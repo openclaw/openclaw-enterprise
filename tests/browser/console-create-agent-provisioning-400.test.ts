@@ -67,6 +67,7 @@ import {
 } from "../integration/sandbox-driver-installation-fixture.ts";
 import {
   apiRequests,
+  asksBeforeUnload,
   fileBrowser,
   holdRequests,
   login,
@@ -783,6 +784,45 @@ test("Create Agent saves a managed static Source and binds its exact ID to a dra
       }
     });
   }
+});
+
+test("an uncertain Create Agent Source write clears busy state without allowing a duplicate or keeping an unsafe draft", async (t) => {
+  const { fixture } = await modelSourceFixture(t);
+  const namespace = await readyNamespace(fixture, "Uncertain Create Agent Source");
+  const { page } = await openModelSourceForm(t, fixture, namespace);
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const requests = apiRequests(page, fixture.origin);
+  // The actual Source write commits, but its reply is lost before the Console can confirm custody.
+  const uncertain = await holdRequests(t, page, fixture.origin + sourcePath, {
+    method: "POST",
+    afterServer: true,
+    loseResponse: true,
+    once: true,
+  });
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await create.click();
+  assert.equal((await uncertain.requested)?.status(), 201);
+  assert.equal(await create.getAttribute("aria-busy"), "true");
+  assert.equal(await create.isDisabled(), true);
+  uncertain.release();
+  await page
+    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
+    .waitFor();
+  assert.equal(await create.getAttribute("aria-busy"), "false");
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 1);
+
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Agents", exact: true })
+    .click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  assert.equal(await asksBeforeUnload(page), false);
+  assert.equal(pathRequests(requests, "POST", sourcePath).length, 1);
 });
 
 test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => {

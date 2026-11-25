@@ -21,6 +21,13 @@ export async function openCreateSecretDialog(
 export async function createModelCredentialSecret(page: Page, secretValue: string) {
   // Preset quick-start reads the installed template before rendering its credential fields.
   await page.locator("#create-agent-form").waitFor();
+  // Capability discovery determines whether this installation uses Sources or Secrets. Do not
+  // choose from the temporary form shown while that real read is still pending.
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector("#create-agent-capability-status")?.textContent !==
+      "Checking installation capabilities…",
+  );
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
     const choice = page.getByLabel("Model credential", { exact: true });

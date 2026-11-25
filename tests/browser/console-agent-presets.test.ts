@@ -20,6 +20,7 @@ import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   type HarnessAuthBinding,
+  type Namespace,
   type Preset,
   type PresetTemplate,
   type PresetVariable,
@@ -39,7 +40,10 @@ import type {
 import { PresetResponse, PresetListResponse } from "../../packages/contracts/src/api/resources.ts";
 
 import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
+import type {
+  NamespaceLifecycleBinding,
+  PlatformStateStore,
+} from "../../packages/occ/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -54,6 +58,18 @@ import { consoleStorage } from "../helpers/console-storage.ts";
 import { installDeviceTokenService } from "../helpers/device-token-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
+import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import {
+  openShellNamespaceObjects,
+  openShellWorkspaceProtocol,
+} from "../helpers/openshell-workspace-protocol.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "../integration/sandbox-driver-installation-fixture.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
@@ -165,10 +181,54 @@ const createConsoleAppFixture = (
 
 async function createTokenServiceConsoleFixture(t: TestContext) {
   const secretDriver = createTestSecretDriver({ id: "console-preset-token-storage" });
+  const core = new FakeSecretCoreV1Api();
+  const installation = buildSandboxInstallation();
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+  const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+    installation,
+    computeId: "console-preset-compute",
+    tokenServiceId: "occ",
+    core,
+    gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
+  });
+  const sandbox = runtime.sandboxDriver;
+  const delivery = runtime.credentialDeliveryRegistration;
+  assert.ok(sandbox);
+  assert.ok(delivery);
+  const composition = installationControllerOptions(runtime.installation);
+  const computeDriver = Object.assign(
+    createTestKubernetesComputeDriver("console-preset-compute", { sandboxDriver: sandbox }),
+    {
+      async ensureNamespace(namespace: Namespace) {
+        return { namespaceId: namespace.id, namespaceReady: true };
+      },
+    },
+  );
+  const placements = new Map<string, string>();
+  computeDriver.resolveSandboxNamespace = async (namespace) => {
+    let name = placements.get(namespace.id);
+    if (name === undefined) {
+      name = core.addNamespace(namespace.id);
+      placements.set(namespace.id, name);
+    }
+    return { ...namespace, name };
+  };
+  computeDriver.resolveSandboxNamespaceContext = async (namespace, signal) => ({
+    namespace: await computeDriver.resolveSandboxNamespace(namespace),
+    kubernetes: openShellNamespaceObjects(),
+    signal,
+  });
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
   let state: PlatformStateStore | undefined;
   const fixture = await createBaseConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
+    computeDriver,
     secretDriver,
+    modelCredentialSourcePresets: composition.modelCredentialSourcePresets,
+    modelCredentialPreset: composition.modelCredentialPreset,
+    driverConfigurations: composition.driverConfigurations,
+    namespaceLifecycleBindings,
     wrapState(current: PlatformStateStore) {
       state = current;
       return current;
@@ -176,7 +236,11 @@ async function createTokenServiceConsoleFixture(t: TestContext) {
   });
   await fixture.bootstrap();
   assert.ok(state);
-  await installDeviceTokenService(fixture.controller, state, secretDriver);
+  await installDeviceTokenService(fixture.controller, state, secretDriver, "occ");
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(computeDriver, sandbox, delivery),
+  );
+  fixture.controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
   return fixture;
 }
 
@@ -1246,6 +1310,7 @@ test("Create Agent discovers hosted plugins through a saved TokenService Source"
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   await page.getByLabel("Agent name", { exact: true }).fill("Hosted catalog Agent");
   const enrolled = page.waitForResponse(
     (response) =>
@@ -3676,7 +3741,6 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   const preset = await createPreset(fixture, namespace.id, artifact);
 
   const { page } = await newPage(t, fixture);
-  await routeInstallationWithoutProvisioning(page, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption(preset.id);
@@ -3684,6 +3748,7 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await page.getByLabel("Model", { exact: true }).fill("gpt-6-astra");
   assert.equal(await page.getByLabel("Model Secret", { exact: true }).count(), 0);
   await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const credential = page.getByLabel("Service account token", { exact: true });
   await credential.waitFor();
   assert.equal(await credential.inputValue(), "");

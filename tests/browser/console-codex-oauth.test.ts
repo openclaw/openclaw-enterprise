@@ -891,6 +891,10 @@ for (const savedAgent of [false, true]) {
     // Method changes rerender controls; even a delivered click cannot repeat the write.
     await page.getByLabel(methodLabel).selectOption("api_key");
     await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
+    if (!agent) {
+      await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+    }
+    assert.equal(await start.isDisabled(), true);
     await start.dispatchEvent("click");
     await settlePageRequests(page);
     assert.equal(
