@@ -44,7 +44,7 @@ export async function publishPrepared(
       assert.equal(
         metadata.digest,
         expectedDigests.get(image),
-        "Prepared archive differs from the chart image.",
+        "Prepared archive differs from the expected image digest.",
       );
     }
     const archive = join(dir, "image.tar");
