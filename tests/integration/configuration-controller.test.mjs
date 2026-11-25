@@ -4,7 +4,10 @@ import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { registerConfigurationChannelCredentialCases } from "./configuration-channel-credential-cases.ts";
 import { registerConfigurationSizeAdmissionCases } from "./configuration-size-admission-cases.ts";
-import { registerConfigurationCredentialSaveCases } from "./configuration-credential-save-cases.ts";
+import {
+  configurationData,
+  registerConfigurationCredentialSaveCases,
+} from "./configuration-credential-save-cases.ts";
 import {
   registerConfigurationModelPolicyCases,
   registerConfigurationStoredCompatibilityCases,
@@ -342,7 +345,7 @@ async function createAgentConfiguration(context, values, label) {
 
 async function createSavedConfiguration(context, values) {
   const created = await createAgentConfiguration(context, values);
-  return { created, item: `${context.collection}/${created.body.data.id}` };
+  return { created, item: `${context.collection}/${configurationData(created.body).id}` };
 }
 
 function createOpenClawConfiguration() {
@@ -625,6 +628,14 @@ async function assertNothingStored(context, kept = []) {
   assert.deepEqual(await context.stored(), kept);
 }
 
+async function assertOnlyStoredConfiguration(context, created) {
+  const original = created.body.data;
+  const saved = await request(context.app, "GET", `${context.collection}/${original.id}`);
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(configurationData(saved.body), original);
+  await assertNothingStored(context, [`${original.id}.json`]);
+}
+
 // Create and update refuse `values` and leave the Agent's Configuration as it was. A row an older
 // release stored with them still reads, deployment refuses it with `deploy` (by default the save's
 // 400), and an update that keeps them is refused. Then the valid row is stored again.
@@ -684,8 +695,7 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   ]) {
     await refusedOnSave(context, at("/models/providers/openai", settings), message, { item });
   }
-  assert.deepEqual(await readData(context, item), created.body.data);
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
   // Any API id the pinned runtime accepts, on a provider or a model, still saves, as do a
   // blank provider baseUrl (the runtime's built-in default) and `${VAR}` references the
   // runtime resolves before it validates. local/m is selected, so its catalog row is
@@ -782,11 +792,16 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
     const message = setting(`${key}.models`, "must be an array of model entries");
     await refusedOnSave(context, { models: { providers } }, message, { item, sentinel });
   }
-  assert.deepEqual(await readData(context, item), created.body.data);
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
   // A list, an empty one, or no models setting still saves.
   const listed = { models: { providers: { gateway: { models: [] }, openai: {} } } };
   await updateSaved(context, item, listed);
+});
+
+// gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
+const gateway = (settings) => ({
+  agents: { defaults: { model: "gateway/m" } },
+  models: { providers: { gateway: settings } },
 });
 
 const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
@@ -2356,18 +2371,12 @@ registerConfigurationChannelCredentialCases({
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
   // for a fallback. The rules depend only on the Configuration, so no Agent is consulted.
-  const configurationDriver = createConfigurationBackend();
-  const context = await fixture({
-    configurationDriver,
-    computeDriver: kubernetesRules("compute-model-provider-save", ...configurationRules),
-  });
-  const { namespace, collection } = context;
-  const valid = runtimeSelected;
-  const { created, configurationId, item, agentPath } = await deployableAgent(context, namespace, {
-    values: valid,
+  const { context, agent } = await storedConfigurationFixture("compute-model-provider-save", {
     name: "Model provider consumer",
     secretName: "model-provider-key",
   });
+  const { collection } = context;
+  const { created, configurationId, item, agentPath, configurationDriver, valid } = agent;
   const other = "anthropic/claude-opus-4";
   // A default model setting off the openai provider, and the refusal that names it.
   const offDefaults = (path, settings, name) => [
@@ -2454,7 +2463,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     });
   }
 
-  // A row stored before the fallback rule still reads; Agent save and deployment name it.
+  // Agent save and deployment both name an invalid fallback stored before the rule.
   await t.test("a stored fallback on another provider", async () => {
     const entryFallback = withAgents({
       entries: { main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } } },
@@ -2467,11 +2476,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       ],
     ]) {
       const label = JSON.stringify(values);
-      await writePastOcc(configurationDriver, configurationId, values);
-      const agentSaved = await request(context.app, "PATCH", agentPath, {
-        body: { configurationId },
-      });
-      assertRefused(agentSaved, message, { label });
+      await refusedAtAgentSave(context, agent, values, message, label);
       assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, { label });
       // Refused before a revision exists.
       assert.deepEqual(await readData(context, `${agentPath}/revisions`, label), [], label);
@@ -2498,15 +2503,10 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     model: "codex/gpt-5",
     models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
   };
-  const codexItem = async () => {
-    const codex = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values: { agents: { defaults: codexDefaults } } },
-    });
-    assert.equal(codex.status, 201, JSON.stringify(codex.body));
-    return `${collection}/${codex.body.data.id}`;
-  };
   await t.test("a provider apiKey on Dedicated Codex", async () => {
-    const codex = await codexItem();
+    const { item: codex } = await createSavedConfiguration(context, {
+      agents: { defaults: codexDefaults },
+    });
     // A null key is still set: deployment refuses it, so save does too.
     for (const apiKey of ["${OPENAI_API_KEY}", null]) {
       const values = {
@@ -2522,7 +2522,9 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   // policy key, so an entry needs its provider, and OpenClaw calls media and voice models
   // directly, which Codex does not serve.
   await t.test("an allowlist entry, media or voice model on Dedicated Codex", async () => {
-    const codex = await codexItem();
+    const { item: codex } = await createSavedConfiguration(context, {
+      agents: { defaults: codexDefaults },
+    });
     const unset =
       "must be unset: Dedicated Codex serves chat models only, not media or voice models";
     for (const [defaults, message] of [
@@ -2558,17 +2560,16 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
   // the Configuration an Agent uses as for one no Agent uses, and nothing names the Agent.
   await t.test("a caller who cannot read the Agent learns nothing about it", async () => {
-    const unused = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values: valid },
-    });
-    assert.equal(unused.status, 201, JSON.stringify(unused.body));
+    const unused = await createAgentConfiguration(context, valid);
+    const unusedId = unused.body.data.id;
+    assert.notEqual(configurationId, unusedId);
     const role = context.roles.find(({ id }) => id === "role-configuration-integration");
     // The same PATCH to the used and the unused Configuration; a denial may name only the ID
     // its request sent.
     const answers = (values, status) =>
       assertSameAnswer(
         (id) => request(context.app, "PATCH", `${collection}/${id}`, { body: { values } }),
-        [item.split("/").at(-1), unused.body.data.id],
+        [configurationId, unusedId],
         { status, label: JSON.stringify(values) },
       );
     role.permissions = [
@@ -2583,7 +2584,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     // A zero-grant member gets the uniform 403, whatever the values.
     role.permissions = [];
     for (const values of [valid, imageValues]) {
-      const denied = await answers(values);
+      const denied = await answers(values, 403);
       assert.equal(denied.code, "FORBIDDEN");
     }
   });
@@ -2867,7 +2868,7 @@ test("Configuration and Preset saves refuse an OpenRouter compatibility selector
   ]) {
     await refusedOnSave(context, values, providerModel(path), { item });
   }
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
 
   // A Preset selector that waits on a variable is checked once filled: a default fills it here.
   const waiting = codexModel({ primary: codex.model, fallbacks: ["openrouter:{{ vars.kind }}"] });
@@ -3044,11 +3045,6 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const context = await saveFixture(t);
   const { created, item } = await createSavedConfiguration(context, {});
   const sentinel = `synthetic-model-rule-credential-${randomUUID()}`;
-  // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
-  const gateway = (settings) => ({
-    agents: { defaults: { model: "gateway/m" } },
-    models: { providers: { gateway: settings } },
-  });
   const field = (path) => `/models/providers/gateway/${path}`;
   // Finding 1218: the refusal names the header up to its first invalid character, never past it.
   const invalidName = (name, path = "models.providers.gateway.headers") =>
@@ -3145,7 +3141,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   for (const [values, message] of refused) {
     await refusedOnSave(context, values, message, { item, sentinel });
   }
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
 
   // Benign names and a bearer reference under an Authentication header still save.
   await acceptedOnSave(
@@ -3407,10 +3403,7 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   ]) {
     await refusedOnSave(context, values, userinfo(field), { item, sentinel });
   }
-  const read = await request(context.app, "GET", item);
-  assert.equal(read.status, 200, JSON.stringify(read.body));
-  assert.deepEqual(read.body.data.values, original.body.data.values);
-  await assertNothingStored(context, [`${original.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, original);
   const path = join(context.root, context.namespace.id, `${original.body.data.id}.json`);
   assert.equal((await readFile(path, "utf8")).includes(sentinel), false);
 
@@ -3582,10 +3575,10 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     const env = Object.fromEntries(
       Array.from({ length: 12 }, (_, index) => [`X${index}`, `x://h${"${A:-x}".repeat(170)}`]),
     );
-    const one = await createAgentConfiguration(context, {
+    const { item: singleItem } = await createSavedConfiguration(context, {
       skills: { entries: { x: { env: { X0: env.X0 } } } },
     });
-    await request(context.app, "DELETE", `${context.collection}/${one.body.data.id}`);
+    assert.equal((await request(context.app, "DELETE", singleItem)).status, 204);
     const response = await request(context.app, "POST", context.collection, {
       body: { kind: "agent", values: { skills: { entries: { x: { env } } } } },
     });
@@ -3594,7 +3587,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
       "Configuration field /skills/entries/x/env/X10, with the URLs and environment values before it, holds too many URLs or ${NAME} references to check for a user name or password. Shorten these values, or make each whole value a ${NAME} reference.",
     );
   });
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
 
   const saved = await savePreset(
     context,
@@ -3956,7 +3949,7 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       assertRefused(response, userinfo(field), { label: field, sentinel });
     });
   }
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
 
   // Ordinary git config pairs still save: other keys with an `@` in their value (`core.gitProxy`
   // names a command), a proxy without a user name, or one that is a whole reference, and a proxy
@@ -4020,12 +4013,12 @@ test("Configuration and Preset saves read a git config value as a proxy when its
 
 registerConfigurationCredentialSaveCases({
   saveFixture,
-  request,
+  createSavedConfiguration,
   savePreset,
   assertRefused,
   refusedOnSave,
   acceptedOnSave,
-  assertNothingStored,
+  assertOnlyStoredConfiguration,
   referenceFormRefusal,
   at,
   inline,
@@ -4040,11 +4033,6 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   // the whole baseUrl or api saved, and failed every launch.
   const context = await saveFixture(t);
   const { created, item } = await createSavedConfiguration(context, {});
-  // gateway/m is selected, so a catalog row for it is not refused first (finding 3019).
-  const gateway = (settings) => ({
-    agents: { defaults: { model: "gateway/m" } },
-    models: { providers: { gateway: settings } },
-  });
   const baseUrl = (field = "baseUrl") => absoluteUrl(`/models/providers/gateway/${field}`);
   // Finding 1285: a scheme followed by one or no slash names the missing `//`.
   const slashes = (field = "baseUrl") =>
@@ -4152,7 +4140,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   ]) {
     assertRefused(await savePreset(context, template(variables, settings)), message);
   }
-  await assertNothingStored(context, [`${created.body.data.id}.json`]);
+  await assertOnlyStoredConfiguration(context, created);
 
   // A host variable without a default saves; filled empty at launch, its Configuration is refused.
   const variables = { h: { type: "string" }, n: { type: "number" }, u: { type: "string" } };
