@@ -14,8 +14,8 @@ import type {
   StoredCredentialSource,
   CredentialSourceReference,
   ErrorDetail,
+  GitHubAppClient,
   GitHubAppInstallationCredentialSource,
-  GitHubAppInstallationScope,
   PrivateSecretRef,
   PrivateSecretStore,
   JSONSchema,
@@ -31,6 +31,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   ResourceStateConflictError,
+  PostgresCommitOutcomeUnknownError,
   CredentialDeliveryFailedError,
   ScopeViolationError,
   TokenServiceSourceInputError,
@@ -51,10 +52,7 @@ import {
   type GitHubAppIssuerOptions,
   type GitHubAppSourceIssuer,
 } from "./github-app-issuer.ts";
-import {
-  parseGitHubNumericId,
-  type GitHubAppRepositorySelection,
-} from "../repo/github/access/repository-grant.ts";
+import { parseGitHubNumericId } from "../repo/github/access/repository-grant.ts";
 import { providerClockSkewMs } from "../repo/github/access/driver/lifetime.ts";
 import type { GitHubRepositoryRegistry } from "../repo/github/access/registry.ts";
 import {
@@ -112,7 +110,11 @@ function decodeCredential(value: string): ResolvedCredential {
 }
 
 function encodeGitHubAppCredential(
-  { credential, expiresAt, providerExpiresAt }: Awaited<ReturnType<GitHubAppSourceIssuer["issue"]>>,
+  {
+    credential,
+    expiresAt,
+    providerExpiresAt,
+  }: Awaited<ReturnType<GitHubAppSourceIssuer["mintInstallationToken"]>>,
   deliveryPending = false,
 ) {
   const version = randomUUID();
@@ -416,43 +418,19 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return { status: "ready", source };
   }
 
-  private issueGitHubAppCredential(
-    scope: GitHubAppRepositorySelection,
-    keyRef: PrivateSecretRef,
-    signal: AbortSignal,
-  ) {
-    return withComputeAbortSignal(signal, () =>
-      this.store.withValue(keyRef, (privateKey) =>
-        this.githubAppIssuer.issue(scope, privateKey, signal),
-      ),
-    );
-  }
-
-  private githubAppSigningKeyRef(
+  private assertGitHubAppClient(
     client: (Readonly<CredentialClient> & { readonly tokenServiceInstanceId?: string }) | undefined,
-    {
-      namespaceId,
-      clientId,
-      scope,
-    }: {
-      readonly namespaceId: string;
-      readonly clientId: string;
-      readonly scope: Pick<GitHubAppRepositorySelection, "appId">;
-    },
-  ): PrivateSecretRef {
+    namespaceId: string,
+    appId: string,
+  ): asserts client is Readonly<GitHubAppClient> & { readonly tokenServiceInstanceId: string } {
     if (
       client?.kind !== "github-app" ||
-      client.id !== clientId ||
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
-      client.appId !== scope.appId ||
+      client.appId !== appId ||
       client.tokenServiceInstanceId !== this.tokenServiceInstanceId
     ) {
       throw new ResourceStateConflictError("The GitHub App client is unavailable for this Source.");
     }
-    return this.clientSecretRef({
-      ...client,
-      tokenServiceInstanceId: client.tokenServiceInstanceId,
-    });
   }
 
   private assertCurrentGitHubAppRegistryScope(
@@ -473,10 +451,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     source: Readonly<GitHubAppInstallationCredentialSource>,
   ): Promise<void> {
     this.assertCurrentGitHubAppRegistryScope(source);
-    const client = await this.state.read(({ connectionTemplates }) =>
-      connectionTemplates.findCredentialClient(source.clientId),
+    const client = await this.state.read(({ credentialClients }) =>
+      credentialClients.find(source.clientId),
     );
-    this.githubAppSigningKeyRef(client, source);
+    this.assertGitHubAppClient(client, source.namespaceId, source.scope.appId);
+    this.clientSecretRef(client);
   }
 
   private async createGitHubAppSource(
@@ -489,43 +468,58 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       throw new ResourceStateConflictError("GitHub App Source enrollment is unavailable.");
     }
     const scope = admitGitHubAppSourceScope(input, githubApp.registry);
-    return this.state.transact(async ({ namespaces, connectionTemplates, credentialSources }) => {
-      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+    const client = await this.state.read(async ({ namespaces, credentialClients }) => {
+      const namespace = await namespaces.findNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
-      // Serialize enrollment with client retirement before issuing against its signing key.
-      const key = this.githubAppSigningKeyRef(
-        await connectionTemplates.lockCredentialClient(input.clientId),
-        { namespaceId: ref.namespaceId, clientId: input.clientId, scope },
-      );
-      const issued = await this.issueGitHubAppCredential(scope, key, signal);
-      const source: GitHubAppInstallationCredentialSource = {
-        id: ref.id,
-        namespaceId: ref.namespaceId,
-        name: input.name,
-        type: "github-app-installation",
-        clientId: input.clientId,
-        ownerCapability: "token_service",
-        tokenServiceInstanceId: this.tokenServiceInstanceId,
-        state: "ready",
-        scope: { ...scope, repositories: issued.repositories },
-        createdAt: new Date().toISOString(),
-      };
-      try {
-        await credentialSources.createCredentialSource(source);
-        const { stored } = encodeGitHubAppCredential(issued);
+      return credentialClients.find(input.clientId);
+    });
+    this.assertGitHubAppClient(client, ref.namespaceId, scope.appId);
+    const signingKeyRef = this.clientSecretRef(client);
+    const installationToken = await withComputeAbortSignal(signal, () =>
+      this.store.withValue(signingKeyRef, (privateKey) =>
+        this.githubAppIssuer.mintInstallationToken(scope, privateKey, signal),
+      ),
+    );
+    const source: GitHubAppInstallationCredentialSource = {
+      id: ref.id,
+      namespaceId: ref.namespaceId,
+      name: input.name,
+      type: "github-app-installation",
+      clientId: input.clientId,
+      ownerCapability: "token_service",
+      tokenServiceInstanceId: this.tokenServiceInstanceId,
+      state: "ready",
+      scope: { ...scope, repositories: installationToken.repositories },
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      return await this.state.transact(async (state) => {
+        const namespace = await state.namespaces.lockNamespace(ref.namespaceId);
+        if (namespace?.status !== "ready") {
+          throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+        }
+        // Keep the Client active until the Source reference commits.
+        this.assertGitHubAppClient(
+          await state.credentialClients.lock(source.clientId),
+          source.namespaceId,
+          source.scope.appId,
+        );
+        await state.credentialSources.createCredentialSource(source);
+        const { stored } = encodeGitHubAppCredential(installationToken);
         await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
         signal.throwIfAborted();
-      } catch (error) {
-        // The Source cannot commit after a custody failure. Try to retire its token.
+        return source;
+      });
+    } catch (error) {
+      if (!(error instanceof PostgresCommitOutcomeUnknownError)) {
         await this.githubAppIssuer
-          .revoke(source.scope, issued.credential, AbortSignal.timeout(3_000))
+          .revoke(installationToken.credential, AbortSignal.timeout(3_000))
           .catch(() => false);
-        throw error;
       }
-      return source;
-    });
+      throw error;
+    }
   }
 
   async createSource(
@@ -828,8 +822,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const ref = source.sourceRef;
     const stored = this.storageRef(ref);
     const committed = await this.state.transact(
-      async ({ namespaces, connectionTemplates, credentialSources }) => {
-        const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      async ({ namespaces, credentialClients, credentialSources }) => {
+        const namespace = await namespaces.findNamespace(ref.namespaceId);
         const current = this.ownedSource(
           await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
         );
@@ -854,12 +848,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
               : undefined;
           }
         }
-        const key = this.githubAppSigningKeyRef(
-          await connectionTemplates.findCredentialClient(current.clientId),
-          current,
+        const client = await credentialClients.find(current.clientId);
+        this.assertGitHubAppClient(client, current.namespaceId, current.scope.appId);
+        const signingKeyRef = this.clientSecretRef(client);
+        const installationToken = await withComputeAbortSignal(signal, () =>
+          this.store.withValue(signingKeyRef, (privateKey) =>
+            this.githubAppIssuer.mintInstallationToken(current.scope, privateKey, signal),
+          ),
         );
-        const issued = await this.issueGitHubAppCredential(current.scope, key, signal);
-        const replacement = encodeGitHubAppCredential(issued, this.credentialProxy !== undefined);
+        const replacement = encodeGitHubAppCredential(
+          installationToken,
+          this.credentialProxy !== undefined,
+        );
         await withComputeAbortSignal(signal, () => this.store.update(stored, replacement.stored));
         return { version: replacement.version, minted: true };
       },
@@ -874,7 +874,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     // Keep the pending version in custody so another API pass can retry a failed push.
     await this.notifyCredentialUpdated(source, version, signal);
     await this.state.transact(async ({ namespaces, credentialSources }) => {
-      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      const namespace = await namespaces.findNamespace(ref.namespaceId);
       const current = this.ownedSource(
         await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
       );
@@ -937,7 +937,6 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   }
 
   private async retireGitHubAppCredential(
-    scope: GitHubAppInstallationScope,
     stored: PrivateSecretRef,
     signal: AbortSignal,
   ): Promise<void> {
@@ -952,7 +951,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     ) {
       return;
     }
-    if (!(await this.githubAppIssuer.revoke(scope, current.credential, signal))) {
+    if (!(await this.githubAppIssuer.revoke(current.credential, signal))) {
       throw new ResourceStateConflictError(
         "GitHub App Source credential retirement is unconfirmed.",
       );
@@ -1014,7 +1013,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         const stored = this.storageRef(ref);
         const githubApp = found.type === "github-app-installation";
         if (githubApp) {
-          await this.retireGitHubAppCredential(found.scope, stored, signal);
+          await this.retireGitHubAppCredential(stored, signal);
         }
         // Erase material before deletion; an installation Secret may remain terminating under a finalizer.
         await withoutMutationDeadline(() =>

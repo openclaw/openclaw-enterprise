@@ -1,9 +1,16 @@
 import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
 
-import type { ProviderScope } from "./provider-transport/request-options.ts";
 import { parseJsonMembers } from "../../../json-members.ts";
 import { providerClockSkewMs, tokenLifetimeMs } from "./driver/lifetime.ts";
 import { isGitHubWireCredential } from "./wire-credential.ts";
+
+type InstallationTokenScope =
+  | { readonly kind: "inherited" }
+  | {
+      readonly kind: "selected";
+      readonly permissions: Readonly<Record<string, string>>;
+      readonly repositories: readonly { readonly id?: number; readonly name: string }[];
+    };
 
 /** Custody identification is independent of evidence that permits using the token. */
 export function parseInstallationTokenResponse(body: Buffer): Readonly<{
@@ -44,7 +51,7 @@ export function validateInstallationTokenResponse<Credential>(
   packet: Record<string, unknown> | undefined,
   credential: Credential | undefined,
   observedWallMs: number,
-  scope: ProviderScope,
+  scope: InstallationTokenScope,
   minimumValidityMs: number,
 ):
   | Readonly<{
@@ -99,7 +106,7 @@ export function validateInstallationTokenResponse<Credential>(
 
 function verifyIssuedScope(
   packet: Record<string, unknown>,
-  scope: ProviderScope,
+  scope: InstallationTokenScope,
 ): { repositories?: GitHubAppInstallationScope["repositories"] } | undefined {
   const { permissions, repositories, repository_selection: selection } = packet;
   const reported =

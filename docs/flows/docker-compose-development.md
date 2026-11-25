@@ -230,12 +230,11 @@ import before smaller OpenShell assets.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
-publishes only an admitted API proxy on host loopback. The source archive and all three
-OpenShell images select 0.1.9 together, including the paired sandbox/supervisor
-control protocol and compromised-key rejection. The observed-hook repository
-credential preview admits 0.1.6 through its existing opt-in, held-launcher and
-recipient checks. Repository-scoped access uses the separate
-[protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
+publishes only an admitted API proxy on host loopback. The source archive and
+three images pin OpenShell 0.1.9. The default profile selects OCC TokenService
+and the OpenShell Sandbox with native Credential Proxy delivery. The separate
+[protected Git sender](../reference/repository-credentials/protected-openshell-git.md)
+has its own qualification and installation settings.
 
 With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in

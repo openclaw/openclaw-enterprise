@@ -14,6 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
 import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
@@ -52,6 +53,7 @@ import {
 import {
   configuredHarnessId,
   configuredModel,
+  credentialSourceOperateDenial,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -2552,12 +2554,14 @@ export async function renderAgentDetail(
     }
     chooser.value = selected;
     chooser.addEventListener("change", () => {
-      if (draftEditorBlocksNavigation() || sharingWrite) {
-        chooser.value = selected;
+      const requested = chooser.value;
+      // Navigation can retain this page and restore its picker on a later visit.
+      chooser.value = selected;
+      if (sharingWrite) {
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(requested, "configuration");
     });
     trackRevisionControl(chooser);
     const older =
@@ -3614,6 +3618,13 @@ export async function renderAgentDetail(
     let snapshot: Configuration = found;
     let values = snapshot.values;
     const executionMode = agent.executionMode;
+    const harnessSourceId =
+      agent.harnessAuth?.method === "credential_source" &&
+      executionMode === "dedicated" &&
+      configuredHarnessId(values) === "codex"
+        ? agent.harnessAuth.sourceId
+        : undefined;
+    let sourceDestinationChecking = harnessSourceId !== undefined;
     let deployPending = false;
     let deployReloadMessage = "";
     const repositoryDeploymentWarning = element(
@@ -4035,6 +4046,7 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        sourceDestinationChecking ||
         (reviewRepositories &&
           (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
@@ -4210,7 +4222,7 @@ export async function renderAgentDetail(
     }
     function updateDeployControls() {
       harnessControls.hidden = callerPermissions?.deploy !== true;
-      harnessControls.toggleAttribute("inert", deployPending);
+      harnessControls.toggleAttribute("inert", deployPending || sourceDestinationChecking);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -4291,6 +4303,8 @@ export async function renderAgentDetail(
           deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
+        } else if (sourceDestinationChecking) {
+          deployMessage = "Checking Credential Source destination…";
         } else if (authenticationSaveState === "saving") {
           deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
@@ -4661,12 +4675,14 @@ export async function renderAgentDetail(
         updateChecklist();
       });
     }
+    const sourceDestinationHint = element("p", { className: "hint", hidden: true });
     const harnessControls = element(
       "details",
       { className: "card agent-harness-settings" },
       element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
+      sourceDestinationHint,
       element(
         "p",
         { className: "hint" },
@@ -4994,6 +5010,52 @@ export async function renderAgentDetail(
       draftActions.insertAdjacentElement("afterend", harnessControls);
     }
     renderDetailHeading();
+    if (harnessSourceId) {
+      void (async () => {
+        try {
+          const permissions = await latestPermissionsRead;
+          if (
+            permissions?.deploy !== true ||
+            !context.isCurrent() ||
+            generation !== detailsGeneration
+          ) {
+            return;
+          }
+          const sourcePath = `/namespaces/${encodeURIComponent(namespaceId)}/credential-sources/${encodeURIComponent(harnessSourceId)}`;
+          const source = readCredentialSourceMetadata(await request(sourcePath), namespaceId);
+          if (source?.id !== harnessSourceId) {
+            throw new Error("The Credential Source metadata did not match the saved Source.");
+          }
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (source.modelPreset === "codex-pat" || source.oauthConsentKind === "builtin_codex") {
+            harnessChoice.querySelector('option[value="retain"]')?.remove();
+            harnessChoice.querySelector<HTMLOptionElement>('option[value="custom"]')!.disabled =
+              true;
+            harnessChoice.value = "default";
+            const kind = source.modelPreset === "codex-pat" ? "PAT" : "OAuth";
+            sourceDestinationHint.textContent = `This Codex ${kind} Source has a fixed destination. Model provider overrides are unavailable.`;
+            sourceDestinationHint.hidden = false;
+          }
+        } catch (cause) {
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (requestFailure(cause).status === 401) {
+            context.onExpired();
+            return;
+          }
+          sourceDestinationHint.textContent = `${namedDenial(cause) ?? "Credential Source metadata is unavailable."} Deployment will check whether the requested Harness destination is compatible.`;
+          sourceDestinationHint.hidden = false;
+        } finally {
+          if (context.isCurrent() && generation === detailsGeneration) {
+            sourceDestinationChecking = false;
+            updateDeployControls();
+          }
+        }
+      })();
+    }
     return {
       get snapshot() {
         return snapshot;
@@ -5669,8 +5731,8 @@ export async function renderAgentDetail(
           }
           return result && requestFailure(result.error).status === 403 ? false : undefined;
         }),
-        // The failed-version recovery stops offering Logs as soon as they are denied.
-        onLogsDenied: () => {
+        // Keep the failed version’s recovery action in sync with the reads available in Logs.
+        onRuntimeAvailabilityChanged: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
@@ -6130,6 +6192,8 @@ export async function renderAgentDetail(
         configuredHarnessId(values),
         {
           agentName: agent.name,
+          executionMode: agent.executionMode,
+          configuration: values,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
           onStartSettled: () => recordAuthentication(),
@@ -6533,10 +6597,20 @@ export async function renderAgentDetail(
             // A refused write names the chosen Secret when a fresh answer says the caller may not
             // operate it (finding 2453).
             const chosen = auth.changedSecret;
-            const named =
-              mutationStarted && requestFailure(error).status === 403 && chosen
-                ? await refusedSecretBinding("agent", [chosen])
+            const sourceId =
+              harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined;
+            const currentId =
+              baseline.harnessAuth?.method === "credential_source"
+                ? baseline.harnessAuth.sourceId
                 : undefined;
+            const namedSource =
+              (sourceId ? credentialSourceOperateDenial(error, sourceId) : undefined) ??
+              (currentId ? credentialSourceOperateDenial(error, currentId, true) : undefined);
+            const named =
+              namedSource ??
+              (mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding("agent", [chosen])
+                : undefined);
             if (!context.isCurrent()) {
               return;
             }
@@ -6599,7 +6673,7 @@ export async function renderAgentDetail(
               (binding) =>
                 `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",
@@ -7349,12 +7423,13 @@ export async function renderAgentDetail(
       reloadRequired = false;
       updateState();
     });
-    showDraftEditorNavigationBlock = () => {
+    showDraftEditorNavigationBlock = (focusFeedback) => {
       if (draftEditorNavigationBlock) {
         setStatusTone(feedback, null);
         feedback.setAttribute("role", "status");
         feedback.textContent = draftEditorNavigationBlock;
         feedbackLocked = true;
+        focusFeedback?.(feedback);
       }
     };
 

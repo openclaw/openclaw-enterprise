@@ -7,7 +7,7 @@ import test from "node:test";
 
 import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authBaseURL,
   createNativeAdminSetup,
@@ -18,7 +18,7 @@ import {
   publicOrigin,
 } from "./native-admin-access-fixture.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import {

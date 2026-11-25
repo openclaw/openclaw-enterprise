@@ -34,7 +34,7 @@ import type {
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.ts";
@@ -51,6 +51,7 @@ import {
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
+  selectSecret,
   takeLayoutShifts,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -1747,12 +1748,17 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Anthropic authoring", { ready: true });
+  const discardedPat = await fixture.createSecret(
+    namespace.id,
+    "Discarded Codex PAT",
+    "at-discarded-codex-pat",
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page.getByLabel("Service account token", { exact: true }).fill("at-discarded-codex-pat");
+  await selectSecret(page, "Service account token Secret", discardedPat);
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
   assert.deepEqual(
@@ -1823,7 +1829,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Anthropic Agent model credential", value: "test-anthropic-api-key" }],
   );
-  assert.equal(secretDriver.calls.filter((call) => call.operation === "create").length, 1);
+  assert.equal(secretDriver.calls.filter((call) => call.operation === "create").length, 2);
   assert.equal(JSON.stringify(audit.events).includes("test-anthropic-api-key"), false);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
@@ -2137,8 +2143,7 @@ for (const width of [1440, 390]) {
 
     // Authentication owns its picker even when the model reset refuses the malformed draft.
     const keySecret = page.getByLabel("API key Secret", { exact: true });
-    const directKey = page.getByLabel("API key", { exact: true });
-    const patToken = page.getByLabel("Service account token", { exact: true });
+    const patSecret = page.getByLabel("Service account token Secret", { exact: true });
     const authDraft = await editAllow("codex");
     const authModel = await manual.inputValue();
     const authMode = await mode.inputValue();
@@ -2146,15 +2151,14 @@ for (const width of [1440, 390]) {
     await assertBlocked(authDraft);
     assert.equal(await authMethod.inputValue(), "codex_pat");
     assert.equal(await keySecret.isVisible(), false);
-    assert.equal(await patToken.isVisible(), true);
+    assert.equal(await patSecret.isVisible(), true);
     assert.equal(await manual.inputValue(), authModel);
     assert.equal(await manual.isVisible(), true);
     assert.equal(await mode.inputValue(), authMode);
     await editAllow([]);
     await authMethod.selectOption("api_key");
-    assert.equal(await directKey.isVisible(), true);
-    assert.equal(await keySecret.isVisible(), false);
-    assert.equal(await patToken.isVisible(), false);
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await patSecret.isVisible(), false);
     assert.equal(await choice.inputValue(), "");
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
     await choice.selectOption("gpt-6-sol");
@@ -2176,7 +2180,7 @@ for (const width of [1440, 390]) {
     assert.equal(await manual.inputValue(), harnessModel);
     assert.equal(await manual.isVisible(), true);
     assert.equal(await keySecret.isVisible(), true);
-    assert.equal(await patToken.isVisible(), false);
+    assert.equal(await patSecret.isVisible(), false);
     await editAllow([]);
     await harness.selectOption("codex");
     assert.equal(await harness.inputValue(), "codex");

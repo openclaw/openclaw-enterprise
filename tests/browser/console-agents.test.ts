@@ -53,7 +53,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -183,12 +183,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     { value: "codex_pat", text: "Service Accounts" },
     { value: "credential_source", text: "ChatGPT OAuth (Experimental)" },
   ]);
-  assert.equal(await page.getByLabel("Credential storage").inputValue(), "source");
-  const apiKey = page.getByLabel("API key", { exact: true });
-  await apiKey.waitFor();
-  assert.equal(await apiKey.getAttribute("type"), "password");
-  assert.equal(await apiKey.evaluate((node: HTMLInputElement) => node.required), true);
-  await page.getByLabel("Credential storage").selectOption("secret");
+  assert.equal(await page.getByLabel("Model credential", { exact: true }).isVisible(), false);
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
   assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");
@@ -1766,7 +1761,6 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await page.getByText("This installation creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
     page
