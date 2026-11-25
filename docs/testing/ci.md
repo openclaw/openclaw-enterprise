@@ -44,9 +44,11 @@ workflow triggers and failure consequences.
   [First Agent Smoke](ci/first-agent-smoke.md) uses a simulated model provider.
   Its failure blocks publication when selected, but does not block merge.
   Container preparation also requires [native image checks](ci/required-checks.md#scenarios).
-- [Release OCE](../release/README.md) requires approval and a successful Full
-  Integration Aggregate for `lane=all` at the selected source SHA in the release
-  run. It can qualify any commit in protected `main` history without prior push CI.
+- [Release OCE](../release/README.md) requires approval. A full release
+  requires a successful Full Integration Aggregate for `lane=all` at the selected
+  source SHA in the release run. It can qualify any commit in protected `main`
+  history without prior push CI. [Image-only publication](../release/README.md#publish-images-only)
+  skips Full Integration and requires native image checks.
 
 ### When does ordinary CI run integration tests?
 

@@ -1421,14 +1421,42 @@ test("Agent repository search prioritizes exact names before prefix matches", as
     await page.locator("#repository-results .repository-identity strong").allTextContents(),
     ["omega/application", "zeta/application", "alpha/application-api", "beta/my-application"],
   );
-  await search.press("Enter");
+  const submissions = await page.evaluateHandle(() => {
+    const count = { value: 0 };
+    document.addEventListener("submit", () => count.value++, true);
+    return count;
+  });
+  // Holding Enter must add only the first match.
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(
     await page.locator(".repository-card .repository-identity strong").innerText(),
     "omega/application",
   );
   assert.equal(await search.inputValue(), "ApPlIcAtIoN");
-  // Repeated Enter skips the already checked choice and selects the next match.
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
+
+  // Confirming typed text must not submit the form or select the next match.
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await search.selectText();
+    await cdp.send("Input.imeSetComposition", {
+      text: "application",
+      selectionStart: 11,
+      selectionEnd: 11,
+    });
+    await page.keyboard.press("Enter");
+    assert.equal(await submissions.evaluate((count) => count.value), 0);
+    assert.ok(await search.evaluate((input) => input === document.activeElement));
+    await cdp.send("Input.insertText", { text: "application" });
+    assert.equal(await search.inputValue(), "application");
+  } finally {
+    await cdp.detach();
+  }
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   await search.press("Enter");
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);

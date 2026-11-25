@@ -49,13 +49,11 @@ export function validateContext(
   match(env.SOURCE_SHA ?? "", shaPattern, "A full immutable source SHA is required.");
 }
 
-export function validateCi(
+export function validateCompletedCiRun(
   run: unknown,
   workflow: unknown,
-  jobs: readonly unknown[],
   sourceSha: string | undefined,
   runId: string | number | undefined,
-  attempt?: string | number,
 ) {
   assert.match(String(runId), integerPattern);
   assert.equal(String(field(run, "id")), String(runId));
@@ -77,6 +75,17 @@ export function validateCi(
     "PR and arbitrary dispatch checks are not release evidence.",
   );
   assert.equal(field(run, "status"), "completed");
+}
+
+export function validateCi(
+  run: unknown,
+  workflow: unknown,
+  jobs: readonly unknown[],
+  sourceSha: string | undefined,
+  runId: string | number | undefined,
+  attempt?: string | number,
+) {
+  validateCompletedCiRun(run, workflow, sourceSha, runId);
   assert.equal(field(run, "conclusion"), "success", "The entire CI run must succeed.");
   assert.match(String(field(run, "run_attempt")), integerPattern);
   if (attempt !== undefined) {

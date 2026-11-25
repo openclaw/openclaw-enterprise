@@ -21,6 +21,7 @@ import {
   expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -166,22 +167,93 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   const name = dialog.getByLabel("Namespace name");
-  await name.fill("Existing team");
+  const requests = apiRequests(page, fixture.origin);
+  await name.fill(" Existing team ");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
   // The API's own sentence: a live Namespace has the name (not one a deleted Namespace keeps).
-  await dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT }).waitFor();
+  const conflict = dialog.getByRole("alert").filter({ hasText: NAMESPACE_NAME_CONFLICT });
+  const described = dialog.getByRole("textbox", { description: NAMESPACE_NAME_CONFLICT });
+  const withHelp = dialog.getByRole("textbox", {
+    description: "Names cannot currently be changed.",
+  });
+  await conflict.waitFor();
+  assert.equal(await described.count(), 1);
+  assert.equal(await withHelp.count(), 1);
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
-  assert.equal(await name.inputValue(), "Existing team");
+  assert.equal(await name.inputValue(), " Existing team ");
   await waitForEnabled(name);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  // Editing the submitted name removes the stale warning. Returning to the trimmed
+  // name restores it, without another request or a new validation barrier.
+  await page.keyboard.press("End");
+  await page.keyboard.type("2");
+  assert.equal(await conflict.isVisible(), false);
+  assert.equal(await described.count(), 0);
+  assert.equal(await withHelp.count(), 1);
+  await page.keyboard.press("Backspace");
+  await page.keyboard.press("Backspace");
+  assert.equal(await conflict.isVisible(), true);
+  assert.equal(await described.count(), 1);
+  assert.equal(await name.getAttribute("aria-invalid"), null);
   await name.fill("New team");
-  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Namespace created", exact: true })
-    .getByRole("button", { name: "Done" })
-    .click();
+  assert.equal(creates(requests).length, 1);
+  const url = page.url();
+  const read = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await name.press("Enter");
+  assert.equal((await read.requested)?.status(), 200);
+  const confirmation = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  const done = confirmation.getByRole("button", { name: "Done" });
+  const agents = confirmation.getByRole("button", { name: "Open Agents" });
+  assert.equal(await agents.count(), 0);
+  assert.ok(await hasFocus(done));
+  // Finish the same press even if the second action appears while Space is held.
+  await page.keyboard.down("Space");
+  read.release();
+  await agents.waitFor();
+  assert.ok(await hasFocus(done));
+  await page.keyboard.up("Space");
+  await confirmation.waitFor({ state: "hidden" });
+  assert.equal(page.url(), url);
+  assert.equal(creates(requests).length, 2);
   await page.locator(settledView).getByRole("link", { name: "New team", exact: true }).waitFor();
+  await focusReturnsToOpener(page);
+});
+
+test("a failed Namespace access check does not interrupt a press on Done", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const name = page.getByLabel("Namespace name");
+  await name.fill("New team");
+  // The initial list has loaded. Only hold the read after creation.
+  const url = `${fixture.origin}/namespaces`;
+  const read = await holdRequests(t, page, url, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  });
+  await name.press("Enter");
+  await read.requested;
+  const confirmation = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  const done = confirmation.getByRole("button", { name: "Done" });
+  assert.ok(await hasFocus(done));
+  await page.keyboard.down("Space");
+  const response = page.waitForResponse(
+    (reply) => reply.url() === url && reply.request().method() === "GET",
+  );
+  read.release();
+  assert.equal((await response).status(), 503);
+  await confirmation.getByRole("button", { name: "Check access again" }).waitFor();
+  assert.ok(await hasFocus(done));
+  await page.keyboard.up("Space");
+  await confirmation.waitFor({ state: "hidden" });
   await focusReturnsToOpener(page);
 });
 
@@ -306,7 +378,7 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     {
       status: 201,
       contentType: "application/json",
-      json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } },
+      json: { data: { id: "ns_fake", name: "Another team", status: "ready" } },
     },
   ];
   await page.route(`${fixture.origin}/namespaces`, (route) =>
@@ -325,6 +397,8 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     .waitFor();
   await waitForEnabled(name);
   await waitForEnabled(submit);
+  await name.fill("Another team");
+  assert.match(await dialog.getByRole("alert").innerText(), /Wait before trying again/);
   await submit.click();
   await dialog
     .getByRole("alert")

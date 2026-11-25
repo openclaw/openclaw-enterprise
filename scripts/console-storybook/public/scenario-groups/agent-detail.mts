@@ -4155,6 +4155,7 @@ export function createAgentDetailRepositoryScenarios(
   const repositoryCollaborator = {
     ...repositoryEditor,
     name: "Select repository collaborator from an empty set",
+    policyState: "repositoryPermissions",
     repositoryOptions: collaboratorRepositoryOptions,
     repositoryAccess: { defaultProfile: "git-full", repositories: [] },
     description:
