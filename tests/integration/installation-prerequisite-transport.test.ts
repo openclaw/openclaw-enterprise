@@ -652,6 +652,48 @@ test(
       encoding: "utf8",
     });
     assert.equal(kubectl.status, 0);
+    await t.test("waits for a listening proxy without replaying a disconnected GET", async () => {
+      const bin = join(directory, "proxy-delay-bin");
+      const marker = join(directory, "proxy-delay");
+      await mkdir(bin);
+      // Widen the bind-to-listen gap for the first read, then start genuine
+      // kubectl. In the second run drop the connection after receiving the GET.
+      await writeFile(
+        join(bin, "kubectl"),
+        `#!/usr/bin/env python3
+import os, socket, sys, time
+marker = os.environ["TEST_MARKER"]
+if "--unix-socket" in sys.argv and not os.path.exists(marker):
+    address = sys.argv[sys.argv.index("--unix-socket") + 1]
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(address)
+        if os.environ["TEST_DROP"] == "yes":
+            listener.listen()
+            with listener.accept()[0] as peer, peer.makefile("rb") as received:
+                with open(marker, "wb") as log:
+                    log.write(received.readline())
+        else:
+            open(marker, "w").close()
+            time.sleep(0.25)
+        os.unlink(address)
+os.execv(os.environ["TEST_KUBECTL"], sys.argv)
+`,
+        { mode: 0o700 },
+      );
+      const env = {
+        PATH: `${bin}:${process.env.PATH}`,
+        TEST_KUBECTL: kubectl.stdout.trim(),
+        TEST_MARKER: marker,
+      };
+      const ready = await observations(verifiedConfig, null, { ...env, TEST_DROP: "no" });
+      assert.equal(ready.get("kubernetes-api")?.status, "passed");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 1);
+      await rm(marker);
+      const dropped = await observations(verifiedConfig, null, { ...env, TEST_DROP: "yes" });
+      assert.equal((await readFile(marker, "utf8")).trim(), `GET ${apiPath} HTTP/1.1`);
+      assert.equal(dropped.get("kubernetes-api")?.status, "unknown");
+      assert.equal(httpsRequests.filter(({ path }) => path === apiPath).length, 0);
+    });
     await t.test("a late kuberc policy cannot be bypassed to run an exec plugin", async () => {
       const bin = join(directory, "late-policy-bin");
       await mkdir(bin);

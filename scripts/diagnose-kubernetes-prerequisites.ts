@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { constants } from "node:fs";
 import { mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { get, type IncomingMessage } from "node:http";
-import { isIP } from "node:net";
+import { createConnection, isIP, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -772,23 +773,45 @@ async function kubernetesGet<T>(
       resolve();
     });
   });
-  try {
-    while (!(await stat(localSocket).catch(() => undefined))?.isSocket()) {
-      if (closed) {
-        throw new DiagnosticError(
-          "The private transport to the selected endpoint could not start.",
-        );
+  // bind creates the socket file before listen. Retry only local connection
+  // failures during startup. No HTTP request exists until this loop finishes.
+  async function connectProxy() {
+    while (!closed) {
+      requestSignal.throwIfAborted();
+      const connection = createConnection(localSocket);
+      try {
+        await once(connection, "connect", { signal: requestSignal });
+        return connection;
+      } catch (error) {
+        connection.destroy();
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          (error.code !== "ENOENT" && error.code !== "ECONNREFUSED")
+        ) {
+          throw error;
+        }
       }
       await delay(20, undefined, { signal: requestSignal });
     }
+    throw new DiagnosticError("The private transport to the selected endpoint could not start.");
+  }
 
+  let transport: Socket | undefined;
+  try {
+    const connection = await connectProxy();
+    transport = connection;
+    // The proxy can disconnect during the asynchronous policy check.
+    connection.on("error", () => {});
     await kubectl.verifyPolicy?.();
+    if (connection.destroyed) {
+      throw new DiagnosticError("The private transport to the selected endpoint closed.");
+    }
     requestSignal.throwIfAborted();
     const response = await new Promise<IncomingMessage>((resolve, reject) => {
       get(
         {
-          socketPath: localSocket,
-          agent: false,
+          createConnection: () => connection,
           path,
           headers: { host: "localhost", accept: "application/json" },
           signal: requestSignal,
@@ -863,6 +886,7 @@ async function kubernetesGet<T>(
     }
     throw new DiagnosticError("The read failed or returned incomplete data.");
   } finally {
+    transport?.destroy();
     proxy.stdin?.end();
     await settled;
     // The enclosing run removes the directory even if this early unlink fails.
