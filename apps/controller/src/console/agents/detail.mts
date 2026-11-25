@@ -7718,7 +7718,7 @@ export async function renderAgentDetail(
   }
 
   view.append(dangerZone);
-  context.setTabNavigation((next) => {
+  context.setTabNavigation((next, onBlocked) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const requestedTab = next.searchParams.get("tab");
     const nextTab =
@@ -7744,7 +7744,9 @@ export async function renderAgentDetail(
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      showLeaveBlock();
+      showLeaveBlock(
+        selectedTab === "repositories" && !draftWriteInFlight() ? onBlocked : undefined,
+      );
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });

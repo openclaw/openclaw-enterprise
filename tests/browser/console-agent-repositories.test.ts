@@ -26,6 +26,11 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  consoleViewports,
+  detailUrl,
+  hasFocus,
+  inViewport,
+  nextFrames,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -1726,5 +1731,131 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
       repositoryAccessSelections(saved.data.repositoryAccess),
       saved.data.repositoryAccess.repositories,
     );
+  });
+}
+
+for (const viewport of consoleViewports) {
+  test(`Back and Forward show how to leave unsaved repository changes at ${viewport.width}px`, async (t) => {
+    const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+      ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"].map((repositoryRef, i) => ({
+        repositoryRef,
+        repositoryId: String(1700 + i),
+        repository: `example/${repositoryRef}`,
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      })),
+    );
+    const agent = await fixture.createAgent(namespace.id, "Plan", nativeValues("base"));
+    const { page } = await newPage(t, fixture);
+    await page.setViewportSize(viewport);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    // Keep real history entries on both sides of Repositories.
+    const configuration = page.url();
+    await page.getByRole("tab", { name: "Repositories" }).click();
+    const search = page.getByLabel("Find a repository");
+    await search.waitFor();
+    const repositories = page.url();
+    await page.getByRole("tab", { name: "Configuration" }).click();
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(repositories);
+    const choice = repositoryCheckbox(page, "example/alpha");
+    await choice.check();
+    const historyLength = await page.evaluate(() => history.length);
+    const afterReturn = async () => {
+      await page.waitForURL(repositories);
+      // popstate precedes native scroll restoration. Check the settled viewport before
+      // any locator or keyboard action that could scroll the editor into view.
+      await nextFrames(page);
+      assert.equal(await page.evaluate(() => history.length), historyLength);
+    };
+    const cancel = page.getByRole("tabpanel").getByRole("button", { name: "Cancel", exact: true });
+    const save = page.getByRole("button", { name: "Save repository access", exact: true });
+    const status = page.getByText("Save or cancel repository changes before leaving this tab.", {
+      exact: true,
+    });
+    const changes = await page
+      .getByText("Save or cancel repository changes before deploying.", { exact: true })
+      .evaluateHandle((note) => {
+        const count = { value: 0 };
+        new MutationObserver((records) => {
+          count.value += records.length;
+        }).observe(note, { childList: true });
+        return count;
+      });
+    await search.focus();
+    for (const direction of ["goBack", "goForward"] as const) {
+      // Scroll back to the choices without moving focus away from the explanation.
+      await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+      if (direction === "goForward") {
+        assert.ok(await hasFocus(status));
+        assert.equal(await inViewport(status), false);
+      }
+      const before = await changes.evaluate((count) => count.value);
+      await page[direction]({ waitUntil: "commit" });
+      await afterReturn();
+      assert.equal(await changes.evaluate((count) => count.value), before + 1);
+      assert.ok(await hasFocus(status), "Focus the explanation once the browser returns");
+      for (const target of [status, save, cancel]) {
+        assert.ok(await inViewport(target));
+        assert.ok(
+          await target.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return node.contains(
+              document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+            );
+          }),
+        );
+      }
+      assert.ok(await choice.isChecked());
+    }
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await hasFocus(cancel));
+    // A reader who returns to search before the inverse traversal keeps focus there.
+    await search.focus();
+    await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+    await cancel.evaluate((button) => {
+      const input = document.activeElement;
+      if (!(input instanceof HTMLInputElement)) {
+        throw Error("Expected repository search");
+      }
+      window.addEventListener(
+        "popstate",
+        () => {
+          button.focus({ preventScroll: true });
+          input.focus({ preventScroll: true });
+        },
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search), "Keep the reader’s later focus choice");
+    assert.ok(await inViewport(search));
+    // Cancel only the inverse traversal. A later manual Forward reaches the same entry,
+    // but must not deliver the canceled request's feedback.
+    await page.evaluate(() => {
+      const { navigation } = globalThis;
+      navigation.addEventListener(
+        "navigate",
+        () =>
+          navigation.addEventListener("navigate", (event) => event.preventDefault(), {
+            once: true,
+          }),
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await nextFrames(page);
+    assert.equal(page.url(), configuration);
+    await page.goForward({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search));
+    await cancel.click();
+    await waitForEnabled(page.getByRole("tab", { name: "Configuration" }));
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(configuration);
   });
 }

@@ -23,6 +23,15 @@ The shared catalog offers `example/application` as collaborator-only Git access,
 Git repository choices. The existing `RepositoryEditor` and loading/refusal
 stories retain their older profile fixtures.
 
+## Leave an unsaved selection
+
+In the standalone Repository Collaborator preview, open **Channels**, then
+return to **Repositories**. Select `example/application` and scroll up until
+the save actions are out of view. Press Back. The selection stays checked.
+The explanation takes focus, with **Save repository access** and **Cancel**
+in view. Press Shift+Tab to reach **Cancel**. Cancel the edit, then check
+that Back opens **Channels**. Repeat at phone width.
+
 ## Positive and negative checks
 
 1. In the empty story, confirm no selected repositories and a Contributor Agent
