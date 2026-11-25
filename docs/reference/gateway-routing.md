@@ -66,10 +66,10 @@ to the Agent Service in the same namespace. The exact Agent path rewrites to
 TLS ends at Envoy. From there, plaintext HTTP and WebSocket traffic to the
 gateway is restricted by NetworkPolicy.
 
-The route and Service stay stable when a version is activated or a gateway Pod
-is replaced. Retiring an older version preserves the newer gateway's route;
-final gateway cleanup removes it. Compute repairs the route only while
-reconciling a version.
+The route and Service survive activation, Pod replacement and retirement of an
+older version. Compute repairs the route during reconciliation and removes it
+at final cleanup. Runtime audit adds a private path per revision for
+[message lookup](../flows/audit-ledger.md#8-an-analyst-opens-the-user-message-for-a-turn).
 
 ### Native node endpoint
 

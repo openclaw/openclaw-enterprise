@@ -1,11 +1,21 @@
 import { deepFreeze } from "@openclaw-enterprise/utils";
-import type {
-  AuditEvent,
-  AuditEventKind,
-  AuditOutcome,
-  AuthorizationRequest,
+import {
+  RUNTIME_AUDIT_MESSAGE_LINK_VALUES,
+  type AuditEvent,
+  type AuditEventKind,
+  type AuditOutcome,
+  type AuthorizationRequest,
 } from "@openclaw-enterprise/contracts";
 
+import { REDACTED, redactAuditText } from "./runtime-reference.ts";
+
+export { runtimeAuditReference } from "./runtime-reference.ts";
+export {
+  createRuntimeAuditReplaySigner,
+  runtimeAuditReplayVerifier,
+  verifyRuntimeAuditReplay,
+} from "./runtime-replay.ts";
+export type { RuntimeAuditReplayFields } from "./runtime-replay.ts";
 export type { AuditEvent, AuditEventKind, AuditOutcome } from "@openclaw-enterprise/contracts";
 
 export type AuditEventInput = Omit<AuditEvent, "id" | "occurredAt" | "kind" | "outcome">;
@@ -24,7 +34,6 @@ export interface AuditEventCreationInput extends Omit<AuditEventInput, "actorId"
   readonly actor?: AuditActor;
   readonly kind?: AuditEventKind;
   readonly outcome?: AuditOutcome;
-  readonly source?: "occ";
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly iamDriverId?: string;
@@ -47,21 +56,18 @@ export interface AuditEventFactoryOptions {
   readonly idGenerator?: () => string;
 }
 
-const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY =
   /(?:access[_-]?token|api[_-]?key|authorization|bearer|client[_-]?secret|cookie|credential|password|private[_-]?key|provider[_-]?(?:credential|token)|refresh[_-]?token|secret|session[_-]?(?:cookie|token)|token|body|content|message|prompt|text|transcript)/i;
 const SAFE_REFERENCE_KEY = /(?:id|ids|ref|reference|name|names|kind|count)$/i;
-const SENSITIVE_VALUE =
-  /(?:\bBearer\s+[\w.+/=-]+|\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[baprs]-|xapp-)[A-Za-z0-9_-]{8,})/gi;
 const UNSAFE_PROPERTY = /^(?:__proto__|constructor|prototype)$/;
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/g;
+const SAFE_MESSAGE_LINK_VALUES = new Set<string>(RUNTIME_AUDIT_MESSAGE_LINK_VALUES);
 
 function redact(value: unknown, visited: WeakSet<object>, depth: number): unknown {
   if (depth > 16) {
     return REDACTED;
   }
   if (typeof value === "string") {
-    return value.replace(SENSITIVE_VALUE, REDACTED).replace(CONTROL_CHARACTER, " ");
+    return redactAuditText(value);
   }
   if (value === null || typeof value !== "object") {
     return typeof value === "bigint" ? value.toString() : value;
@@ -86,7 +92,9 @@ function redact(value: unknown, visited: WeakSet<object>, depth: number): unknow
     if (UNSAFE_PROPERTY.test(key)) {
       continue;
     }
-    const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key);
+    const safeMessageLink =
+      key === "messageLink" && typeof entry === "string" && SAFE_MESSAGE_LINK_VALUES.has(entry);
+    const sensitive = SENSITIVE_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key) && !safeMessageLink;
     sanitized[key] = sensitive ? REDACTED : redact(entry, visited, depth + 1);
   }
   return sanitized;
@@ -208,7 +216,7 @@ function validateInput(input: AuditEventInput): void {
 }
 
 function safeReason(value: string): string {
-  return value.replace(SENSITIVE_VALUE, REDACTED).replace(CONTROL_CHARACTER, " ").slice(0, 120);
+  return redactAuditText(value).slice(0, 120);
 }
 
 function safeReasonCode(value: string): string {

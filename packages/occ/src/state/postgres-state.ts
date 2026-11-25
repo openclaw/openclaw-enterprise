@@ -1,10 +1,12 @@
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
+import { startHttpChatAuditQueue } from "./http-chat-audit-queue.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   isCanonicalRepositoryNetworkPolicy,
   assertExecutionAdmission,
   CONFIGURED_IAM_ID_PREFIXES,
   CONTROLLER_WORK_AUDIT_ACTIONS,
+  isAgentAuditLinkedTurn,
   isConfiguredRoleId,
   normalizeAgentNetworkProxy,
 } from "@openclaw-enterprise/contracts";
@@ -25,6 +27,8 @@ import type { PredecessorReplacement } from "../ports/agent-reads.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
+import { createPostgresAuthTransactionBinding } from "../auth-persistence/postgres-auth-binding.ts";
+import type { SchemaAuthBoundaryV1 } from "../auth-persistence/schema-auth-boundary-v1.ts";
 
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
@@ -42,7 +46,11 @@ import { postgresOAuthCredentials } from "./postgres-oauth-credentials.ts";
 import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
-import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
+import {
+  projectAgentAuditRow,
+  SELECT_AGENT_AUDIT,
+  SELECT_LINKED_TURN,
+} from "./postgres-agent-audit.ts";
 import {
   normalizedRepositoryAccess,
   validRepositoryRevisionState,
@@ -288,6 +296,7 @@ function checkoutFailure(error: unknown): Error {
 interface TransactionContext {
   readonly lifetime: RepositoryTransactionLifetime;
   readonly client: PostgresClient;
+  readonly bindAuthDatabase: () => Promise<SchemaAuthBoundaryV1>;
   installation: Readonly<Installation> | undefined;
   installationLoaded: boolean;
   /** A READ ONLY REPEATABLE READ unit: every statement sees one snapshot and nothing writes. */
@@ -1310,7 +1319,14 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
   if (
     !RESOURCE_KINDS.has(resourceKind) ||
     !["success", "denied", "failure"].includes(outcome) ||
-    !["bootstrap", "mutation", "access", "authorization_denial", "api_request"].includes(kind)
+    ![
+      "bootstrap",
+      "mutation",
+      "access",
+      "authorization_denial",
+      "api_request",
+      "runtime_activity",
+    ].includes(kind)
   ) {
     throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
@@ -1542,8 +1558,30 @@ function prefixPattern(prefix: string): string {
   return `${prefix.replaceAll("_", "\\_")}%`;
 }
 
+export interface GatewayRuntimeAuditGrant {
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly agentRevisionId: string;
+  readonly runtimeSource: "openclaw" | "codex";
+}
+
+type StoredGatewayRuntimeGrant = GatewayRuntimeAuditGrant & { readonly tokenDigest: string };
+
+interface GatewayRuntimeReplayRegistration {
+  readonly endpoint: string;
+  readonly replayVerifier: string;
+}
+
+interface GatewayRuntimeReplayScope {
+  readonly revisionId: string;
+  readonly source: "openclaw" | "codex";
+  readonly endpoint: string;
+  readonly verifier: string;
+}
+
 export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
+  private chatQueue: ReturnType<typeof startHttpChatAuditQueue> | undefined;
   private readonly pool: PostgresPool;
   private readonly queueOptions: PostgresWorkQueueOptions;
   private readonly preparedTokenProof: NonNullable<
@@ -1561,8 +1599,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     const auditWriteTimeoutMs = options.auditWriteTimeoutMs;
     this.auditSink = {
-      append: async (event) =>
-        this.execute({
+      append: async (event) => {
+        if (this.chatQueue?.enqueue(event)) {
+          return;
+        }
+        await this.execute({
           mode: "write",
           work: async (state, context) => {
             if (auditWriteTimeoutMs !== undefined) {
@@ -1577,8 +1618,22 @@ export class PostgresPlatformState implements PlatformStateStore {
             }
             await state.audit.append(event);
           },
-        }),
+        });
+      },
     };
+  }
+
+  startHttpChatAuditDelivery(installation: Installation, mode: "development" | "production") {
+    this.chatQueue ??= startHttpChatAuditQueue(installation, mode, async (event) => {
+      await this.transactReadCommitted(async (unit) => {
+        await this.boundAgentAuditTransaction(unit);
+        const current = await unit.installations.findInstallation(event.installationId);
+        if (current?.createdAt !== installation.createdAt) {
+          throw new ScopeViolationError("The audit queue belongs to a different Installation.");
+        }
+        await unit.audit.append(event);
+      });
+    });
   }
 
   setBootstrapNativeIAM(state: PersistedNativeIAMState): void {
@@ -1892,7 +1947,204 @@ export class PostgresPlatformState implements PlatformStateStore {
   }
 
   async close(): Promise<void> {
+    await this.chatQueue?.close();
     await this.pool.end();
+  }
+
+  async registerGatewayRuntimeGrant(
+    grant: StoredGatewayRuntimeGrant,
+    replay: GatewayRuntimeReplayRegistration,
+  ): Promise<void> {
+    const scope = [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource];
+    await this.transactReadCommitted(async (unit) => {
+      // Serialize enrollment for one Agent. A retry can reuse only its own credential.
+      const eligible = await this.queryInTransaction(
+        unit,
+        `SELECT revision.id FROM occ.agent_revisions AS revision
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE (revision.namespace_id, revision.agent_id, revision.id) = ($1, $2, $3)
+           AND agent.status = 'active' AND revision.admitted_spec #>> '{harness,id}' = $4
+         FOR NO KEY UPDATE OF agent`,
+        scope,
+      );
+      if (eligible.rows.length !== 1) {
+        throw new ScopeViolationError(
+          "The runtime audit credential requires a matching Agent revision.",
+        );
+      }
+      await this.queryInTransaction(
+        unit,
+        `INSERT INTO occ.gateway_runtime_audit_grants
+           (namespace_id, agent_id, revision_id, runtime_source, token_digest)
+         SELECT $1, $2, $3, $4, $5
+         WHERE NOT EXISTS (
+           SELECT FROM occ.gateway_runtime_audit_grants
+           WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest) = ($1, $2, $3, $4, $5)
+           FOR KEY SHARE
+         )`,
+        [...scope, grant.tokenDigest],
+      );
+      await this.queryInTransaction(
+        unit,
+        `INSERT INTO occ.gateway_runtime_audit_replay_verifiers
+           (namespace_id, agent_id, revision_id, runtime_source, token_digest, endpoint, replay_verifier)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (token_digest) DO NOTHING`,
+        [...scope, grant.tokenDigest, replay.endpoint, replay.replayVerifier],
+      );
+      const registered = await this.queryInTransaction(
+        unit,
+        `SELECT 1 FROM occ.gateway_runtime_audit_replay_verifiers
+         WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest, endpoint, replay_verifier)
+           = ($1, $2, $3, $4, $5, $6, $7)
+         FOR KEY SHARE`,
+        [...scope, grant.tokenDigest, replay.endpoint, replay.replayVerifier],
+      );
+      if (registered.rows.length !== 1) {
+        throw new ResourceConflictError(
+          "The runtime audit replay verifier conflicts with its credential.",
+        );
+      }
+    });
+  }
+
+  async removeGatewayRuntimeGrant(grant: StoredGatewayRuntimeGrant): Promise<void> {
+    await this.transact((unit) =>
+      this.queryInTransaction(
+        unit,
+        `DELETE FROM occ.gateway_runtime_audit_grants
+       WHERE (namespace_id, agent_id, revision_id, runtime_source, token_digest) = ($1, $2, $3, $4, $5)`,
+        [
+          grant.namespaceId,
+          grant.agentId,
+          grant.agentRevisionId,
+          grant.runtimeSource,
+          grant.tokenDigest,
+        ],
+      ),
+    );
+  }
+
+  async hasGatewayRuntimeGrant(grant: GatewayRuntimeAuditGrant): Promise<boolean> {
+    const grants = await this.readStatement(
+      `SELECT 1 FROM occ.gateway_runtime_audit_grants
+       WHERE (namespace_id, agent_id, revision_id, runtime_source) = ($1, $2, $3, $4)`,
+      [grant.namespaceId, grant.agentId, grant.agentRevisionId, grant.runtimeSource],
+    );
+    return grants.length > 0;
+  }
+
+  async appendGatewayRuntimeAudit(
+    tokenDigest: string,
+    build: (installationId: string, grant: GatewayRuntimeAuditGrant) => AuditEvent,
+  ): Promise<boolean> {
+    return this.transactReadCommitted(async (unit) => {
+      await this.boundAgentAuditTransaction(unit);
+      // Hold the credential through COMMIT. A revoked credential must not authorize a later append.
+      const result = await this.queryInTransaction(
+        unit,
+        `SELECT credential.namespace_id, credential.agent_id, credential.revision_id, credential.runtime_source
+         FROM occ.gateway_runtime_audit_grants AS credential
+         JOIN occ.agent_revisions AS revision
+           ON (revision.namespace_id, revision.agent_id, revision.id) =
+              (credential.namespace_id, credential.agent_id, credential.revision_id)
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE credential.token_digest = $1 AND agent.status = 'active'
+           AND revision.admitted_spec #>> '{harness,id}' = credential.runtime_source
+         FOR SHARE OF agent FOR KEY SHARE OF credential`,
+        [tokenDigest],
+      );
+      const row = decodeQueryRows(result)[0];
+      if (row === undefined) {
+        return false;
+      }
+      const installation = await unit.installations.getInstallation();
+      if (installation === undefined) {
+        throw new ScopeViolationError("A runtime audit event requires an Installation.");
+      }
+      await unit.audit.append(
+        build(installation.id, {
+          namespaceId: text(row, "namespace_id"),
+          agentId: text(row, "agent_id"),
+          agentRevisionId: text(row, "revision_id"),
+          runtimeSource: text(row, "runtime_source") as GatewayRuntimeAuditGrant["runtimeSource"],
+        }),
+      );
+      return true;
+    });
+  }
+
+  async appendGatewayRuntimeAuditReplay(
+    tokenDigest: string,
+    senderSource: string | undefined,
+    replay: GatewayRuntimeReplayScope,
+    verify: () => boolean,
+    build: (installationId: string, original: GatewayRuntimeAuditGrant) => AuditEvent,
+  ): Promise<"saved" | "unauthenticated" | "forbidden"> {
+    return this.transactReadCommitted(async (unit) => {
+      await this.boundAgentAuditTransaction(unit);
+      // Keep the current credential locked through COMMIT. Its holder can relay
+      // records only for the same Agent and the same registered destination.
+      const senderResult = await this.queryInTransaction(
+        unit,
+        `SELECT credential.namespace_id, credential.agent_id, credential.runtime_source, sender.endpoint
+         FROM occ.gateway_runtime_audit_grants AS credential
+         JOIN occ.gateway_runtime_audit_replay_verifiers AS sender ON sender.token_digest = credential.token_digest
+         JOIN occ.agent_revisions AS revision ON (revision.namespace_id, revision.agent_id, revision.id) =
+           (credential.namespace_id, credential.agent_id, credential.revision_id)
+         JOIN occ.agents AS agent ON (agent.namespace_id, agent.id) = (revision.namespace_id, revision.agent_id)
+         WHERE credential.token_digest = $1 AND agent.status = 'active'
+           AND revision.admitted_spec #>> '{harness,id}' = credential.runtime_source
+         FOR SHARE OF agent FOR KEY SHARE OF credential, sender`,
+        [tokenDigest],
+      );
+      const sender = decodeQueryRows(senderResult)[0];
+      if (sender === undefined) {
+        return "unauthenticated";
+      }
+      if (
+        senderSource !== text(sender, "runtime_source") ||
+        replay.endpoint !== text(sender, "endpoint")
+      ) {
+        return "forbidden";
+      }
+      const originalResult = await this.queryInTransaction(
+        unit,
+        `SELECT namespace_id, agent_id, revision_id, runtime_source
+         FROM occ.gateway_runtime_audit_replay_verifiers
+         WHERE (replay_verifier, namespace_id, agent_id, revision_id, runtime_source, endpoint)
+           = ($1, $2, $3, $4, $5, $6)
+         FOR KEY SHARE`,
+        [
+          replay.verifier,
+          text(sender, "namespace_id"),
+          text(sender, "agent_id"),
+          replay.revisionId,
+          replay.source,
+          replay.endpoint,
+        ],
+      );
+      const original = decodeQueryRows(originalResult)[0];
+      if (original === undefined || !verify()) {
+        return "forbidden";
+      }
+      const installation = await unit.installations.getInstallation();
+      if (installation === undefined) {
+        throw new ScopeViolationError("A runtime audit event requires an Installation.");
+      }
+      await unit.audit.append(
+        build(installation.id, {
+          namespaceId: text(original, "namespace_id"),
+          agentId: text(original, "agent_id"),
+          agentRevisionId: text(original, "revision_id"),
+          runtimeSource: text(
+            original,
+            "runtime_source",
+          ) as GatewayRuntimeAuditGrant["runtimeSource"],
+        }),
+      );
+      return "saved";
+    });
   }
 
   async read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T> {
@@ -2017,6 +2269,18 @@ export class PostgresPlatformState implements PlatformStateStore {
     return context.lifetime.run(() => context.client.query(statement, parameters));
   }
 
+  /** Reuse the original client for auth persistence within this unit's lifetime. */
+  withAuthDatabase<T>(
+    unit: PlatformUnitOfWork,
+    work: (binding: SchemaAuthBoundaryV1) => Promise<T>,
+  ): Promise<T> {
+    const context = this.contexts.get(unit);
+    if (context === undefined) {
+      throw new DependencyUnavailableError("The platform transaction is unavailable.");
+    }
+    return context.lifetime.run(async () => work(await context.bindAuthDatabase()));
+  }
+
   async boundAgentAuditTransaction(unit: PlatformUnitOfWork): Promise<void> {
     // A caller can configure a lower timeout. Keep it for this transaction too.
     await this.queryInTransaction(
@@ -2074,6 +2338,28 @@ export class PostgresPlatformState implements PlatformStateStore {
       selection.limit + 1,
     ]);
     return decodeQueryRows(result).map(projectAgentAuditRow);
+  }
+
+  async findAgentAuditLinkedTurn(
+    unit: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+  ) {
+    const result = await this.queryInTransaction(unit, SELECT_LINKED_TURN, [
+      namespaceId,
+      agentId,
+      auditEventId,
+    ]);
+    const [row] = decodeQueryRows(result);
+    if (row === undefined) {
+      return undefined;
+    }
+    const event = projectAgentAuditRow(row);
+    if (!isAgentAuditLinkedTurn(event)) {
+      throw new PersistedStateInvalidError("The saved audit message reference is invalid.");
+    }
+    return event;
   }
 
   /**
@@ -2166,6 +2452,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       "findWorkAttempt",
       "hasRepositoryExecutionRedeployRequired",
       "repositoryExpiryState",
+      "scheduleGatewayAuditMaintenance",
       "latestRevisionMaintenanceKey",
       "countRefusedStopWaits",
     ]);
@@ -2220,30 +2507,35 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (transportError !== undefined) {
         throw transportError;
       }
+      const runStatement = async <T>(query: () => Promise<T>): Promise<T> => {
+        // Counted before anything can fail: a cached policy must not outlive a write
+        // that was issued, even one whose outcome is unknown.
+        context.statements += 1;
+        lifetime.assertActive();
+        if (transportError !== undefined) {
+          throw transportError;
+        }
+        let result: T;
+        try {
+          result = await query();
+        } catch (error) {
+          abandoned ||= queryAbandonedByClient(error);
+          throw error;
+        }
+        lifetime.assertActive();
+        if (transportError !== undefined) {
+          throw transportError;
+        }
+        return result;
+      };
       const context: TransactionContext = {
         lifetime,
+        bindAuthDatabase: () =>
+          createPostgresAuthTransactionBinding(client, (query) =>
+            lifetime.run(() => runStatement(query)),
+          ),
         client: {
-          query: async (statement, parameters) => {
-            // Counted before anything can fail: a cached policy must not outlive a write
-            // that was issued, even one whose outcome is unknown.
-            context.statements += 1;
-            lifetime.assertActive();
-            if (transportError !== undefined) {
-              throw transportError;
-            }
-            let result: Awaited<ReturnType<PostgresClient["query"]>>;
-            try {
-              result = await client.query(statement, parameters);
-            } catch (error) {
-              abandoned ||= queryAbandonedByClient(error);
-              throw error;
-            }
-            lifetime.assertActive();
-            if (transportError !== undefined) {
-              throw transportError;
-            }
-            return result;
-          },
+          query: (statement, parameters) => runStatement(() => client.query(statement, parameters)),
           release: () => {
             throw new ScopeViolationError("Only the transaction owner releases the client.");
           },

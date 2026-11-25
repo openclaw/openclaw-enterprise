@@ -3,6 +3,7 @@
 {{- $repositoryRegistry := .Values.repositoryCredentials.registryConfigMapName }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
+{{- $privateRuntimeAudit := and $.Values.controlPlaneAudit.enabled $.Values.gatewayRouting.enabled }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
 ---
 apiVersion: apps/v1
@@ -61,11 +62,37 @@ spec:
       {{- end }}
       securityContext:
         {{- include "openclaw.podSecurity" $ | nindent 8 }}
+        {{- if eq $component "api" }}
+        fsGroupChangePolicy: OnRootMismatch
+        {{- end }}
       {{- with $.Values.controlPlane.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if eq $component "api" }}
+        - name: http-chat-audit
+          persistentVolumeClaim:
+            claimName: openclaw-enterprise-http-chat-audit
+        {{- end }}
+        {{- if $privateRuntimeAudit }}
+        {{- if eq $component "api" }}
+        - name: runtime-audit-tls
+          secret:
+            secretName: openclaw-enterprise-runtime-audit-tls
+            defaultMode: 288
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        {{- else }}
+        - name: runtime-audit-ca
+          secret:
+            secretName: openclaw-enterprise-runtime-audit-root
+            defaultMode: 288
+            items:
+              - {key: tls.crt, path: ca.crt}
+        {{- end }}
+        {{- end }}
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -344,6 +371,10 @@ spec:
               value: production
             - name: OCC_CONTROL_PLANE_AUDIT_ENABLED
               value: {{ ternary "true" "false" $.Values.controlPlaneAudit.enabled | quote }}
+            {{- if $privateRuntimeAudit }}
+            - name: OCC_CHART_RUNTIME_AUDIT
+              value: {{ dict "namespace" $.Release.Namespace "release" $.Release.Name "port" (include "openclaw.runtimeAuditPort" $ | int) | toJson | quote }}
+            {{- end }}
             {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
             - name: OCC_CONSOLE_THEME_DIR
               value: /etc/openclaw/console-theme
@@ -468,6 +499,10 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if eq $component "api" }}
+            - name: http-chat-audit
+              mountPath: /var/lib/occ/http-chat-audit
+            {{- end }}
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell
@@ -495,6 +530,17 @@ spec:
             - name: console-theme
               mountPath: /etc/openclaw/console-theme
               readOnly: true
+            {{- end }}
+            {{- if $privateRuntimeAudit }}
+            {{- if eq $component "api" }}
+            - name: runtime-audit-tls
+              mountPath: /etc/openclaw/runtime-audit-tls
+              readOnly: true
+            {{- else }}
+            - name: runtime-audit-ca
+              mountPath: /etc/openclaw/runtime-audit-ca
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- if $.Values.executionCluster.enabled }}
             - name: execution-kubeconfig
@@ -573,6 +619,10 @@ spec:
             {{- if eq $component "api" }}
             - name: http
               containerPort: {{ $.Values.api.port }}
+            {{- if $privateRuntimeAudit }}
+            - name: runtime-audit
+              containerPort: {{ include "openclaw.runtimeAuditPort" $ }}
+            {{- end }}
             {{- if $.Values.egressAuthority.enabled }}
             - name: egress-tls
               containerPort: {{ $.Values.egressAuthority.port }}

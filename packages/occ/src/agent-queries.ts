@@ -23,6 +23,7 @@ import {
   deploymentWarningsForWork,
 } from "./deployment-work-status.ts";
 import {
+  AgentChatAccessUnavailableError,
   AgentDeletingError,
   AuthorizationDeniedError,
   DependencyUnavailableError,
@@ -127,7 +128,14 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
     readonly revision?: Readonly<AgentRevision>;
     readonly endpoint: AgentChatCompletionsResolution;
   }> {
-    const reference = await resolveAgentReference((candidate) => candidate.id === agentId);
+    const reference = await resolveAgentReference((candidate) => candidate.id === agentId).catch(
+      (error: unknown) => {
+        if (error instanceof DependencyUnavailableError) {
+          throw new AgentChatAccessUnavailableError("The Agent's Namespace could not be checked.");
+        }
+        throw error;
+      },
+    );
     if (!reference) {
       throw new ScopeViolationError("The requested Agent was not found.");
     }
@@ -145,6 +153,9 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
         );
       }
     } catch (error) {
+      if (error instanceof DependencyUnavailableError) {
+        throw new AgentChatAccessUnavailableError("The Agent permission check is unavailable.");
+      }
       if (
         error instanceof AuthorizationDeniedError &&
         (outsideCredentialScope ||

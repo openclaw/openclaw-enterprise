@@ -1,4 +1,8 @@
-import type { AgentAuditEntry, IAMDriver } from "@openclaw-enterprise/contracts";
+import type {
+  AgentAuditEntry,
+  AgentAuditLinkedTurn,
+  IAMDriver,
+} from "@openclaw-enterprise/contracts";
 
 export interface AgentAuditSelection {
   readonly start: string;
@@ -27,4 +31,10 @@ export interface AgentAuditState<Unit> {
     agentId: string,
     selection: AgentAuditSelection,
   ): Promise<readonly AgentAuditEntry[]>;
+  findLinkedTurn(
+    unit: Unit,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+  ): Promise<AgentAuditLinkedTurn | undefined>;
 }

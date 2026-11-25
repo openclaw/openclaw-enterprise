@@ -29,7 +29,7 @@ Use **Rotate OAuth client secret** or
 same client ID. Include `kind: "oauth2"` and the write-only `clientSecret` in the API
 request. Later code exchanges and renewals use the new value. Before
 retrying an operation with an unknown outcome, refresh the list. A pending
-consent attempt or a Source that uses the client blocks its removal.
+consent attempt or a Source that uses the client blocks its removal. After deletion, the worker removes the private value and [records cleanup or a retry](../flows/connection-templates.md#2-register-and-maintain-a-credential-client).
 
 For GitHub App registration, see the [repository access guide](../guides/repository-credentials.md#select-a-github-source-for-an-openshell-agent).
 

@@ -203,9 +203,9 @@ the initializer mounts the protected credential input secrets. The
 owns credential creation and recovery; the
 [Compose development flow](../../flows/docker-compose-development.md) traces ordering.
 
-The cleanup command printed by `dev-up` keeps `occ_postgres_data` and
-`occ_configuration_data`. Adding `--volumes` deletes both. Credential files
-remain outside those volumes; retain them privately according to your policy.
+The `dev-up` cleanup command keeps `occ_postgres_data`, `occ_configuration_data`
+and `occ_http_chat_audit`. Adding `--volumes` deletes all three. Keep credential
+files separate and private.
 
 ### Gateway authentication
 

@@ -60,12 +60,15 @@ Provide these cluster services before installing OCC:
 
 | Requirement               | Operator preparation                                                                                               |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| HTTP chat audit queue     | A default StorageClass for a private `1Gi` RWO claim. The filesystem must support SQLite locking and UID/GID 1000. |
 | Private gateway state     | An explicit block-backed filesystem StorageClass supporting `10Gi` RWO claims and reliable SQLite locking.         |
 | Bootstrap credentials     | An existing Secret containing the administrator password and service key; create it before Helm installation.      |
 | Dedicated Agent workspace | A default StorageClass supporting `40Gi` RWO claims. Embedded Agents do not need this Harness claim.               |
 | PostgreSQL                | An external database with separate application and migrator roles and verified TLS.                                |
 | Container registry        | Push access for the image builder and pull access from every eligible node, including tenant workloads.            |
 | Operator access           | An approved HTTPS origin and access path matching `auth.baseUrl`; the chart does not create public TLS or Ingress. |
+
+The API needs [queue storage](../../reference/agent-http-chat.md#queue-storage) even when Control Plane audit is off.
 
 An Envoy Gateway ingress for the console origin answers a path with an encoded
 slash (`%2F`) itself: by default it redirects with `307` to the decoded path, so

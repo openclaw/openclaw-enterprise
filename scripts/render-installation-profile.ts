@@ -724,6 +724,7 @@ function validateDatabaseCaMount(values: SecretValues, diagnostics: Errors) {
     "/etc/openclaw/installation",
     "/run/openclaw-worker",
     "/run/openclaw-bootstrap",
+    "/var/lib/occ/http-chat-audit",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
   ]);

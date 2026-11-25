@@ -5,12 +5,62 @@ import { request as httpsRequest } from "node:https";
 import { once } from "node:events";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuditEventFactory, AuditSink } from "@openclaw-enterprise/audit";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
+import { AgentChatAccessUnavailableError, type OpenClawController } from "@openclaw-enterprise/occ";
 import type { AdmittedCaller } from "../admission/admission-verifier.ts";
 import type { RequestContext } from "./types.ts";
-import { dependencyUnavailable, failure } from "./errors.ts";
+import { dependencyUnavailable, failure, requestFailure } from "./errors.ts";
 
 export const AGENT_CHAT_BODY_LIMIT = 20 * 1024 * 1024;
+
+/** Read only a completion's first top-level identity. Never retain response content. */
+function completionIdentityHash(streaming: boolean) {
+  const tokens = streaming ? ["data:", "{", '"id"', ":", '"'] : ["{", '"id"', ":", '"'];
+  let token = 0;
+  let offset = 0;
+  let candidate = "";
+  let observed = 0;
+  let ended = false;
+
+  return (chunk: Uint8Array): string | undefined => {
+    if (ended) {
+      return undefined;
+    }
+    for (const byte of chunk) {
+      if (++observed > 512) {
+        ended = true;
+        return undefined;
+      }
+      const character = String.fromCharCode(byte);
+      if (token < tokens.length) {
+        if (offset === 0 && (byte === 0x09 || byte === 0x0a || byte === 0x0d || byte === 0x20)) {
+          continue;
+        }
+        const current = tokens[token]!;
+        if (character !== current[offset]) {
+          ended = true;
+          return undefined;
+        }
+        if (++offset === current.length) {
+          token++;
+          offset = 0;
+        }
+        continue;
+      }
+      if (character === '"') {
+        ended = true;
+        return candidate.length > 0
+          ? createHash("sha256").update(`audit-chat-completion-v1:${candidate}`).digest("hex")
+          : undefined;
+      }
+      if (candidate.length >= 256 || byte < 0x21 || byte > 0x7e || character === "\\") {
+        ended = true;
+        return undefined;
+      }
+      candidate += character;
+    }
+    return undefined;
+  };
+}
 
 interface AgentChatOptions {
   readonly installationId: string;
@@ -23,6 +73,7 @@ interface AgentChatOptions {
   readonly admission: AdmittedCaller;
   readonly gatewayApiKey: (() => Promise<string>) | undefined;
   readonly reauthenticate: () => Promise<void>;
+  readonly permissionCheckUnavailable: () => void;
   readonly auditFailure: (error: unknown) => void;
 }
 
@@ -73,9 +124,21 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       );
     }
     const { agentId } = request.params as { agentId: string };
-    const selected = await current(
-      controller.resolveAgentChat(context.actorId, agentId, admission.admittedScope.namespaceId),
-    );
+    let checkUnavailable = false;
+    function unavailable() {
+      checkUnavailable = true;
+      options.permissionCheckUnavailable();
+    }
+    const resolveChat = () =>
+      current(
+        controller.resolveAgentChat(context.actorId, agentId, admission.admittedScope.namespaceId),
+      ).catch((error: unknown) => {
+        if (error instanceof AgentChatAccessUnavailableError) {
+          unavailable();
+        }
+        throw error;
+      });
+    const selected = await resolveChat();
     const endpoint = match(selected.endpoint)
       .with({ status: "unsupported" }, () => {
         throw failure(
@@ -129,6 +192,8 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       headers["x-api-key"] = key;
     }
     const startedAt = new Date().toISOString();
+    const messageCount = (body.messages as unknown[]).length;
+    let completionIdHash: string | undefined;
     const audit = async (outcome: "admitted" | "completed" | "interrupted" | "failed") => {
       await options.auditSink.append(
         options.factory.create({
@@ -151,13 +216,18 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
           action: `openclaw.agents.chat.${outcome}`,
           outcome: outcome === "admitted" || outcome === "completed" ? "success" : "failure",
           requestId: request.id,
+          ...(checkUnavailable ? { reasonCode: "PERMISSION_CHECK_UNAVAILABLE" } : {}),
           admissionDecisionId: context.admissionDecisionId,
           details: {
             revisionId: revision.id,
             authenticationMethod: admission.method,
             streaming: body.stream === true,
+            messageCount,
             startedAt,
             ...(outcome === "admitted" ? {} : { finishedAt: new Date().toISOString() }),
+            ...(outcome !== "admitted" && completionIdHash !== undefined
+              ? { completionIdHash }
+              : {}),
             ...(admission.method === "api_key" && admission.serviceKeyId !== undefined
               ? { actorServiceKeyId: admission.serviceKeyId }
               : {}),
@@ -183,14 +253,13 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       }
       const deadline = setTimeout(() => abort.abort(), 5_000);
       inFlightCheck = (async () => {
-        await current(options.reauthenticate());
-        const latest = await current(
-          controller.resolveAgentChat(
-            context.actorId,
-            agent.id,
-            admission.admittedScope.namespaceId,
-          ),
-        );
+        await current(options.reauthenticate()).catch((error: unknown) => {
+          if (!abort.signal.aborted && requestFailure(error).status >= 500) {
+            unavailable();
+          }
+          throw error;
+        });
+        const latest = await resolveChat();
         if (latest.endpoint.status !== "available" || latest.revision?.id !== revision.id) {
           throw dependencyUnavailable();
         }
@@ -258,6 +327,13 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
       reply.raw.setHeader("cache-control", "no-store");
       reply.raw.flushHeaders();
       const streaming = body.stream === true && response.statusCode === 200;
+      const contentType = response.headers["content-type"];
+      const observeIdentity =
+        response.statusCode === 200 &&
+        typeof contentType === "string" &&
+        contentType.toLowerCase().startsWith(streaming ? "text/event-stream" : "application/json")
+          ? completionIdentityHash(streaming)
+          : undefined;
       let pending: Buffer = Buffer.alloc(0);
       let eventPrefix = "";
       let nativeStreamError = false;
@@ -265,6 +341,7 @@ export async function relayAgentChat(options: AgentChatOptions): Promise<void> {
         if (abort.signal.aborted) {
           throw dependencyUnavailable();
         }
+        completionIdHash ??= observeIdentity?.(chunk);
         const text = String(chunk);
         if (body.stream === true) {
           // Native SSE errors also end with [DONE]. Observe only each line's bounded

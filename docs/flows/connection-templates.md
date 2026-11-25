@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: 2026-11-24
-last_updated_session: authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090
+updated: "2026-11-24 19:38"
+last_updated_session: "authoring-run/12bc1c8a-eaac-4de8-a731-f7638d71ab6b"
 ---
 
 # How OCC saves a connection template
@@ -29,6 +29,9 @@ graph TD
   Admin -->|Confidential client| Secret["TokenService stores its secret"]
   Admin -->|Public client| Publish["OCC publishes the client registration"]
   Secret --> Publish
+  Publish -->|Delete client| Cleanup["Worker removes its private value"]
+  Cleanup -->|Removal fails| Retry["OCC schedules and audits a retry"]
+  Cleanup -->|Removal succeeds| Removed["OCC removes the registration and audits success"]
 ```
 
 ### Consent and token custody
@@ -67,7 +70,7 @@ If the save response lacks a valid version, the Console keeps the editor open an
 
 OCC records the selected Installation or Namespace scope for either Client kind. For an OAuth2 secret or GitHub App key, OCC reserves a hidden row and asks the selected TokenService to store the material under the Client's private address. A public OAuth2 Client needs only metadata. OCC publishes the Client and records the audit.
 
-Rotation replaces the private value at the same address. OAuth2 code exchange and refresh read the current secret. The GitHub issuer uses the current signing key and checks the Client's scope against the Source's Namespace before reading it. A pending consent attempt, Agent repository selection or retained Source can block Client deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+Rotation replaces the private value at the same address. OAuth2 code exchange and refresh read the current secret. The GitHub issuer uses the current signing key and checks the Client's scope against the Source's Namespace before reading it. A pending consent attempt, Agent repository selection or retained Source can block Client deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup. If removal fails, OCC keeps the registration hidden, schedules a retry after 60 seconds, and records `openclaw.credential_clients.cleanup` with outcome `failure`. If removal succeeds, OCC deletes the registration and records the same action with outcome `success`. The record contains `credentialClientId`. Its actor is unresolved because the hidden registration has no requester.
 
 ### 3. Authorize the account in the browser
 
@@ -114,6 +117,8 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 19:38: Record credential client cleanup and retry outcomes. (authoring-run/12bc1c8a-eaac-4de8-a731-f7638d71ab6b - 0865cc4ce1d9308ad66fbb5877dfb57186457e2e)
 
 - 2026-11-24 11:56: Record the OAuth maintenance interval and on-demand renewal. (authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090 - b49a9c6cface9c77134d4e83674c003138169c68)
 

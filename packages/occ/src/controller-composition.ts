@@ -763,7 +763,7 @@ export function createControllerComposition(
     tokenService: (instanceId) => managedCredentialSources.ownedTokenServiceDriver(instanceId),
     timeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
   });
-  const readAgentAuditEvents = createAgentAuditReader({
+  const agentAuditReader = createAgentAuditReader({
     installationId: admittedInstallation.id,
     platformState,
     auditState: options.agentAuditState,
@@ -1218,7 +1218,7 @@ export function createControllerComposition(
     presets,
     provisioningRequests,
     provisioningWorker,
-    readAgentAuditEvents,
+    agentAuditReader,
     repositoryPolicy,
     runtimeCredentials,
     runtimeObservations,

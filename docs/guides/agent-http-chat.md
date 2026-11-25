@@ -51,6 +51,50 @@ in the workspace. Before you retry or continue, follow the
 See the [HTTP chat contract](../reference/agent-http-chat.md) for limits, status
 codes, conversation boundaries and audit behavior.
 
+## Retry delayed HTTP chat audit records
+
+If an HTTP chat record is missing from the audit log, check the API's
+queue. For a missing Gateway turn record, use the separate
+[Gateway recovery procedure](topics/audit-log.md#recover-delayed-runtime-events).
+
+After PostgreSQL recovers, OCC sends pending records automatically. It
+checks the queue at startup, when it adds a record and every 15 seconds.
+After three consecutive delivery failures, it pauses for 15 seconds.
+**Do not send the chat request again.** A second request can repeat a
+tool action.
+
+For a Helm installation, set `namespace` to the API's Kubernetes
+namespace. You need permission to run commands in the API Pod.
+
+```sh
+queue=/app/packages/occ/src/state/http-chat-audit-queue.ts
+kubectl exec -n "$namespace" deployment/openclaw-enterprise-api -c api -- node "$queue" status
+```
+
+The JSON list shows pending event IDs, Installation IDs, actions and
+retry times. `retry_at` is in milliseconds since the Unix epoch.
+An empty list means no records are waiting. If the file is missing,
+check the API volume. OCC creates the file on the first queue write.
+
+Check that the API can write to the original Installation database.
+Set `eventId` to a pending ID. Run this command to make that record
+ready for the next check.
+
+```sh
+kubectl exec -n "$namespace" deployment/openclaw-enterprise-api -c api -- node "$queue" retry "$eventId"
+```
+
+Run `status` again. After delivery, the ID leaves the queue.
+An authorized database operator can confirm the write in `psql`.
+
+```sql
+\prompt 'Event ID: ' event_id
+SELECT id, action FROM occ.audit_events WHERE id = :'event_id';
+```
+
+Keep the [API volume](../reference/agent-http-chat.md#queue-storage)
+until delivery finishes. Removing it can lose pending records.
+
 ## Disable HTTP chat
 
 Set `gateway.http.endpoints.chatCompletions.enabled` to `false` in the Agent's

@@ -476,6 +476,9 @@ RUN --mount=type=secret,id=build-ca,required=false \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+COPY deploy/runtime/managed-runtime-audit/ /app/oce-plugins/oce-runtime-audit/
+COPY packages/audit/src/runtime-reference.ts /app/oce-plugins/oce-runtime-audit/
+COPY packages/audit/src/runtime-replay.ts /app/oce-plugins/oce-runtime-audit/
 COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/

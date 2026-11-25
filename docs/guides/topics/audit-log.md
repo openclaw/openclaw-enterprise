@@ -7,30 +7,29 @@ The [OpenTelemetry Collector](../observability.md) exports operational logs.
 
 ## What is recorded
 
-An event identifies when it occurred, the Installation, actor, action, affected
-resource, and outcome. It can also include a Namespace, request ID, or
-authorization decision when available. A denial's decision names the exact
-permission and resource that was refused, which can differ from the action. An
-Agent update refused for a missing `operate` on the Agent's Secret records
-`openclaw.agents.update` with a decision for `operate` on that Secret. When the
-Agent's own service principal is refused, the event has reason code
-`AGENT_PRINCIPAL_NOT_AUTHORIZED` and its details name that principal and the
-refused grant. Service API key issuance and revocation record the caller, the
-principal ID, and the key's ID and name, not the credential. An API route's
-event for a request made with a
+An event identifies its time, Installation, actor, action, resource, and outcome.
+It can include a Namespace, request ID, and authorization decision. A denial
+names the exact refused permission and resource. For example, an Agent update
+can report `operate` denied on its Secret. `AGENT_PRINCIPAL_NOT_AUTHORIZED`
+identifies a refused Agent principal and grant. Service key changes record the
+caller, principal, and key ID and name, not the credential. A request with a
 [service API key](../../reference/authentication/service-api-keys.md#revocation-and-audit)
 records that key's ID in `actorServiceKeyId` on the resource event.
 
 ### API requests
 
-When Control Plane audit is enabled, OCC records two events for a covered
-resource API request that reaches its handler after bootstrap. It saves
-`openclaw.api.request.admitted` before the handler starts and
-`openclaw.api.request.result` before sending the response. Admission means OCC
-accepted the request for processing. The handler still checks
-permission for the operation. A request rejected before the handler can have a
-result record by itself, for example a `400` for an invalid request or a `401`
-for missing credentials.
+After bootstrap, Control Plane audit records `openclaw.api.request.admitted`
+before a covered handler starts. The handler still checks permission.
+OCC records `openclaw.api.request.result` before sending a standard API
+response. An invalid or unauthenticated request can have only a result.
+[HTTP chat](../../reference/agent-http-chat.md#kubernetes-configuration-and-audit)
+queues `openclaw.api.request.received` before authentication. A relayed
+response has a separate chat result.
+
+The result hook also covers the registered account, service-key, sign-in,
+recovery, and native administration routes. When a resource API request returns
+`405`, OCC records a `methodNotAllowed` result. A successful API
+bootstrap can record its result after it saves the Installation.
 
 The request ID connects the records. They name the registered operation and
 HTTP method. The result also has the HTTP status. For a successful read of one
@@ -46,9 +45,10 @@ If it cannot save the result, it keeps the selected response and logs
 cannot save a separate permission-denial record. A device login scope denial
 returns `503` if OCC cannot save its required denial record. If OCC cannot
 confirm a commit, look for `http.commit_outcome_unknown` and check the current
-resource or job state before retrying. Bootstrap and runtime log reads use
-their own audit paths. Authentication callbacks, native proxy traffic, and
-unmatched routes are outside these request records.
+resource or job state before retrying. Bootstrap and runtime log reads have
+their own records for the state change or disclosure. Matched Google and OIDC
+sign-in callbacks have their own authentication records. Arbitrary unmatched
+paths and native proxy traffic are outside this request audit scope.
 
 Control Plane audit is on by default in PostgreSQL development. Production
 requires the [audit setting](../../reference/settings/production.md#control-plane-audit)
@@ -58,8 +58,8 @@ for both the API and worker.
 
 With Control Plane audit enabled, PostgreSQL saves jobs from covered API
 requests with an `openclaw.controller_work.queued` event. The event links the
-work ID to the HTTP request ID. Internal repair transfers and maintenance
-continuation can have claim and result records without a queued record.
+work ID to the HTTP request ID. Repository cleanup and maintenance recovery
+also save a queue record when they create or reopen follow-up work.
 PostgreSQL saves each claim with its `openclaw.controller_work.claimed` event.
 If that write fails, the job stays queued and the worker does not start it.
 
@@ -84,18 +84,106 @@ denials and resource lifecycle evidence apply with either audit setting.
 If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 `COMMIT_OUTCOME_UNKNOWN`. Check the job before requesting a retry.
 
+### Agent runtime activity
+
+Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
+with Helm-managed Gateway routing. Each Gateway on the control cluster
+gets the `oce-runtime-audit` plugin and a revision credential.
+Disabling the plugin prevents setup.
+
+Changing the setting can restart Gateways and dedicated Codex workers. A turn
+can fail or use the old setting during restart. If maintenance fails, restore
+the original deployer's permission and deploy the Agent.
+`GATEWAY_AUDIT_MAINTENANCE_FAILED` means scheduling failed. The worker retries
+after 30 seconds and can continue credential cleanup.
+
+| Action                                     | What the Gateway observed                                                                 |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `openclaw.runtime.session.started`         | New session. Empty chats and sessions created by a first message can lack this record.    |
+| `openclaw.runtime.session.ended`           | Session deletion.                                                                         |
+| `openclaw.runtime.turn.started`            | Start of a turn.                                                                          |
+| `openclaw.runtime.turn.completed`          | Final turn result in `details.outcome`.                                                   |
+| `openclaw.runtime.model_call.started`      | Start of an embedded OpenClaw or dedicated Codex model call.                              |
+| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw result for the same `modelCallId`.                                      |
+| `openclaw.runtime.model_attempt.observed`  | Embedded OpenClaw or dedicated Codex HTTP attempt.                                        |
+| `openclaw.runtime.model_response.observed` | Dedicated OpenClaw or Codex response. `responseIdHash` identifies the provider response.  |
+| `openclaw.runtime.model_error.observed`    | Dedicated OpenClaw worker saved an assistant error. `errorCode` can give the HTTP status. |
+
+Each turn includes `sessionId` and `turnId`, even without a session start.
+Recovery can reuse a turn ID. Without a result, the outcome is unknown.
+OCE hashes IDs that fail format checks or exceed
+256 characters. [Message links](#open-the-message-for-a-turn) require
+original session and message IDs but allow hashed turn IDs.
+
+Group HTTP attempts within a revision and turn by `modelCallId`. Each
+identifies the `model`, `provider` and a distinct `modelAttemptId`.
+`attempt` starts at 1 per call. `httpStatus` comes from response headers.
+`failureCode: TRANSPORT_ERROR` means the request failed before headers arrived.
+HTTP 200 cannot confirm stream completion. With different call IDs,
+the records alone cannot identify a retry.
+
+- Embedded OpenClaw reports OpenAI Responses, Chat Completions and Anthropic
+  Messages attempts. The full `traceparent` must match a model call. Background
+  session recap calls are not reported. A trace exporter can prevent a match.
+- Dedicated OpenClaw reports saved provider responses and errors, but omits request attempts and retries.
+- Dedicated Codex requires a managed Pod on the control cluster with a
+  direct Gateway connection. An HTTP 503 retry can share the call ID.
+  A stream retry starts a new call. Call starts can appear after the request.
+  Check Gateway logs for reporting warnings.
+
+Attempts can arrive after the result. WebSockets, failures before sending,
+missing traces and ambiguous matches can leave gaps. Restart or overflow
+can erase attempts before the [Gateway queues them](../../flows/audit-ledger.md#7-a-gateway-reports-work-for-one-revision).
+
+The Gateway queues events locally and sends them in the background.
+Chat continues if PostgreSQL cannot save a runtime event.
+
+For HTTP chat, OCC saves admission records in a
+[queue on the API's persistent volume](../agent-http-chat.md#retry-delayed-http-chat-audit-records).
+OCC can queue a chat result during a PostgreSQL outage. It still needs
+PostgreSQL to check access and the Agent revision.
+
+### Recover delayed runtime events
+
+The Gateway retries network errors and HTTP 408, 429 and 5xx after
+15 seconds. HTTP 204 confirms delivery. Other responses hold the event.
+The Gateway keeps 256 events per revision, source and endpoint, up to
+512 per Agent. Held events count toward both limits. Pod replacement
+preserves events. Agent deletion removes them. A full or unavailable
+queue can lose new events. The Gateway warns.
+A new Gateway can deliver signed records from an older revision to the same endpoint.
+
+To check delivery, set `namespace` and `pod` to the Gateway's Kubernetes
+namespace and Pod name. You need permission to run commands in that Pod.
+
+```sh
+kubectl exec -n "$namespace" "$pod" -c gateway -- node /app/oce-plugins/oce-runtime-audit/sink.mjs status
+```
+
+`pending` counts events awaiting delivery. `held` lists event IDs and HTTP
+statuses. `otherScope` counts records for another revision, source or endpoint.
+OCC checks the original signature and revision. The old credential remains revoked.
+A signature does not prove when the record was signed.
+A changed endpoint prevents delivery.
+
+Correct the cause of the refusal. Set `eventId` to the held ID.
+
+```sh
+kubectl exec -n "$namespace" "$pod" -c gateway -- node /app/oce-plugins/oce-runtime-audit/sink.mjs retry "$eventId"
+```
+
+The Gateway checks every 15 seconds. A retry does not repeat the turn.
+Run `status` again. The audit API uses a different event ID.
+Find recent turns by revision, session and turn ID.
+
 ### Agent runtime logs
 
-Reading an Agent's container output has a separate access record. Each
-[runtime log view](agent-logs.md) records one `openclaw.agents.runtime_logs.view`
-event before any output is read, with the version, source, Pod, container,
-previous-instance flag, line count and a view ID, never the log text. Follow
-polls within the view are not recorded again; a poll that has to read another
-Pod, because the view's Pod is gone, records a new view. If the event cannot be written,
-no output is returned. Each log download records one
-`openclaw.agents.runtime_logs.download` event with the same details, before the
-read. Both use the audit event kind `access`, which marks an audited read. The
-event names the permission that admitted the reader, `read_logs` or `administer`.
+Before reading [container logs](agent-logs.md), OCC records
+`openclaw.agents.runtime_logs.view` or `openclaw.agents.runtime_logs.download`.
+If the write fails, OCC withholds output. Follow polls reuse the view until
+the Pod changes. Both `access` events identify the permission (`read_logs`
+or `administer`), version, source, Pod, container, previous-instance flag,
+line count and view ID. They omit log text.
 
 ## Manage audit storage
 
@@ -104,10 +192,11 @@ rows. It cannot update, delete, or truncate them. Automatic expiry, purge,
 archive, and export are outside the current audit workflow. Use approved
 database access to inspect raw audit rows.
 
-PostgreSQL checks each new Control Plane request, work, or audit disclosure event
-against an 8 KiB limit on its JSON row. At 1 GiB of allocated space for the
-`occ.audit_events` table and its indexes, PostgreSQL refuses new Control Plane
-audit events by default. Existing event types can still grow the table.
+PostgreSQL limits each Control Plane request, HTTP chat, work, audit disclosure
+and runtime activity record to 8 KiB of JSON. At 1 GiB of
+allocated space for the `occ.audit_events` table and its indexes, PostgreSQL
+refuses new records of these types by default. Other event types can still grow
+the table.
 Concurrent writes and page allocations can take the table above the threshold.
 
 Check the storage threshold before enabling Control Plane audit and while it runs.
@@ -119,7 +208,9 @@ SELECT pg_total_relation_size('occ.audit_events') AS used_bytes,
 ```
 
 If `accepts_new_events` is `false`, the API can block covered requests or
-withhold audit results. The worker cannot claim covered jobs or save the
+withhold audit results. The [HTTP chat and Gateway queues](#agent-runtime-activity)
+can still accept records until they reach their limits.
+The control plane worker cannot claim covered jobs or save the
 results of audited attempts until space is available. It reports
 `worker.error` with code `AUDIT_CAPACITY_EXCEEDED`. Preserve the existing
 records. Monitor free disk space separately. Reserve space for other tables,
@@ -169,29 +260,70 @@ it does not correlate separate attempts to the same person or browser.
 
 ## Read an Agent’s audit events
 
-This API requires PostgreSQL, the Native IAM Driver, and enabled Control Plane
-audit. If you receive `501`, check that audit is enabled and the Installation
-uses the Native IAM Driver.
-
 Sign in with a human account. Ask an Installation administrator to
 [bind a Namespace Role](../../reference/authorization.md#manage-namespace-policy)
 with the `read_audit` permission directly to your Principal and the Agent.
 OCC checks the grant each time you request a page.
 
 Send `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`.
-The response lists selected API reads and worker events from the preceding
-24 hours, newest first. A work ID in the response connects events for the
-same job. OCC gives it a separate format to keep internal work keys and
-Agent revision IDs private.
+The response lists Agent lifecycle, HTTP chat, runtime, API read, and worker
+records for a 24-hour period, newest first. The period ends
+now by default. For older records, set `end` to a UTC timestamp, such as
+`?end=2026-11-20T00:00:00.000Z`. Use `end` only on the first page and do
+not select a future time. Lifecycle records show the
+saved action, such as Agent creation, deployment admission, or activation.
+They include an Agent revision ID when OCC verifies that revision belongs to
+the Agent. A work ID connects job records. For `http_chat`, use `requestId` to
+connect admission and result. `messageCount` counts submitted entries;
+`turnId` appears only after a matching runtime turn is saved. Older records
+can lack the count.
 
-The default page contains up to 50 records. Set `limit` to a number from
-1 through 100 to change the size. If the response includes a `nextCursor`,
-send it as `cursor` on the next request. Use the same session and Agent within
-15 minutes of the first page. OCC keeps the first page's time window.
+Set `limit` to 1–100 records per page. The default is 50. Send `nextCursor` as
+`cursor` within 15 minutes of the first page. Use the same session and Agent.
+OCC keeps the first page's time window.
 
 OCC saves a disclosure record before it sends each page, including an empty
 page. If it cannot confirm the write, it returns `503` and withholds the page.
 Give your platform operator the request ID if the error persists.
+
+### Open the message for a turn
+
+Ask a Namespace administrator to grant your human Principal both `read_audit`
+and `read_audit_content` directly on the Agent. The same Role can contain
+both permissions. The content grant gives you access to linked user messages
+from chats with this Agent, including chats that other users started.
+
+1. List the Agent's audit events. Find a turn with `details.messageLink: linked`.
+2. Copy the event's top-level `id` into the following request.
+
+```http
+GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message
+```
+
+The [response](../../reference/api.md#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage)
+contains the turn in `data.event` and the text from chat history in
+`data.message.text`. OCC gets the message from the Gateway when you make
+this request. PostgreSQL stores the message ID and a record of who opened
+the event. The text stays in chat history.
+
+The Gateway can link a browser chat turn to its input in all three runtimes.
+For HTTP chat in embedded and dedicated OpenClaw, the link is available when
+the request contains one user message and no earlier conversation entries.
+You can send the same text twice in the same chat. Each request gets its own
+turn and saved message. Codex links an HTTP turn when it identifies the saved
+prompt.
+
+If the start has no link, check the completion. `messageLink` is `linked`,
+`input_hidden`, `input_blocked`, `steering_input`, `internal_input`,
+`multiple_inputs`, `invalid_reference`, or `unknown`. `multiple_inputs` means
+the Gateway confirmed conflicting saved inputs. `unknown` gives no cause.
+
+| Status | What to check                                                                                                                                                              |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `403`  | Check both direct grants for this Agent.                                                                                                                                   |
+| `404`  | `revision_unavailable`: the event's revision cannot serve the lookup. `message_unavailable`: history cannot return eligible text within 64 KiB. Neither confirms deletion. |
+| `501`  | Check that the Installation uses Native IAM, PostgreSQL, and Control Plane audit with managed Gateway routing.                                                             |
+| `503`  | OCC could not finish the Gateway lookup or confirm the disclosure record. Try again.                                                                                       |
 
 ## Access and limitations
 

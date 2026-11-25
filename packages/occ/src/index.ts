@@ -228,6 +228,8 @@ export {
   TransientDependencyError,
   WorkClaimLostError,
   AgentAuditDisclosureUnavailableError,
+  AgentAuditRevisionUnavailableError,
+  AgentChatAccessUnavailableError,
   AuditAppendUnavailableError,
   PostgresCommitOutcomeUnknownError,
 } from "./errors.ts";
@@ -362,6 +364,7 @@ export type {
 } from "./ports/repository-sessions.ts";
 export { PostgresCertificateRejectedError, PostgresPlatformState } from "./state/postgres-state.ts";
 export type {
+  GatewayRuntimeAuditGrant,
   PersistedNativeIAMState,
   PostgresClient,
   PostgresPlatformStateOptions,

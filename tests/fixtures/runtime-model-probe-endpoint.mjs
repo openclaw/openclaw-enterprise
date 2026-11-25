@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createServer } from "node:https";
@@ -27,6 +27,7 @@ const echoPattern =
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const auditFailures = process.env.PROBE_AUDIT_FAILURES === "1";
 const slackStandIn = process.env.PROBE_SLACK_STANDIN === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
@@ -83,7 +84,9 @@ function callerLabel(request) {
   if (credentialLabels === undefined) {
     return undefined;
   }
-  const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
+  const token =
+    /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1] ??
+    request.headers["x-api-key"];
   return token === undefined
     ? null
     : (credentialLabels.get(createHash("sha256").update(token).digest("hex")) ?? null);
@@ -91,6 +94,14 @@ function callerLabel(request) {
 
 function emit(event) {
   process.stdout.write(`${JSON.stringify({ ...event, at: Date.now() })}\n`);
+}
+
+function firstAttemptId(request) {
+  const trace = request.headers.traceparent;
+  if (typeof trace !== "string" || !/^00-[a-f0-9]{32}-[a-f0-9]{16}-[a-f0-9]{2}$/.test(trace)) {
+    return;
+  }
+  return createHash("sha256").update(`${trace}:1`).digest("hex");
 }
 
 function sseResponse(response, events) {
@@ -101,18 +112,167 @@ function sseResponse(response, events) {
   response.end();
 }
 
+function completionsResponse(response, model, text, stream) {
+  const base = {
+    id: `chatcmpl_${randomUUID().replaceAll("-", "")}`,
+    created: Math.floor(Date.now() / 1000),
+    model,
+  };
+  if (!stream) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        ...base,
+        object: "chat.completion",
+        choices: [
+          { index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" },
+        ],
+      }),
+    );
+    return;
+  }
+  response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+  for (const choice of [
+    { index: 0, delta: { role: "assistant", content: text }, finish_reason: null },
+    { index: 0, delta: {}, finish_reason: "stop" },
+  ]) {
+    response.write(
+      `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [choice] })}\n\n`,
+    );
+  }
+  response.end("data: [DONE]\n\n");
+}
+
+function messagesResponse(response, model, text, stream) {
+  const message = {
+    id: `msg_${randomUUID().replaceAll("-", "")}`,
+    type: "message",
+    role: "assistant",
+    model,
+    content: [{ type: "text", text }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  if (!stream) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(message));
+    return;
+  }
+  sseResponse(response, [
+    {
+      type: "message_start",
+      message: {
+        ...message,
+        content: [],
+        stop_reason: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    },
+    { type: "message_stop" },
+  ]);
+}
+
 function answerText(request) {
   const matches = echoPattern === undefined ? [] : request.match(echoPattern);
   return matches?.at(-1) ?? "READY";
 }
 
+const failedAuditNonces = new Set();
+const auditToolResults = new Map();
+
+function auditToolId(caller, text) {
+  // OpenClaw preserves provider-style call IDs when it resends full history.
+  return caller === "embedded" ? `call_${text.slice(-20)}` : text;
+}
+
+function auditScenario(caller, text) {
+  if (!auditFailures) {
+    return;
+  }
+  if (caller === "codex") {
+    return /^OCE_SMOKE_(retry|cancel|restart|transport)-[0-9a-f-]{36}$/u.exec(text)?.[1];
+  }
+  if (caller === "embedded") {
+    return /^OCE_SMOKE_(retry|repair|transport)-[0-9a-f]{20}$/u.exec(text)?.[1];
+  }
+}
+
+function auditFault(transport, model, request, caller) {
+  const text = answerText(request);
+  const fault = auditScenario(caller, text);
+  if (fault === undefined) {
+    return undefined;
+  }
+  if (fault === "retry" || fault === "repair" || fault === "transport") {
+    const expected = auditToolResults.get(text);
+    if (!expected) {
+      return undefined;
+    }
+    const { input, previous_response_id } = JSON.parse(request);
+    const callId = auditToolId(caller, text);
+    const result = input.findLast(
+      (item) => item.type === "function_call_output" && item.call_id === callId,
+    );
+    const retried = failedAuditNonces.has(text);
+    // Only reject a real continuation. Recovery must resend history without the reference.
+    const verified =
+      JSON.stringify(result?.output ?? "").includes(expected) &&
+      (fault !== "repair" || (retried ? !previous_response_id : !!previous_response_id));
+    emit({ event: "audit-tool-result", transport, caller, text, verified });
+    if (!verified || retried) {
+      return undefined;
+    }
+    failedAuditNonces.add(text);
+    if (fault === "transport") {
+      emit({ event: "audit-provider-transport", transport, caller, text });
+      return { fault };
+    }
+    const status = fault === "repair" ? 400 : 503;
+    emit({
+      event: "audit-provider-retry",
+      transport,
+      caller,
+      text,
+      status: transport === "https" ? status : undefined,
+    });
+    return { fault: "retry", status };
+  }
+  emit({ event: `audit-provider-${fault}`, transport, caller, text });
+  const events = answerEvents(model, text);
+  const started = events[0];
+  const completed = events.at(-1);
+  completed.response.output = [];
+  return { fault, responseId: started.response.id, started, completed };
+}
+
+const auditResponseCounts = new Map();
+
+function nextResponseId(text) {
+  if (!auditFailures || !text.startsWith("OCE_SMOKE_")) {
+    return "resp_runtime_probe";
+  }
+  // Two requests with the same text must still get different provider response IDs.
+  const count = (auditResponseCounts.get(text) ?? 0) + 1;
+  auditResponseCounts.set(text, count);
+  return `resp_${text}_${count}`;
+}
+
 // A minimal Responses API stream: one assistant message saying READY, or the
 // caller's echoed nonce.
 function answerEvents(model, text) {
-  const id = "resp_runtime_probe";
+  const id = nextResponseId(text);
   const message = {
     type: "message",
-    id: "msg_runtime_probe",
+    id: id.replace(/^resp_/, "msg_"),
     status: "completed",
     role: "assistant",
     content: [{ type: "output_text", text, annotations: [] }],
@@ -168,6 +328,36 @@ function answerEvents(model, text) {
   ];
 }
 
+// A real tool must join the pieces before we refuse the next request. An error
+// that echoes the command cannot pass this check. Never log the tool output.
+function auditToolEvents(model, text, caller) {
+  const scenario = auditScenario(caller, text);
+  if (
+    (scenario !== "retry" && scenario !== "repair" && scenario !== "transport") ||
+    auditToolResults.has(text)
+  ) {
+    return undefined;
+  }
+  const expected = randomUUID();
+  auditToolResults.set(text, expected);
+  if (caller === "embedded") {
+    // Code Mode can join two strings without granting access to a shell or workspace.
+    return functionCallEvents(model, nextResponseId(text), {
+      id: `fc_${randomUUID().replaceAll("-", "")}`,
+      type: "function_call",
+      status: "completed",
+      call_id: auditToolId(caller, text),
+      name: "exec",
+      arguments: JSON.stringify({
+        code: `text('${expected.slice(0, 18)}' + '${expected.slice(18)}')`,
+      }),
+    });
+  }
+  const command = `printf '%s%s' '${expected.slice(0, 18)}' '${expected.slice(18)}'`;
+  // A continuation can carry just the tool output. Its call ID identifies the turn.
+  return execCommandEvents(model, nextResponseId(text), text, command);
+}
+
 // The smoke's model stand-in requests a real Codex tool call. The command reads
 // the endpoint from the managed skill; the provider-only title is never supplied
 // to the model or the command before the tool output returns.
@@ -207,14 +397,18 @@ function publicReadEvents(model, request) {
     'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
     'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
   ].join("\n");
+  return execCommandEvents(model, "resp_public_read", "public-read-call", command);
+}
+
+function execCommandEvents(model, responseId, callId, command) {
   const item = {
     type: "function_call",
-    call_id: "public-read-call",
+    call_id: callId,
     name: "exec_command",
     arguments: JSON.stringify({ cmd: command }),
   };
   const base = {
-    id: "resp_public_read",
+    id: responseId,
     object: "response",
     model,
     created_at: Math.floor(Date.now() / 1000),
@@ -298,8 +492,12 @@ function workspaceHistoryEvents(model, request) {
     name: "read",
     arguments: JSON.stringify({ path: "gateway-history.txt" }),
   };
+  return functionCallEvents(model, "resp_gateway_history", item);
+}
+
+function functionCallEvents(model, id, item) {
   const slot = { item_id: item.id, output_index: 0 };
-  const base = { id: "resp_gateway_history", object: "response", model, created_at: 1 };
+  const base = { id, object: "response", model, created_at: Math.floor(Date.now() / 1000) };
   return [
     { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
     {
@@ -316,7 +514,12 @@ function workspaceHistoryEvents(model, request) {
 
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
-  emit({ event: "request", transport, turn: true });
+  const text = answerText(request);
+  const evidence = {
+    ...(caller === undefined ? {} : { caller }),
+    ...(echoPattern === undefined ? {} : { text }),
+  };
+  emit({ event: "request", transport, turn: true, ...evidence });
   if (heldPrompt !== undefined && request.includes(heldPrompt)) {
     emit({ event: "turn-held" });
     return;
@@ -324,24 +527,18 @@ function turn(transport, model, request, respond, closed, caller) {
   if (mode === "hang") {
     return;
   }
-  const text = answerText(request);
   setTimeout(() => {
     if (closed()) {
       return;
     }
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
+        auditToolEvents(model, text, caller) ??
         publicReadEvents(model, request) ??
         workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),
     );
-    emit({
-      event: "turn-answered",
-      transport,
-      status: 200,
-      ...(caller === undefined ? {} : { caller }),
-      ...(echoPattern === undefined ? {} : { text }),
-    });
+    emit({ event: "turn-answered", transport, status: 200, ...evidence });
   }, delayMs);
 }
 
@@ -412,6 +609,58 @@ const server = createServer(
     });
     request.on("end", () => {
       const path = new URL(request.url, "https://api.openai.com").pathname;
+      if (
+        auditFailures &&
+        caller === "embedded" &&
+        request.method === "POST" &&
+        path.endsWith("/chat/completions")
+      ) {
+        const payload = JSON.parse(body);
+        const text = answerText(body);
+        emit({
+          event: "request",
+          transport: "https",
+          path,
+          turn: true,
+          caller,
+          text,
+          attemptId: firstAttemptId(request),
+        });
+        setTimeout(() => {
+          if (response.destroyed) {
+            return;
+          }
+          completionsResponse(response, payload.model, text, payload.stream);
+          emit({ event: "turn-answered", transport: "https", status: 200, caller, text });
+        }, delayMs);
+        return;
+      }
+      if (
+        auditFailures &&
+        caller === "embedded" &&
+        request.method === "POST" &&
+        path === "/v1/messages"
+      ) {
+        const payload = JSON.parse(body);
+        const text = answerText(body);
+        emit({
+          event: "request",
+          transport: "https",
+          path,
+          turn: true,
+          caller,
+          text,
+          attemptId: firstAttemptId(request),
+        });
+        setTimeout(() => {
+          if (response.destroyed) {
+            return;
+          }
+          messagesResponse(response, payload.model, text, payload.stream);
+          emit({ event: "turn-answered", transport: "https", status: 200, caller, text });
+        }, delayMs);
+        return;
+      }
       if (!(request.method === "POST" && path.endsWith("/responses"))) {
         emit({ event: "request", method: request.method, path, turn: false });
         response.writeHead(404, { "content-type": "application/json" });
@@ -446,6 +695,31 @@ const server = createServer(
         response.writeHead(401, { "content-type": "application/json" });
         response.end(rejection);
         emit({ event: "turn-answered", transport: "https", status: 401 });
+        return;
+      }
+      const audit = auditFault("https", model, body, caller);
+      if (audit !== undefined) {
+        if (audit.fault === "transport") {
+          // Close the actual TLS connection before sending response headers.
+          request.socket.destroy();
+          return;
+        }
+        if (audit.fault === "retry") {
+          const error =
+            audit.status === 400
+              ? {
+                  code: "previous_response_not_found",
+                  param: "previous_response_id",
+                  type: "invalid_request_error",
+                  message: "Previous response not found.",
+                }
+              : { type: "server_error", message: "Probe temporary unavailability" };
+          response.writeHead(audit.status, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error }));
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write(`event: ${audit.started.type}\ndata: ${JSON.stringify(audit.started)}\n\n`);
         return;
       }
       response.on("close", () => emit({ event: "turn-closed", transport: "https" }));
@@ -500,6 +774,7 @@ server.on("upgrade", (request, socket, head) => {
   }
   sockets.handleUpgrade(request, socket, head, (webSocket) => {
     let open = true;
+    let heldAudit;
     webSocket.on("close", () => {
       open = false;
       emit({ event: "turn-closed", transport: "websocket" });
@@ -509,6 +784,21 @@ server.on("upgrade", (request, socket, head) => {
       try {
         message = JSON.parse(String(data));
       } catch {
+        return;
+      }
+      if (
+        heldAudit?.fault === "cancel" &&
+        message.type === "response.interrupt" &&
+        message.response_id === heldAudit.responseId
+      ) {
+        webSocket.send(
+          JSON.stringify({
+            type: "response.interrupt.accepted",
+            response_id: heldAudit.responseId,
+          }),
+        );
+        webSocket.send(JSON.stringify(heldAudit.completed));
+        heldAudit = undefined;
         return;
       }
       if (message.type !== "response.create") {
@@ -531,6 +821,17 @@ server.on("upgrade", (request, socket, head) => {
           }),
         );
         emit({ event: "prewarm", transport: "websocket" });
+        return;
+      }
+      const audit = auditFault("websocket", message.model ?? "unknown", String(data), caller);
+      if (audit !== undefined) {
+        if (audit.fault === "retry" || audit.fault === "transport") {
+          // Fail an actual Responses request after the upgrade and before a result.
+          webSocket.terminate();
+        } else {
+          heldAudit = audit;
+          webSocket.send(JSON.stringify(audit.started));
+        }
         return;
       }
       turn(

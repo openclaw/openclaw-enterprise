@@ -670,6 +670,33 @@ test(
     core.failureCodes.deleteNamespacedSecret.push(403);
     await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 1);
+    const cleanupAudit = async () =>
+      (
+        await pool.query(
+          `SELECT actor_id, resource_kind, resource_id, outcome,
+                  details - '__occAuditMetadata' AS details,
+                  details->'__occAuditMetadata'->'actor' AS actor,
+                  details->'__occAuditMetadata'->>'source' AS source,
+                  details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+           FROM occ.audit_events WHERE action = 'openclaw.credential_clients.cleanup'
+             AND details->>'credentialClientId' = $1 ORDER BY occurred_at, id`,
+          [client.id],
+        )
+      ).rows;
+    const cleanupEvidence = {
+      actor_id: "unresolved",
+      resource_kind: "installation",
+      resource_id: controller.installation.id,
+      details: { credentialClientId: client.id },
+      actor: { unresolved: true },
+      source: "occ",
+    };
+    const retry = {
+      ...cleanupEvidence,
+      outcome: "failure",
+      reason_code: "CREDENTIAL_CLIENT_CLEANUP_RETRY",
+    };
+    assert.deepEqual(await cleanupAudit(), [retry]);
     const hidden = await inject("GET", "/credential-clients");
     assert.equal(hidden.statusCode, 200, hidden.body);
     assert.ok(!hidden.json().data.some((row: { id: string }) => row.id === client.id));
@@ -680,6 +707,11 @@ test(
     assert.equal(due.rowCount, 1);
     await controller.cleanupCredentialClients();
     assert.equal(core.secrets.size, 0);
+    await controller.cleanupCredentialClients();
+    assert.deepEqual(await cleanupAudit(), [
+      retry,
+      { ...cleanupEvidence, outcome: "success", reason_code: null },
+    ]);
   },
 );
 
@@ -747,10 +779,18 @@ test(
       [stagedClientId],
     );
     assert.equal(expired.rowCount, 1);
+    // Audit maintenance must not prevent the worker from removing an expired real Client.
+    // The scheduler fails at the same composition boundary used by the installed worker.
+    const workerEvents: Readonly<Record<string, unknown>>[] = [];
+    const privateFailure = `scheduler failure ${randomUUID()}`;
     const { worker } = recovery.startWorker({
       backends: [],
       secretDriver: driver,
       tokenServiceDriverId: owner.id,
+      scheduleGatewayAuditMaintenance: async () => {
+        throw new Error(privateFailure);
+      },
+      emit: (event: Readonly<Record<string, unknown>>) => workerEvents.push(event),
     });
     await worker.start();
     await waitFor("the worker to retire the hidden registration", async () => {
@@ -760,6 +800,20 @@ test(
       return remaining.rowCount === 0 ? true : undefined;
     });
     assert.equal(core.secrets.size, 2);
+    const cleanup = await pool.query(
+      `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'requestId' AS request_id
+       FROM occ.audit_events WHERE action = 'openclaw.credential_clients.cleanup'
+         AND details->>'credentialClientId' = $1`,
+      [expired.rows[0].id],
+    );
+    assert.deepEqual(cleanup.rows, [
+      { actor_id: "unresolved", outcome: "success", request_id: null },
+    ]);
+    assert.deepEqual(
+      workerEvents.filter((event) => event.code === "GATEWAY_AUDIT_MAINTENANCE_FAILED"),
+      [{ event: "worker.error", code: "GATEWAY_AUDIT_MAINTENANCE_FAILED" }],
+    );
+    assert.equal(JSON.stringify(workerEvents).includes(privateFailure), false);
     assert.equal(
       await recovered.withOAuthClientSecret(
         original.json().data,

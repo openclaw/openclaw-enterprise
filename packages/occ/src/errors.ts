@@ -213,9 +213,18 @@ export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableErro
   }
 }
 
+export class AgentChatAccessUnavailableError extends DependencyUnavailableError {}
+
 export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
   constructor() {
     super("The Agent audit disclosure record is unavailable.");
+  }
+}
+
+export class AgentAuditRevisionUnavailableError extends Error {
+  constructor() {
+    super("The Agent revision for this audit event is not available for message lookup.");
+    this.name = "AgentAuditRevisionUnavailableError";
   }
 }
 

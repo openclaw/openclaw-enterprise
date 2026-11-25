@@ -9,7 +9,24 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
-import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
+import {
+  allowAgentAuditRead,
+  assertAgentAuditMessage,
+  assertAgentTurnAudit,
+  checkHttpTurnAudit,
+} from "../../scripts/ci/first-agent-smoke/agents.ts";
+import {
+  apiProcess,
+  createApi,
+  expectPersistedRuntimeAudit,
+  setLocalSetupAudit,
+} from "../../scripts/ci/first-agent-smoke/setup.ts";
+import { waitFor } from "../../scripts/ci/first-agent-smoke/process.ts";
+import {
+  RUNTIME_AUDIT_ACTIONS,
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+} from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -28,6 +45,7 @@ import {
   localFirstAgentStack,
   ownFirstAgentWork,
   measureFirstAgentStage,
+  withoutModelCredentials,
 } from "../helpers/local-first-agent-stack.mjs";
 import {
   recordFirstAgentPodTiming,
@@ -327,9 +345,26 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function readTokenServiceCustodyVersion(kube, { installationId, namespaceId, sourceId }) {
+async function readTokenServiceCustodyVersion(
+  kube,
+  { installationId, namespaceId, sourceId, platformNamespace },
+) {
   // Read only owner and object metadata for this disposable Installation. The Source
   // API deliberately exposes no private storage version or Secret reference.
+  let secretNamespace = kube.env.OCC_INSTALLATION_SECRET_NAMESPACE ?? "oce-installation-secrets";
+  if (platformNamespace !== undefined) {
+    // The chart assigns a release-scoped custody Namespace. Read the actual API setting
+    // so this check finds the same private store that accepted the Source.
+    const api = await readKubernetesJson(
+      kube,
+      ["get", "deployment", "openclaw-enterprise-api", "--namespace", platformNamespace],
+      "the API Deployment",
+    );
+    secretNamespace = api.spec?.template?.spec?.containers
+      ?.find(({ name }) => name === "api")
+      ?.env?.find(({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE")?.value;
+    assert.match(secretNamespace ?? "", /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+  }
   const template = String.raw`{{range .items}}{{index .metadata.annotations "openclaw.dev/installation-id"}}{{"\t"}}{{index .metadata.annotations "openclaw.dev/private-secret-id"}}{{"\t"}}{{.metadata.uid}}{{"\t"}}{{.metadata.resourceVersion}}{{"\n"}}{{end}}`;
   const metadata = await readKubernetes(
     kube,
@@ -337,7 +372,7 @@ async function readTokenServiceCustodyVersion(kube, { installationId, namespaceI
       "get",
       "secrets",
       "--namespace",
-      kube.env.OCC_INSTALLATION_SECRET_NAMESPACE ?? "oce-installation-secrets",
+      secretNamespace,
       "--selector",
       "app.kubernetes.io/managed-by=openclaw-enterprise",
     ],
@@ -735,8 +770,16 @@ test(
     const own = ownFirstAgentWork(context);
     let finishCapacity = () => {};
     context.after(() => finishCapacity());
+    // The Kubernetes-only profile can change the chart on the stack this test creates.
+    const auditAdministratorPassword =
+      selectedSandboxDriver === "openshell" &&
+      process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE === "kubernetes" &&
+      process.env.OCC_DEVELOPMENT_STATE_DIRECTORY === undefined
+        ? randomUUID()
+        : undefined;
     const stack = await localFirstAgentStack(context, {
       modelCredential: "openai",
+      administratorPassword: auditAdministratorPassword,
       ...(selectedSandboxDriver === "openshell" ? { nativeModelGrant } : {}),
     });
     const stateDirectory = stack.directory;
@@ -758,6 +801,23 @@ test(
       /^occ-dev-[a-z0-9][a-z0-9-]*$/.test(recorded.cluster ?? ""),
       "The Local Setup state must identify a disposable Kubernetes context",
     );
+    const chartStack = {
+      directory: stateDirectory,
+      state: recorded,
+      kubeconfig: join(stateDirectory, "kubeconfig"),
+      context: `k3d-${recorded.cluster}`,
+    };
+    const chartOptions = {
+      env: withoutModelCredentials(process.env),
+      signal: context.signal,
+    };
+    let servingApi;
+    if (auditAdministratorPassword !== undefined) {
+      assert.equal(recorded.deploymentMode, "k3d");
+      sensitiveValues.add(auditAdministratorPassword);
+      await setLocalSetupAudit(chartStack, true, chartOptions);
+      servingApi = await apiProcess(chartStack, chartOptions);
+    }
     const keyFile = await stat(recorded.keyPath);
     assert.ok(
       keyFile.isFile() && (keyFile.mode & 0o077) === 0,
@@ -826,9 +886,7 @@ test(
       const configuration = createHarnessConfiguration("openclaw", expectedModel);
       const installation = await request("GET", "/installation");
       assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
-      assert.ok(
-        installation.capabilities?.credentialSources?.types.some(({ type }) => type === "static"),
-      );
+      assert.ok(installation.capabilities?.modelCredentialSourcePresets?.includes("openai"));
       // Enroll the native Agent's own separate Source through the selected TokenService.
       const nativeSource = await request("POST", `${base}/credential-sources`, {
         name: `first-agent-native-${suffix}`,
@@ -883,6 +941,14 @@ test(
       const revision = await request("GET", `${nativePath}/revisions/${initialRevisionId}`);
       assert.equal(revision.harness.id, "openclaw");
       assert.equal(revision.harness.mode, "dedicated");
+      const createReader = () =>
+        allowAgentAuditRead(
+          { ...chartStack, namespaceId: nativeNamespace.id },
+          nativeAgent,
+          auditAdministratorPassword,
+        );
+      const reader = auditAdministratorPassword === undefined ? undefined : await createReader();
+      const readAudit = reader?.readAudit;
       const access = await request("GET", `${base}/iam/access-bindings`);
       assert.ok(
         access.some(
@@ -901,13 +967,6 @@ test(
         false,
         "The native Agent must not gain underlying Secret access",
       );
-      // Reading through the real Console workspace route proves private setup
-      // bytes are usable by the enrolled worker, not merely accepted at admission.
-      for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
-        const file = await request("GET", `${nativePath}/workspace/files/${filename}`);
-        assert.equal(file.name, filename);
-        assert.equal(file.content, content);
-      }
       // Change owner-maintained bytes after setup: a replacement must reuse
       // the workspace rather than silently restoring the initial templates.
       const retainedMarker = `NATIVE_RETAINED_WORKSPACE_${randomUUID()}`;
@@ -915,9 +974,6 @@ test(
         ...WORKSPACE_DEFAULTS,
         "USER.md": `${WORKSPACE_DEFAULTS["USER.md"]}\n<!-- ${retainedMarker} -->\n`,
       };
-      await request("PUT", `${nativePath}/workspace/files/USER.md`, {
-        content: retainedFiles["USER.md"],
-      });
       const workspaceRoot = revision.configuration.agents.defaults.workspace;
       assert.ok(workspaceRoot?.startsWith("/"));
       const workspaceFile = {
@@ -935,6 +991,122 @@ test(
           ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
           : undefined,
       });
+      async function proveNativeTurn(revisionId, options) {
+        try {
+          return await assertNativeWorkerProofInController(nativeContext, {
+            ...proofOptions(revisionId),
+            ...options,
+          });
+        } catch (error) {
+          if (readAudit && error instanceof Error) {
+            // Keep the original failure and its CI fields. Expose only event counts
+            // so a failed real turn can be traced without disclosing messages.
+            const page = await readAudit().catch(() => undefined);
+            if (page) {
+              const events = page.events.filter(
+                (event) =>
+                  event.event === "runtime_activity" &&
+                  event.details.agentRevisionId === revisionId,
+              );
+              const counts = new Map();
+              for (const { action, details } of events) {
+                if (RUNTIME_AUDIT_ACTIONS.includes(action)) {
+                  const knownOutcome = [
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "blocked",
+                    "unknown",
+                  ].includes(details.outcome);
+                  const key = knownOutcome ? `${action} (${details.outcome})` : action;
+                  counts.set(key, (counts.get(key) ?? 0) + 1);
+                }
+              }
+              error.message += ` (audit event counts: ${JSON.stringify(Object.fromEntries(counts))})`;
+            }
+          }
+          throw error;
+        }
+      }
+      async function checkAudit(revisionId, proof, requireSuccess = true) {
+        if (readAudit === undefined) {
+          return;
+        }
+        const turn = await assertAgentTurnAudit(readAudit, {
+          label: "Dedicated OpenClaw",
+          revisionId,
+          runtimeSource: "openclaw",
+          sessionId: proof.session.sessionId,
+          turnId: proof.runId,
+          requireSuccess,
+        });
+        await expectPersistedRuntimeAudit(chartStack, revisionId, await readAudit(), chartOptions);
+        return turn;
+      }
+      let linkedEventId;
+      async function checkNormalChat(stage, revisionId, expectedNodeId, previous) {
+        if (readAudit === undefined) {
+          return;
+        }
+        // A failed model must still leave a link to the saved input. Check the
+        // original reply and tool requirements in their own subtests.
+        let proof;
+        let turn;
+        await nativeContext.test(
+          `dedicated OpenClaw links the saved message to the turn on the ${stage} revision`,
+          async () => {
+            proof = await proveNativeTurn(revisionId, {
+              plainChat: true,
+              expectedNodeId,
+              session: previous?.session,
+              sessionFile: previous?.sessionFile,
+            });
+            turn = await checkAudit(revisionId, proof, false);
+            await assertAgentAuditMessage(reader, turn, proof.source, {
+              checkGrant: stage === "first",
+            });
+            if (linkedEventId) {
+              // The transcript survived. Only the active revision may return its messages.
+              await assert.rejects(reader.readMessage(linkedEventId), /HTTP 404$/);
+            }
+            linkedEventId = turn.id;
+          },
+        );
+        if (proof) {
+          await nativeContext.test(
+            `dedicated OpenClaw answers chat and records its model response on the ${stage} revision`,
+            async () => {
+              assert.equal(
+                proof.replied,
+                true,
+                "the dedicated worker did not return the requested reply",
+              );
+              assert.equal(turn?.details.outcome, "succeeded");
+              // The worker's committed assistant message must produce an observation for
+              // this exact turn, including after a revision replaces the first worker.
+              const response = await waitFor(
+                `dedicated OpenClaw model response on ${revisionId}`,
+                async () => {
+                  const page = await readAudit();
+                  const event = page.events.find(
+                    ({ action, details }) =>
+                      action === "openclaw.runtime.model_response.observed" &&
+                      details.agentRevisionId === revisionId &&
+                      details.sessionId === proof.session.sessionId &&
+                      details.turnId === proof.runId,
+                  );
+                  return { done: event !== undefined, value: event };
+                },
+                60_000,
+              );
+              assert.equal(response.details.provider, "openai");
+              assert.equal(response.details.model, expectedModel);
+              assert.match(response.details.responseIdHash, /^sha256:[0-9a-f]{16}$/u);
+            },
+          );
+        }
+        return proof?.session;
+      }
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
           kube,
@@ -1090,17 +1262,84 @@ test(
       // Native setup status retains its delivery receipt for 20 minutes. The
       // durable Agent-owned Secret and device remain authoritative afterward.
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
-      const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
-        assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions(initialRevisionId),
-          expectedNodeId: initialProvider.expectedNodeId,
-        }),
+      const firstSession = await checkNormalChat(
+        "first",
+        initialRevisionId,
+        initialProvider.expectedNodeId,
       );
-      assert.equal(
-        firstNativeProof.hostname,
-        initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
-        "The initial native model turn and exec must run in the first revision's Harness Pod",
-      );
+      let firstNativeProof;
+      async function checkInitialFilesAndExec() {
+        // Reading through the real Console workspace route proves private setup
+        // bytes are usable by the enrolled worker, not merely accepted at admission.
+        for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
+          const file = await request("GET", `${nativePath}/workspace/files/${filename}`);
+          assert.equal(file.name, filename);
+          assert.equal(file.content, content);
+        }
+        await request("PUT", `${nativePath}/workspace/files/USER.md`, {
+          content: retainedFiles["USER.md"],
+        });
+        firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
+          proveNativeTurn(initialRevisionId, {
+            expectedNodeId: initialProvider.expectedNodeId,
+            session: firstSession,
+          }),
+        );
+        assert.equal(
+          firstNativeProof.hostname,
+          initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
+          "The initial native model turn and exec must run in the first revision's Harness Pod",
+        );
+        // The tool request and the reply after its result need separate model calls.
+        await checkAudit(initialRevisionId, firstNativeProof);
+      }
+      if (reader === undefined) {
+        await checkInitialFilesAndExec();
+      } else {
+        // A failed subtest keeps the suite red while the replacement can still run normal chat.
+        await nativeContext.test(
+          "the first native worker reads its workspace and runs exec",
+          checkInitialFilesAndExec,
+        );
+        await nativeContext.test(
+          "dedicated OpenClaw links HTTP turns in the same session to their saved messages",
+          async (httpContext) => {
+            // A failed browser test may have stopped before granting access to its reader.
+            const httpReader = await createReader();
+            await httpReader.grantContent();
+            const commandOptions = { ...chartOptions, signal: httpContext.signal };
+            // OpenShell records each model request from this worker, including retries.
+            const providerOrigin = new URL(configuration.models.providers.openai.baseUrl).origin;
+            const countModelRequests = async () => {
+              const logs = await request(
+                "GET",
+                `${nativePath}/deployments/${initialRevisionId}/runtime/logs?source=sandbox&tailLines=1000`,
+                undefined,
+                httpContext.signal,
+              );
+              assert.equal(logs.truncated, false);
+              return logs.records.filter(
+                ({ message }) =>
+                  message?.startsWith("HTTP:POST ") && message.includes(` ${providerOrigin}/`),
+              ).length;
+            };
+            await checkHttpTurnAudit(
+              { ...chartStack, commandOptions, api: createApi(env.OCC_URL, serviceKey) },
+              { id: nativeAgent.id, label: "Dedicated OpenClaw" },
+              initialRevisionId,
+              httpReader,
+              "dedicated-openclaw",
+              countModelRequests,
+            );
+            await expectPersistedRuntimeAudit(
+              chartStack,
+              initialRevisionId,
+              await httpReader.readAudit(),
+              commandOptions,
+            );
+          },
+        );
+      }
 
       // Keep the genuine Gateway expiry. The successor must reuse the saved device
       // credential even though the original one-shot setup can no longer enroll it.
@@ -1151,6 +1390,13 @@ test(
         "native-replacement",
         replacementRequestedAt,
       );
+      if (readAudit !== undefined) {
+        assert.deepEqual(
+          await apiProcess(chartStack, chartOptions),
+          servingApi,
+          "The API must serve both native revisions without restarting for enrollment",
+        );
+      }
       assert.equal(replacementProvider.expectedNodeId, initialProvider.expectedNodeId);
       const { enrolledRevisionId, ...retainedSetup } = await readSetup();
       assert.equal(enrolledRevisionId, replacement.id);
@@ -1173,6 +1419,16 @@ test(
         initialProvider.sandbox.metadata.uid,
       );
       assert.deepEqual(replacementProvider.workspaceStorage, initialProvider.workspaceStorage);
+      await checkNormalChat(
+        "replacement",
+        replacement.id,
+        replacementProvider.expectedNodeId,
+        firstNativeProof,
+      );
+      if (!firstNativeProof) {
+        // The failed initial subtest produced no verified session or file to resume.
+        return;
+      }
       for (const [filename, content] of Object.entries(retainedFiles)) {
         const file = await request("GET", `${nativePath}/workspace/files/${filename}`);
         assert.equal(file.name, filename);
@@ -1182,8 +1438,7 @@ test(
         nativeContext,
         "native-resumed-model",
         () =>
-          assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions(replacement.id),
+          proveNativeTurn(replacement.id, {
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
@@ -1206,6 +1461,7 @@ test(
         firstNativeProof.sessionFile,
         "The resumed exec must read the relative file written before redeployment",
       );
+      await checkAudit(replacement.id, replacementNativeProof);
     };
     // Distinct Agents and sources share only the already-ready Namespace. Keep
     // mutation/denial checks below the join and retain each real identity proof.
@@ -1568,6 +1824,9 @@ test(
           installationId: recorded.installationId,
           namespaceId: first.namespaceId,
           sourceId: source.id,
+          ...(recorded.deploymentMode === "k3d"
+            ? { platformNamespace: recorded.platformNamespace }
+            : {}),
         });
 
       const bindings = await requestLocalApi(

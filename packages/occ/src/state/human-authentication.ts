@@ -1704,26 +1704,79 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  /**
-   * Password-only profile: audits a password sign-in that Better Auth already accepted. The
-   * guarded profile audits in the session's own transaction (issueSession); this profile's
-   * sessions are written by Better Auth, so the caller revokes the session if this fails.
-   */
-  async recordPasswordLogin(userId: string): Promise<void> {
+  private async recordPasswordSessionChange(
+    unit: PlatformUnitOfWork,
+    action: "authentication.login" | "authentication.logout",
+    userId: string,
+    requestId: string | undefined,
+  ): Promise<void> {
+    const principalId = await this.findPrincipal(unit, userId);
+    await unit.audit.append({
+      id: `aud_${randomUUID()}`,
+      installationId: this.installationId,
+      occurredAt: new Date().toISOString(),
+      kind: "mutation",
+      actorId: principalId ?? "unresolved",
+      actor: principalId === undefined ? { unresolved: true } : { principalId },
+      source: "occ",
+      action,
+      resource: { kind: "installation", id: this.installationId },
+      outcome: "success",
+      ...(requestId === undefined ? {} : { requestId }),
+      details: { userId },
+    });
+  }
+
+  /** Commit the password-only session and its authentication evidence together. */
+  async issuePasswordSession(
+    session: HumanAuthenticationSession,
+    requestId?: string,
+  ): Promise<HumanAuthenticationSession> {
+    return this.state.transact(async (unit) => {
+      const [inserted] = await this.query(
+        unit,
+        `INSERT INTO occ.session (id, token, user_id, created_at, updated_at, expires_at, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [
+          session.id,
+          session.token,
+          session.userId,
+          session.createdAt,
+          session.updatedAt,
+          session.expiresAt,
+          session.ipAddress ?? null,
+          session.userAgent ?? null,
+        ],
+      );
+      if (inserted === undefined) {
+        throw new ScopeViolationError("The password session could not be created.");
+      }
+      await this.recordPasswordSessionChange(
+        unit,
+        "authentication.login",
+        session.userId,
+        requestId,
+      );
+      return sessionFromRow(inserted);
+    });
+  }
+
+  /** A repeated logout after successful revocation does not record another state change. */
+  async revokePasswordSession(token: string, requestId?: string): Promise<void> {
     await this.state.transact(async (unit) => {
-      const principalId = await this.findPrincipal(unit, userId);
-      await unit.audit.append({
-        id: `aud_${randomUUID()}`,
-        installationId: this.installationId,
-        occurredAt: new Date().toISOString(),
-        kind: "mutation",
-        actorId: principalId ?? "unresolved",
-        actor: principalId === undefined ? { unresolved: true } : { principalId },
-        action: "authentication.login",
-        resource: { kind: "installation", id: this.installationId },
-        outcome: "success",
-        details: { userId },
-      });
+      const [deleted] = await this.query(
+        unit,
+        "DELETE FROM occ.session WHERE token = $1 RETURNING user_id",
+        [token],
+      );
+      if (deleted !== undefined) {
+        await this.recordPasswordSessionChange(
+          unit,
+          "authentication.logout",
+          deleted.user_id as string,
+          requestId,
+        );
+      }
     });
   }
 
@@ -1736,6 +1789,7 @@ export class PostgresHumanAuthentication {
       readonly userId?: string;
     },
     audit?: { readonly attemptId: string },
+    requestId?: string,
   ): Promise<void> {
     const subject = identity?.subject;
     const userId = identity?.userId;
@@ -1771,6 +1825,7 @@ export class PostgresHumanAuthentication {
         resource: { kind: "installation", id: this.installationId },
         outcome: "denied",
         reasonCode: reason,
+        ...(requestId === undefined ? {} : { requestId }),
         ...(provider === undefined
           ? {}
           : {

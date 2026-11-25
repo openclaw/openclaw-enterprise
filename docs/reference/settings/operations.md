@@ -180,7 +180,7 @@ removing control-plane storage does not retire external resources or grants.
 
 For Docker or Podman, copy the exact `Cleanup` command printed by the original
 startup. Add `--volumes` before its `--` only when intentionally deleting that
-installation's PostgreSQL and Configuration volumes. Preserve its
+installation's PostgreSQL, Configuration and HTTP chat audit volumes. Preserve its
 engine connection, environment, project, Compose files, and overrides. For
 example, after setting `DEV_COMPOSE_PROJECT` to your own recorded project:
 
@@ -373,14 +373,13 @@ Installation, Namespace, Agent, native IAM, audit, and controller-work state
 survive restart in both Compose and database-only modes. The full Compose path
 also starts the worker and selects Docker Compute by default.
 
-Compose keeps relational OCC metadata in the `occ_postgres_data` named volume
-and native development Configuration documents in the `occ_configuration_data`
-named volume. The configuration volume is mounted only into the controller at
-`/app/.development/configurations`; it is not mounted into the worker or
-runtime containers. Bootstrap alone receives the two input files as Compose
-secrets at `/run/secrets/admin-password` and `/run/secrets/admin-service-key`;
-migration, API, and worker do not receive them. For Docker Compute, the printed
-cleanup command retains both named volumes and uses the selected container engine. Podman cleanup retains
+Compose stores OCC metadata in `occ_postgres_data`. Only the API mounts
+`occ_configuration_data` at `/app/.development/configurations` and
+`occ_http_chat_audit` for [pending HTTP chat records](../agent-http-chat.md#queue-storage).
+Only bootstrap receives the two input files as Compose secrets at
+`/run/secrets/admin-password` and `/run/secrets/admin-service-key`.
+For Docker Compute, the printed cleanup command retains these volumes
+and uses the selected container engine. Podman cleanup retains
 the caller's `CONTAINER_CONNECTION` or `CONTAINER_HOST` selection.
 Add `--volumes` before any `--` separator only when
 intentionally deleting those volumes. Private credential files are separate.

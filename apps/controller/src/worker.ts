@@ -1374,7 +1374,8 @@ export class ControllerWorker {
   private connectionRevocationCursor: string | undefined;
   private connectionRevocationScanAfter = 0;
   private authenticationStateCleanup: Promise<void> | undefined;
-  private nextClientCleanup = 0;
+  private nextPeriodicSweep = 0;
+  private readonly scheduleGatewayAuditMaintenance: InstallationRuntimeDrivers["scheduleGatewayAuditMaintenance"];
   private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
@@ -1510,6 +1511,7 @@ export class ControllerWorker {
       throw new Error("A before-commit Compute Driver must implement activateRevision.");
     }
     this.compute = computeDriver;
+    this.scheduleGatewayAuditMaintenance = drivers?.scheduleGatewayAuditMaintenance;
     this.namespaceLifecycleBindings = drivers?.namespaceLifecycleBindings;
     const selectedSecretDriver = drivers?.secretDriver;
     this.secretDriver = selectedSecretDriver;
@@ -1809,8 +1811,13 @@ export class ControllerWorker {
           this.claimedPassesSinceSweep = 0;
           await this.harnessExposureSweep.step();
           await this.sweepConnectionRevocation();
-          if (Date.now() >= this.nextClientCleanup) {
-            this.nextClientCleanup = Date.now() + 30_000;
+          if (Date.now() >= this.nextPeriodicSweep) {
+            this.nextPeriodicSweep = Date.now() + 30_000;
+            try {
+              await this.scheduleGatewayAuditMaintenance?.(this.queue);
+            } catch {
+              this.emit({ event: "worker.error", code: "GATEWAY_AUDIT_MAINTENANCE_FAILED" });
+            }
             await this.provisioningController?.cleanupCredentialClients();
           }
         }

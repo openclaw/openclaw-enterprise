@@ -317,6 +317,16 @@ function optionalItems(value: unknown): unknown[] | undefined {
   return value;
 }
 
+export function mountsGatewayRevision(pod: unknown, agentId: string, revisionId: string): boolean {
+  const name = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
+  const matches = (source: unknown) => optionalFields(fields(source).configMap)?.name === name;
+  const volumes = optionalItems(optionalFields(fields(pod).spec)?.volumes) ?? [];
+  return volumes.some((volume) => {
+    const sources = optionalItems(optionalFields(fields(volume).projected)?.sources);
+    return matches(volume) || sources?.some(matches);
+  });
+}
+
 // Preserve the selected fields from kubectl. The command runner owns argv validation,
 // and diagnostics compares the optional coordinates to the runtime evidence it reads.
 export type GatewaySelection = { pod: unknown; uid?: unknown; restartCount?: unknown };
@@ -372,7 +382,6 @@ async function findGateway(
   signal: AbortSignal | undefined,
 ): Promise<GatewayTarget> {
   const deadline = Date.now() + readinessTimeout;
-  const configMap = `gateway-${idHash(agentId)}-rev-${idHash(revisionId)}`;
   const selector = [
     "app.kubernetes.io/managed-by=openclaw-enterprise",
     "openclaw.dev/workload-role=gateway",
@@ -425,11 +434,7 @@ async function findGateway(
           const metadata = liveMetadata(pod);
           return metadata === undefined ? [] : [{ pod: fields(pod), metadata }];
         });
-        const matching = pods.filter(({ pod }) =>
-          optionalItems(optionalFields(pod.spec)?.volumes)?.some(
-            (volume) => optionalFields(fields(volume).configMap)?.name === configMap,
-          ),
-        );
+        const matching = pods.filter(({ pod }) => mountsGatewayRevision(pod, agentId, revisionId));
         const ready = matching.flatMap(({ pod, metadata }) => {
           const status = optionalFields(pod.status);
           const ready =

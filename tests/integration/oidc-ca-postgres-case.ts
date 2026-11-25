@@ -170,6 +170,9 @@ export async function verifyDatabaseStartupTrust(t: TestContext) {
       api.volumes.find(({ name }) => name === "oidc-ca"),
     );
     const command = firstContainer(generated);
+    // Upgrade checks must be able to run while the live API owns its audit disk.
+    assert.ok(!generated.volumes.some(({ name }) => name === "http-chat-audit"));
+    assert.ok(!command.volumeMounts.some(({ name }) => name === "http-chat-audit"));
     const argv = command.args.map((arg) =>
       arg.startsWith("/etc/") ? wiring.resolve(arg) : arg.replaceAll("/app/", process.cwd() + "/"),
     );

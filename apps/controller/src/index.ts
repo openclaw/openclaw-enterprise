@@ -1,6 +1,10 @@
 import { AGENT_CHAT_BODY_LIMIT, relayAgentChat } from "./http/agent-chat.ts";
 import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
-import { createAgentAuditReader } from "./http/agent-audit.ts";
+import { createAgentAuditReader, getAgentAuditEventMessage } from "./http/agent-audit.ts";
+import {
+  registerGatewayRuntimeAudit,
+  type GatewayRuntimeAuditWriter,
+} from "./http/runtime-audit.ts";
 import { isAgentAutomationOperation, relayAgentAutomation } from "./http/agent-automations.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
@@ -179,6 +183,12 @@ import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, RequestOperation, ResourceHandlers } from "./http/types.ts";
 import { createWorkspaceFileHandlers, WORKSPACE_FILE_BODY_LIMIT } from "./http/workspace-files.ts";
 
+declare module "fastify" {
+  interface FastifyContextConfig {
+    auditManagementRequest?: true;
+  }
+}
+
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
 class AccountPrincipalAccessDeniedError extends AuthorizationDeniedError {
@@ -213,6 +223,7 @@ export interface ControllerAppOptions {
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
   readonly auditSink: AuditSink;
+  readonly gatewayRuntimeAuditWriter?: GatewayRuntimeAuditWriter;
   /** Durable sink for required HTTP admission and result records. */
   readonly durableRequestAuditSink?: AuditSink;
   readonly agentAuditCursorSecret?: string;
@@ -286,6 +297,7 @@ const RESOURCE_ID_PREFIX = {
   sessionId: "sec_",
   credentialSourceId: "cs_",
   agentId: "agt_",
+  auditEventId: "aud_",
   revisionId: "rev_",
   deploymentId: "rev_",
 } as const;
@@ -791,10 +803,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       denialObserved: boolean;
       resultSelected: boolean;
       readTarget?: ResourceRef;
-      commitOutcomeUnknown?: true;
+      reasonCode?: "COMMIT_OUTCOME_UNKNOWN" | "PERMISSION_CHECK_UNAVAILABLE";
     }
   >();
   const requestAuditSink = options.durableRequestAuditSink;
+  if (options.gatewayRuntimeAuditWriter !== undefined) {
+    registerGatewayRuntimeAudit(app, options.gatewayRuntimeAuditWriter);
+  }
   const factory = options.auditEventFactory ?? new AuditEventFactory();
   const readAgentAudit =
     options.agentAuditCursorSecret === undefined
@@ -1136,7 +1151,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   function logRequestAuditFailure(
     request: FastifyRequest,
-    operation: RequestOperation,
+    operation: { readonly operationId: string },
     action: string,
     error: unknown,
   ): void {
@@ -1158,7 +1173,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   async function appendRequestAudit(
     sink: AuditSink,
     request: FastifyRequest,
-    operation: RequestOperation,
+    operation: { readonly operationId: string; readonly method: string },
     observation: ApiRequestAuditObservation,
   ): Promise<boolean> {
     const context = contexts.get(request);
@@ -1197,6 +1212,73 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (audit !== undefined) {
       audit.readTarget = resource;
     }
+  }
+
+  function markChatCheckUnavailable(request: FastifyRequest): void {
+    const audit = requestAuditState.get(request);
+    if (audit !== undefined) {
+      audit.reasonCode = "PERMISSION_CHECK_UNAVAILABLE";
+    }
+  }
+
+  async function requireRequestAuditAdmission(
+    request: FastifyRequest,
+    operation: { readonly operationId: string; readonly method: string },
+  ): Promise<void> {
+    if (
+      requestAuditSink !== undefined &&
+      controller !== undefined &&
+      requestAuditState.has(request) &&
+      !(await appendRequestAudit(requestAuditSink, request, operation, {
+        action: API_REQUEST_AUDIT_ACTIONS.admitted,
+        outcome: "success",
+      }))
+    ) {
+      throw dependencyUnavailable();
+    }
+  }
+
+  async function resolveAuditedIdentity(request: FastifyRequest, operation: RequestOperation) {
+    await resolveIdentity(request, operation);
+    await requireRequestAuditAdmission(request, operation);
+  }
+
+  function requestAuditHooks(operation: { readonly operationId: string; readonly method: string }) {
+    if (requestAuditSink === undefined) {
+      return {};
+    }
+    return {
+      config: { auditManagementRequest: true as const },
+      onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
+        const audit = requestAuditState.get(request);
+        if (audit === undefined || audit.resultSelected || controller === undefined) {
+          return payload;
+        }
+        // Record the first selected response once, even if a transport error re-enters onSend.
+        audit.resultSelected = true;
+        const statusCode = reply.statusCode;
+        let outcome: "success" | "denied" | "failure" = "success";
+        if (
+          statusCode < 500 &&
+          (audit.denialObserved || statusCode === 401 || statusCode === 403)
+        ) {
+          outcome = "denied";
+        } else if (statusCode >= 400) {
+          outcome = "failure";
+        }
+        const readTarget =
+          outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
+        // Admission can stop work. A result write must preserve the response already selected.
+        await appendRequestAudit(requestAuditSink, request, operation, {
+          action: API_REQUEST_AUDIT_ACTIONS.result,
+          outcome,
+          statusCode,
+          ...(readTarget === undefined ? {} : { readTarget }),
+          ...(audit.reasonCode === undefined ? {} : { reasonCode: audit.reasonCode }),
+        });
+        return payload;
+      },
+    };
   }
 
   const nativeAdmin = createNativeAdminAccess({
@@ -1251,6 +1333,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }),
   };
 
+  app.addHook("onRoute", (route) => {
+    if (route.config?.auditManagementRequest !== true) {
+      return;
+    }
+    const handle = route.handler;
+    route.handler = async function (request, reply) {
+      // Wait for the asynchronous onSend audit when a handler called reply.send().
+      const payload: unknown = await handle.call(this, request, reply);
+      return payload === undefined ? reply : payload;
+    };
+  });
+
   const chatBodyDeadlines = new WeakMap<FastifyRequest, ReturnType<typeof setTimeout>>();
   app.addHook("onRequest", async (request, reply) => {
     if (request.routeOptions.url === "/agents/:agentId/chat") {
@@ -1273,7 +1367,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (await nativeAdmin.interceptHttp(request, reply)) {
       return;
     }
-    if ("auditManagementRequest" in request.routeOptions.config) {
+    if (request.routeOptions.config.auditManagementRequest === true) {
       requestAuditState.set(request, { denialObserved: false, resultSelected: false });
     }
     const contentLength = request.headers["content-length"];
@@ -1334,6 +1428,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       (operation === createAuthAccountOperation ||
         operation.operationId === "bootstrapInstallation" ||
         operation.operationId === "listAgentAuditEvents" ||
+        operation.operationId === "getAgentAuditEventMessage" ||
         isAgentAutomationOperation(operation.operationId))
     ) {
       throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
@@ -1453,7 +1548,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         headers: request.headers,
       });
     } catch (error) {
-      throw requestFailure(error);
+      const mapped = requestFailure(error);
+      if (operation.operationId === "chatWithAgent" && mapped.status >= 500) {
+        markChatCheckUnavailable(request);
+      }
+      throw mapped;
     }
 
     if (
@@ -1500,6 +1599,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
       );
     } catch {
+      if (operation.operationId === "chatWithAgent") {
+        markChatCheckUnavailable(request);
+      }
       throw dependencyUnavailable();
     }
 
@@ -1625,6 +1727,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         factory,
         auditSink: options.auditSink,
         gatewayApiKey: options.nativeAdminGatewayApiKey,
+        permissionCheckUnavailable: () => markChatCheckUnavailable(request),
         auditFailure: (error) =>
           logRequestAuditFailure(request, operation, operation.action, error),
         reauthenticate: async () => {
@@ -2129,7 +2232,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    if (operation.operationId === "listAgentAuditEvents") {
+    if (
+      operation.operationId === "listAgentAuditEvents" ||
+      operation.operationId === "getAgentAuditEventMessage"
+    ) {
       const admitted = admissions.get(request);
       if (admitted?.method !== "session") {
         throw failure(401, "UNAUTHENTICATED", "A human controller session is required.");
@@ -2137,7 +2243,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (readAgentAudit === undefined) {
         throw failure(501, "NOT_IMPLEMENTED", "Agent audit is disabled.");
       }
-      await readAgentAudit({
+      const auditRead = {
         controller,
         auth: options.auth,
         session: admitted.session,
@@ -2148,8 +2254,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         agentId,
         request,
         reply,
-      });
-      return;
+      };
+      if (operation.operationId === "getAgentAuditEventMessage") {
+        if (!options.gatewayRuntimeAuditWriter) {
+          throw failure(501, "NOT_IMPLEMENTED", "Gateway runtime audit is disabled.");
+        }
+        return getAgentAuditEventMessage(
+          auditRead,
+          params.auditEventId!,
+          options.nativeAdminGatewayApiKey,
+        );
+      }
+      return readAgentAudit(auditRead);
     }
 
     if (
@@ -2288,10 +2404,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.route({
         method: operation.method,
         url: operation.path,
+        ...requestAuditHooks(operation),
         schema: authSchemas.serviceKey(operation, RESOURCE_ID.namespaceId.source),
         onRequest: async (request) => admit(request, operation),
         preValidation: async (request) => refuseUnstorableText(request),
-        preHandler: async (request) => resolveIdentity(request, operation),
+        preHandler: async (request) => resolveAuditedIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
           if (!context) {
@@ -2408,15 +2525,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             await requireCoverage(principal.id);
             let key;
             try {
-              key = await options.auth.createServiceKey({
+              const input = {
                 principal,
                 name: body.name,
                 ...(body.expiresIn === undefined ? {} : { expiresIn: body.expiresIn }),
-              });
-              await options.auditSink.append(audit(key));
+              };
+              if (options.auth.serviceKeyMutations === undefined) {
+                key = await options.auth.createServiceKey(input);
+                await options.auditSink.append(audit(key));
+              } else {
+                key = await options.auth.serviceKeyMutations.issue(input, audit);
+              }
             } catch (error) {
-              // Never return an unaudited credential; remove it if audit persistence fails.
-              if (key) {
+              // The standalone development auth adapter compensates a failed separate audit.
+              if (options.auth.serviceKeyMutations === undefined && key) {
                 await options.auth.revokeServiceKey(key).catch(() => {});
               }
               // The schema admitted this name, so a refusal is a contract mismatch, not an
@@ -2445,11 +2567,19 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             }
             // Revocation requires the same authority as issuance.
             await requireCoverage(key.servicePrincipalId);
+            let removed = true;
             try {
-              await options.auth.revokeServiceKey(key);
-              await options.auditSink.append(audit(key));
+              if (options.auth.serviceKeyMutations === undefined) {
+                await options.auth.revokeServiceKey(key);
+                await options.auditSink.append(audit(key));
+              } else {
+                removed = await options.auth.serviceKeyMutations.revoke(key, audit(key));
+              }
             } catch {
               throw dependencyUnavailable();
+            }
+            if (!removed) {
+              throw failure(404, "NOT_FOUND", "The service API key was not found.");
             }
             reply.send({ data: { id: key.id, revoked: true }, meta: { requestId: request.id } });
           }
@@ -2460,6 +2590,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       "/api/auth/providers",
       {
+        ...requestAuditHooks({ operationId: "getAuthProviders", method: "GET" }),
         schema: {
           operationId: "getAuthProviders",
           summary: "List configured browser sign-in methods",
@@ -2518,11 +2649,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       { name: "oidc", label: "OIDC", article: "an", operation: "Oidc" },
     ] as const;
     for (const provider of externalSignInProviders) {
+      const startOperationId = `start${provider.operation}SignIn`;
+      const resultOperationId = `confirm${provider.operation}SignIn`;
       routes.post(
         `/api/auth/providers/${provider.name}/start`,
         {
+          ...requestAuditHooks({ operationId: startOperationId, method: "POST" }),
           schema: {
-            operationId: `start${provider.operation}SignIn`,
+            operationId: startOperationId,
             summary: `Start ${provider.label} sign-in for an enrolled account`,
             description:
               "Requires the exact configured browser Origin and, when Sec-Fetch-Site is present, same-origin. Creates a one-use browser-bound login attempt and returns its public attemptId for the result exchange; does not create an account or grant access.",
@@ -2544,6 +2678,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
         async (request, reply) => options.auth[`${provider.name}Start`](request, reply),
       );
+      // The login producer records callbacks bound to a real attempt. Unmatched callbacks do
+      // not identify an actor or an attempt and use only the existing operational counter.
       routes.get(
         `/api/auth/providers/${provider.name}/callback`,
         {
@@ -2562,8 +2698,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.post(
         `/api/auth/providers/${provider.name}/result`,
         {
+          ...requestAuditHooks({ operationId: resultOperationId, method: "POST" }),
           schema: {
-            operationId: `confirm${provider.operation}SignIn`,
+            operationId: resultOperationId,
             summary: `Confirm which session ${provider.article} ${provider.label} sign-in created`,
             description:
               "Requires the configured browser Origin, the one-use login receipt cookie set by the callback, the matching attemptId and the session cookie that callback issued. Returns that session's sessionKey; never issues or extends a session.",
@@ -2777,8 +2914,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       accountReadOperation.path,
       {
+        ...requestAuditHooks(accountReadOperation),
         schema: authSchemas.readAccount(accountReadOperation),
         ...accountAdmission(accountReadOperation),
+        preHandler: async (request) => requireRequestAuditAdmission(request, accountReadOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -2846,8 +2985,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.post(
         operation.path,
         {
+          ...requestAuditHooks(operation),
           schema: authSchemas.changeAccount(operation, operationName),
           ...accountAdmission(operation),
+          preHandler: async (request) => requireRequestAuditAdmission(request, operation),
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -2896,6 +3037,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       recoveryReadOperation.path,
       {
+        ...requestAuditHooks(recoveryReadOperation),
         schema: authSchemas.readRecovery(recoveryReadOperation),
         onRequest: async (request) => admit(request, recoveryReadOperation),
         preValidation: async (request) => resolveIdentity(request, recoveryReadOperation),
@@ -2926,6 +3068,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.post(
       recoveryReplaceOperation.path,
       {
+        ...requestAuditHooks(recoveryReplaceOperation),
         schema: authSchemas.replaceRecovery(recoveryReplaceOperation),
         ...accountAdmission(recoveryReplaceOperation),
       },
@@ -3004,8 +3147,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.post(
       enrolOperation.path,
       {
+        ...requestAuditHooks(enrolOperation),
         schema: authSchemas.enrolAccount(enrolOperation),
         ...accountAdmission(enrolOperation),
+        preHandler: async (request) => requireRequestAuditAdmission(request, enrolOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3025,6 +3170,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.post(
       "/api/auth/sign-in/email",
       {
+        ...requestAuditHooks({ operationId: "signInEmail", method: "POST" }),
         schema: {
           operationId: "signInEmail",
           summary: "Sign in with email and password",
@@ -3057,6 +3203,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.post(
       "/api/auth/sign-out",
       {
+        ...requestAuditHooks({ operationId: "signOut", method: "POST" }),
         schema: {
           operationId: "signOut",
           summary: "Sign out of the current session",
@@ -3075,6 +3222,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.get(
       "/api/auth/session",
       {
+        ...requestAuditHooks({ operationId: "getAuthSession", method: "GET" }),
         schema: {
           operationId: "getAuthSession",
           summary: "Inspect authentication without revealing session tokens",
@@ -3116,10 +3264,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       async (request, reply) => options.auth.session(request, reply),
     );
+    const accountCreateAudit = requestAuditHooks(createAuthAccountOperation);
     routes.post<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       createAuthAccountOperation.path,
       {
-        config: { rateLimit: new RequestRateLimiter(10, 1 / 6) },
+        ...accountCreateAudit,
+        config: { ...accountCreateAudit.config, rateLimit: new RequestRateLimiter(10, 1 / 6) },
         schema: authSchemas.createAccount(createAuthAccountOperation),
         onRequest: async (request) => admit(request, createAuthAccountOperation),
         preValidation: async (request) => {
@@ -3134,6 +3284,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           );
           await resolveIdentity(request, createAuthAccountOperation);
         },
+        preHandler: async (request) =>
+          requireRequestAuditAdmission(request, createAuthAccountOperation),
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3287,26 +3439,30 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   void app.register(async (routes) => {
+    const nativeReturnAudit = requestAuditHooks(nativeAdminReturnOperation);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
+        ...nativeReturnAudit,
         schema: nativeAdminReturnSchema,
         // Bound session admission per direct peer. Proxies share this more generous budget;
         // the resolver separately limits expensive lookups by authenticated principal.
-        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        config: { ...nativeReturnAudit.config, rateLimit: new RequestRateLimiter(60, 5) },
         onRequest: async (request, reply) => {
           limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
           await admit(request, nativeAdminReturnOperation);
         },
-        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+        preHandler: async (request) => resolveAuditedIdentity(request, nativeAdminReturnOperation),
       },
       nativeAdmin.resolveReturn,
     );
+    const connectionCallbackAudit = requestAuditHooks(connectionCallbackOperation);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       CONNECTION_CALLBACK_PATH,
       {
+        ...connectionCallbackAudit,
         schema: connectionCallbackSchema,
-        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        config: { ...connectionCallbackAudit.config, rateLimit: new RequestRateLimiter(60, 5) },
         onRequest: async (request, reply) => {
           reply.header("referrer-policy", "no-referrer").header("cache-control", "no-store");
           const retryAfter = request.routeOptions.config.rateLimit.consume(request.ip);
@@ -3360,9 +3516,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
+      ...requestAuditHooks(nativeAdminStatusOperation),
       schema: nativeAdminStatusSchema,
       onRequest: async (request) => admit(request, nativeAdminStatusOperation),
-      preHandler: async (request) => resolveIdentity(request, nativeAdminStatusOperation),
+      preHandler: async (request) => resolveAuditedIdentity(request, nativeAdminStatusOperation),
       handler: nativeAdmin.status,
     });
     for (const [operation, handler, confirm] of [
@@ -3372,24 +3529,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.route({
         method: "POST",
         url: operation.path,
+        ...requestAuditHooks(operation),
         schema: nativeAdminLaunchSchema(confirm),
         onRequest: async (request, reply) => {
           reply.header("cache-control", "no-store");
           reply.header("referrer-policy", "no-referrer");
           await admit(request, operation);
         },
-        preHandler: async (request) => resolveIdentity(request, operation),
+        preHandler: async (request) => resolveAuditedIdentity(request, operation),
         handler,
       });
     }
     for (const operation of occApiRoutes) {
-      // Bootstrap has its own transactional evidence. Runtime log reads have their own
-      // disclosure gate and can also return a download.
-      const routeAuditSink =
-        operation.operationId === "bootstrapInstallation" ||
-        operation.operationId === "getAgentDeploymentRuntimeLogs"
-          ? undefined
-          : requestAuditSink;
+      // Bootstrap has its own admission boundary. A runtime log view has a separate disclosure
+      // gate and can also return a download.
+      const auditRequest = operation.operationId !== "getAgentDeploymentRuntimeLogs";
+      const requireAdmission = auditRequest && operation.operationId !== "bootstrapInstallation";
       const { description, permissions } = routePermissionMetadata(operation);
       const schema: DocumentedFastifySchema = {
         ...operation.schema,
@@ -3400,6 +3555,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "x-openclaw-permissions": permissions,
         ...(operation.operationId === "bootstrapInstallation" ||
         operation.operationId === "listAgentAuditEvents" ||
+        operation.operationId === "getAgentAuditEventMessage" ||
         isAgentAutomationOperation(operation.operationId)
           ? { security: [{ sessionCookie: [] }] }
           : {}),
@@ -3407,7 +3563,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.route<RouteGenericInterface, { auditManagementRequest?: true }>({
         method: operation.method as HTTPMethods,
         url: operation.path,
-        ...(routeAuditSink === undefined ? {} : { config: { auditManagementRequest: true } }),
+        ...(auditRequest ? requestAuditHooks(operation) : {}),
         ...(operation.operationId === "chatWithAgent" ? { bodyLimit: AGENT_CHAT_BODY_LIMIT } : {}),
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
@@ -3423,6 +3579,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 : {}),
         schema,
         onRequest: async (request) => {
+          if (
+            operation.operationId === "chatWithAgent" &&
+            requestAuditSink &&
+            requestAuditState.has(request)
+          ) {
+            // Receipt is an observation. Only admission requires a successful write.
+            await appendRequestAudit(requestAuditSink, request, operation, {
+              action: API_REQUEST_AUDIT_ACTIONS.received,
+              outcome: "success",
+            });
+          }
           await admit(request, operation);
           if (authorizesBeforeBody(operation)) {
             await resolveIdentity(request, operation);
@@ -3457,21 +3624,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           ? {}
           : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => {
-          if (routeAuditSink === undefined) {
+          if (!requireAdmission || requestAuditSink === undefined) {
             return performFenced(request, reply, operation);
           }
           // Admission here means the request can enter the handler. The handler still
           // checks the caller's permission for the exact operation and target.
-          if (
-            controller !== undefined &&
-            requestAuditState.has(request) &&
-            !(await appendRequestAudit(routeAuditSink, request, operation, {
-              action: API_REQUEST_AUDIT_ACTIONS.admitted,
-              outcome: "success",
-            }))
-          ) {
-            throw dependencyUnavailable();
-          }
+          await requireRequestAuditAdmission(request, operation);
           if (controller === undefined) {
             await performFenced(request, reply, operation);
           } else {
@@ -3482,43 +3640,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           // Wait for an asynchronous onSend hook when perform called reply.send().
           return reply;
         },
-        ...(routeAuditSink === undefined
-          ? {}
-          : {
-              onSend: async (request: FastifyRequest, reply: FastifyReply, payload: unknown) => {
-                const audit = requestAuditState.get(request);
-                if (audit === undefined || audit.resultSelected || controller === undefined) {
-                  return payload;
-                }
-                // A later transport or reply error can re-enter onSend. Record the first selected
-                // response once, including when its append fails.
-                audit.resultSelected = true;
-                const statusCode = reply.statusCode;
-                let outcome: "success" | "denied" | "failure" = "success";
-                if (
-                  statusCode < 500 &&
-                  (audit.denialObserved || statusCode === 401 || statusCode === 403)
-                ) {
-                  outcome = "denied";
-                } else if (statusCode >= 400) {
-                  outcome = "failure";
-                }
-                const readTarget =
-                  outcome === "success" && statusCode === 200 ? audit.readTarget : undefined;
-                // Preserve the selected response if the append fails. The handler may have
-                // committed its change or already denied the request.
-                await appendRequestAudit(routeAuditSink, request, operation, {
-                  action: API_REQUEST_AUDIT_ACTIONS.result,
-                  outcome,
-                  statusCode,
-                  ...(readTarget === undefined ? {} : { readTarget }),
-                  ...(audit.commitOutcomeUnknown === true
-                    ? { reasonCode: "COMMIT_OUTCOME_UNKNOWN" }
-                    : {}),
-                });
-                return payload;
-              },
-            }),
       });
     }
   });
@@ -3580,6 +3701,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       .map(({ method }) => method);
     if (allowed.length > 0) {
       reply.header("allow", [...new Set(allowed)].join(", "));
+      if (requestAuditSink !== undefined && controller !== undefined) {
+        // A path can support several operations. No operation or resource was admitted here.
+        await appendRequestAudit(
+          requestAuditSink,
+          request,
+          { operationId: "methodNotAllowed", method: request.method },
+          { action: API_REQUEST_AUDIT_ACTIONS.result, outcome: "failure", statusCode: 405 },
+        );
+      }
       canonicalFailure(
         reply,
         failure(405, "METHOD_NOT_ALLOWED", "The requested HTTP method is not supported."),
@@ -3880,7 +4010,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (error instanceof AuditAppendUnavailableError) {
         logRequestAuditFailure(request, operation, auditAction(operation, request), error);
       } else if (error instanceof PostgresCommitOutcomeUnknownError) {
-        audit.commitOutcomeUnknown = true;
+        audit.reasonCode = "COMMIT_OUTCOME_UNKNOWN";
         app.log.error({
           event: "http.commit_outcome_unknown",
           requestId: request.id,

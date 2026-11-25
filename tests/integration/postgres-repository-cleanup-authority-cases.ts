@@ -28,7 +28,7 @@ export function registerRepositoryCleanupAuthorityCases(): void {
       `failed Agent stop protects later admissions while Agent is ${desiredState}`,
       requiresPostgres,
       async (context) => {
-        const { pool, queue } = await dependencies(context);
+        const { pool, queue } = await dependencies(context, { controlPlaneAuditEnabled: true });
         const {
           namespaceId,
           agents: [agentId, unrelatedAgentId],
@@ -68,10 +68,28 @@ export function registerRepositoryCleanupAuthorityCases(): void {
           await readQueueRow(pool, repositoryCleanupKey(later.revisionId, sourceKey)),
           undefined,
         );
-        assert.equal(
-          (await readQueueRow(pool, repositoryCleanupKey(old.revisionId, sourceKey)))?.actor_id,
-          "principal-stop-source",
+        const cleanupKey = repositoryCleanupKey(old.revisionId, sourceKey);
+        assert.equal((await readQueueRow(pool, cleanupKey))?.actor_id, "principal-stop-source");
+        // The failed work creates a new cleanup job. Its queue event belongs to the exact
+        // retained revision and does not inherit the failed Stop claim as its own attempt.
+        const recorded = await pool.query(
+          `SELECT actor_id, namespace_id, resource_kind, resource_id, outcome,
+                  details->>'agentId' AS agent_id, details->>'attemptId' AS attempt_id
+           FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+             AND details->>'workId' = $1 AND details->>'reasonCode' = 'REPOSITORY_CLEANUP_QUEUED'`,
+          [cleanupKey],
         );
+        assert.deepEqual(recorded.rows, [
+          {
+            actor_id: "principal-stop-source",
+            namespace_id: namespaceId,
+            resource_kind: "agent_revision",
+            resource_id: old.revisionId,
+            outcome: "success",
+            agent_id: agentId,
+            attempt_id: null,
+          },
+        ]);
         await completeCleanupWork(queue, old.revisionId, sourceKey);
       },
     );
@@ -523,7 +541,9 @@ export function registerRepositoryCleanupAuthorityCases(): void {
     "a still-current Namespace deletion claim requeues completed cleanup for a later closing obligation",
     requiresPostgres,
     async (context) => {
-      const { pool, queue } = await dependencies(context);
+      const { pool, queue, PostgresWorkQueue } = await dependencies(context, {
+        controlPlaneAuditEnabled: true,
+      });
       const {
         namespaceId,
         agents: [agentId],
@@ -538,9 +558,41 @@ export function registerRepositoryCleanupAuthorityCases(): void {
       const sourceKey = `queue-delete-register:${randomUUID()}`;
       await queue.enqueue(namespaceWork(namespaceId, sourceKey, new Date(0), "deleted"));
       const source = await claimExpected(queue, sourceKey);
+      const cleanupKey = repositoryCleanupKey(owner.revisionId, sourceKey);
+      const queuedRecordCount = async () =>
+        (
+          await pool.query(
+            `SELECT id FROM occ.audit_events WHERE action = 'openclaw.controller_work.queued'
+               AND details->>'workId' = $1 AND details->>'attemptId' IS NULL`,
+            [cleanupKey],
+          )
+        ).rowCount;
+
+      // Exercise the installed ledger capacity guard using a single limited app connection.
+      // An audit failure must leave no new cleanup work and keep the original claim current.
+      const capacityClient = await pool.connect();
+      try {
+        await capacityClient.query("SET occ.control_plane_audit_max_bytes = '1'");
+        const fullLedger = new PostgresWorkQueue(capacityClient, {
+          controlPlaneAuditEnabled: true,
+        });
+        await assert.rejects(fullLedger.enqueueRepositoryCleanup(source, owner), {
+          code: "53400",
+          constraint: "control_plane_audit_capacity",
+        });
+      } finally {
+        capacityClient.release(true);
+      }
+      assert.equal(await readQueueRow(pool, cleanupKey), undefined);
+      assert.equal(await queuedRecordCount(), 0);
+
       const registered = await queue.enqueueRepositoryCleanup(source, owner);
       assert.ok(registered);
+      assert.equal(await queuedRecordCount(), 1);
+      assert.equal((await queue.enqueueRepositoryCleanup(source, owner))?.state, "queued");
       const cleanup = await claimExpected(queue, registered.idempotencyKey);
+      assert.equal((await queue.enqueueRepositoryCleanup(source, owner))?.state, "claimed");
+      assert.equal(await queuedRecordCount(), 1);
       const [closingAdmissionId, lateAdmissionId] = owner.admissionIds;
       assert.ok(closingAdmissionId && lateAdmissionId);
       await pool.query<never>(
@@ -560,6 +612,7 @@ export function registerRepositoryCleanupAuthorityCases(): void {
       assert.equal(requeued.state, "queued");
       assert.equal(requeued.actorId, source.actorId);
       assert.equal((await readQueueRow(pool, registered.idempotencyKey))?.completed_at, null);
+      assert.equal(await queuedRecordCount(), 2, "new closing work needs a new queue record");
       const replay = await claimExpected(queue, registered.idempotencyKey);
       await pool.query<never>(
         "UPDATE occ.repository_session_attempts SET phase = 'disposed', updated_at = clock_timestamp() WHERE admission_id = $1",

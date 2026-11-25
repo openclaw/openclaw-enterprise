@@ -1,3 +1,5 @@
+import { AGENT_AUDIT_PROJECTION_VERSION } from "../packages/contracts/src/api/agent-audit.ts";
+
 // Synthetic, source-backed examples for the HTTP contract. IDs are shared so
 // related request/response examples describe the same resources.
 const uuid = "123e4567-e89b-42d3-a456-426614174000";
@@ -314,7 +316,26 @@ const oauthSource = {
   },
 };
 
+const linkedTurn = {
+  id: "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+  occurredAt: "2026-10-01T11:31:00.000000Z",
+  event: "runtime_activity",
+  action: "openclaw.runtime.turn.completed",
+  outcome: "success",
+  details: {
+    agentRevisionId: revisionId,
+    runtimeSource: "openclaw",
+    sessionId: uuid,
+    turnId: "0f8a6dad-40e1-4121-8521-676796fdcf83",
+    messageLink: "linked",
+    messageId: "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+    outcome: "succeeded",
+  },
+};
+
 export const parameterExamples = {
+  auditEventId: linkedTurn.id,
+  end: "2026-10-01T12:00:00.000Z",
   automationId: "cron-example",
   expectedConfigRevision: "revision-1",
   modelProviderId: modelProvider.id,
@@ -616,10 +637,27 @@ export const responseExamples = {
   },
   deployAgent: revision,
   getAgentRevision: revision,
+  getAgentAuditEventMessage: {
+    event: linkedTurn,
+    message: { role: "user", text: "Summarize the release notes." },
+  },
   listAgentAuditEvents: {
-    projectionVersion: 1,
+    projectionVersion: AGENT_AUDIT_PROJECTION_VERSION,
     window: { start: "2026-09-30T12:00:00.000Z", end: time },
     events: [
+      {
+        id: "aud_123e4567-e89b-42d3-a456-426614174002",
+        occurredAt: "2026-10-01T11:31:01.000000Z",
+        event: "http_chat",
+        action: "openclaw.agents.chat.completed",
+        outcome: "success",
+        actorId: id("prn"),
+        requestId: id("req"),
+        agentRevisionId: revisionId,
+        messageCount: 3,
+        turnId: linkedTurn.details.turnId,
+      },
+      linkedTurn,
       {
         id: id("aud"),
         occurredAt: "2026-10-01T11:30:00.000000Z",
@@ -628,6 +666,15 @@ export const responseExamples = {
         actorId: id("prn"),
         requestId: id("req"),
         operationId: "getAgent",
+      },
+      {
+        id: "aud_123e4567-e89b-42d3-a456-426614174001",
+        occurredAt: "2026-10-01T11:00:00.000000Z",
+        event: "agent_lifecycle",
+        action: "openclaw.agents.deploy",
+        outcome: "success",
+        actorId: id("prn"),
+        agentRevisionId: revisionId,
       },
     ],
     nextCursor: null,

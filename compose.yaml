@@ -49,6 +49,7 @@ services:
     ports:
       - "127.0.0.1:${OPENCLAW_DEV_PORT:-3000}:3000"
     volumes:
+      - occ_http_chat_audit:/app/.development
       - occ_configuration_data:/app/.development/configurations
     depends_on:
       bootstrap:
@@ -114,6 +115,7 @@ services:
 volumes:
   occ_postgres_data:
   occ_configuration_data:
+  occ_http_chat_audit:
 
 secrets:
   bootstrap-admin-password:

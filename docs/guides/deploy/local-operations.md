@@ -123,7 +123,7 @@ startup, including macOS machine connections. See the
 [cleanup flow](../../flows/docker-compose-development.md#3-clean-up-docker-or-podman-compose)
 for how the host connection and worker socket are handled.
 
-Compose keeps PostgreSQL and Configuration volumes unless you
+Compose keeps the PostgreSQL, Configuration and HTTP chat audit volumes unless you
 pass `--volumes` to delete the local Installation. Account for Agent containers
 and their Namespace networks before deleting the database. Docker Compute owns
 those networks. The private bootstrap input files and CLI service-key file are outside these

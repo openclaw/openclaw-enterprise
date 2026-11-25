@@ -574,6 +574,7 @@ export function createConnectionAdministration({
         if (!client) {
           return;
         }
+        let outcome: "success" | "failure" = "success";
         try {
           const instance = clientInstance(client);
           const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
@@ -583,11 +584,28 @@ export function createConnectionAdministration({
             id,
             new Date(now().getTime() + 60_000).toISOString(),
           );
-          return;
+          outcome = "failure";
         }
-        if (!(await state.connectionTemplates.deleteCredentialClient(id))) {
+        if (
+          outcome === "success" &&
+          !(await state.connectionTemplates.deleteCredentialClient(id))
+        ) {
           throw new ResourceStateConflictError("The client is still referenced.");
         }
+        await state.audit.append({
+          id: `aud_${crypto.randomUUID()}`,
+          installationId,
+          occurredAt: timestamp(),
+          kind: "mutation",
+          actorId: "unresolved",
+          actor: { unresolved: true },
+          source: "occ",
+          action: "openclaw.credential_clients.cleanup",
+          resource: { kind: "installation", id: installationId },
+          outcome,
+          ...(outcome === "failure" ? { reasonCode: "CREDENTIAL_CLIENT_CLEANUP_RETRY" } : {}),
+          details: { credentialClientId: id },
+        });
       });
     }
   }

@@ -962,7 +962,7 @@ const reference = (() => {
     const roleIds: string[] = [];
     const grantingGroupIds: string[] = [];
     const candidates =
-      request.action === "read_audit"
+      request.action === "read_audit" || request.action === "read_audit_content"
         ? auditBindings(state, identity).filter(
             (binding) =>
               resource.kind === "agent" &&
@@ -1107,7 +1107,7 @@ const reference = (() => {
           resourceId: binding.resourceId,
           permissions: role.permissions.filter(
             (permission) =>
-              (permission.action !== "read_audit" ||
+              ((permission.action !== "read_audit" && permission.action !== "read_audit_content") ||
                 (permission.resourceKind === "agent" && directAuditBindings.includes(binding))) &&
               (binding.resourceKind === undefined ||
                 permission.resourceKind === binding.resourceKind ||

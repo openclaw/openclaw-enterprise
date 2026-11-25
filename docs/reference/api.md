@@ -71,7 +71,7 @@ the paths.
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
-| `error.reason` | `"credential_registration_pending"` | No | On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes. |
+| `error.reason` | `"credential_registration_pending" or "revision_unavailable" or "message_unavailable"` | No | — |
 | `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
 | `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
 | `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
@@ -90,7 +90,7 @@ the paths.
 | [Connections](#connections) | 14 operations |
 | [Installation](#installation) | 10 operations |
 | [Namespaces](#namespaces) | 7 operations |
-| [Agents](#agents) | 61 operations |
+| [Agents](#agents) | 62 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -4409,6 +4409,7 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events`](#get-namespacesnamespaceidagentsagentidauditevents) | List audit metadata for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`](#get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage) | Read the saved user message linked to an Agent turn |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/automations`](#get-namespacesnamespaceidagentsagentidautomations) | List an Agent's native cron automations |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/automations`](#post-namespacesnamespaceidagentsagentidautomations) | Create a native cron automation for an Agent |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}/automations/{automationId}`](#delete-namespacesnamespaceidagentsagentidautomationsautomationid) | Delete a native cron automation |
@@ -6294,7 +6295,7 @@ List audit metadata for one Agent
 
 **Operation ID:** `listAgentAuditEvents`
 
-**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.
+**Permissions:** Requires a human session with a direct read_audit grant on the requested Agent. Returns selected lifecycle, HTTP chat, runtime, API read, and worker records for a 24-hour period. Use end on the first page to select a past period.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -6306,6 +6307,7 @@ List audit metadata for one Agent
 | --- | --- | --- | --- | --- | --- |
 | `limit` | query | `string` | No | pattern: `^(?:[1-9][0-9]?\|100)$` | "20" |
 | `cursor` | query | `string` | No | min length: 1; max length: 1024; pattern: `^[A-Za-z0-9_-]+$` | "YXVkaXQtbmV4dC1wYWdl" |
+| `end` | query | `string (date-time)` | No | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` | "2026-10-01T12:00:00.000Z" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
 
@@ -6327,19 +6329,9 @@ List audit metadata for one Agent
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.events` | `array<object>` | Yes | max items: 100 |
-| `data.events[].actorId` | `string` | No | pattern: `^(prn\|spn)_[a-f0-9-]{36}$` |
-| `data.events[].attemptId` | `string` | No | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].event` | `"api_request" or "work_queued" or "work_claimed" or "work_deferred" or "work_completed" or "work_result"` | Yes | — |
-| `data.events[].id` | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].occurredAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$` |
-| `data.events[].operationId` | `"getAgent"` | No | — |
-| `data.events[].outcome` | `"success" or "denied" or "failure"` | Yes | — |
-| `data.events[].requestId` | `string` | No | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.events[].workId` | `string` | No | pattern: `^work_[0-9a-f]{64}$` |
-| `data.events[].workState` | `"queued" or "claimed" or "succeeded" or "failed_permanent" or "superseded"` | No | — |
+| `data.events` | `array<object or object or object or object or object or object or object or object or object or object or object or object>` | Yes | max items: 100 |
 | `data.nextCursor` | `string or null` | Yes | — |
-| `data.projectionVersion` | `1` | Yes | — |
+| `data.projectionVersion` | `4` | Yes | — |
 | `data.window` | `object` | Yes | — |
 | `data.window.end` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.window.start` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -6352,6 +6344,34 @@ Example response
   "data": {
     "events": [
       {
+        "action": "openclaw.agents.chat.completed",
+        "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "event": "http_chat",
+        "id": "aud_123e4567-e89b-42d3-a456-426614174002",
+        "messageCount": 3,
+        "occurredAt": "2026-10-01T11:31:01.000000Z",
+        "outcome": "success",
+        "requestId": "req_123e4567-e89b-42d3-a456-426614174000",
+        "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+      },
+      {
+        "action": "openclaw.runtime.turn.completed",
+        "details": {
+          "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+          "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+          "messageLink": "linked",
+          "outcome": "succeeded",
+          "runtimeSource": "openclaw",
+          "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+          "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+        },
+        "event": "runtime_activity",
+        "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+        "occurredAt": "2026-10-01T11:31:00.000000Z",
+        "outcome": "success"
+      },
+      {
         "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
         "event": "api_request",
         "id": "aud_123e4567-e89b-42d3-a456-426614174000",
@@ -6359,13 +6379,101 @@ Example response
         "operationId": "getAgent",
         "outcome": "success",
         "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+      },
+      {
+        "action": "openclaw.agents.deploy",
+        "actorId": "prn_123e4567-e89b-42d3-a456-426614174000",
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "event": "agent_lifecycle",
+        "id": "aud_123e4567-e89b-42d3-a456-426614174001",
+        "occurredAt": "2026-10-01T11:00:00.000000Z",
+        "outcome": "success"
       }
     ],
     "nextCursor": null,
-    "projectionVersion": 1,
+    "projectionVersion": 4,
     "window": {
       "end": "2026-10-01T12:00:00.000Z",
       "start": "2026-09-30T12:00:00.000Z"
+    }
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/audit-events/{auditEventId}/message`
+
+<span id="get-namespacesnamespaceidagentsagentidauditeventsauditeventidmessage"></span>
+
+Read the saved user message linked to an Agent turn
+
+**Operation ID:** `getAgentAuditEventMessage`
+
+**Permissions:** Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read_audit` | `agent` | `requested` |
+| `read_audit_content` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+| `auditEventId` | path | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "aud_019e8451-865d-4daf-a30d-b2be921186ce" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.event` | `object or object` | Yes | — |
+| `data.message` | `object` | Yes | — |
+| `data.message.role` | `"user"` | Yes | — |
+| `data.message.text` | `string` | Yes | max length: 65536 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "event": {
+      "action": "openclaw.runtime.turn.completed",
+      "details": {
+        "agentRevisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
+        "messageId": "7501adc8-16ab-45d7-8ed8-a63bf342629f",
+        "messageLink": "linked",
+        "outcome": "succeeded",
+        "runtimeSource": "openclaw",
+        "sessionId": "123e4567-e89b-42d3-a456-426614174000",
+        "turnId": "0f8a6dad-40e1-4121-8521-676796fdcf83"
+      },
+      "event": "runtime_activity",
+      "id": "aud_019e8451-865d-4daf-a30d-b2be921186ce",
+      "occurredAt": "2026-10-01T11:31:00.000000Z",
+      "outcome": "success"
+    },
+    "message": {
+      "role": "user",
+      "text": "Summarize the release notes."
     }
   },
   "meta": {
@@ -12076,7 +12184,7 @@ List exact Namespace IAM Roles
 | `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -12144,7 +12252,7 @@ Create an immutable Namespace IAM Role
 | --- | --- | --- | --- |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
 Example request
@@ -12184,7 +12292,7 @@ Example request
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -12287,7 +12395,7 @@ Get an exact Namespace IAM Role
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "read_audit" or "read_audit_content"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

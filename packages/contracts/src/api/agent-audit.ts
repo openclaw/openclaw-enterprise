@@ -1,9 +1,34 @@
 import { Type } from "typebox";
+import { Check } from "typebox/value";
 
-import { AuditId, Meta, RequestId, Timestamp } from "./common.ts";
+import { linkedTurnEntry, runtimeAuditPageEntry } from "../runtime-audit.ts";
+import { AuditId, Meta, RequestId, RevisionId, Timestamp } from "./common.ts";
 
 export const AGENT_AUDIT_PAGE_LIMIT = 100;
-export const AGENT_AUDIT_PROJECTION_VERSION = 1;
+export const AGENT_AUDIT_PROJECTION_VERSION = 4;
+
+export const AGENT_HTTP_CHAT_AUDIT_ACTIONS = [
+  "openclaw.agents.chat.admitted",
+  "openclaw.agents.chat.completed",
+  "openclaw.agents.chat.failed",
+  "openclaw.agents.chat.interrupted",
+] as const;
+
+export const AGENT_LIFECYCLE_AUDIT_ACTIONS = {
+  agent: [
+    "openclaw.agents.create",
+    "openclaw.agents.update",
+    "openclaw.agents.stop",
+    "openclaw.agents.lifecycle.stop",
+    "openclaw.agents.provision.checkpoint",
+  ],
+  revision: [
+    "openclaw.agents.deploy",
+    "openclaw.agents.lifecycle.activate",
+    "openclaw.agents.lifecycle.supersede",
+  ],
+  provisioningFailure: "openclaw.agents.provision.failure",
+} as const;
 
 const AgentAuditCursor = Type.String({
   minLength: 1,
@@ -20,17 +45,32 @@ export const AgentAuditQuery = Type.Object(
       }),
     ),
     cursor: Type.Optional(AgentAuditCursor),
+    end: Type.Optional(
+      Type.String({
+        format: "date-time",
+        pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+        description:
+          "UTC end of the 24-hour period. The default is the current time. Use this only on the first page.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
 
-const AgentAuditEntry = Type.Object(
+const auditEntryFields = {
+  id: AuditId,
+  occurredAt: Type.String({
+    format: "date-time",
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
+  }),
+  outcome: Type.Union([Type.Literal("success"), Type.Literal("denied"), Type.Literal("failure")]),
+  actorId: Type.Optional(Type.String({ pattern: "^(prn|spn)_[a-f0-9-]{36}$" })),
+  requestId: Type.Optional(RequestId),
+};
+
+const ControlPlaneAgentAuditEntry = Type.Object(
   {
-    id: AuditId,
-    occurredAt: Type.String({
-      format: "date-time",
-      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{6}Z$",
-    }),
+    ...auditEntryFields,
     event: Type.Union([
       Type.Literal("api_request"),
       Type.Literal("work_queued"),
@@ -39,9 +79,6 @@ const AgentAuditEntry = Type.Object(
       Type.Literal("work_completed"),
       Type.Literal("work_result"),
     ]),
-    outcome: Type.Union([Type.Literal("success"), Type.Literal("denied"), Type.Literal("failure")]),
-    actorId: Type.Optional(Type.String({ pattern: "^(prn|spn)_[a-f0-9-]{36}$" })),
-    requestId: Type.Optional(RequestId),
     operationId: Type.Optional(Type.Literal("getAgent")),
     workId: Type.Optional(Type.String({ pattern: "^work_[0-9a-f]{64}$" })),
     attemptId: Type.Optional(AuditId),
@@ -57,6 +94,95 @@ const AgentAuditEntry = Type.Object(
   },
   { additionalProperties: false },
 );
+
+const AgentLifecycleAuditDetails = Type.Object(
+  {
+    event: Type.Literal("agent_lifecycle"),
+    action: Type.Enum([
+      ...AGENT_LIFECYCLE_AUDIT_ACTIONS.agent,
+      ...AGENT_LIFECYCLE_AUDIT_ACTIONS.revision,
+      AGENT_LIFECYCLE_AUDIT_ACTIONS.provisioningFailure,
+    ]),
+    agentRevisionId: Type.Optional(RevisionId),
+    provisioningPhase: Type.Optional(
+      Type.Union([
+        Type.Literal("admitted"),
+        Type.Literal("configuration"),
+        Type.Literal("transport"),
+        Type.Literal("handoff"),
+      ]),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const AgentLifecycleAuditEntry = Type.Object(
+  { ...auditEntryFields, ...AgentLifecycleAuditDetails.properties },
+  { additionalProperties: false },
+);
+
+const HttpChatReference = Type.String({
+  minLength: 1,
+  maxLength: 256,
+  pattern: "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$",
+});
+
+const AgentHttpChatAuditDetails = Type.Object(
+  {
+    event: Type.Literal("http_chat"),
+    action: Type.Enum(AGENT_HTTP_CHAT_AUDIT_ACTIONS),
+    agentRevisionId: RevisionId,
+    messageCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    completionIdHash: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+    turnId: Type.Optional(HttpChatReference),
+  },
+  { additionalProperties: false },
+);
+
+const AgentHttpChatAuditEntry = Type.Object(
+  { ...auditEntryFields, ...AgentHttpChatAuditDetails.properties },
+  { additionalProperties: false },
+);
+
+export function projectAgentHttpChatAuditDetails(
+  action: unknown,
+  agentRevisionId: unknown,
+  messageCount: unknown,
+  completionIdHash: unknown,
+  turnId: unknown,
+): Type.Static<typeof AgentHttpChatAuditDetails> | undefined {
+  const projected = {
+    event: "http_chat",
+    action,
+    agentRevisionId,
+    ...(messageCount === null ? {} : { messageCount }),
+    ...(completionIdHash === null ? {} : { completionIdHash }),
+    ...(turnId === null ? {} : { turnId }),
+  };
+  return Check(AgentHttpChatAuditDetails, projected) ? projected : undefined;
+}
+
+export function projectAgentLifecycleAuditDetails(
+  action: unknown,
+  agentRevisionId: unknown,
+  provisioningPhase: unknown,
+): Type.Static<typeof AgentLifecycleAuditDetails> | undefined {
+  const projected = {
+    event: "agent_lifecycle",
+    action,
+    ...(agentRevisionId === null ? {} : { agentRevisionId }),
+    ...(provisioningPhase === null ? {} : { provisioningPhase }),
+  };
+  return Check(AgentLifecycleAuditDetails, projected) ? projected : undefined;
+}
+
+const AgentAuditEntry = Type.Union([
+  ControlPlaneAgentAuditEntry,
+  AgentLifecycleAuditEntry,
+  AgentHttpChatAuditEntry,
+  runtimeAuditPageEntry(auditEntryFields),
+]);
+
 const AgentAuditPage = Type.Object(
   {
     projectionVersion: Type.Literal(AGENT_AUDIT_PROJECTION_VERSION),
@@ -74,3 +200,27 @@ export const AgentAuditResponse = Type.Object(
 export type AgentAuditEntry = Type.Static<typeof AgentAuditEntry>;
 export type AgentAuditPage = Type.Static<typeof AgentAuditPage>;
 export type AgentAuditQuery = Type.Static<typeof AgentAuditQuery>;
+
+const AgentAuditLinkedTurn = linkedTurnEntry(auditEntryFields);
+export type AgentAuditLinkedTurn = Type.Static<typeof AgentAuditLinkedTurn>;
+
+export function isAgentAuditLinkedTurn(entry: AgentAuditEntry): entry is AgentAuditLinkedTurn {
+  return Check(AgentAuditLinkedTurn, entry);
+}
+
+export const AGENT_AUDIT_MESSAGE_BYTES = 64 * 1024;
+const AgentAuditMessage = Type.Object(
+  { role: Type.Literal("user"), text: Type.String({ maxLength: AGENT_AUDIT_MESSAGE_BYTES }) },
+  { additionalProperties: false },
+);
+export type AgentAuditMessage = Type.Static<typeof AgentAuditMessage>;
+export const AgentAuditMessageResponse = Type.Object(
+  {
+    data: Type.Object(
+      { event: AgentAuditLinkedTurn, message: AgentAuditMessage },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);

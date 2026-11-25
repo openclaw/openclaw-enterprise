@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-18 14:31"
-last_updated_session: "authoring-run/71818c11-eeb5-4a34-8231-ea32f513c574"
+updated: "2026-11-18 20:21"
+last_updated_session: "authoring-run/b1e7eb2d-074c-4160-95df-a704f3d29ce9"
 ---
 
 # Bootstrap and human authentication flow
@@ -44,7 +44,9 @@ graph TD
     T --> Q
     P -->|External profile enabled| Q["State rechecks account, method and recovery eligibility; commits session and audit"]
     Q --> J["Release session cookie"]
-    P -->|Password-only profile| J
+    P -->|Password-only PostgreSQL| V["Commit session and audit"]
+    V --> J
+    V -->|Commit failure| R
     Q -->|Disabled, stale proof, or commit failure| R["Reject login; no cookie"]
     J --> N{"Unsafe session request?"}
     N -->|Yes| O["Check console origin and Fetch Metadata"]
@@ -111,31 +113,27 @@ and storage before reset. Retain confirmed attempt IDs.
 
 ### 3. Construct session authentication
 
-`apps/controller/src/auth/index.ts:createPostgresControllerAuth` uses OCC's
-[public binding](../reference/postgres-auth-binding.md#composition) for the
-caller-owned pool, full schema, construction failures, and adapter settings.
-
-`apps/controller/src/auth/index.ts:createControllerAuth` configures Better Auth
-password authentication, protected cookies, and PostgreSQL storage. Sign-in
-returns `{ authenticated: true }` and keeps the token in an HttpOnly cookie.
-`safeSessionResponse` returns public identity and `sessionKey`, an auth-secret HMAC
-of the session ID (`apps/controller/src/auth/session-binding.ts`). The
-[Console](platform-console.md#2-resolve-the-session-before-private-reads) clears
-retained views and drafts when the key changes.
-`apps/controller/src/auth/password-sign-out.ts:passwordSignOut` deletes the
-password-only session through the selected database adapter before clearing its
-cookie. Storage failure returns `503` and leaves the cookie intact for retry after recovery.
-`auth/admission.ts:passwordFailureAdmission` counts failures. Fast success clears
-only the selected identity's count. `onLimited` reports
-`authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
-checks the email-bound MAC before rate- and concurrency-limited password-state
-reads (see [known devices](../reference/authentication.md#known-devices)).
-Verified bindings select the device lane. Rejected bindings use the shared lane.
-After failed or refused reads, signed keys still constrain email and address.
+`apps/controller/src/auth/index.ts:createPostgresControllerAuth` connects
+Better Auth to PostgreSQL through the [public binding](../reference/postgres-auth-binding.md#composition).
+The session token stays in an HttpOnly cookie. The
+[Console](platform-console.md#2-resolve-the-session-before-private-reads)
+clears retained views and drafts when the session key changes.
+`apps/controller/src/auth/password-sign-out.ts:passwordSignOut` clears the
+cookie after it confirms session deletion. In PostgreSQL, State commits the
+deletion and the `authentication.logout` record together. Storage failure
+returns `503` and leaves the cookie intact for retry.
+`auth/admission.ts:passwordFailureAdmission` counts failures and reports
+`authentication.sign-in-limited` once per lane and window. Fast success clears
+the selected identity's count. The email-bound MAC selects the
+[known-device lane](../reference/authentication.md#known-devices) after bounded
+State reads. Other attempts use the shared lane. Signed keys still constrain
+email and address if the read fails.
 Password-only admission captures issuance state before credentials so resets
-invalidate stale state. Success may reissue it. With password-only PostgreSQL State,
-`passwordSignInAudit` attempts `authentication.login`. If that audit fails, it
-attempts session deletion and returns `503` without a cookie.
+invalidate stale state. Success may reissue it. With password-only PostgreSQL
+State, `apps/controller/src/auth/password-sessions.ts` passes the session
+insert to `packages/occ/src/state/human-authentication.ts:issuePasswordSession`.
+State commits the session and `authentication.login` together. The API
+returns `503` without a cookie if it cannot confirm the commit.
 `DenialAuditUnavailable` counts as a credential failure, as does
 `PASSWORD_DENIAL_AUDIT_UNAVAILABLE` from guarded `/oce/password`. See
 [audit fields, statuses, and unconfirmed outcomes](../reference/authentication.md#session-lifecycle).
@@ -352,6 +350,8 @@ issuing its cookie.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-18 20:21: Trace the PostgreSQL password session and audit commit. (authoring-run/b1e7eb2d-074c-4160-95df-a704f3d29ce9 - 86265b4ed8e8b22ae3882889d4febccdef1b5f65)
 
 - 2026-11-18 14:31: Compose recovery, OIDC transport and account-read traces. (authoring-run/71818c11-eeb5-4a34-8231-ea32f513c574 - 0cdebc5eda71caeb08b5036d15655a1f23f23903)
 - 2026-11-18 09:44: Trace same-origin browser reads of account and recovery state. (authoring-run/05059b24-93d6-4c07-b659-2d0b084a3070 - 43194d2b141b43d5da490c21661c85a91662ec83)

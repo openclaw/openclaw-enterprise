@@ -1,5 +1,6 @@
 import type { Static } from "typebox";
 
+import type { RuntimeAuditSource } from "./runtime-audit.ts";
 import type { AgentNetworkProxy } from "./agent-network-proxy.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ConnectionEndpoint } from "./connection-templates.ts";
@@ -1509,6 +1510,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "read_logs",
   "manage_policy",
   "read_audit",
+  "read_audit_content",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1540,6 +1542,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "read_logs",
     "manage_policy",
     "read_audit",
+    "read_audit_content",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1656,11 +1659,12 @@ export type IdentityLookup = Scope &
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
 export type AuditEventKind =
-  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request" | "runtime_activity";
 
 export type AuditOutcome = "success" | "denied" | "failure";
 
 export const API_REQUEST_AUDIT_ACTIONS = {
+  received: "openclaw.api.request.received",
   admitted: "openclaw.api.request.admitted",
   result: "openclaw.api.request.result",
 } as const;
@@ -1674,6 +1678,7 @@ export const CONTROLLER_WORK_AUDIT_ACTIONS = {
 } as const;
 
 export type ApiRequestAuditObservation =
+  | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.received; readonly outcome: "success" }
   | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.admitted; readonly outcome: "success" }
   | {
       readonly action: typeof API_REQUEST_AUDIT_ACTIONS.result;
@@ -1681,7 +1686,7 @@ export type ApiRequestAuditObservation =
       readonly statusCode: number;
       /** The exact resource returned by a successful, authorized read. */
       readonly readTarget?: ResourceRef;
-      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN";
+      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN" | "PERMISSION_CHECK_UNAVAILABLE";
     };
 
 export interface AuditEvent extends Scope {
@@ -1692,7 +1697,7 @@ export interface AuditEvent extends Scope {
   readonly kind: AuditEventKind;
   readonly actorId: string;
   readonly schemaVersion?: number;
-  readonly source?: "occ";
+  readonly source?: "occ" | RuntimeAuditSource;
   readonly requestId?: string;
   readonly admissionDecisionId?: string;
   readonly actor?: {
@@ -1712,6 +1717,14 @@ export interface AuditEvent extends Scope {
   readonly outcome: AuditOutcome;
   readonly details?: Readonly<Record<string, unknown>>;
 }
+
+export {
+  RUNTIME_AUDIT_ACTIONS,
+  RUNTIME_AUDIT_MESSAGE_LINK_VALUES,
+  RuntimeAuditObservationSchema,
+  projectRuntimeAgentAuditDetails,
+} from "./runtime-audit.ts";
+export type { RuntimeAuditObservation, RuntimeAuditSource } from "./runtime-audit.ts";
 
 export { DRIVER_CAPABILITIES, isDriverCapability } from "./drivers/index.ts";
 export type {
@@ -1834,7 +1847,15 @@ export * from "./api/common.ts";
 export {
   AGENT_AUDIT_PAGE_LIMIT,
   AGENT_AUDIT_PROJECTION_VERSION,
+  AGENT_HTTP_CHAT_AUDIT_ACTIONS,
+  AGENT_LIFECYCLE_AUDIT_ACTIONS,
+  projectAgentHttpChatAuditDetails,
+  projectAgentLifecycleAuditDetails,
   type AgentAuditEntry,
+  isAgentAuditLinkedTurn,
+  AGENT_AUDIT_MESSAGE_BYTES,
+  type AgentAuditLinkedTurn,
+  type AgentAuditMessage,
   type AgentAuditPage,
   type AgentAuditQuery,
 } from "./api/agent-audit.ts";

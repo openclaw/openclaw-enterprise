@@ -296,7 +296,9 @@ test(
     const expectedVersion = integer(
       record(await readAccount(ordinary, adminHeaders, recoveryUserId)).version,
     );
-    const administrationProxy = await commitAckProxy(databaseUrl);
+    const administrationProxy = await commitAckProxy(databaseUrl, {
+      transactionStatement: "DELETE FROM occ.session WHERE user_id = $1",
+    });
     proxies.push(administrationProxy);
     const administration = await composePostgresDevelopment(
       { ...config, databaseUrl: administrationProxy.url },
@@ -304,10 +306,9 @@ test(
     );
     apps.push(administration);
     await administration.ready();
-    // Admission, Native IAM identity lookup, authorization, the target Principal
-    // lookup and its grant coverage each finish their read transaction first.
-    // Drop the following account+audit mutation COMMIT.
-    administrationProxy.arm({ skipCommits: 5 });
+    // Drop the acknowledgement for the transaction that removes the account's
+    // sessions and saves its audit record. Let request admission commits pass.
+    administrationProxy.arm();
     const unknownAdministration = await administration.inject({
       method: "POST",
       url: `/api/auth/accounts/${recoveryUserId}/revoke`,

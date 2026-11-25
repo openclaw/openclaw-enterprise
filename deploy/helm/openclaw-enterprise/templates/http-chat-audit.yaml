@@ -1,0 +1,14 @@
+# Keep pending records when optional logging is off or the API rolls back.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-enterprise-http-chat-audit
+  labels:
+    {{- include "openclaw.labels" (dict "root" . "component" "api") | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

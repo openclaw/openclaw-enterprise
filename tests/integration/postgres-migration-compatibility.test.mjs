@@ -1573,6 +1573,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2011,6 +2016,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3151,6 +3161,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3289,6 +3304,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3460,6 +3480,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3488,6 +3513,9 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [100, "CREATE INDEX"],
+                [97, "CREATE TRIGGER"],
+                [96, "CREATE TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],

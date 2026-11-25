@@ -110,21 +110,17 @@ tab's requests with `x-occ-session-key`. Foreign, malformed, or duplicated keys
 return `401`; rejected sign-out preserves sessions and cookies. Omitting the
 header leaves requests unchanged.
 
-Session inspection never sets cookies; late old-session responses cannot clear
-newer sign-in cookies.
-
-Password-only sign-out confirms session deletion before clearing its cookie. A
-storage failure returns `503 DEPENDENCY_UNAVAILABLE` without clearing the cookie;
-retry sign-out after storage recovers.
+Session inspection leaves cookies alone. With PostgreSQL, password-only
+sign-out commits session deletion and its logout record, then clears its
+cookie. On `503 DEPENDENCY_UNAVAILABLE`, the cookie remains available for retry.
 
 Password-only sessions expire seven days after sign-in; use does not extend
 them. With Google or OIDC sign-in enabled, every session expires after
 eight hours ([session controls](authentication/external-sign-in.md#session-and-recovery-controls)).
-Password-only has no online way to end another account's session: removing its
-IAM bindings and Group memberships refuses permissioned requests from the next
-one (native admin WebSockets within about 25 s), and `purge-sessions --user
-<userId> --writers-stopped` ([stopped maintenance](../guides/deploy/auth-maintenance.md#choose-the-operation))
-ends it.
+To end another password-only session, use `purge-sessions --user
+<userId> --writers-stopped` during [stopped maintenance](../guides/deploy/auth-maintenance.md#choose-the-operation).
+Removing IAM bindings and Group memberships refuses the next permissioned request
+and takes effect within about 25 s for native admin WebSockets.
 
 Sign-in takes `{"email": "...", "password": "..."}`. The session arrives only
 through `Set-Cookie`.
@@ -153,17 +149,18 @@ the auth secret; `untracked` events have no key and no hash. The email and
 address are never logged. The bundled Collector
 exports the event and lane, not the hash.
 
-Password checks attempt an `authentication.login` audit: success names the
-account's Principal and `userId`; wrong passwords and unknown emails produce
-`denied`/`INVALID_CREDENTIALS` without account identity. Audit writes fail closed.
-Failed success audits return `503` without a cookie; uncertain session creation
-or cleanup may leave a server-side session. Failed denial audits still count
-against tracked budgets, returning `503` or, in the slow lane, `429`. Untracked
-or exhausted lanes are paced without necessarily adding failure entries.
-Unconfirmed audit writes have unknown persistence outcomes. Admission `429`s
-before password checking are unaudited and reported by
-`authentication.sign-in-limited`. Slow-lane administrator checks remain audited;
-wrong passwords return `429`.
+An `authentication.login` success names the account's Principal and `userId`.
+Wrong passwords and unknown emails record `denied` with reason
+`INVALID_CREDENTIALS` and omit account identity. PostgreSQL commits the
+session and success record together. If OCC cannot confirm commit, it returns
+`503` without a cookie and the outcome remains unknown.
+
+Failed denial writes count against tracked budgets. They return `503`, or
+`429` in the slow lane. OCC paces untracked or exhausted lanes and may omit
+their denial records. When the limiter refuses a request before checking the
+password, it reports `authentication.sign-in-limited`. With Control Plane
+audit on, OCC records the HTTP result. Wrong passwords in slow-lane
+administrator checks still record denials and return `429`.
 
 ### Known devices
 

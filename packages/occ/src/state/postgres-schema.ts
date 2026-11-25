@@ -1388,7 +1388,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'read_audit', 'read_audit_content')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",
@@ -1399,6 +1399,77 @@ export const iamRestrictions = occSchema.table(
       "iam_restrictions_resource_id_normalized",
       sql`${table.resourceId} IS NULL OR (${table.resourceId} = btrim(${table.resourceId}) AND char_length(${table.resourceId}) BETWEEN 1 AND 200)`,
     ),
+  ],
+);
+
+export const gatewayRuntimeAuditGrants = occSchema.table(
+  "gateway_runtime_audit_grants",
+  {
+    tokenDigest: text("token_digest").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    runtimeSource: text("runtime_source").notNull(),
+  },
+  (table) => [
+    check(
+      "gateway_runtime_audit_grants_token_digest_check",
+      sql`${table.tokenDigest} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_grants_runtime_source_check",
+      sql`${table.runtimeSource} IN ('openclaw', 'codex')`,
+    ),
+    unique("gateway_runtime_audit_grants_revision_unique").on(
+      table.namespaceId,
+      table.agentId,
+      table.revisionId,
+    ),
+    foreignKey({
+      name: "gateway_runtime_audit_grants_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+  ],
+);
+
+export const gatewayRuntimeAuditReplayVerifiers = occSchema.table(
+  "gateway_runtime_audit_replay_verifiers",
+  {
+    replayVerifier: text("replay_verifier").primaryKey(),
+    tokenDigest: text("token_digest").notNull().unique(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    runtimeSource: text("runtime_source").notNull(),
+    endpoint: text("endpoint").notNull(),
+  },
+  (table) => [
+    check(
+      "gateway_runtime_audit_replay_verifiers_replay_verifier_check",
+      sql`${table.replayVerifier} ~ '^[A-Za-z0-9_-]{43}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_token_digest_check",
+      sql`${table.tokenDigest} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_runtime_source_check",
+      sql`${table.runtimeSource} IN ('openclaw', 'codex')`,
+    ),
+    check(
+      "gateway_runtime_audit_replay_verifiers_endpoint_check",
+      sql`octet_length(${table.endpoint}) <= 2048 AND ${table.endpoint} ~ '^https://[^/?#@[:space:]]+/internal/runtime-audit$'`,
+    ),
+    foreignKey({
+      name: "gateway_runtime_audit_replay_verifiers_revision_owner",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
   ],
 );
 
@@ -1439,6 +1510,14 @@ export const auditEvents = occSchema.table(
               AND ${table.details}->>'attemptId' IS NOT NULL)))`,
       ),
     check("audit_events_id_format", sql`${table.id} ~ ${identifierPatterns.audit}`),
+    index("audit_events_agent_runtime_page_idx")
+      .on(table.namespaceId, table.resourceId, table.occurredAt.desc(), table.id.desc())
+      .where(sql`${table.resourceKind} = 'agent' AND ${table.kind} = 'runtime_activity'`),
+    index("audit_events_agent_http_chat_page_idx")
+      .on(table.namespaceId, table.resourceId, table.occurredAt.desc(), table.id.desc())
+      .where(
+        sql`${table.resourceKind} = 'agent' AND ${table.kind} = 'mutation' AND ${table.action} IN ('openclaw.agents.chat.admitted','openclaw.agents.chat.completed','openclaw.agents.chat.failed','openclaw.agents.chat.interrupted')`,
+      ),
     check("audit_events_outcome_valid", sql`${table.outcome} IN ('success', 'denied', 'failure')`),
     check(
       "audit_events_details_object",

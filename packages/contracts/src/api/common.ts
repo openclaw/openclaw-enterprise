@@ -610,6 +610,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
   Type.Literal("read_audit"),
+  Type.Literal("read_audit_content"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -1208,10 +1209,18 @@ export const ErrorResponse = Type.Object(
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         reason: Type.Optional(
-          Type.Literal("credential_registration_pending", {
-            description:
-              "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
-          }),
+          Type.Union([
+            Type.Literal("credential_registration_pending", {
+              description:
+                "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+            }),
+            Type.Literal("revision_unavailable", {
+              description: "The audit event's Agent revision cannot serve a message lookup.",
+            }),
+            Type.Literal("message_unavailable", {
+              description: "The linked message cannot be returned from chat history.",
+            }),
+          ]),
         ),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
         remainingResources: Type.Optional(

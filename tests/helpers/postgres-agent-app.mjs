@@ -59,7 +59,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  * @param options.authSecret the session signing secret (at least 32 characters).
  * @param [options.createAuditSink] receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
- * @param [options.requestAudit] wires the same durable sink for required HTTP request evidence.
+ * @param [options.requestAudit] enables PostgreSQL audit for HTTP requests and the private Gateway listener.
  * @param [options.appOptions] extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
  * @param [options.controllerOptions]
@@ -72,7 +72,7 @@ export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
  *   `inject(method, url, body)` sends an administrator request. `deployAgent(name)` creates a
  *   ready Namespace, an Agent Configuration and API-key Secret, and an Agent whose
  *   ServicePrincipal may operate that Secret, deploys it, and returns
- *   `{ namespace, secretRef, agent, revision }`.
+ *   `{ namespace, secretRef, agent, revision, createRequestId }`.
  */
 export async function createPostgresAgentApp(
   t,
@@ -140,7 +140,9 @@ export async function createPostgresAgentApp(
       secretDriver,
       resolveHarness: resolveApprovedHarness,
       auditSink,
-      ...(requestAudit ? { durableRequestAuditSink: state.auditSink } : {}),
+      ...(requestAudit
+        ? { durableRequestAuditSink: state.auditSink, gatewayRuntimeAuditWriter: state }
+        : {}),
       auth,
       development: { enabled: false },
       ...appOptions,
@@ -212,7 +214,10 @@ export async function createPostgresAgentApp(
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });
-    const { data: agent } = fixtureResponse(
+    const {
+      data: agent,
+      meta: { requestId: createRequestId },
+    } = fixtureResponse(
       { status: createdAgent.statusCode, body: /** @type {unknown} */ (createdAgent.json()) },
       201,
       AgentResponse,
@@ -224,7 +229,7 @@ export async function createPostgresAgentApp(
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedHarness,
     );
-    return { namespace, secretRef, agent, revision };
+    return { namespace, secretRef, agent, revision, createRequestId };
   }
 
   return {

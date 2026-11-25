@@ -64,6 +64,8 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         primary(),
         requirement("update", "credential_source", "requested", "bound_credential_source"),
       ];
+    case "getAgentAuditEventMessage":
+      return [requirement("read_audit", "agent"), requirement("read_audit_content", "agent")];
     case "recoverAgentFirstDeployment":
       return [requirement("deploy", "agent"), requirement("read", "configuration")];
     case "deleteCredentialSource":
@@ -327,7 +329,10 @@ function permissionDescription(
   operationId: OccApiRoute["operationId"],
 ): string {
   if (operationId === "listAgentAuditEvents") {
-    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected audit metadata from the preceding 24 hours.";
+    return "Requires a human session with a direct read_audit grant on the requested Agent. Returns selected lifecycle, HTTP chat, runtime, API read, and worker records for a 24-hour period. Use end on the first page to select a past period.";
+  }
+  if (operationId === "getAgentAuditEventMessage") {
+    return "Requires a human session with direct read_audit and read_audit_content grants on the requested Agent. Returns a linked turn event and its saved user message from the active revision. OCC records the disclosure before it returns the text.";
   }
   if (operationId === "recoverAgentFirstDeployment") {
     return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";

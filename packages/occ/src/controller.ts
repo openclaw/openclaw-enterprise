@@ -464,11 +464,29 @@ export class OpenClawController {
     holdSession: AuthorityFence,
     disclosure: (count: number, decision: DeployAgentAuthorization) => AuditEvent,
   ) {
-    return this.composition.readAgentAuditEvents(
+    return this.composition.agentAuditReader.listAgentAuditEvents(
       principalId,
       namespaceId,
       agentId,
       selection,
+      holdSession,
+      disclosure,
+    );
+  }
+
+  async selectAgentAuditMessage(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    auditEventId: string,
+    holdSession: AuthorityFence,
+    disclosure?: (decision: DeployAgentAuthorization) => AuditEvent,
+  ) {
+    return this.composition.agentAuditReader.selectAgentAuditMessage(
+      principalId,
+      namespaceId,
+      agentId,
+      auditEventId,
       holdSession,
       disclosure,
     );

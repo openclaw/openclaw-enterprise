@@ -452,6 +452,7 @@ test("private Git installer retains its process exit through wrapper cleanup", a
   await cp("scripts/ci", join(checkout, "scripts/ci"), { recursive: true });
   for (const path of [
     "scripts/lib",
+    "scripts/first-agent-model.ts",
     "apps",
     "packages",
     "tests",

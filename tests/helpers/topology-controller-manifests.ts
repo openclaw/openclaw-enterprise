@@ -18,6 +18,7 @@ type VolumeMount = {
 type Volume = { name: string } & (
   | { secret: { secretName: string; items: { key: string; path: string }[] } }
   | { configMap: { name: string } }
+  | { persistentVolumeClaim: { claimName: string } }
 );
 
 type ControllerTopologyManifestInputs = {
@@ -76,7 +77,14 @@ export function buildControllerTopologyManifests({
   workerOptions,
   workspaceGateway,
 }: ControllerTopologyManifestInputs) {
+  const chatAuditClaim = `${name}-http-chat-audit`;
   const resources = [
+    {
+      apiVersion: "v1",
+      kind: "PersistentVolumeClaim",
+      metadata: { name: chatAuditClaim, namespace: platformNamespace },
+      spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: "1Gi" } } },
+    },
     {
       apiVersion: "v1",
       kind: "ConfigMap",
@@ -157,6 +165,7 @@ export function buildControllerTopologyManifests({
     { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/gateway-ca/ca.crt" },
   ];
   const apiVolumeMounts: VolumeMount[] = [
+    { name: "http-chat-audit", mountPath: "/var/lib/occ/http-chat-audit" },
     {
       name: "installation",
       mountPath: "/etc/openclaw/installation",
@@ -196,6 +205,7 @@ export function buildControllerTopologyManifests({
     livenessProbe: { httpGet: { path: "/healthz", port: "http" } },
   };
   const apiVolumes: Volume[] = [
+    { name: "http-chat-audit", persistentVolumeClaim: { claimName: chatAuditClaim } },
     {
       name: "installation",
       secret: {
@@ -227,6 +237,7 @@ export function buildControllerTopologyManifests({
       runAsUser: 1000,
       runAsGroup: 1000,
       fsGroup: 1000,
+      fsGroupChangePolicy: "OnRootMismatch",
       seccompProfile: { type: "RuntimeDefault" },
     },
     containers: [
@@ -260,6 +271,7 @@ export function buildControllerTopologyManifests({
     metadata: { name, namespace: platformNamespace },
     spec: {
       replicas: 1,
+      strategy: { type: "Recreate" },
       selector: { matchLabels: labels },
       template: {
         metadata: { labels },
