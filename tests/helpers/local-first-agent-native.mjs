@@ -3,7 +3,10 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { nativeFirstAgentProofDiagnostic } from "../../scripts/ci/reporter.ts";
+import {
+  nativeFirstAgentProofDiagnostic,
+  nativeTurnErrorFields,
+} from "../../scripts/ci/reporter.ts";
 import {
   nativePlacementReadRetryable,
   nativeWorkerPlacementObservation,
@@ -177,6 +180,18 @@ export function nativeWorkerTurnEventObservation(event, selectedTurn) {
       : undefined;
   }
   const data = payload.data;
+  const chatError = event.event === "chat" && payload.state === "error";
+  const detail = chatError ? payload.errorDetail : data?.errorObservation;
+  const terminalFields = () =>
+    nativeTurnErrorFields({
+      turnChatErrorKind: chatError ? payload.errorKind : data?.errorKind,
+      turnFailoverReason: detail?.failoverReason,
+      turnProviderFailureKind: detail?.providerRuntimeFailureKind,
+      turnProviderHttpStatus: detail?.httpStatus,
+    });
+  if (chatError) {
+    return terminalFields();
+  }
   if (
     event.event !== "agent" ||
     payload.stream !== "lifecycle" ||
@@ -187,6 +202,7 @@ export function nativeWorkerTurnEventObservation(event, selectedTurn) {
   }
   const terminal = nativeWorkerTurnObservation({ outcome: data });
   return {
+    ...(data.phase === "error" ? terminalFields() : {}),
     turnLifecyclePhase: data.phase,
     turnLifecycleError: terminal.turnError,
     providerStarted: terminal.providerStarted,
@@ -751,7 +767,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst queryCredentialProxyRefusal = (${queryCredentialProxyRefusal.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: plainChat ? 3 * 60_000 : nativeFirstAgentProofTimeout, plainChat, workspaceFile, expectedNodeId, session, sessionFile, credentialProxyScope })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst queryCredentialProxyRefusal = (${queryCredentialProxyRefusal.toString()});\nconst nativeWorkerProofProgram = (${nativeWorkerProofProgram.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst nativeTurnErrorFields = (${nativeTurnErrorFields.toString()});\nconst nativeWorkerTurnEventObservation = (${nativeWorkerTurnEventObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: plainChat ? 3 * 60_000 : nativeFirstAgentProofTimeout, plainChat, workspaceFile, expectedNodeId, session, sessionFile, credentialProxyScope })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"

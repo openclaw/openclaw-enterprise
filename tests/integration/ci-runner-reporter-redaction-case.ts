@@ -242,6 +242,60 @@ export async function checkReporterRedaction(t: TestContext) {
     transcript: `${nativePrivate}-transcript`,
     token: `${nativePrivate}-token`,
   });
+  // The selected turn's terminal reports can include private provider details.
+  // Both the controller packet and the retained CI artifact must exclude them.
+  const providerDetail = {
+    failoverReason: "auth",
+    providerRuntimeFailureKind: "auth_scope",
+    httpStatus: 403,
+    providerErrorMessagePreview: nativePrivate,
+    providerErrorCode: nativePrivate,
+  };
+  const providerTerminal = {
+    event: "chat",
+    payload: {
+      ...identity,
+      state: "error",
+      errorKind: "refusal",
+      errorDetail: providerDetail,
+      errorMessage: nativePrivate,
+      message: nativePrivate,
+    },
+  };
+  const settledFailure = nativeWorkerTurnEventObservation(
+    lifecycle({ phase: "error", executionSettled: true, errorObservation: providerDetail }),
+    selectedTurn,
+  );
+  // agent.wait may finish before the corresponding chat event arrives.
+  assert.equal(
+    runnerRecord(settledFailure, "settled provider failure").turnProviderHttpStatus,
+    403,
+  );
+  const providerTurn = Object.assign(
+    {},
+    settledFailure,
+    nativeWorkerTurnEventObservation(providerTerminal, selectedTurn),
+    nativeWorkerTurnEventObservation(
+      {
+        ...providerTerminal,
+        payload: {
+          ...providerTerminal.payload,
+          runId: "foreign-run",
+          errorDetail: { httpStatus: 500 },
+        },
+      },
+      selectedTurn,
+    ),
+    nativeWorkerTurnEventObservation(
+      lifecycle({
+        phase: "error",
+        executionSettled: false,
+        errorObservation: { httpStatus: 429 },
+      }),
+      selectedTurn,
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(providerTurn), new RegExp(nativePrivate));
   const turnEvents = Object.assign(
     {},
     ...[
@@ -663,6 +717,27 @@ export async function checkReporterRedaction(t: TestContext) {
             worker: runnerRecord(worker, name),
           },
         })),
+        {
+          name: "retains selected provider status without exporting its private message",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            worker: providerTurn,
+          },
+        },
+        {
+          name: "omits malformed provider status and private categories",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-outcome",
+            worker: {
+              turnProviderHttpStatus: 600,
+              turnChatErrorKind: nativePrivate,
+              turnFailoverReason: nativePrivate,
+              turnProviderFailureKind: nativePrivate,
+            },
+          },
+        },
         ...nativeLeafDiagnostics,
         ...turnDiagnostics,
         {
@@ -932,6 +1007,19 @@ export async function checkReporterRedaction(t: TestContext) {
     assert.equal(turn.execResultCount, 1);
     assert.equal(turn.execFailureCount, 1);
   }
+  const providerFailure = workerFor(
+    "retains selected provider status without exporting its private message",
+  );
+  assert.deepEqual(
+    {
+      kind: providerFailure.turnChatErrorKind,
+      reason: providerFailure.turnFailoverReason,
+      failure: providerFailure.turnProviderFailureKind,
+      status: providerFailure.turnProviderHttpStatus,
+    },
+    { kind: "refusal", reason: "auth", failure: "auth_scope", status: 403 },
+  );
+  assert.deepEqual(workerFor("omits malformed provider status and private categories"), {});
   const collected = workerFor("collects native turn failure within the shared read budget");
   assert.deepEqual(
     {
