@@ -1,6 +1,7 @@
 # Upgrade production images
 
-See [One Off Upgrades](one-off-upgrades.md).
+Check [one-off upgrades](one-off-upgrades.md). For [Credential Gateway cutover](credential-proxy-upgrade.md),
+verify credentials and pending work before shutdown, even if migration history matches.
 
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
@@ -15,8 +16,8 @@ lack the required chart-owned initializer.
 4. [Verify](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
-Use `--controller-image` for API and worker. Repository credentials also require
-`--broker-image`; restarting the broker can interrupt existing Agents.
+Select `--controller-image` for API and worker. Repository credentials require
+`--broker-image`. Broker restarts can interrupt Agents.
 `--runtime-image` updates Gateway and runtime images, redeploying running Agents
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
@@ -29,9 +30,8 @@ Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
 `HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
 These override kubeconfig/context flags.
 
-For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
-For the experimental two-cluster profile, first
-[upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
+[Prepare settings changes](#include-reviewed-settings). For experimental
+two-cluster upgrades, [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart) first.
 
 ## Prepare the release
 
@@ -311,9 +311,9 @@ scripts/upgrade-production-images "${target[@]}" \
 With repository credentials, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-Preflight refuses replacement if the active revision uses staged credentials
-or the draft selects a TokenService Harness source. Plan an interruption. Complete Agent Stop, upgrade with fresh evidence
-and deploy those Agents separately afterward.
+Preflight refuses replacement when the active revision uses staged credentials
+or the draft selects a TokenService Harness source. Schedule downtime, complete
+Agent Stop, upgrade with fresh evidence and deploy affected Agents separately.
 
 Check warnings. Older images or oversized drafts defer Configuration checks
 until deployment, which also checks Drivers, credentials, plugins and repositories.
