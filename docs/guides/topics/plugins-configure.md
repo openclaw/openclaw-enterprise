@@ -97,9 +97,9 @@ script using the same credential can call that enabled tool without Gateway appr
 If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
 Removing the Plugin does not delete its Source or change an independent Agent credential attachment. [Withdraw the Source](../../reference/credential-sources/withdrawal.md) to revoke a running version's credential access.
 
-For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
-`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+For example, the reviewed Slack MCP server is `https://mcp.slack.com/mcp`; the
+worker receives a credential placeholder in `SLACK_MCP_TOKEN`. Select `slack_search_public` if
+the account advertises it. Inspect its worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
