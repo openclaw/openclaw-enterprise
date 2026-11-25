@@ -15,7 +15,7 @@ import * as runtimeEntrypoints from "../../apps/controller/src/drivers/compute/k
 import { WORKSPACE_SETUP_RUNTIME } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { readJsonLinesSync } from "../helpers/json-lines.mjs";
+import { readJsonLinesSync } from "../helpers/json-lines-file.ts";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const { COMPUTE_AGENT_RUNTIME_ENTRYPOINT: AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;

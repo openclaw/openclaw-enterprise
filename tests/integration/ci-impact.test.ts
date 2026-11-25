@@ -79,6 +79,20 @@ function textRecord(value: unknown): Record<string, string> {
   );
 }
 
+function readStepOutputs(path: string, expected: string[]): Record<string, string> {
+  const lines = readFileSync(path, "utf8").split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  const entries = lines.map((line): [string, string] => {
+    const split = line.indexOf("=");
+    assert.ok(split > 0 && !line.includes("\r"), "expected a single-line name=value output");
+    return [line.slice(0, split), line.slice(split + 1)];
+  });
+  assert.deepEqual(entries.map(([name]) => name).sort(), [...expected].sort());
+  return Object.fromEntries(entries);
+}
+
 function json(value: string): unknown {
   return JSON.parse(value);
 }
@@ -2280,10 +2294,12 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
         },
       });
       assert.equal(selection.status, 0, selection.stderr);
-      const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
-      assert.ok(firstAgent);
-      const sourceBuild = /^source-build=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
-      assert.ok(sourceBuild);
+      const { "first-agent": firstAgent, "source-build": sourceBuild } = readStepOutputs(output, [
+        "first-agent",
+        "source-build",
+      ]);
+      assert.ok(firstAgent === "true" || firstAgent === "false");
+      assert.ok(sourceBuild === "true" || sourceBuild === "false");
       const evaluate = (expression: string) =>
         evaluateInContext(
           expression
@@ -3682,19 +3698,20 @@ async function buildMatrix(t: TestContext, mode: string, lanes: string) {
       },
     },
   );
-  const values = Object.fromEntries(
-    readFileSync(output, "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
-  );
+  const values =
+    result.status === 0
+      ? readStepOutputs(output, ["matrix", "image-matrix", "fixture", "has-matrix", "has-images"])
+      : undefined;
+  if (!values) {
+    assert.equal(readFileSync(output, "utf8"), "");
+  }
   return {
     ...result,
-    matrix: values.matrix ? laneRows(json(values.matrix)) : undefined,
-    images: values["image-matrix"] ? laneRows(json(values["image-matrix"])) : undefined,
-    hasMatrix: values["has-matrix"],
-    hasImages: values["has-images"],
-    fixture: values.fixture,
+    matrix: values && laneRows(json(present(values.matrix))),
+    images: values && laneRows(json(present(values["image-matrix"]))),
+    hasMatrix: values?.["has-matrix"],
+    hasImages: values?.["has-images"],
+    fixture: values?.fixture,
   };
 }
 
@@ -4173,9 +4190,10 @@ test("full integration selects images and gates runtime artifact consumers", (t)
     [
       ["", ""],
       ["gateway@sha256:abc", "agent@sha256:def"],
-      ["partial", ""],
+      ["partial=value", ""],
       ["", "partial"],
       ["line\nbreak", ""],
+      ["", "line\rbreak"],
     ] satisfies [string, string][]
   ).entries()) {
     const step = present(selector.steps[0]);
@@ -4183,18 +4201,26 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: gateway,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: agent,
     };
+    // A release must build its own selected source even when the environment
+    // supplies image digests for ordinary manual and scheduled lanes.
+    for (const expression of Object.values(step.env)) {
+      assert.equal(evaluate(expression, { vars, inputs: { source_sha: "a".repeat(40) } }), "");
+    }
     const output = join(selectionDirectory, `output-${index}`);
     const result = spawnSync("bash", ["-e", "-c", present(step.run)], {
       env: {
         ...process.env,
         ...Object.fromEntries(
-          Object.entries(step.env).map(([name, value]) => [name, text(evaluate(value, { vars }))]),
+          Object.entries(step.env).map(([name, value]) => [
+            name,
+            text(evaluate(value, { vars, inputs: {} })),
+          ]),
         ),
         GITHUB_OUTPUT: output,
       },
       encoding: "utf8",
     });
-    if (present(gateway).includes("\n")) {
+    if ([gateway, agent].some((value) => /[\r\n]/.test(value))) {
       assert.ifError(result.error);
       assert.equal(result.signal, null);
       assert.ok(result.status !== null && result.status > 0);
@@ -4202,15 +4228,11 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       continue;
     }
     assert.equal(result.status, 0, result.stderr);
-    const snapshot = Object.fromEntries(
-      readFileSync(output, "utf8")
-        .trimEnd()
-        .split("\n")
-        .map((line) => {
-          const split = line.indexOf("=");
-          return [line.slice(0, split), line.slice(split + 1)];
-        }),
-    );
+    const snapshot = readStepOutputs(output, [
+      "gateway-image",
+      "agent-image",
+      "use-runtime-artifact",
+    ]);
     assert.equal(snapshot["use-runtime-artifact"], String(!gateway && !agent));
     for (const selection of ["all", "gateway-routing"]) {
       const values = context(selection, "failure", snapshot);

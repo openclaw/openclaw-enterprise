@@ -23,7 +23,7 @@ The Kubernetes network helper defaults to `oce-system`. If you use an existing G
    Set `OPENSHELL_NAMESPACE` in the operator shell to the Gateway's namespace, if the installation did not already save it. The helper uses it for OpenShell Service discovery and policy placement. OCE stays in `oce-system`, and `save_session` retains the setting.
 
 2. Confirm that the operator can read the Services used by the helper and manage NetworkPolicies in the affected namespaces.
-3. Check that the API and worker Pods can reach that Gateway. The quickstart's installation block grants this egress when `OPENSHELL_NAMESPACE` is set before it runs. Otherwise, add scoped egress from those Pods to the `openshell-gateway` Service on TCP 8080 and to its selected Pods on the target port.
+3. Check that the API and worker Pods can reach the `openshell-gateway` Service on TCP 8080. The chart permits their outbound connections; the Gateway's ingress policy must admit them.
 4. Ask the Gateway owner to check ingress for every existing client of the management Pods, including any ingress controller or proxy that connects to them. Verify that each required client has a scoped allow on its destination port before the helper applies its rules. On a cluster that enforces NetworkPolicy, the first ingress policy selecting those Pods can isolate them for ingress.
 
 If repository credentials are already enabled, also [check Gateway egress](#check-gateway-egress-before-adding-git) before deployment.

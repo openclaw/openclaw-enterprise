@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-22 10:45"
-last_updated_session: "authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e"
+updated: "2026-11-24 23:19"
+last_updated_session: "authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76"
 ---
 
 # GitHub Actions testing flow
@@ -37,7 +37,7 @@ graph TD
   K --> G
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
-  L --> R["Full CI coverage result"]
+  L --> R["CI coverage for selected lanes"]
   C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
   P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
@@ -167,19 +167,17 @@ Without runner capture, it emits a projected diagnostic. `unavailable` means a
 failed observation; missing records do not prove healthy startup.
 
 Dedicated Codex preparation and the operator's offline profile generator share
-`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Preparation
-requires an actual workspace write and denied write to a container-writable
-outside path before publishing the selected Localhost profile to the live suite.
-Native runtime-image tests trust a dynamic Codex Docker seccomp profile only when
-`OPENCLAW_ENTERPRISE_CI_STATE` records the exact prepared
-`cluster.codexDockerSeccompProfile` path and SHA. A self-hashed profile without
-that state is not CI proof; the standalone fallback remains the pinned reviewed
-manual profile. Production node provisioning remains outside CI ownership; see
-[Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+`scripts/lib/codex-seccomp-profile.ts:deriveCodexBwrapProfile`. Before publishing
+the Localhost profile to the live suite, preparation must confirm a write inside the
+workspace succeeds and a write to a container-writable path outside it is denied.
+Native runtime-image tests require the exact `cluster.codexDockerSeccompProfile`
+path and SHA in `OPENCLAW_ENTERPRISE_CI_STATE` for dynamic profiles.
+Standalone runs fall back to the reviewed, pinned manual profile.
+[Operators provision production nodes](../guides/deploy/codex-sandbox.md).
 
-`scripts/ci/staging-qualification.ts:prepare-signin` binds verified publications
-to the reviewed v3 inputs and catalog; [staging qualification](../release/staging-qualification.md)
-owns credential isolation and historical-pair limits.
+`scripts/ci/staging-qualification.ts:prepare-signin` checks both sources before
+pulling images and rechecks them when creating the
+[sign-in plan](../release/staging-qualification.md#prepare-a-controller-pair).
 
 ### 3. Execute and account for actual cases
 
@@ -290,6 +288,10 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 23:19: Label the CI result by the lanes selected. (authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76 - 59e36d118540fd64ed43d8feddbcd9599604afd7)
+
+- 2026-11-24 22:18: Check sign-in compatibility before pulls. (authoring-run/6f832bfe-362b-4a10-a2c9-6d2e71f33bd5 - e74f86b18a839cd2b7b6d82a1c43b960f50b5f01)
 
 - 2026-11-22 10:45: Trace the shared parent-side command supervisor. (authoring-run/78c89934-02fc-415d-b3ba-2fdb677b314e - 427e14ba93239035c9cc7445dcf19710d72bab67)
 

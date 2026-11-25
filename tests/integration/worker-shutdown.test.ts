@@ -170,22 +170,13 @@ for (const failing of [
           },
         },
         closeMetrics: step("metrics"),
-        preparedGitHub: { close: step("github") },
         worker: { stopLoop: step("loop"), stop: step("worker") },
       }),
       (error) => error === failures.get(failing.first),
     );
 
     // The loop stops first and the worker's database pool closes last, with no step skipped.
-    assert.deepEqual(events, [
-      "loop",
-      "transport",
-      "prepared",
-      "receipt",
-      "metrics",
-      "github",
-      "worker",
-    ]);
+    assert.deepEqual(events, ["loop", "transport", "prepared", "receipt", "metrics", "worker"]);
     await assert.rejects(lstat(readinessPath), { code: "ENOENT" });
     // The listener is gone and its socket removed: nothing keeps the process alive.
     assert.equal(await reach(receiptPath), "ENOENT");

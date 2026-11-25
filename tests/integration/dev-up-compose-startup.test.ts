@@ -21,7 +21,7 @@ import {
   prepareLifecycleCommands,
   publicControllerOverride,
   serviceKey,
-} from "../helpers/dev-up.mjs";
+} from "../helpers/dev-up.ts";
 
 type RecordedInvocation = { args: string[] };
 type EngineInvocation = RecordedInvocation & { env: Record<string, string> };

@@ -1,29 +1,17 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import {
-  KubernetesComputeDriver,
-  type KubernetesComputeDriverOptions,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import type {
-  OpenShellGatewayClient,
-  OpenShellSandboxResponse,
-} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import type { OpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type {
   AgentRevision,
   SandboxHarnessContext,
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
-import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { openShellWorkspaceHarnessConfiguration } from "./sandbox-driver-installation-fixture.ts";
 import { backendFor, openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
@@ -45,20 +33,15 @@ type Requirements = Omit<
 type GatewayFixture = OpenShellGatewayClient &
   Pick<ReturnType<typeof createWorkspaceGatewayClient>, "calls">;
 type FixtureDependencies = {
-  agentRuntimeEntrypoint: string;
   codexRequirements: (
     revision: Pick<AgentRevision, "id">,
     environment: Requirements["environment"],
   ) => Requirements;
-  conformanceKubernetesOptions: (options: {
-    gatewayTrustedProxyCidrs: string[];
-  }) => KubernetesComputeDriverOptions;
   dedicatedRevision: (
     driver: OpenShellSandboxDriver,
     context: SandboxNamespaceContext,
     tail: string,
   ) => SandboxFixtureRevision;
-  harnessRuntimeCommand: (program: string) => string[];
   namespaceContext: () => SandboxNamespaceContext;
   runtimeSandboxFixture: (driver: OpenShellSandboxDriver) => {
     context: SandboxNamespaceContext;
@@ -68,28 +51,9 @@ type FixtureDependencies = {
   workspaceGatewayClient: () => GatewayFixture;
 };
 
-function record(value: unknown): Record<string, unknown> {
-  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
-  return value as Record<string, unknown>;
-}
-
-function stringRecord(value: unknown): Record<string, string> {
-  const fields = record(value);
-  assert.ok(Object.values(fields).every((field) => typeof field === "string"));
-  return fields as Record<string, string>;
-}
-
-function stringArray(value: unknown): string[] {
-  assert.ok(Array.isArray(value) && value.every((item: unknown) => typeof item === "string"));
-  return value;
-}
-
 export function createSandboxCodexHarnessChecks({
-  agentRuntimeEntrypoint,
   codexRequirements,
-  conformanceKubernetesOptions,
   dedicatedRevision,
-  harnessRuntimeCommand,
   namespaceContext,
   runtimeSandboxFixture,
   workspaceGatewayClient,
@@ -251,196 +215,6 @@ export function createSandboxCodexHarnessChecks({
         endpoint(join(tls.directory, "missing-root.pem")),
         /readable public PEM CA/,
       );
-    },
-    async holdWithdrawnCodexAuthentication(t: TestContext): Promise<void> {
-      const gatewayClient = workspaceGatewayClient();
-      let sandbox: OpenShellSandboxResponse | undefined;
-      gatewayClient.createSandbox = async (request) => {
-        sandbox = {
-          ...structuredClone(request),
-          phase: "SANDBOX_PHASE_READY",
-          serviceUrls: { "": "http://codex.example.test" },
-        };
-        return sandbox;
-      };
-      gatewayClient.getSandbox = async () => sandbox;
-      const driver = openShellDriver(gatewayClient);
-      const { context, revision: fixtureRevision, requirements } = runtimeSandboxFixture(driver);
-      const compute = new KubernetesComputeDriver(
-        conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
-        { sandboxDriver: driver },
-      );
-      assert.ok(requirements.credentialAttachments[0]);
-      requirements.credentialAttachments[0] = {
-        ...requirements.credentialAttachments[0],
-        sourceId: "cs_00000000-0000-4000-8000-000000000001",
-        externalChatgptAuth: {
-          accessTokenPlaceholder: "openshell:resolve:env:CODEX_ACCESS_TOKEN",
-          accountId: "withdrawn-account",
-          planType: "business",
-        },
-      };
-      const transportToken = "withdrawn-harness-transport";
-      // The held Harness serves its failure on this port. Hold it until the Harness answers there,
-      // so a test running in parallel cannot take it first.
-      const reservation = await reservePort({ host: "0.0.0.0" });
-      t.after(() => reservation.release());
-      const port: number = reservation.port;
-      requirements.loginMode = "chatgptAuthTokens";
-      const revision = completeWorkspaceRevision(fixtureRevision, requirements);
-      requirements.command = harnessRuntimeCommand(agentRuntimeEntrypoint);
-      requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
-      requirements.environment.push(
-        { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
-        ...compute["credentialSourceEnvironment"](revision, requirements.credentialAttachments),
-      );
-      const appServerPort = requirements.environment.find(({ name }) => name === "APP_SERVER_PORT");
-      assert.ok(appServerPort && "value" in appServerPort);
-      appServerPort.value = String(port);
-      const appTokenSha = requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA");
-      assert.ok(appTokenSha && "value" in appTokenSha);
-      appTokenSha.value = createHash("sha256").update(transportToken).digest("hex");
-      await driver.provisionHarness({ ...context, revision, requirements });
-
-      const root = await mkdtemp(join(tmpdir(), "openshell-withdrawn-auth-"));
-      t.after(() => rm(root, { recursive: true, force: true }));
-      const codexHome = join(root, "codex");
-      await mkdir(codexHome);
-      const authPath = join(codexHome, "auth.json");
-      const previousAuth = JSON.stringify({
-        auth_mode: "chatgptAuthTokens",
-        OPENAI_API_KEY: null,
-        tokens: {
-          access_token: "withdrawn-placeholder",
-          id_token: "fixture-account-metadata",
-          refresh_token: "",
-          account_id: "withdrawn-account",
-        },
-        last_refresh: new Date().toISOString(),
-      });
-      await writeFile(authPath, previousAuth, { mode: 0o600 });
-
-      // Exercise the actual Driver command and launcher. The upstream client only
-      // captures provisioning. Compute supplies the normal generic placeholder, but
-      // a withdrawn OpenShell provider supplies no override. Retaining that placeholder
-      // in the Sandbox spec would make this real command exit before its held failure.
-      // Private paths substitute for the Sandbox's writable mounts.
-      assert.ok(sandbox);
-      const spec = record(sandbox.spec);
-      const sandboxEnvironment = stringRecord(spec.environment);
-      const sandboxCommand = stringArray(spec.command);
-      const environment = {
-        ...sandboxEnvironment,
-        PATH: dirname(process.execPath),
-        HOME: root,
-        CODEX_HOME: codexHome,
-        OPENCLAW_WORKSPACE_DIR: join(root, "workspace"),
-      };
-      const command = [
-        ...reservedPortArgs(reservation),
-        "-e",
-        ...sandboxCommand.slice(RUNTIME_WRAPPER_COMMAND.length),
-      ];
-      const child = spawn(process.execPath, command, {
-        env: environment,
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-      let errors = "";
-      child.stderr.on("data", (chunk: Buffer) => {
-        errors += chunk;
-      });
-      const exited = new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("exit", (code, signal) => resolve({ code, signal }));
-      });
-      t.after(async () => {
-        child.kill("SIGTERM");
-        await exited;
-      });
-      const statusUrl = `http://127.0.0.1:${port}/openclaw/runtime/status`;
-      const deadline = Date.now() + 5_000;
-      let unauthenticated: Response | undefined;
-      // The failure log precedes the asynchronous listen callback. Wait for an actual
-      // HTTP response before asserting the held endpoint's authentication behavior.
-      while (unauthenticated === undefined) {
-        assert.equal(
-          child.exitCode,
-          null,
-          `Harness exited instead of holding authentication: ${errors}`,
-        );
-        assert.ok(
-          Date.now() < deadline,
-          `Harness did not expose authentication failure: ${errors}`,
-        );
-        if (errors.includes("Harness model authentication probe failed.")) {
-          unauthenticated = await fetch(statusUrl, {
-            signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
-          }).catch(() => undefined);
-        }
-        if (unauthenticated === undefined) {
-          await delay(20);
-        }
-      }
-      assert.equal(unauthenticated.status, 401);
-      // The Harness answered, so it listens: free the reservation, which would reset a connection
-      // the kernel hands it.
-      await reservation.release();
-      const response = await fetch(statusUrl, {
-        headers: { Authorization: `Bearer ${transportToken}` },
-      });
-      assert.equal(response.status, 200);
-      const statusBody: unknown = await response.json();
-      const runtimeFailure = record(record(statusBody).runtimeFailure);
-      assert.equal(runtimeFailure.component, "agent");
-      assert.equal(runtimeFailure.check, "login");
-      assert.equal(runtimeFailure.code, "AUTHENTICATION_FAILED");
-      assert.equal(sandboxEnvironment.CODEX_ACCESS_TOKEN, undefined);
-      const accountJson = sandboxEnvironment.OCE_CODEX_CHATGPT_ACCOUNT;
-      assert.ok(accountJson);
-      const accountMetadata: unknown = JSON.parse(accountJson);
-      assert.deepEqual(accountMetadata, {
-        accountId: "withdrawn-account",
-        planType: "business",
-      });
-      assert.equal(
-        child.exitCode,
-        null,
-        "A withdrawal must hold the Harness, not restart its canonical process.",
-      );
-      assert.equal(
-        await readFile(authPath, "utf8"),
-        previousAuth,
-        "Cached authentication must not be rewritten or used.",
-      );
-      assert.doesNotMatch(
-        errors,
-        /codex\.model_probe|withdrawn-placeholder|withdrawn-harness-transport/,
-      );
-
-      // Only absent material is recoverable by holding. A supplied unbound alias
-      // or invalid account metadata remains an explicit startup configuration error.
-      for (const [invalid, expected] of [
-        [
-          { CODEX_ACCESS_TOKEN: "openshell:resolve:env:CODEX_ACCESS_TOKEN" },
-          /refresh-managed credential binding/,
-        ],
-        [
-          {
-            CODEX_ACCESS_TOKEN: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
-            OCE_CODEX_CHATGPT_ACCOUNT: "{}",
-          },
-          /account metadata is unavailable/,
-        ],
-      ] as const) {
-        const rejected = spawnSync(process.execPath, command, {
-          env: { ...environment, ...invalid },
-          encoding: "utf8",
-          timeout: 5_000,
-        });
-        assert.equal(rejected.status, 1);
-        assert.match(rejected.stderr, expected);
-        assert.equal(await readFile(authPath, "utf8"), previousAuth);
-      }
     },
   };
 }

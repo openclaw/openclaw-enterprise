@@ -56,6 +56,47 @@ export function inspectedWorkspaceNodeRule({ host, port, path }: InspectedWorksp
   };
 }
 
+/** Dedicated OpenClaw's enrolled node and worker transfers use only its Agent-scoped ingress. */
+export function inspectedOpenClawWorkspaceNodeRule(route: InspectedWorkspaceNodeRoute) {
+  const base = inspectedWorkspaceNodeRule(route);
+  const { host, port, path } = route;
+  const enforcement = "NETWORK_ENFORCEMENT_MODE_ENFORCE";
+  const worker = `${path}/__openclaw__/worker`;
+  const digest = "[0123456789abcdef]".repeat(64);
+  const environment = "*";
+  const transfer = `${path}/__openclaw__/worker-transfer/v1/environments/${environment}`;
+  const rest = [
+    { method: "GET", path: `${path}/__openclaw__/worker-bundle/v1/bundles/${digest}` },
+    { method: "GET", path: `${transfer}/snapshots/${digest}/manifest` },
+    { method: "GET", path: `${transfer}/snapshots/${digest}/pack` },
+    { method: "GET", path: `${transfer}/blobs/${digest}` },
+    { method: "POST", path: `${transfer}/reconciliations/${digest}` },
+  ];
+  return {
+    ...base,
+    endpoints: [
+      base.endpoints[0]!,
+      {
+        host,
+        ports: [port],
+        protocol: "websocket",
+        path: worker,
+        enforcement,
+        rules: ["GET", "WEBSOCKET_TEXT"].map((method) => ({ allow: { method, path: worker } })),
+        deny_rules: [{ method: "HEAD", path: worker }],
+      },
+      ...rest.map(({ method, path: requestPath }) => ({
+        host,
+        ports: [port],
+        protocol: "rest",
+        path: requestPath,
+        enforcement,
+        rules: [{ allow: { method, path: requestPath } }],
+      })),
+    ],
+  };
+}
+
 /** The Setup Secret's owner and contents have already been checked by the Sandbox. */
 export function inspectedWorkspaceNodeRoute(
   computeUrl: string,
@@ -121,10 +162,16 @@ export const inspectedWorkspaceNodeTrustPrelude = String.raw`{
 
 /** Render only from the independently validated, Agent-owned setup binding. */
 export function workspaceNodeNetworkPolicy(
-  binding: Readonly<InspectedWorkspaceNodeRoute & { tls: boolean; inspected?: true }>,
+  binding: Readonly<
+    InspectedWorkspaceNodeRoute & { tls: boolean; inspected?: true; nativeWorker?: true }
+  >,
 ): Record<string, unknown> {
   if (binding.inspected === true) {
-    return { [workspaceRuleName]: inspectedWorkspaceNodeRule(binding) };
+    return {
+      [workspaceRuleName]: binding.nativeWorker
+        ? inspectedOpenClawWorkspaceNodeRule(binding)
+        : inspectedWorkspaceNodeRule(binding),
+    };
   }
   // WSS remains end to end with the Gateway route, which pins its own CA.
   const endpoint = binding.tls

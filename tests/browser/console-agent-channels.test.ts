@@ -12,7 +12,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { responseTo } from "./console-action-helpers.ts";
 import {
@@ -1121,6 +1121,31 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await expectSettledAnchor(unconfirmedTop, "confirmed access");
       assert.equal(await hasFocus(tab), true);
       assert.equal(pathRequests(requests, "GET", permissionsPath).length, 10);
+
+      // Returning to the browser tab must preserve arrow-key focus without activating it.
+      const strip = page.getByRole("tablist").filter({ has: tab });
+      const repositories = strip.getByRole("tab", { name: "Repositories", exact: true });
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await hasFocus(repositories), true);
+      assert.equal(await tab.getAttribute("aria-selected"), "true");
+      await recheck(200, true);
+      assert.equal(await hasFocus(repositories), true);
+      assert.equal(await tab.getAttribute("aria-selected"), "true");
+      const stops = await strip
+        .getByRole("tab")
+        .evaluateAll((tabs) =>
+          tabs.filter((item) => item.tabIndex >= 0).map((item) => item.textContent?.trim()),
+        );
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(
+        await strip.evaluate((list) => list.matches(":focus-within")),
+        false,
+        "Shift+Tab leaves the Agent tabs in one step",
+      );
+      await page.keyboard.press("Tab");
+      assert.equal(await hasFocus(tab), true, "Tab returns to the selected Channels tab");
+      assert.deepEqual(stops, ["Repositories"]);
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 11);
       assert.deepEqual(nonAuthWriteRequests(requests), []);
     });
   }

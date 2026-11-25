@@ -26,6 +26,7 @@ type ControllerTopologyManifestInputs = {
   authSecret: string;
   controller: { apiAccount: string; account: string };
   controllerImage: string;
+  controlPlaneAuditEnabled?: boolean;
   databaseAddress: string;
   databaseServiceName: string;
   inClusterDatabaseUrl: URL;
@@ -56,6 +57,7 @@ export function buildControllerTopologyManifests({
   authSecret,
   controller,
   controllerImage,
+  controlPlaneAuditEnabled,
   databaseAddress,
   databaseServiceName,
   inClusterDatabaseUrl,
@@ -122,6 +124,9 @@ export function buildControllerTopologyManifests({
   ];
   const apiEnvironment: EnvironmentVariable[] = [
     { name: "NODE_ENV", value: "production" },
+    ...(controlPlaneAuditEnabled
+      ? [{ name: "OCC_CONTROL_PLANE_AUDIT_ENABLED", value: "true" }]
+      : []),
     {
       name: "OCC_CONFIG_PATH",
       value: "/etc/openclaw/installation/installation.yaml",
@@ -327,6 +332,7 @@ export function buildControllerTopologyManifests({
                   [
                     "NODE_ENV",
                     "OCC_CONFIG_PATH",
+                    "OCC_CONTROL_PLANE_AUDIT_ENABLED",
                     "OCC_DATABASE_URL",
                     "OCC_GATEWAY_API_KEY_PATH",
                     "NODE_EXTRA_CA_CERTS",

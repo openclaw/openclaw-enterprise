@@ -121,18 +121,14 @@ test("Full Integration partitions OpenShell without changing the default focused
   assert.ok(
     selected
       .lane("openshell-installers")
-      .files.some(
-        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
-      ),
-    "tests/integration/openshell-git-finite-removal-real.test.ts must be in openshell-installers",
+      .files.some(({ path }) => path === "tests/integration/dev-up-openshell-k3d-real.test.mjs"),
+    "tests/integration/dev-up-openshell-k3d-real.test.mjs must be in openshell-installers",
   );
   assert.ok(
     !selected
       .lane("openshell-policy")
-      .files.some(
-        ({ path }) => path === "tests/integration/openshell-git-finite-removal-real.test.ts",
-      ),
-    "tests/integration/openshell-git-finite-removal-real.test.ts must be absent from openshell-policy",
+      .files.some(({ path }) => path === "tests/integration/dev-up-openshell-k3d-real.test.mjs"),
+    "tests/integration/dev-up-openshell-k3d-real.test.mjs must be absent from openshell-policy",
   );
   const allFiles = shards.flatMap((name) => selected.lane(name).files);
   assert.equal(allFiles.length, canonical.files.length);
@@ -313,15 +309,15 @@ test("both complete OpenShell receipts are required by targeted and full aggrega
     const cleanup = makeReceipt(installers);
     present(cleanup.files[0]).cleanup.status = "failed";
     reject(cleanup, "cleanup-failed");
-    // A successful lane receipt cannot omit the finite-removal file's complete evidence.
+    // A successful lane receipt cannot omit the development installation file's complete evidence.
     const missingFile = makeReceipt(installers);
     missingFile.files = missingFile.files.filter(
-      ({ path }) => path !== "tests/integration/openshell-git-finite-removal-real.test.ts",
+      ({ path }) => path !== "tests/integration/dev-up-openshell-k3d-real.test.mjs",
     );
     writeJson(receiptPath, missingFile);
     assertIssue(aggregate(group), "missing-lane-evidence", {
       lane: "openshell-installers",
-      file: "tests/integration/openshell-git-finite-removal-real.test.ts",
+      file: "tests/integration/dev-up-openshell-k3d-real.test.mjs",
     });
   }
 });

@@ -16,7 +16,7 @@ import {
   runDevDown,
   runDevUp,
 } from "../helpers/dev-up-commands.ts";
-import { createFixture, prepareLifecycleCommands, serviceKey } from "../helpers/dev-up.mjs";
+import { createFixture, prepareLifecycleCommands, serviceKey } from "../helpers/dev-up.ts";
 import { registerKubernetesRecoveryCases } from "./dev-up-kubernetes-recovery-cases.ts";
 import {
   registerFreshShellCustodyCases,

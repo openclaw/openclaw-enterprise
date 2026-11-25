@@ -391,6 +391,11 @@ export interface OpenShellSandboxObserver {
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
+  /** Complete paginated Workspace Sandbox inventory. */
+  listSandboxes?(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellSandboxResponse[]>;
 }
 
 /** Narrows a gateway client to its Sandbox record read; the result exposes nothing else. */
@@ -2037,6 +2042,65 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
+  }
+
+  async listSandboxes(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellSandboxResponse[]> {
+    const selectedWorkspace = nonempty(workspace, "OpenShell Workspace");
+    const sandboxes: OpenShellSandboxResponse[] = [];
+    const ids = new Set<string>();
+    const names = new Set<string>();
+    const tokens = new Set<string>();
+    let pageToken = "";
+    do {
+      signal.throwIfAborted();
+      const response = await this.unary(
+        "ListSandboxes",
+        {
+          workspace_scope: { workspace: selectedWorkspace },
+          page_size: 100,
+          page_token: pageToken,
+        },
+        signal,
+      );
+      const page = response.sandboxes ?? [];
+      const next = response.next_page_token ?? "";
+      if (
+        !Array.isArray(page) ||
+        typeof next !== "string" ||
+        (next !== "" && (next.trim() !== next || tokens.has(next)))
+      ) {
+        throw new OpenShellGatewayFailure("OpenShell ListSandboxes returned an invalid page.");
+      }
+      for (const value of page) {
+        const sandbox = sandboxResponse(
+          { sandbox: value },
+          "ListSandboxes",
+          this.options.endpoint,
+          false,
+        );
+        if (
+          !sandbox.id ||
+          sandbox.workspace !== selectedWorkspace ||
+          ids.has(sandbox.id) ||
+          names.has(sandbox.name)
+        ) {
+          throw new OpenShellGatewayFailure(
+            "OpenShell ListSandboxes returned an invalid Sandbox identity.",
+          );
+        }
+        ids.add(sandbox.id);
+        names.add(sandbox.name);
+        sandboxes.push(sandbox);
+      }
+      if (next) {
+        tokens.add(next);
+      }
+      pageToken = next;
+    } while (pageToken);
+    return sandboxes;
   }
 
   async getService(

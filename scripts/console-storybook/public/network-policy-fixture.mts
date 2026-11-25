@@ -507,6 +507,7 @@ export function createNetworkPolicyFixture(
           "The preview requires network additions with string identities and numeric port ranges.",
         );
       }
+      const explicit = "repositoryNetworkPolicy" in body;
       if (protectedExecution && body.additions.length > 0) {
         return error(
           409,
@@ -514,7 +515,6 @@ export function createNetworkPolicyFixture(
           "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
         );
       }
-      const explicit = "repositoryNetworkPolicy" in body;
       const savedGrants = sandboxPolicy.repositoryNetworkPolicy;
       if (simulateRepositoryConflict && explicit && savedGrants?.length === 2) {
         // Simulate a second editor removing the application grant before this save.
