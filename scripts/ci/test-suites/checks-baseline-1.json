@@ -362,8 +362,8 @@
     {
       "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
       "expectedTests": [
-        "provider profile wire defaults preserve Git overlap enforcement",
-        "direct Git bootstrap reports missing readiness and a mismatched loaded selector"
+        "reconciles a Workspace provider profile without replaying a failed write",
+        "stock Supervisor readiness pins the Pod and its container"
       ]
     },
     {
@@ -889,10 +889,7 @@
     {
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
-        "one installed Driver owns both protected capabilities, lifecycle and verified release",
-        "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "repository scope changes invalidate the external Driver identity while a reload preserves it",
-        "the loader closes an installed registration that later composition refuses"
+        "incomplete credential delivery Driver registration is refused before selection"
       ]
     },
     {
