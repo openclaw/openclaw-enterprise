@@ -10,9 +10,9 @@ select **Enable browser chat** before **Create Agent**. After deployment,
 select **Open chat** with `operate` permission or **Open Agent UI** with
 `administer` permission on that exact Agent.
 
-The checkbox supports ordinary creation and guided provisioning after Installation
-native access is enabled; see [creation requirements](../../reference/agent-native-admin.md#enable-during-creation).
-For an existing Agent, follow [Configure each Agent](#configure-each-agent).
+Ordinary creation and guided provisioning require [Installation native access](../../reference/agent-native-admin.md#enable-during-creation)
+for browser chat. For an existing Agent, [enable access](#configure-each-agent)
+or [turn off the Gateway dashboard](../console/configuration-plugins-and-files.md#turn-off-the-gateway-control-ui).
 
 The [local OpenShell quickstart](local-setup.md) includes native admin setup,
 browser onboarding and reopening the same conversation.

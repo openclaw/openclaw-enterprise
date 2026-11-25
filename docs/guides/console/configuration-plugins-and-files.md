@@ -89,6 +89,45 @@ selection if you moved to another control while saving. If you stayed on
 Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
+### Turn off the Gateway Control UI
+
+Open **Open draft** → **Configuration** → **Edit Configuration**. Set
+`enabled` to `false` in the existing `gateway.controlUi` object. If the key is
+missing, merge this fragment into the native JSON:
+
+```json
+{ "gateway": { "controlUi": { "enabled": false } } }
+```
+
+Select **Save Configuration**, then **Deploy new version**. The deployed
+Gateway stops serving its browser dashboard, including native browser chat.
+You can still manage the Agent in the OCE Console. If other Agents share the
+Configuration, they pick up the setting on their next deployment. The Helm
+setting `agentNativeAdmin.enabled` controls access through OCC across the Installation.
+
+To use this default for new Agents, set
+`template.configuration.values.gateway.controlUi.enabled` to `false` in their
+[Namespace Preset](../../reference/presets.md#variables). Leave **Enable browser
+chat** unchecked during creation. Selecting it explicitly turns the Control UI on.
+
+To let each Agent creator choose, merge this fragment into the Preset's
+`template` object. The chooser starts with the dashboard enabled.
+
+```json
+{
+  "variables": {
+    "controlUiEnabled": {
+      "type": "boolean",
+      "description": "Serve the Gateway dashboard",
+      "default": true
+    }
+  },
+  "configuration": {
+    "values": { "gateway": { "controlUi": { "enabled": "{{ vars.controlUiEnabled }}" } } }
+  }
+}
+```
+
 ## Plugins tab
 
 In **Open draft** → **Plugins**, edit the Agent's existing selections and
