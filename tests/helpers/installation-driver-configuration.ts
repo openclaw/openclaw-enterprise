@@ -1,7 +1,6 @@
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/installation-fields.ts";
 import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { KubernetesConfigurationDriverOptions } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import type { OpenShellCredentialGatewayOptions } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellProxyOptions } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -93,7 +92,6 @@ export function createCredentialProxyInstallationConfiguration() {
       },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_gateway: "openshell-credentials",
         credential_proxy: "openshell-egress",
       },
     },
@@ -123,12 +121,6 @@ export function createCredentialProxyInstallationConfiguration() {
       },
     } satisfies OpenShellSandboxDriverOptions,
   };
-  const credentialGateway = {
-    id: "openshell-credentials",
-    configuration: {
-      binaries: ["/usr/bin/model-client"],
-    } satisfies OpenShellCredentialGatewayOptions,
-  };
   const credentialProxy = {
     id: "openshell-egress",
     configuration: {
@@ -152,7 +144,6 @@ export function createCredentialProxyInstallationConfiguration() {
     drivers: {
       ...configuration.drivers,
       sandbox,
-      credential_gateway: credentialGateway,
       credential_proxy: credentialProxy,
     },
   };

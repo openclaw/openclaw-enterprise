@@ -51,22 +51,30 @@ For `--verify-agent`, keep `agent-continuity.json` and review
 workload roles, then resume with the same selection. Resume skips successful
 Helm work. A replacement revision requires separate recovery and verification.
 
-Review `native-command-failures.tsv`. Settle outstanding operations. Before retrying,
-privately copy the journals, last prepared `quiescence-<component>-patch.json` and
-`current-<component>-deployment.json`. Compare them with both live Deployments.
-The files alone prove neither submission nor acceptance.
+Settle outstanding operations. Review `native-command-failures.tsv` and
+`quiescence-<component>-preview.err`. Privately back up journals,
+`quiescence-<component>-patch.json` and `current-<component>-deployment.json`
+before retrying. Compare both Deployments. Saved requests cannot prove acceptance.
 
-At zero Worker replicas, further quiescence requires a valid
-`worker-stop-confirmed.json`.
-Privately restore only an authentic copy from this attempt. Live state, the
-request and the handoff cannot reconstruct the receipt.
+At zero Worker replicas, further shutdown requires this attempt's
+`worker-stop-confirmed.json`. Only restore an authentic private copy.
+Live state and handoff records cannot reconstruct it.
 
-After handoff or possible SQL or Helm submission, keep both writers fenced
-and reconcile with the release and database owners. Restarting either writer
-invalidates the handoff. Before handoff or submission, the release owner can
-restore compatible writers under exclusive maintenance after checking Helm,
-the mounted Installation Secret, database history and outstanding work.
-Resume rechecks inventory before a fresh stop.
+After handoff or possible SQL or Helm submission, keep both writers stopped.
+Restarting either invalidates the handoff. Consult the release and database owners.
+
+### Restore incumbent API access after partial quiescence
+
+Before handoff or submission, the release owner can restore compatible writers
+under exclusive maintenance. Check Helm, the mounted Installation Secret,
+database history and outstanding work. If only the API stopped, use one JSON Patch.
+Test the original UID, verified resource version and zero replicas before restoring
+the recorded count. Verify inventory access before resuming.
+
+Preserve `channel-agent-operations.json`. A Stop marked `sending` blocks resume.
+Reconcile Agent state, revisions and audit records. Resolve permission or admission denials.
+
+### Reconcile Helm and migration
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the database;
@@ -272,7 +280,7 @@ keeping baseline files matched to live state.
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `auth.google.allowedDomains` set while Google is disabled                                                                                                                         | Remove the list.                                                                                                                                                                                                |
-| `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
+| `""` or `{}` for a sign-in allowlist                                                                                                                                              | Write `[]` or remove the key.                                                                                                                                                                                   |
 | An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
 | An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusts forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead.                                                                                                              |
 | A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode Agent suffix                                                                                 | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-09-30
-last_updated_session: authoring-run/690d00a9-936c-427d-8467-7ad6552327de
+updated: "2026-11-24 23:19"
+last_updated_session: "authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76"
 ---
 
 # ClawSweeper dispatch flow
@@ -43,7 +43,7 @@ graph TD
 
 `.github/workflows/clawsweeper-dispatch.yml:19`
 
-The called [admission workflow](https://github.com/openclaw/clawsweeper/blob/7829cdce71310b549c119c670e7bd69e04f7e242/.github/workflows/hosted-target-admission.yml) checks the target against its eligibility registry, then checks current GitHub repository identity and public visibility. The executable workflow is pinned; its separate registry input defaults to `main`, so eligibility can change independently. A terminal or unverifiable result prevents dispatch and produces a notice or warning.
+The admission workflow [pinned by the dispatcher](../../.github/workflows/clawsweeper-dispatch.yml#L19-L20) checks the target against its eligibility registry, then checks current GitHub repository identity and public visibility. The executable workflow is pinned; its separate registry input defaults to `main`, so eligibility can change independently. A terminal or unverifiable result prevents dispatch and produces a notice or warning.
 
 ### 2. Prepare credentials and acknowledgements
 
@@ -104,6 +104,8 @@ After the first eligible issue, pull request, or command event following merge, 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 23:19: Link to the admission workflow pin in the dispatcher. (authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76 - 59e36d118540fd64ed43d8feddbcd9599604afd7)
 
 - 2026-09-30 09:40: Move setup, first-run verification, and recovery details from the CI guide. (authoring-run/690d00a9-936c-427d-8467-7ad6552327de - 4e2fa1b7cc600752c415cf8537e3adcc35451253)
 - 2026-09-30 00:24: Document admission and best-effort acknowledgement in the accompanying workflow change. (authoring-run/87dad345-a295-4885-a18f-5d6813b458ea - 97f7c1ca923328adc530160fb9d73eadb74bc36f)

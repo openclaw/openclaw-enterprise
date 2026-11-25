@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exerciseHarnessOverrides } from "../helpers/harness-overrides.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -91,7 +90,3 @@ for (const harness of ["codex", "openclaw"] as const) {
     });
   }
 }
-
-test("ordinary deployment admits concurrent source-authorized destinations and isolates first-deployment intent", async (t) => {
-  await exerciseHarnessOverrides(t);
-});

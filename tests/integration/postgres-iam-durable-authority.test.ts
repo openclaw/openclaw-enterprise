@@ -5,7 +5,7 @@ import type { Pool, PoolClient } from "pg";
 
 import { betterAuthIssuer, humanLoginConfiguration } from "../../apps/controller/src/auth/index.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
-import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -209,14 +209,13 @@ async function withdrawalFirst<T>(
 }
 
 async function createFixture(t: TestContext) {
-  const preparedTokens = new TokenService();
   const secretDriver = createTestSecretDriver();
   const fixture = await createPostgresAgentApp(t, {
     label: "durable-authority",
     authSecret: "durable-authority-fixture-session-secret",
     poolOptions: { max: 10, connectionTimeoutMillis: 5000 },
     secretDriver,
-    controllerOptions: { preparedTokens, iamConfiguration: policy(true) },
+    controllerOptions: { iamConfiguration: policy(true) },
     appOptions: {
       publicOrigin,
       provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
@@ -243,13 +242,22 @@ async function createFixture(t: TestContext) {
     );
     await authentication.provisionPasswordAccount(prepared, seed, audit, external);
   };
-  preparedTokens.registerIssuer(
+  const instanceId = await controller.activateTokenServiceInstance("durable-oauth", randomUUID());
+  const tokenOwner = new OCCTokenServiceDriver(
+    "durable-oauth",
+    controller.installation.id,
+    secretDriver.privateSecrets,
+    instanceId,
+    state,
+    undefined,
     new OAuthAccountTokens(
       state,
-      secretDriver,
+      secretDriver.privateSecrets,
       controller.resolveConnectionClient.bind(controller),
     ),
   );
+  controller.registerDriver(tokenOwner);
+  controller.selectDriver("token_service", tokenOwner.id);
   await controller.applyIAMConfiguration();
 
   const administratorRoles = await pool.query<{ role_id: string }>(
@@ -311,14 +319,19 @@ async function createFixture(t: TestContext) {
       controller.installation,
       {
         state,
-        preparedTokens,
         iamConfiguration,
         recordOperations: false,
         ...extra,
       },
       repositoryAdmission,
     );
-    for (const capability of ["iam", "compute", "configuration", "secret"] as const) {
+    for (const capability of [
+      "iam",
+      "compute",
+      "configuration",
+      "secret",
+      "token_service",
+    ] as const) {
       const driver = controller.selectedDriver(capability);
       next.registerDriver(driver);
       next.selectDriver(capability, driver.id);
@@ -405,6 +418,7 @@ test(
     const f = await createFixture(t);
     const originalFetch = globalThis.fetch;
     let exchanges = 0;
+    let refreshes = 0;
     t.mock.method(
       globalThis,
       "fetch",
@@ -415,6 +429,11 @@ test(
         }
         assert.equal(request.method, "POST");
         const body = new URLSearchParams(await request.text());
+        if (body.get("grant_type") === "refresh_token") {
+          assert.ok(body.get("refresh_token")?.startsWith("fixture-refresh-"));
+          refreshes++;
+          return Response.json({ error: "invalid_grant" }, { status: 400 });
+        }
         assert.equal(body.get("grant_type"), "authorization_code");
         assert.ok(body.get("code")?.startsWith("fixture-"));
         assert.ok(body.get("code_verifier"));
@@ -443,26 +462,31 @@ test(
         }),
         201,
       );
-      data(
-        await f.inject("POST", "/oauth-clients", {
-          connectionTemplateId: template.id,
-          connectionTemplateVersion: template.current.version,
+      const client = data<{ id: string }>(
+        await f.inject("POST", "/credential-clients", {
+          kind: "oauth2",
+          namespaceId,
+          issuer,
+          tokenUrl,
           displayName: "Durable public fixture",
           clientId: "durable-" + randomUUID(),
           tokenEndpointAuthMethod: "none",
         }),
         201,
       );
-      const started = data<{ credentialSourceId: string; authorizationUrl: string }>(
+      const started = data<{ authorizationUrl: string; expiresAt: string }>(
         await f.request("POST", `/namespaces/${namespaceId}/connections`, {
           connectionTemplateId: template.id,
+          oauthClientId: client.id,
         }),
         201,
       );
       const state = new URL(started.authorizationUrl).searchParams.get("state");
       assert.ok(state);
+      assert.equal(Object.hasOwn(started, "credentialSourceId"), false);
       return {
-        id: started.credentialSourceId,
+        connectionTemplateId: template.id,
+        oauthClientId: client.id,
         complete: () =>
           f.request(
             "GET",
@@ -472,83 +496,90 @@ test(
       };
     }
 
-    async function connectionEffects(namespaceId: string, sourceId: string, expected: 0 | 1) {
-      const saved = await f.state.read((unit) =>
-        unit.savedConnections.findSavedConnection(namespaceId, sourceId),
+    async function connectionEffects(namespaceId: string, expected: 0 | 1) {
+      const result = await f.pool.query<{ id: string; state: string }>(
+        "SELECT id,state FROM occ.credential_sources WHERE namespace_id=$1 AND owner_capability='token_service' AND type='oauth2-refresh-token'",
+        [namespaceId],
       );
-      const source = await f.state.read((unit) =>
-        unit.credentialSources.findCredentialSource(namespaceId, sourceId),
-      );
+      assert.equal(result.rowCount, expected);
       const policy = await f.state.loadNativeIAMState();
       const bindings = policy.bindings.filter(
-        (binding) => binding.id === `binding_${sourceId}_connection_owner`,
+        (binding) =>
+          binding.namespaceId === namespaceId &&
+          binding.subjectId === f.actor.id &&
+          binding.resourceKind === "credential_source",
       );
-      assert.equal(saved === undefined ? 0 : 1, expected);
-      assert.equal(source?.state === "ready" ? 1 : 0, expected);
       assert.equal(bindings.length, expected);
-      assert.equal(await f.effects("openclaw.namespaces.connections.complete", sourceId), expected);
-      assert.equal(
-        (await f.decision("operate", "credential_source", sourceId, namespaceId)).allowed,
-        expected === 1,
-      );
       if (expected === 1) {
+        const source = result.rows[0]!;
+        assert.equal(source.state, "ready");
+        assert.equal(await f.effects("openclaw.namespaces.connections.complete", source.id), 1);
+        assert.equal(
+          (await f.decision("operate", "credential_source", source.id, namespaceId)).allowed,
+          true,
+        );
         const binding = bindings[0]!;
         assert.equal(binding.subjectId, f.actor.id);
-        assert.equal(binding.resourceId, sourceId);
+        assert.equal(binding.resourceId, source.id);
         assert.deepEqual(policy.roles.find((role) => role.id === binding.roleId)?.permissions, [
           { resourceKind: "credential_source", action: "read" },
           { resourceKind: "credential_source", action: "operate" },
         ]);
+        return source.id;
       }
     }
 
-    await t.test("Connection callback holds authority through COMMIT", async () => {
+    await t.test("OAuth callback refuses a previously withdrawn Source-create grant", async () => {
       await f.reset();
       const namespaceId = await f.namespace();
       const attempt = await connection(namespaceId);
-      assert.equal(
-        (await f.decision("create", "credential_source", namespaceId, namespaceId)).allowed,
-        true,
-      );
+      await f.withdraw();
       const before = exchanges;
-      const response = await authorityFirst(f.pool, namespaceId, attempt.complete, () =>
-        f.withdraw(),
-      );
+      const response = await attempt.complete();
       assert.equal(response.statusCode, 303);
-      assert.match(String(response.headers.location), /connection=connected/);
-      assert.equal(exchanges, before + 1);
-      await connectionEffects(namespaceId, attempt.id, 1);
-      assert.equal(
-        (await f.decision("create", "credential_source", namespaceId, namespaceId)).allowed,
-        false,
-      );
+      assert.match(String(response.headers.location), /connection=failed/);
+      assert.equal(exchanges, before, "a denied callback does not redeem the provider code");
+      await connectionEffects(namespaceId, 0);
     });
 
     await t.test(
-      "Connection callback refuses a preceding withdrawal without owner authority",
+      "OAuth refuses consent when the selected IAM cannot grant Source ownership",
       async () => {
         await f.reset();
         const namespaceId = await f.namespace();
         const attempt = await connection(namespaceId);
-        assert.equal(
-          (await f.decision("create", "credential_source", namespaceId, namespaceId)).allowed,
-          true,
-        );
-        const before = exchanges;
-        const response = await withdrawalFirst(f.pool, attempt.complete, () => f.withdraw());
-        assert.equal(response.statusCode, 303);
-        assert.match(String(response.headers.location), /connection=failed/);
-        assert.equal(exchanges, before + 1);
-        await connectionEffects(namespaceId, attempt.id, 0);
-        assert.equal(
-          (await f.decision("create", "credential_source", namespaceId, namespaceId)).allowed,
-          false,
-        );
+        // Authorization still reads real Native IAM policy; only its optional binding writer is absent.
+        const unsupportedIAM = new NativeIAMDriver(f.state, { id: "durable-iam-without-binding" });
+        Object.defineProperty(unsupportedIAM, "createNamespaceAccessBinding", { value: undefined });
+        f.controller.registerDriver(unsupportedIAM);
+        f.controller.selectDriver("iam", unsupportedIAM.id);
+        try {
+          const before = exchanges;
+          const start = await f.request("POST", `/namespaces/${namespaceId}/connections`, {
+            connectionTemplateId: attempt.connectionTemplateId,
+            oauthClientId: attempt.oauthClientId,
+          });
+          assert.equal(start.statusCode, 503, start.body);
+          const states = await f.pool.query<{ count: number }>(
+            "SELECT count(*)::integer AS count FROM occ.authentication_states WHERE namespace_id=$1 AND kind='oauth_connection'",
+            [namespaceId],
+          );
+          assert.equal(states.rows[0]?.count, 1, "only the earlier authorized attempt exists");
+
+          // A separate callback must recheck the selected IAM before redeeming the one-use code.
+          const callback = await attempt.complete();
+          assert.equal(callback.statusCode, 303);
+          assert.match(String(callback.headers.location), /connection=failed/);
+          assert.equal(exchanges, before, "an unsupported owner grant cannot redeem the code");
+          await connectionEffects(namespaceId, 0);
+        } finally {
+          f.controller.selectDriver("iam", f.iam.id);
+        }
       },
     );
 
     await t.test(
-      "unchanged Connection authority creates exactly its read/operate binding",
+      "OAuth Source owner can disconnect with its read/operate binding and no delete grant",
       async () => {
         await f.reset();
         const namespaceId = await f.namespace();
@@ -556,9 +587,105 @@ test(
         const response = await attempt.complete();
         assert.equal(response.statusCode, 303);
         assert.match(String(response.headers.location), /connection=connected/);
-        await connectionEffects(namespaceId, attempt.id, 1);
+        const sourceId = await connectionEffects(namespaceId, 1);
+        assert.ok(sourceId);
+        assert.equal(
+          (await f.decision("delete", "credential_source", sourceId, namespaceId)).allowed,
+          false,
+        );
+        const sourcePath = `/namespaces/${namespaceId}/credential-sources/${sourceId}`;
+        const ownerBinding = (await f.state.loadNativeIAMState()).bindings.find(
+          (binding) => binding.id === `binding_${sourceId}_connection_owner`,
+        );
+        assert.ok(ownerBinding);
+        const removedOwner = await f.inject(
+          "DELETE",
+          `/namespaces/${namespaceId}/iam/access-bindings/${ownerBinding.id}`,
+        );
+        assert.equal(removedOwner.statusCode, 204, removedOwner.body);
+        assert.equal(
+          (await f.decision("read", "credential_source", sourceId, namespaceId)).allowed,
+          false,
+        );
+        assert.equal(
+          (await f.decision("operate", "credential_source", sourceId, namespaceId)).allowed,
+          false,
+        );
+        const denied = await f.request("DELETE", sourcePath);
+        assert.equal(denied.statusCode, 403, denied.body);
+        const retained = await f.pool.query(
+          `SELECT s.state, c.credential_source_id FROM occ.credential_sources s
+           JOIN occ.connection_token_custody c ON c.namespace_id=s.namespace_id AND c.credential_source_id=s.id
+           WHERE s.namespace_id=$1 AND s.id=$2`,
+          [namespaceId, sourceId],
+        );
+        assert.deepEqual(retained.rows, [{ state: "ready", credential_source_id: sourceId }]);
+        const restored = await f.inject("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+          roleId: ownerBinding.roleId,
+          subjectKind: ownerBinding.subjectKind,
+          subjectId: ownerBinding.subjectId,
+          resourceKind: "credential_source",
+          resourceId: sourceId,
+        });
+        assert.equal(restored.statusCode, 201, restored.body);
+        const disconnected = await f.request("DELETE", sourcePath);
+        assert.equal(disconnected.statusCode, 204, disconnected.body);
+        const deletionAudit = await f.pool.query(
+          `SELECT details->'removedAccessBindings' AS removed FROM occ.audit_events
+           WHERE action='openclaw.credential_sources.delete' AND resource_id=$1 AND outcome='success'
+             AND details ? 'removedAccessBindings'`,
+          [sourceId],
+        );
+        assert.equal(deletionAudit.rowCount, 1);
+        assert.deepEqual(deletionAudit.rows[0].removed, [
+          {
+            id: restored.json().data.id,
+            subjectKind: ownerBinding.subjectKind,
+            subjectId: ownerBinding.subjectId,
+            roleId: ownerBinding.roleId,
+            resourceKind: "credential_source",
+            resourceId: sourceId,
+          },
+        ]);
       },
     );
+
+    await t.test("OAuth Source refuses PATCH and audits a failed issuer refresh", async () => {
+      await f.reset();
+      const namespaceId = await f.namespace();
+      const attempt = await connection(namespaceId);
+      const connected = await attempt.complete();
+      assert.equal(connected.statusCode, 303);
+      assert.match(String(connected.headers.location), /connection=connected/);
+      const sourceId = await connectionEffects(namespaceId, 1);
+      assert.ok(sourceId);
+      const sourcePath = `/namespaces/${namespaceId}/credential-sources/${sourceId}`;
+
+      // OAuth material can change only through provider exchange, even for an administrator.
+      const before = refreshes;
+      const rejected = await f.inject("PATCH", sourcePath, { secret: randomUUID() });
+      assert.equal(rejected.statusCode, 409, rejected.body);
+      assert.equal(rejected.json().error.message, "Only a static Source can be updated.");
+      assert.equal(refreshes, before);
+      const failed = await f.inject("POST", `${sourcePath}/rotate`);
+      assert.equal(failed.statusCode, 503, failed.body);
+      assert.equal(refreshes, before + 1);
+
+      const audit = await f.pool.query(
+        `SELECT actor_id, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+         FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2
+           AND action='openclaw.credential_sources.rotate'
+           AND details->'__occAuditMetadata'->>'requestId'=$3`,
+        [namespaceId, sourceId, failed.headers["x-request-id"]],
+      );
+      assert.deepEqual(audit.rows, [
+        {
+          actor_id: f.principal.id,
+          outcome: "failure",
+          reason_code: "CREDENTIAL_REFRESH_ROTATION_FAILED",
+        },
+      ]);
+    });
 
     function repositoryCompute() {
       const resources = {
@@ -679,7 +806,10 @@ test(
             name: "Durable repository approval",
             configurationId: configuration.id,
             harnessAuth: { method: "api_key", source: secret.ref },
-            repositoryBindings: [{ repositoryRef: "fixture-repository", profile: "git-read" }],
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: "fixture-repository", profile: "git-read" }],
+            },
           },
           app,
         ),

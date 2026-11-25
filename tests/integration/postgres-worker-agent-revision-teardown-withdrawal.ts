@@ -297,7 +297,11 @@ function testPolicyWithdrawal(setup: RevisionSetup) {
             undefined,
             undefined,
             undefined,
-            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+            undefined,
+            {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+            },
           ),
         );
         return required(
@@ -340,7 +344,7 @@ function testPolicyWithdrawal(setup: RevisionSetup) {
           namespaceId,
           agentId: owner.id,
           configurationId: owner.configurationId,
-          repositoryBindings: [],
+          repositoryAccess: { defaultProfile: "git-write", repositories: [] },
         });
         assert.equal(
           await queue.repositoryExpiryState({

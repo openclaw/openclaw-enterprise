@@ -6,17 +6,20 @@ import {
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type AccessBinding,
   type Backend,
+  type CredentialClientSecretInstance,
   type CredentialProxyDriver,
   type CredentialSource,
   type CredentialSourceReference,
   type ErrorDetail,
   type JSONSchema,
   type Namespace,
+  type OAuthClientSecretInstance,
   type ResolvedCredential,
   type SourceLifecycleConfig,
   type SourceRefreshOperation,
   type SourceRegistrationInput,
   type SourceUpdate,
+  type StoredCredentialSource,
   type TokenServiceDriver,
   type TokenServiceSourceInstance,
 } from "@openclaw-enterprise/contracts";
@@ -87,22 +90,15 @@ function ownershipConflict(): never {
 }
 
 function validateLifecycle(config: SourceLifecycleConfig): void {
-  if (config.type !== "static" || Object.keys(config.settings).length !== 0) {
+  if (Object.keys(config.settings).length !== 0) {
     throw new TokenServiceSourceInputError(
       "OpenShell requires a static Source with no lifecycle settings.",
     );
   }
 }
 
-function staticCredential(secret: SourceRegistrationInput["secret"]): string {
-  const values = Object.values(secret);
-  const value = values[0];
-  if (
-    values.length !== 1 ||
-    !isNonEmptyString(value) ||
-    value.includes("\0") ||
-    !value.isWellFormed()
-  ) {
+function staticCredential(value: string): string {
+  if (!isNonEmptyString(value) || value.includes("\0") || !value.isWellFormed()) {
     throw new TokenServiceSourceInputError(
       "A static Source requires one nonempty UTF-8 credential value.",
     );
@@ -162,6 +158,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
 
   readonly capability = "token_service";
   readonly implementation = OpenShellTokenServiceDriver.implementation;
+  readonly clientScopes: TokenServiceDriver["clientScopes"] = Object.freeze({});
   readonly id: string;
   private readonly options: OpenShellTokenServiceOptions;
 
@@ -176,6 +173,43 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
         "The selected OpenShell Backend must declare this TokenService Driver.",
       );
     }
+  }
+
+  private unsupportedClient(signal: AbortSignal): never {
+    signal.throwIfAborted();
+    throw new ResourceStateConflictError(
+      "The OpenShell TokenService does not support credential Clients.",
+    );
+  }
+
+  async registerClientSecret(
+    _client: CredentialClientSecretInstance,
+    _secret: string,
+    signal: AbortSignal,
+  ): Promise<never> {
+    return this.unsupportedClient(signal);
+  }
+
+  async updateClientSecret(
+    _client: CredentialClientSecretInstance,
+    _secret: string,
+    signal: AbortSignal,
+  ): Promise<never> {
+    return this.unsupportedClient(signal);
+  }
+
+  async resolveClientSecret(
+    _client: OAuthClientSecretInstance,
+    signal: AbortSignal,
+  ): Promise<never> {
+    return this.unsupportedClient(signal);
+  }
+
+  async removeClientSecret(
+    _client: CredentialClientSecretInstance,
+    signal: AbortSignal,
+  ): Promise<never> {
+    return this.unsupportedClient(signal);
   }
 
   private ownedRef(source: TokenServiceSourceInstance): CredentialSourceReference {
@@ -193,7 +227,10 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     return ref;
   }
 
-  private locator(source: Readonly<CredentialSource> | undefined, state: "ready" | "deleting") {
+  private locator(
+    source: Readonly<StoredCredentialSource> | undefined,
+    state: "ready" | "deleting",
+  ) {
     if (
       source?.ownerCapability !== "token_service" ||
       source.tokenServiceInstanceId !== this.options.tokenServiceInstanceId ||
@@ -206,7 +243,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     if (!isNonEmptyString(ref?.workspaceId) || !isNonEmptyString(ref?.providerId)) {
       ownershipConflict();
     }
-    return { workspaceId: ref.workspaceId, providerId: ref.providerId };
+    return { source, workspaceId: ref.workspaceId, providerId: ref.providerId };
   }
 
   private labels(ref: CredentialSourceReference): Readonly<Record<string, string>> {
@@ -326,6 +363,11 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     if (!isNonEmptyString(input.namespaceId) || !isName(input.name)) {
       throw new ScopeViolationError("The credential source identity is invalid.");
     }
+    if (input.type !== "static") {
+      throw new TokenServiceSourceInputError(
+        "The OpenShell TokenService supports only static Sources.",
+      );
+    }
     validateLifecycle(input.lifecycleConfig);
     if (input.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== "openai") {
       throw new TokenServiceSourceInputError(
@@ -371,7 +413,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
         workspace,
       );
       await this.workspaceFor(namespace, signal, workspaceId);
-      return credentialSources.createCredentialSource({
+      const saved = await credentialSources.createCredentialSource({
         id: ref.id,
         namespaceId: ref.namespaceId,
         name: input.name,
@@ -380,10 +422,10 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
         tokenServiceInstanceId: this.options.tokenServiceInstanceId,
         state: "ready",
         config: input.config,
-        secrets: {},
         backendRef: { workspaceId, providerId: created.id },
         createdAt: new Date().toISOString(),
       });
+      return this.locator(saved, "ready").source;
     });
   }
 
@@ -404,14 +446,11 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
       const found = await credentialSources.lockCredentialSource(ref.namespaceId, ref.id);
-      if (!found) {
-        ownershipConflict();
-      }
-      const { workspaceId, providerId } = this.locator(found, "ready");
+      const { source: owned, workspaceId, providerId } = this.locator(found, "ready");
       const placed = await this.workspaceFor(namespace, signal, workspaceId);
       const current = await this.readProvider(placed, ref, providerId, signal);
       if (credential === undefined) {
-        return { source: found };
+        return { source: owned };
       }
       const { client, workspace } = placed;
       if (!client.updateProviderCredentialsConditionally) {
@@ -443,7 +482,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
       ) {
         ownershipConflict();
       }
-      return { source: found, version: rotated.resourceVersion };
+      return { source: owned, version: rotated.resourceVersion };
     });
     const delivery = this.options.credentialProxy;
     if (updated.version !== undefined && delivery !== undefined) {

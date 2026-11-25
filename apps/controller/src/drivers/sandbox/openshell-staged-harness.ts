@@ -28,6 +28,7 @@ const server = net.createServer((peer) => {
       const plan = JSON.parse(fs.readFileSync(planPath, "utf8"));
       if (plan.state !== "prepared") throw new Error();
       const environment = { ...process.env };
+      delete environment.OCE_CODEX_CHATGPT_ACCOUNT;
       for (const projection of plan.projections) {
         delete environment[projection.environment];
         const value = projection.placeholder.kind === "runtime"
@@ -35,6 +36,10 @@ const server = net.createServer((peer) => {
           : projection.placeholder.value;
         if (typeof value !== "string" || value.length === 0) throw new Error();
         environment[projection.environment] = value;
+        if (projection.account !== undefined) {
+          if (projection.environment !== "CODEX_ACCESS_TOKEN") throw new Error();
+          environment.OCE_CODEX_CHATGPT_ACCOUNT = JSON.stringify(projection.account);
+        }
       }
       activated = true;
       child = spawn(plan.command[0], plan.command.slice(1), {

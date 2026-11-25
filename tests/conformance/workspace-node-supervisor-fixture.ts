@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -49,6 +49,12 @@ export type ProcessEventRow =
   ChildEvent | { kind: "probe"; attempt?: number; pid?: never; event?: never };
 
 type SetupReadRow = { content: string | null };
+type SetupRefreshRow = {
+  publication: string | null;
+  pid: number;
+  reads: SetupReadRow["content"][];
+  retiring: boolean;
+};
 type SupervisorExit = [code: number | null, signal: NodeJS.Signals | null];
 
 function isChildKind(value: unknown): value is ChildKind {
@@ -77,9 +83,32 @@ function isProcessEvent(value: unknown): value is ProcessEventRow {
   );
 }
 
+function isSetupContent(value: unknown): value is SetupReadRow["content"] {
+  return value === null || typeof value === "string";
+}
+
 function isSetupRead(value: unknown): value is SetupReadRow {
   const row = asRecord(value);
-  return row !== undefined && (row.content === null || typeof row.content === "string");
+  return row !== undefined && isSetupContent(row.content);
+}
+
+function isSetupRefresh(value: unknown): value is SetupRefreshRow {
+  const row = asRecord(value);
+  return (
+    row !== undefined &&
+    isSetupContent(row.publication) &&
+    isPositiveSafeInteger(row.pid) &&
+    Array.isArray(row.reads) &&
+    row.reads.every(isSetupContent) &&
+    typeof row.retiring === "boolean"
+  );
+}
+
+export function setupReadMatches(read: SetupReadRow["content"], content: SetupReadRow["content"]) {
+  return (
+    read === content ||
+    (content !== null && read === Buffer.from(content).subarray(0, 65_537).toString("utf8"))
+  );
 }
 
 function hasErrorCode(error: unknown, code: string): boolean {
@@ -175,12 +204,21 @@ export async function processGone(description: string, pid: number): Promise<voi
 }
 
 // Observe actual projection bytes for both whole-file and bounded descriptor reads.
-export function observeSetupReads(setupPath: string, setupReadsPath: string) {
+export function observeSetupReads(
+  setupPath: string,
+  setupReadsPath: string,
+  captureRefresh = false,
+) {
   return [
     'const fs = require("node:fs");',
     "const realRead = fs.readFileSync, realOpen = fs.openSync, realReadSync = fs.readSync, realClose = fs.closeSync;",
     "const observedSetupReads = new Map(); let directSetupRead = false;",
-    `const setupRead = (content) => fs.appendFileSync(${JSON.stringify(setupReadsPath)}, JSON.stringify({ content }) + "\\n");`,
+    "const setupRead = (content) => {",
+    ...(captureRefresh
+      ? ["  if (activeSetupRefresh) { activeSetupRefresh.reads.push(content); return; }"]
+      : []),
+    `  fs.appendFileSync(${JSON.stringify(setupReadsPath)}, JSON.stringify({ content }) + "\\n");`,
+    "};",
     "fs.readFileSync = (path, ...rest) => {",
     `  if (path !== ${JSON.stringify(setupPath)}) return realRead(path, ...rest);`,
     "  let content = null; directSetupRead = true;",
@@ -204,6 +242,64 @@ export function observeSetupReads(setupPath: string, setupReadsPath: string) {
     "  }",
     "};",
   ];
+}
+
+// Scope the witness to the exact live timer in the production program. Its
+// callback body, interval and unref stay intact. Startup reads still use the
+// read journal, and a throwing callback cannot issue a completion receipt.
+export function setupRefreshWitness(directory: string, setupPath: string, setupReadsPath: string) {
+  const publicationPath = join(directory, "setup-publication");
+  const refreshesPath = join(directory, "setup-refreshes.jsonl");
+  const refreshTimer = "const setupRefreshTimer = setupEnvironment ? undefined : ";
+  const parts = AGENT_WITH_NODE_ENTRYPOINT.split(`${refreshTimer}setInterval(() => {`);
+  assert.equal(parts.length, 2, "Expected one synchronous workspace node setup refresh timer");
+  const entrypoint = parts.join(`${refreshTimer}observeSetupRefresh(workspaceNode, () => {`);
+  const stubs = [
+    "let activeSetupRefresh;",
+    ...observeSetupReads(setupPath, setupReadsPath, true),
+    "const realKill = process.kill;",
+    "process.kill = function (...args) {",
+    "  const [target, signal] = args;",
+    "  if (activeSetupRefresh && target < 0 && signal !== 0) activeSetupRefresh.retiring = true;",
+    "  return Reflect.apply(realKill, this, args);",
+    "};",
+    "function observeSetupRefresh(slot, refresh, interval) {",
+    "  return setInterval(() => {",
+    "    const pid = slot.child?.pid;",
+    "    if (pid === undefined) return refresh();",
+    "    let publication = null;",
+    `    try { publication = realRead(${JSON.stringify(publicationPath)}, "utf8"); }`,
+    '    catch (error) { if (error.code !== "ENOENT") throw error; }',
+    "    const completed = { publication, pid, reads: [], retiring: slot.retirementTimer !== undefined };",
+    "    activeSetupRefresh = completed;",
+    "    try { refresh(); } finally { activeSetupRefresh = undefined; }",
+    "    completed.retiring ||= slot.retirementTimer !== undefined;",
+    "    if (pid !== slot.child?.pid) completed.publication = null;",
+    `    fs.appendFileSync(${JSON.stringify(refreshesPath)}, JSON.stringify(completed) + "\\n");`,
+    "  }, interval);",
+    "}",
+  ];
+
+  const read = () => readJsonLines(refreshesPath, isSetupRefresh);
+  let generation = 0;
+  const publish = async (content: SetupReadRow["content"]) => {
+    const offset = (await read()).length;
+    const publication = String(++generation);
+    if (content === null) {
+      await rm(setupPath);
+    } else {
+      const nextSetup = setupPath + ".next";
+      await writeFile(nextSetup, content);
+      await rename(nextSetup, setupPath);
+    }
+    // Publish after the real file operation so an older read of the same bytes
+    // (or an earlier absence) cannot stand in for this projection.
+    const nextPublication = publicationPath + ".next";
+    await writeFile(nextPublication, publication);
+    await rename(nextPublication, publicationPath);
+    return { offset, publication };
+  };
+  return { entrypoint, stubs, read, publish };
 }
 
 // Stub lines for a saved-identity probe that appends a "probe" row to the events

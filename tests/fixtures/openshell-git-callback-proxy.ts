@@ -145,17 +145,23 @@ export function gitCallbackObserver(options: {
       relay(stream, upstream);
     }
   });
-  return { server, control };
+  function stop() {
+    server.close();
+    control.close();
+  }
+  return { server, control, stop };
 }
 
 if (import.meta.main) {
   const upstreamName = process.env.UPSTREAM_NAME;
   assert.ok(upstreamName, "UPSTREAM_NAME must name the Worker certificate");
-  const { server, control } = gitCallbackObserver({
+  const { server, control, stop } = gitCallbackObserver({
     upstreamName,
     key: readFileSync("/cert/tls.key"),
     cert: readFileSync("/cert/tls.crt"),
     ca: readFileSync("/cert/ca.crt"),
   });
+  // Node runs as PID 1 in the test Pod. Let both listeners close on termination.
+  process.once("SIGTERM", stop);
   control.listen(8447, "127.0.0.1", () => server.listen(8446, "0.0.0.0"));
 }

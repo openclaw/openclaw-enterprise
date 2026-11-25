@@ -2,6 +2,43 @@
 
 TokenService owns a managed static Source and its credential. OCC controls who may create, bind, update, or delete it. This example uses an OpenAI model; see [implementation status](../credential-sources.md#implementation-status) for provider coverage and work still in progress.
 
+## Native model requests
+
+### OpenAI API key
+
+On first deploy, a Dedicated Agent with no saved grant for the destination uses
+the preset’s exact requests if the Installation ceiling permits its stock executable.
+OpenClaw uses `/usr/local/bin/node`. Codex requires exactly one qualified Codex binary.
+For a custom OpenClaw runtime, save an exact grant for its actual executable.
+
+For the static OpenAI API-key preset, the temporary transport exception covers
+`POST api.openai.com:443/v1/responses`. Dedicated Codex with standalone web
+search also permits the fixed executable to send `POST api.openai.com:443/v1/alpha/search`.
+A matching plaintext request can receive the API key until native substitution
+enforces HTTPS.
+
+### Codex PAT
+
+The native Proxy has a temporary transport exception for manually enrolled and
+ServiceAccount-issued Codex PATs. It can inject the PAT into a matching plaintext
+HTTP request on port 443. When the Agent has no saved network rule, first deploy admits only the preset
+requests that the Installation ceiling permits for one stock Codex executable.
+All seven must be authorized. The PAT binding permits these seven method and path combinations:
+
+| Host              | Method | Path                                           |
+| ----------------- | ------ | ---------------------------------------------- |
+| `auth.openai.com` | GET    | `/api/accounts/v1/user-auth-credential/whoami` |
+| `chatgpt.com`     | GET    | `/backend-api/codex/models`                    |
+| `chatgpt.com`     | POST   | `/backend-api/codex/responses`                 |
+| `chatgpt.com`     | GET    | `/backend-api/wham/accounts/check`             |
+| `chatgpt.com`     | GET    | `/backend-api/wham/config/bundle`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/settings/user`              |
+| `chatgpt.com`     | GET    | `/backend-api/wham/usage`                      |
+
+Remove the exception once OpenShell enforces HTTPS during substitution and a
+native test verifies that a matching plaintext request cannot receive the PAT.
+OpenShell already [reports the transport scheme to middleware](https://github.com/ai-openshell/openshell/pull/4397).
+
 ## Register a source
 
 In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` with `credential_source:create`:
@@ -11,11 +48,15 @@ In a ready Namespace, send `POST /namespaces/:namespaceId/credential-sources` wi
   "name": "Model access",
   "type": "static",
   "config": { "provider_preset": "openai" },
-  "secret": { "opaque": "<credential>" }
+  "secret": "<credential>"
 }
 ```
 
-`secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized metadata, `ownerCapability: "token_service"`, and `secrets: {}`. OCC does not store a Namespace Secret reference or return the credential.
+To associate a Source with a Connection Template, supply `connectionTemplateId` in the POST. OCC checks create authority and requires a ready Namespace, then accepts a `static_bearer` Template available Installation-wide or in that Namespace. A malformed ID or unsupported version field returns `400`; an unavailable or foreign Template returns `404`; a different mode returns `409`. OCC rejects an invalid selection before TokenService takes custody.
+
+Omit `connectionTemplateId` for a Source that uses a Harness provider preset, as in the example above. A Template-associated Source cannot also use `config.provider_preset`; POST or PATCH returns `409` before changing custody or configuration.
+
+`secret` is write-only and accepts one nonempty credential. Its field name does not grant destination authority. The optional `config.provider_preset` associates the Source with an approved provider; without it the Source cannot authorize a model destination. The response contains sanitized Source metadata. OCC does not store a Namespace Secret reference or return the credential.
 
 If the private-store write cannot be confirmed, registration can fail while leaving orphaned material. A failure after TokenService commits can leave a Source without its creator IAM grant. See the [OCC custody flow](../../flows/token-service-static-custody.md) for failure handling.
 
@@ -82,7 +123,7 @@ This example covers dedicated OpenClaw. Codex requires a separate Configuration;
    ```
 
 3. The deploying caller needs `agent:deploy` and `credential_source:operate` on the Source. With OCC-managed transactional Native IAM, deployment creates a missing exact Agent service-principal grant when the caller can operate the Source. Otherwise, grant the Agent service principal `credential_source:operate` before deployment.
-4. Save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
+4. If the OpenClaw runtime uses a different executable, save the Agent's Sandbox networking policy. Enabling editing requires Installation and Agent `administer`; reading requires Agent and SandboxPolicy `read`; saving requires Agent `manage_policy` and SandboxPolicy `update`. See [policy authority](../sandbox-policies.md#authority-and-admission). Send `PATCH /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking/editing` with `{ "enabled": true }`. Send `GET /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking` and use `data.policy.version` as `expectedVersion` in `PUT /namespaces/:namespaceId/agents/:agentId/sandbox-policy/networking`. For example, if the current version is `1`:
 
    ```json
    {
@@ -106,7 +147,7 @@ The [implementation status](../credential-sources.md#implementation-status) list
 
 ## Read and list sources
 
-Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable.
+Exact GET requires `credential_source:read`; list requires Namespace `read` and filters each Source by exact `read`. Responses do not resolve credentials or expose the TokenService instance or Driver ID. GET and list read the catalog and remain available when TokenService is unavailable. POST, PATCH, GET, and list return `connectionTemplateId` when a static association exists. They do not return a Template version. Updating the Template preserves the Source association; PATCH cannot change the associated ID. Plugin admission checks the Template's current version; see [implementation status](../credential-sources.md#implementation-status) for slot and delivery limits.
 
 ## Update a source
 
