@@ -1085,6 +1085,7 @@ async function runtimeAuditQueueStatus(stack: KubernetesAccess, gateway: Gateway
 
 interface QueuedRuntimeObservation {
   revisionId: string;
+  source: string;
   eventId: string;
   action: string;
   occurredAt: string;
@@ -1102,7 +1103,7 @@ async function queuedRuntimeObservations(stack: KubernetesAccess, gateway: Gatew
   const script = `
     import { DatabaseSync } from 'node:sqlite';
     const db = new DatabaseSync('/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite', { readOnly: true });
-    const rows = db.prepare(\`SELECT revision_id AS revisionId,
+    const rows = db.prepare(\`SELECT revision_id AS revisionId, source,
       json_extract(body, '$.eventId') AS eventId,
       json_extract(body, '$.action') AS action,
       json_extract(body, '$.occurredAt') AS occurredAt,
@@ -1130,7 +1131,7 @@ async function queuedRuntimeObservations(stack: KubernetesAccess, gateway: Gatew
   const rows: unknown = JSON.parse(stdout);
   assert.ok(Array.isArray(rows));
   for (const row of rows) {
-    for (const field of ["revisionId", "eventId", "action", "occurredAt"]) {
+    for (const field of ["revisionId", "source", "eventId", "action", "occurredAt"]) {
       assert.equal(typeof wireField(row, field), "string", `queued observation has no ${field}`);
     }
   }
@@ -1140,8 +1141,9 @@ async function queuedRuntimeObservations(stack: KubernetesAccess, gateway: Gatew
 function observationIdentity(event: QueuedRuntimeObservation) {
   return JSON.stringify([
     event.revisionId,
+    event.source,
     event.action,
-    event.occurredAt,
+    event.occurredAt.replace(/Z$/, "000Z"),
     event.sessionId,
     event.turnId,
     event.modelCallId,
@@ -1152,6 +1154,7 @@ function observationIdentity(event: QueuedRuntimeObservation) {
 function auditIdentity(event: RuntimeAuditEntry) {
   return JSON.stringify([
     event.details.agentRevisionId,
+    event.details.runtimeSource,
     event.action,
     event.occurredAt,
     event.details.sessionId ?? null,
