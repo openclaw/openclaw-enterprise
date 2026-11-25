@@ -2274,14 +2274,27 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .status.deployment-recovery {
   margin: 0 0 var(--space-8);
   padding: var(--space-5) var(--space-6);
+  container: deployment-recovery / inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+}
+.deployment-recovery-summary {
+  flex: 1 1 100%;
+  min-width: 0;
 }
 .deployment-recovery h2 {
-  margin: 0 0 var(--space-2);
+  display: inline;
+  margin: 0;
   color: var(--color-text-strong);
   font-size: var(--text-lg);
   line-height: var(--text-lg--line-height);
   font-weight: var(--weight-semibold);
   letter-spacing: normal;
+}
+.deployment-recovery .status-body {
+  margin-top: var(--space-2);
 }
 /* line-height 1 keeps a fallback mono font's taller ascent from spacing out the line it sits on. */
 .deployment-recovery .status-body code {
@@ -2289,8 +2302,32 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   font-size: var(--text-md);
   line-height: 1;
 }
-.deployment-recovery .status-actions {
-  margin-top: var(--space-4);
+.deployment-recovery-next {
+  flex: 0 0 100%;
+  min-width: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.deployment-recovery-next > * {
+  margin: 0;
+}
+/* Leave room for both the explanation and a full action label at the reader's text size. */
+@container deployment-recovery (min-width: 52em) {
+  .deployment-recovery-summary {
+    flex-basis: 0;
+  }
+  .deployment-recovery-next {
+    flex-basis: max(17.5em, 26%);
+    border-inline-start: 1px solid var(--color-border);
+    padding-inline-start: var(--space-5);
+    gap: var(--space-3);
+  }
+  .deployment-recovery-actions {
+    flex-direction: column;
+  }
+  .deployment-recovery-actions .button {
+    justify-content: center;
+  }
 }
 /* The danger wash darkens the block, so the input edge falls below 3:1 there; the muted text
    colour keeps a white secondary action's edge at 4.6:1 (finding 1958). */
