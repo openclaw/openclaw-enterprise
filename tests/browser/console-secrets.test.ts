@@ -62,8 +62,10 @@ import {
   fileBrowser,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   newPage,
+  nextFrames,
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.ts";
@@ -710,6 +712,44 @@ test("refocusing a changed Secret library keeps the search and follows only read
   await selector.selectOption(namespace.id);
   await result.waitFor();
   assert.equal(await search.inputValue(), "modeL");
+});
+
+test("Escape reveals the focused Secret row after the list reflows", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reporting");
+  const query = "Reporting key";
+  const name = (index: number) =>
+    `${query} ${String(index).padStart(2, "0")} for the monthly reconciliation of customer invoices and archived payment exports`;
+  for (let i = 1; i <= 15; i += 1) {
+    await fixture.createSecret(namespace.id, name(i), "synthetic-reporting-value");
+  }
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1280, height: 720 } },
+  });
+  await login(page, fixture, secretsUrl(namespace));
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  await search.fill(query);
+  const target = name(8);
+  const trigger = page.getByRole("button", { name: target, exact: true, includeHidden: true });
+  const row = page.getByRole("listitem", { includeHidden: true }).filter({ has: trigger });
+  await trigger.focus();
+  assert.ok(await inViewport(row));
+  await page.keyboard.press("Enter");
+  const inspector = dialog(page, target);
+  await inspector.getByText("No current consumers were found.", { exact: true }).waitFor();
+
+  // Earlier names wrap while the inspector is open, pushing its row below the viewport.
+  await page.setViewportSize({ width: 390, height: 720 });
+  await nextFrames(page);
+  assert.ok(
+    await trigger.evaluate((node) => node.getBoundingClientRect().top >= globalThis.innerHeight),
+  );
+  await page.keyboard.press("Escape");
+  await inspector.waitFor({ state: "hidden" });
+  await nextFrames(page);
+  assert.ok(await hasFocus(trigger));
+  assert.ok(await inViewport(row), "the focused row is visible without further input");
+  assert.equal(await search.inputValue(), query);
 });
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
