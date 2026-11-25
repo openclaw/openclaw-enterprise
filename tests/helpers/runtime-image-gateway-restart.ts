@@ -22,7 +22,7 @@ import { image, imageTestOptions, gatewayStateVolume } from "./runtime-image-sta
 import {
   runStartupProbeScenario,
   withStartupProbeEvidence,
-} from "./runtime-image-startup-probe.mjs";
+} from "./runtime-image-startup-probe.ts";
 import {
   observedValue,
   phaseAt,
