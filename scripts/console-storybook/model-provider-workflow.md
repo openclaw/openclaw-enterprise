@@ -26,6 +26,7 @@ an available static Bearer Template. Enter a dummy value and select **Create Sou
 Confirm that the Source appears in the inventory and its value is not returned.
 A Template Source cannot serve as model authentication or be admitted directly to an Agent.
 **Created Source without exact read access** confirms creation without adding the Source to the readable inventory.
+**Source created but inventory access denied** confirms creation, clears stale rows, and shows the denied Namespace read operation.
 
 Open **Pages/Create Agent → Reuse an existing Credential Source** and select
 **Create Agent**. Check that the draft uses the selected Source ID and the request log

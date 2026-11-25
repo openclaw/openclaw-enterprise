@@ -1283,6 +1283,11 @@ function renderAgentForm(
       updateControls();
     },
   });
+  const existingSourceDestinationHint = element(
+    "p",
+    { className: "hint", hidden: true },
+    CODEX_SOURCE_DESTINATION_HINT,
+  );
   // The picker owns validation and reports an accepted choice above. Searching its list
   // must not clear the field's validity or mark the draft as edited.
   for (const event of ["input", "change"]) {
@@ -1408,6 +1413,7 @@ function renderAgentForm(
       ? [
           credentialStorageField,
           existingModelSource.field,
+          existingSourceDestinationHint,
           modelCredentialField,
           oauthLogin.section,
           transientCredentialField,
@@ -3297,15 +3303,10 @@ function renderAgentForm(
       usesOAuth || existingSource || (!passwordAuth && !managedStatic);
     existingModelSource.setActive(existingSource, usesPat ? "codex-pat" : "openai");
     existingModelSource.setDisabled(planLocked || Boolean(savedAgent));
-    if (existingSource) {
-      credentialStorageHelp.textContent =
-        "Uses the selected existing Credential Source. Saving the Agent checks your permission to operate it." +
-        (harness.value === "codex" && !usesPat ? ` ${CODEX_SOURCE_DESTINATION_HINT}` : "");
-    } else {
-      credentialStorageHelp.textContent = managedStatic
-        ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."
-        : "Stores the model credential as a Namespace Secret.";
-    }
+    existingSourceDestinationHint.hidden = !existingSource || harness.value !== "codex" || usesPat;
+    credentialStorageHelp.textContent = managedStatic
+      ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."
+      : "Stores the model credential as a Namespace Secret.";
     savePatForDiscovery.hidden =
       !usesPat || !managedStatic || Boolean(savedCredentialSource || savedSecret);
     updatePatEnrollment();

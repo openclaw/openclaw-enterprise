@@ -485,6 +485,7 @@ export function renderCredentialSources(context: Context) {
         created = true;
         let listed = false;
         let refreshed = false;
+        let inventoryDenial: string | undefined;
         try {
           const inventory = sourceList(await context.request(path), context.namespaceId);
           sources.items = inventory.items;
@@ -495,6 +496,11 @@ export function renderCredentialSources(context: Context) {
         } catch (cause) {
           if (requestFailure(cause).status === 401) {
             context.onExpired();
+          } else if (requestFailure(cause).status === 403) {
+            inventoryDenial = namedDenial(cause) ?? "Not authorized to read the Source inventory.";
+            sources.items = [];
+            sources.unavailable = 0;
+            renderList();
           }
         }
         feedback.replaceChildren(
@@ -511,9 +517,10 @@ export function renderCredentialSources(context: Context) {
             statusBlock(
               "warning",
               null,
-              refreshed
-                ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
-                : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it.",
+              inventoryDenial ??
+                (refreshed
+                  ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
+                  : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it."),
             ),
           );
         }

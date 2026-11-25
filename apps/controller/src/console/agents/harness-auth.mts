@@ -80,7 +80,7 @@ type AuthBinding = HarnessAuthBinding | null | undefined;
 type ModelSourcePreset = "openai" | "codex-pat";
 
 export const CODEX_SOURCE_DESTINATION_HINT =
-  "For an OpenAI Source, deployment must use https://api.openai.com/v1/responses. The Console cannot check Codex's effective destination before saving. If the Installation default differs, set the Harness destination override before deployment.";
+  "An OpenAI Source requires the OpenAI Responses destination. The Console cannot check Codex's effective destination before saving; deployment checks it. If the Installation default differs, set Harness destination to an override with Provider base URL https://api.openai.com/v1 and Provider protocol Responses.";
 
 /** Return the configured model provider only when its approved static Source presets can apply. */
 export function modelSourceProvider(

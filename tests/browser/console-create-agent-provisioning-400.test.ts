@@ -891,12 +891,33 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const unreadableId = resourceId(
     checked(CredentialSourceResponse, await unreadableResponse.json()).data,
   );
-  await page.getByText("Credential Source created", { exact: true }).waitFor();
+  await page
+    .getByText("The created Source is not in your readable inventory", { exact: false })
+    .waitFor();
   assert.equal(await page.getByRole("row", { name: /Created without read/ }).count(), 0);
   assert.deepEqual((await fixture.request("GET", base)).data, []);
   restoreRead();
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("row", { name: /Created without read/ }).waitFor();
+
+  // A successful collection create remains confirmed if Namespace read is revoked, but
+  // the now-denied inventory must stop presenting rows as readable.
+  const inventoryDeniedForm = await fill("Created before inventory denial");
+  const restoreNamespaceRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
+  const inventoryDeniedCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await inventoryDeniedForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const inventoryDeniedResponse = await inventoryDeniedCreated;
+  assert.equal(inventoryDeniedResponse.status(), 201);
+  const inventoryDeniedId = resourceId(
+    checked(CredentialSourceResponse, await inventoryDeniedResponse.json()).data,
+  );
+  await page.getByText(/Not authorized: this needs Namespace read/).waitFor();
+  assert.equal(await page.getByRole("row", { name: /Research model/ }).count(), 0);
+  restoreNamespaceRead();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("row", { name: /Created before inventory denial/ }).waitFor();
 
   const deniedForm = await fill("Denied model");
   revokeAdministratorGrant(fixture, ["create", "credential_source"]);
@@ -912,7 +933,7 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const inventory = await fixture.request("GET", base);
   assert.deepEqual(
     (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
-    [source.id, templateSource.id, unreadableId].sort(),
+    [source.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
   );
   revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await page.reload();

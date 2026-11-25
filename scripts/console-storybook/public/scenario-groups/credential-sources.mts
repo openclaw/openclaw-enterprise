@@ -34,6 +34,13 @@ const openExistingSource = [
   ...form,
   { selector: "#model-credential-storage", value: "existing_source" },
 ] as const;
+const createInventorySource = [
+  click("Create Source"),
+  { selector: "#credential-source-name", value: "Inventory model" },
+  { selector: "#credential-source-purpose", value: "model:openai" },
+  { selector: "#credential-source-value", value: "dummy-story-credential" },
+  { selector: 'button[form="credential-source-form"]', click: true },
+] as const;
 export const credentialSourceScenarios = {
   credentialsSourceInventory: {
     group: "Pages/Credentials",
@@ -84,15 +91,29 @@ export const credentialSourceScenarios = {
     path,
     oauthCatalog: "ready",
     rules: [{ suffix: "/credential-sources", method: "GET", data: [] }],
-    actions: [
-      click("Create Source"),
-      { selector: "#credential-source-name", value: "Created without read" },
-      { selector: "#credential-source-purpose", value: "model:openai" },
-      { selector: "#credential-source-value", value: "dummy-story-credential" },
-      { selector: 'button[form="credential-source-form"]', click: true },
-    ],
+    actions: createInventorySource,
     description:
       "The simulated create succeeds, but the separately filtered inventory omits the new Source. The page confirms creation and explains that exact Source read is required before reuse.",
+  },
+  credentialsSourceCreatedInventoryDenied: {
+    group: "Pages/Credentials",
+    name: "Source created but inventory access denied",
+    path,
+    oauthCatalog: "ready",
+    initialCredentialSources: previewInventory,
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "GET",
+        skip: 1,
+        status: 403,
+        code: "FORBIDDEN",
+        message: `Not authorized: this needs Namespace read on Namespace ${namespaceId}. Ask an Installation administrator to grant it.`,
+      },
+    ],
+    actions: createInventorySource,
+    description:
+      "The simulated create succeeds, then the inventory read is denied. The page confirms creation, removes previously displayed rows, and shows the exact denial.",
   },
   createExistingSourceLoading: {
     group: "Pages/Create Agent",

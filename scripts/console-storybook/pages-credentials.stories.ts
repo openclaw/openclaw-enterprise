@@ -12,6 +12,9 @@ export const CredentialSourcesEmpty = story("credentialsSourceEmpty");
 export const CredentialSourcesDenied = story("credentialsSourceReadDenied");
 export const CreateCredentialSource = story("credentialsSourceCreate");
 export const CredentialSourceCreatedUnreadable = story("credentialsSourceCreatedUnreadable");
+export const CredentialSourceCreatedInventoryDenied = story(
+  "credentialsSourceCreatedInventoryDenied",
+);
 export const CredentialSourceTemplatesUnavailable = story("credentialsSourceTemplatesUnavailable");
 export const CredentialSourceCreateUnknown = story("credentialsSourceCreateUnknown");
 export const CredentialSourceCreateDenied = story("credentialsSourceCreateDenied");
