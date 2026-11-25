@@ -52,6 +52,7 @@ import {
   createNavigation,
   pages,
   type AgentsLanding,
+  type RestoreHistory,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -1745,6 +1746,42 @@ function showCheckingSession(checking = () => true) {
   }, startupStatusDelayMs);
 }
 
+// Chrome restores the previous scroll position after the return popstate. Wait for that
+// frame before focusing the existing explanation, unless the reader has already moved on.
+function revealAfterReturn(feedback: HTMLElement) {
+  const message = feedback.firstChild;
+  const cancel = new AbortController();
+  const signal = AbortSignal.any([cancel.signal, lifetime.signal]);
+  const stop = () => cancel.abort();
+  for (const event of ["focusin", "blur", "keydown", "input", "pointerdown", "wheel", "pagehide"]) {
+    window.addEventListener(event, stop, { capture: true, passive: true, signal });
+  }
+  // A canceled traversal has no popstate. A later visit to that same entry must not
+  // inherit its focus request. Older browsers still use the ordinary history path.
+  window.navigation?.addEventListener(
+    "navigate",
+    (event) => event.signal.addEventListener("abort", stop, { signal }),
+    { once: true, signal },
+  );
+  return () => {
+    requestAnimationFrame(() => {
+      if (signal.aborted) {
+        return;
+      }
+      cancel.abort();
+      if (
+        !resumePending &&
+        !loggingOut &&
+        document.hasFocus() &&
+        feedback.isConnected &&
+        feedback.firstChild === message
+      ) {
+        shellUI.focusLeaveFeedback(feedback);
+      }
+    });
+  };
+}
+
 async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
@@ -1762,7 +1799,7 @@ async function loadPage({
   reuseView?: boolean;
   fromRefresh?: boolean;
   confirmAgentPermissions?: boolean;
-  restoreHistory?: ((url: string) => void) | null;
+  restoreHistory?: RestoreHistory | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
   agentsLanding?: AgentsLanding | null;
@@ -1795,11 +1832,20 @@ async function loadPage({
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
-  const tabNavigation = fromNavigation && navigateAgentTab?.(current.url);
+  let feedback: HTMLElement | undefined;
+  const tabNavigation =
+    fromNavigation &&
+    navigateAgentTab?.(current.url, (node) => {
+      feedback = node;
+    });
   if (tabNavigation === "blocked") {
     // Back or Forward already moved to an existing entry. Return to the tab we kept open,
     // leaving that entry intact; only a newly requested navigation needs its URL replaced.
-    (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    if (restoreHistory && feedback) {
+      restoreHistory(mountedRouteKey!, revealAfterReturn(feedback));
+    } else {
+      (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    }
     return;
   }
   if (tabNavigation) {
@@ -2845,7 +2891,7 @@ async function loadPage({
           // An Agent page still hidden behind a stand-in leaves tab navigation to a full load: it
           // must not switch tabs, or mark its route mounted, while another page is on screen
           // (finding 1542).
-          const navigateTab: TabNavigation = (next) => shownStandIn === null && handler(next);
+          const navigateTab: TabNavigation = (...args) => shownStandIn === null && handler(...args);
           viewState.tabNavigation = navigateTab;
           navigateAgentTab = navigateTab;
         }
