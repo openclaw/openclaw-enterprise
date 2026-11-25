@@ -457,7 +457,6 @@ export function renderNamespaces(
           context.onExpired();
           return;
         }
-        const keepDoneFocus = !initial && document.activeElement === done;
         if (result === "readable") {
           access.textContent = "This Namespace is in your list.";
           const openAgents = button(
@@ -498,7 +497,10 @@ export function renderNamespaces(
           if (!retry.isConnected) {
             actions.append(retry);
           }
-          (keepDoneFocus ? done : retry).focus();
+          // Offer Retry on the first failure without interrupting a press on Done.
+          if (document.activeElement !== done || (initial && !done.matches(":active"))) {
+            retry.focus();
+          }
         }
       }
     }

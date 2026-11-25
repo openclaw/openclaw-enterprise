@@ -21,6 +21,7 @@ import {
   expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -209,17 +210,46 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   const done = confirmation.getByRole("button", { name: "Done" });
   const agents = confirmation.getByRole("button", { name: "Open Agents" });
   assert.equal(await agents.count(), 0);
-  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  assert.ok(await hasFocus(done));
   // Finish the same press even if the second action appears while Space is held.
   await page.keyboard.down("Space");
   read.release();
   await agents.waitFor();
-  assert.equal(await done.evaluate((node) => node === document.activeElement), true);
+  assert.ok(await hasFocus(done));
   await page.keyboard.up("Space");
   await confirmation.waitFor({ state: "hidden" });
   assert.equal(page.url(), url);
   assert.equal(creates(requests).length, 2);
   await page.locator(settledView).getByRole("link", { name: "New team", exact: true }).waitFor();
+  await focusReturnsToOpener(page);
+});
+
+test("a failed Namespace access check does not interrupt a press on Done", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces");
+  const url = `${fixture.origin}/namespaces`;
+  const read = await holdRequests(t, page, url, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  });
+  await submitCreate(page, "New team");
+  await read.requested;
+  const confirmation = page.getByRole("dialog", { name: "Namespace created", exact: true });
+  const done = confirmation.getByRole("button", { name: "Done" });
+  assert.ok(await hasFocus(done));
+  await page.keyboard.down("Space");
+  const response = page.waitForResponse(
+    (reply) => reply.url() === url && reply.request().method() === "GET",
+  );
+  read.release();
+  assert.equal((await response).status(), 503);
+  await confirmation.getByRole("button", { name: "Check access again" }).waitFor();
+  assert.ok(await hasFocus(done));
+  await page.keyboard.up("Space");
+  await confirmation.waitFor({ state: "hidden" });
   await focusReturnsToOpener(page);
 });
 
