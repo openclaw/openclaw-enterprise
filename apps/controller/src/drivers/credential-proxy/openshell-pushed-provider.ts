@@ -15,6 +15,8 @@ import {
   MANAGED_BY_LABEL,
   SOURCE_ID_LABEL,
   openShellProviderName,
+  openShellStaticBearerProfile,
+  openShellStaticBearerProfileVersion,
 } from "../../backends/openshell.ts";
 import {
   OpenShellProviderAlreadyExistsError,
@@ -97,58 +99,19 @@ function profileForSource(
   environment: string,
   name: string,
 ): OpenShellProviderProfile {
-  return {
+  return openShellStaticBearerProfile({
     id: name,
     displayName: "OCC credential delivery",
-    category: "PROVIDER_PROFILE_CATEGORY_OTHER",
-    credentials: [
-      {
-        name: environment,
-        envVars: [environment],
-        required: true,
-        authStyle: "bearer",
-        headerName: "authorization",
-        stablePlaceholder: true,
-      },
-    ],
-    endpoints: [],
-    binaries: [],
-    inferenceCapable: false,
+    environment,
     annotations: deliveryOwnership(sourceRef),
-  };
+  });
 }
 
 function checkProfile(
   stored: OpenShellStoredProviderProfile | undefined,
-  profile: OpenShellProviderProfile,
+  expected: OpenShellProviderProfile,
 ): string {
-  const definition = stored?.definition;
-  const credentials = Array.isArray(definition?.credentials) ? definition.credentials : [];
-  const credential = asRecord(credentials[0]);
-  const expected = profile.credentials[0]!;
-  if (
-    !stored ||
-    stored.id !== profile.id ||
-    !/^[1-9]\d*$/.test(stored.resourceVersion) ||
-    !isDeepStrictEqual(stored.annotations, profile.annotations) ||
-    !definition ||
-    definition.inference_capable === true ||
-    (Array.isArray(definition.endpoints) && definition.endpoints.length !== 0) ||
-    (Array.isArray(definition.binaries) && definition.binaries.length !== 0) ||
-    (Array.isArray(definition.files) && definition.files.length !== 0) ||
-    credentials.length !== 1 ||
-    !credential ||
-    credential.name !== expected.name ||
-    !isDeepStrictEqual(credential.env_vars, expected.envVars) ||
-    credential.required !== true ||
-    credential.auth_style !== expected.authStyle ||
-    credential.header_name !== expected.headerName ||
-    credential.stable_placeholder !== true ||
-    credential.refresh !== undefined
-  ) {
-    refuse();
-  }
-  return stored.resourceVersion;
+  return openShellStaticBearerProfileVersion(stored, expected) ?? refuse();
 }
 
 function ownsDeliveryProvider(

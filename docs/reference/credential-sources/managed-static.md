@@ -66,7 +66,7 @@ A development Installation can select `drivers.token_service: { id: openshell, c
 
 Use a Gateway that keeps its Provider records and credentials in its own database. OCC uses the Gateway database's built-in `default` Workspace ID to recognize the store and refuses advertised external credential drivers. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. The selected TokenService stores the credential in the Source's OpenShell Provider, which the Proxy attaches directly.
 
-The preview accepts static Sources with the `openai` preset and the single model binding. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
+The preview accepts static Sources with the `openai` preset and the single model binding. Credentials must not exceed 8,192 UTF-8 bytes. TokenService rejects a larger credential before creating or changing Gateway resources. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
 
 ## Deploy an Agent with the source
 

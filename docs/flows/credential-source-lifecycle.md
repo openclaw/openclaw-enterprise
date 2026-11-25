@@ -61,6 +61,8 @@ The arrows show implemented control flow. Readiness checks do not by themselves 
 
 OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
 
+The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
+
 The same POST accepts prepared and credential-free metadata requests owned by the selected Credential Proxy. OCC authorizes the named Agent and any referenced Secret before registration. See [protected Source registration](../reference/credential-sources/other-delivery-modes.md#register-a-source).
 
 After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
@@ -90,7 +92,7 @@ Compute records an idle Sandbox with model credential routes withheld, opens the
 
 For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
 
-In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly. Stop and withdrawal detach it; Source DELETE removes it. Updates modify that Provider, and delivery retry checks its version. Serving still requires running-Harness qualification.
+In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly and the Harness receives a placeholder.
 
 For an OpenAI API-key Source on Dedicated Codex or OpenClaw, admission derives the
 [model network requests](../reference/credential-sources/managed-static.md#openai-api-key)
@@ -104,9 +106,9 @@ Sandbox compiles HTTP and managed MCP bindings. MCP checks exact RPCs and select
 
 `apps/controller/src/worker.ts:authorizedCredentialDeployment`, `apps/controller/src/drivers/compute/kubernetes/index.ts:activateRevision`
 
-Worker selects the Agent revision and checks Source authorization again before each activation attempt. OAuth preparation waits for eligible custody and a matching Provider version. The Worker uses the prepared readiness receipt before activating a new or recovering revision. Sandbox starts the Harness. Compute waits for authenticated runtime readiness and workspace-node enrollment before publishing user chat and delegated browser routes. A pending readiness result leaves activation pending; a terminal error fails the operation.
+Before each activation attempt, Worker rechecks Source authorization for the selected Agent revision. OAuth requires eligible custody and a readiness receipt for the Provider version. Sandbox starts the Harness. Compute publishes user chat and delegated browser routes after authenticated runtime readiness and workspace-node enrollment. A pending readiness result delays activation. A terminal error fails the operation.
 
-On Stop, Compute deletes the Sandbox, then asks Proxy to remove or confirm absence of the revision's binding. It retains the saved target until cleanup succeeds. If a cleanup operation instead keeps the Sandbox, Sandbox must remove the policy's reference to the Provider before Proxy detaches it. Proxy attempts to delete its owned Provider and profile after cleanup; an attached-Provider refusal means it retains the shared copy until the last detach. The TokenService Source remains available for another deployment.
+On Stop, Compute deletes the Sandbox and retains the saved target until Proxy confirms binding removal or absence. If cleanup keeps the Sandbox, Sandbox Driver removes the policy's Provider reference before Proxy detaches it. Proxy retires its delivery copy and profile after the last detach. OpenShell custody retains the authoritative Provider until Source DELETE.
 
 ### 5. Withdraw an Agent binding
 
@@ -116,7 +118,7 @@ OCC checks exact `agent:operate`, records pending withdrawals, and queues reconc
 
 Worker derives active bindings from the revision and confirmed withdrawals, omitting revoked optional Plugin bindings. Pending withdrawal, a missing required model, or failed readiness blocks activation. Proxy remains pending until the loaded policy and Provider fingerprint agree.
 
-After confirmed detachment of each binding for the Source, Proxy attempts to retire those delivery Providers and profiles. OpenShell’s attached-Provider refusal preserves a copy still used by another Agent. The last binding removes that copy, while TokenService retains the Source and credential. Withdrawal does not undo an upstream request already sent, and stock OpenShell’s name-based detach retains the [documented same-name replacement limit](../reference/credential-sources.md#implementation-status).
+With OCC custody, Proxy attempts to retire copies and profiles after detachment. OpenShell refuses deletion while a Sandbox still uses the copy. With OpenShell custody, the authoritative Provider and profile remain in the Workspace. TokenService retains the Source credential. Already-sent requests can complete. See the [same-name detach limit](../reference/credential-sources.md#implementation-status).
 
 <a id="2-update-a-source"></a>
 <a id="5-retire-a-source"></a>
@@ -133,7 +135,9 @@ The recorded Credential Proxy owner handles protected metadata Source lifecycle 
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-API composition binds the selected Proxy to trusted Source Namespace placement. After a credential replacement or renewal commits, TokenService notifies Proxy with the exact Source, version, and instance-bound resolver. Without a Provider, Proxy neither resolves nor creates one. Otherwise it resolves once, conditionally updates each owned Provider, validates target receipts, and waits for activated Sandboxes to observe each update. Waiting does not repeat the update.
+API composition binds Proxy to trusted Namespace placement for OCC custody. After committing a replacement or renewal, TokenService sends the Source, version, and instance-bound resolver. If delivery Providers exist, Proxy resolves the credential once. For each Provider, Proxy issues one conditional update and verifies receipts from activated Sandboxes.
+
+With OpenShell custody, TokenService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
 
 Delivery failure leaves committed material in custody. PATCH audits the update and failure separately and returns `503 DEPENDENCY_UNAVAILABLE`. OAuth leaves the old schedule due and retries the committed version without exchanging the rotated grant again.
 
@@ -149,11 +153,11 @@ For an Agent credential push, OCC selects unwithdrawn bindings from the active r
 
 An Agent service-principal denial asks the operator to restore Source access. The response names a Source only if selected explicitly or readable along with the Agent.
 
-OCC sends Proxy each authorized Source reference and TokenService-bound resolver. Proxy retries the conditional update and verifies receipts, including stale targets at the same version. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed`. Shared Providers can affect other Agents; live Harness rotation remains unqualified.
+OCC sends Proxy each authorized Source reference and TokenService-bound resolver. For OCC custody, Proxy retries the conditional update and verifies serving receipts, including stale targets at the same version. The update can affect other Agents using that Provider. For OpenShell custody, success verifies Provider metadata. Verify delivery on the running Sandbox. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. Live Harness rotation remains unqualified.
 
 #### Retire the Source
 
-OCC checks Agent, revision, deployment, provisioning and Plugin slot references before retirement. A blocking reference returns `409`. After withdrawal and reference removal, OCC records any OAuth revocation intent and asks Proxy to retire its copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. The Worker also retries pending OAuth retirement. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
+OCC returns `409` while Agent, revision, deployment, provisioning or Plugin slot references block removal. When they clear, OCC records any OAuth revocation intent. For OCC custody, Proxy retires delivery copies before TokenService removes custody. Proxy failure returns `503` and retains custody for retry. Worker retries pending OAuth retirement. For OpenShell custody, TokenService deletes the authoritative Provider and profile. See the [static custody flow](token-service-static-custody.md#4-retire-the-source).
 
 ### 7. Enroll a Codex PAT Source
 
