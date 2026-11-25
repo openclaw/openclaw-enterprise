@@ -77,7 +77,10 @@ work never started.
 
 **Selected for service** is OCC's selection, not live health. Deployment may still
 be in progress; a successful historical record does not confirm a response.
-A newer version still deploying is labelled **Deploying version**.
+For a version not selected for service, **Deploying version** means the deployment
+is queued or running. Until the Console knows more, it shows **Read-only admitted
+snapshot**. A temporary read failure does not erase a previous deployment result.
+A known older or completed version can show **Historical version**.
 Verify the runtime and a real response with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 

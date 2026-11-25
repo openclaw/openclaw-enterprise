@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-24
-last_updated_session: authoring-run/0e68027f-b229-42d4-8639-87267b4b6363
+updated: 2026-11-25
+last_updated_session: authoring-run/c98e1166-f5f2-4d30-a121-7747b0cbec27
 ---
 
 # Console Agent editing and runtime requests
@@ -83,8 +83,10 @@ repository access, or overview errors need attention; outcomes remain.
 **Refresh deployment** queues the latest readable revision’s record/overview reread.
 **Refresh record** rereads the viewed revision, retaining focus and ignoring repeats.
 `createDeploymentStatusPanel` polls pending deployments/cleanup through outages.
-`show` renders results without `onFreshRecord`, which retries failed overviews on fresh matching terminal reads.
-`terminalOverview` shares Agent/history reads per outcome. `recordGeneration` rejects stale records.
+`show` renders without `onFreshRecord`, which retries failed overviews on fresh matching terminal reads.
+`terminalOverview` shares per-outcome Agent/history reads. `recordGeneration` rejects stale records.
+After success, `detail.mts:versionNotice` waits for this overview. Unclassified
+snapshots show only their read-only status.
 Refusals clear caches/reads, opening details. Matching errors share alerts. `401` expires sessions.
 Revision changes replace **View deployment**. Same-revision updates preserve focus.
 
@@ -366,7 +368,6 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-24 15:51: Trace draft Channels access confirmation. (authoring-run/0e68027f-b229-42d4-8639-87267b4b6363 - fccad45bda2c0004ecf6ee4cdd93a3cefbfd089e)
-- 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
+- 2026-11-25 03:04: Trace version notices. (authoring-run/c98e1166-f5f2-4d30-a121-7747b0cbec27 - a517e965f8dd3190658b6400e770d41446b8de87)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

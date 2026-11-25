@@ -432,7 +432,7 @@ export function createAgentDetailScenarios({
         description:
           "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
         steps: [
-          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+          "Load older versions, then select v1. Confirm the notice begins Historical version and the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
         ],
         gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
       },
@@ -1929,7 +1929,7 @@ export function createAgentDetailScenarios({
         description:
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
-          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot."',
           "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
@@ -2834,6 +2834,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
           "Open Deployment details to read the in-progress stages.",
+          'Reload and open Configuration while the first read is pending. The notice says "Read-only admitted snapshot." When v7 is in progress it says "Deploying version · read-only admitted snapshot."',
         ],
       },
       deploymentUnavailable: {
@@ -2849,6 +2850,7 @@ export function createAgentDetailScenarios({
           },
         ],
         steps: [
+          'Open Configuration: the latest version says "Read-only admitted snapshot." while its deployment record is unavailable. Return to Deployment.',
           "Fold Deployment details. The selected record still shows the read error outside the fold with one visible alert. Expand again: the activity owns that alert instead of announcing it twice.",
           "Fold and press Refresh deployment. The same failed read opens the details again; this explicit action differs from a routine transient poll.",
         ],

@@ -298,6 +298,7 @@ interface DeploymentActivity {
   readError: unknown;
   transientFailure: boolean;
   overviewUnavailable: boolean;
+  overviewSettled: boolean;
 }
 
 export function createDeploymentStatusPanel(
@@ -536,6 +537,7 @@ export function createDeploymentStatusPanel(
       readError: error,
       transientFailure: error !== null && transientReadError(error),
       overviewUnavailable,
+      overviewSettled: terminalOverview === "ready" || terminalOverview === "failed",
     });
     if (
       keepFocusVisible &&
