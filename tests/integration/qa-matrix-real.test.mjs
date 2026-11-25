@@ -217,15 +217,20 @@ test(
         "kubernetes/OpenClaw/OpenShell",
         "native Source custody, dedicated model turn, rotation and withdrawal",
         async () => {
+          const env = { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" };
+          // The parent test runner marks its worker with this variable. Passing it to a new
+          // node --test process makes Node suppress the child suite as a recursive run.
+          delete env.NODE_TEST_CONTEXT;
           const result = await promisify(execFile)(
             process.execPath,
             ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
             {
-              env: { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" },
+              env,
               timeout: 1_800_000,
               maxBuffer: 8 * 1024 * 1024,
             },
           );
+          assert.match(result.stdout, /\btests 1(?:\r?\n|$)/);
           assert.match(result.stdout, /(?:skipped|skip) 0/);
           context.diagnostic(result.stdout);
         },
