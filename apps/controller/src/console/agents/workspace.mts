@@ -118,7 +118,7 @@ function fileError(error: FileFailure, writing: boolean, failure: unknown) {
     text =
       "The file was rejected. Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.";
   }
-  if (writing && writeOutcomeUnknown(error.status)) {
+  if (writing && unanswered(error.status)) {
     text =
       "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
   }
@@ -135,7 +135,9 @@ function confirmsMissingFile(error: FileFailure) {
   );
 }
 
-function writeOutcomeUnknown(status: number | undefined) {
+// Nothing answered for the file itself: the request did not reach the API, or the API or the
+// gateway failed. A write then has an unknown outcome, and the section's Retry can repeat a read.
+function unanswered(status: number | undefined) {
   return status === undefined || ![400, 403, 404, 409, 413, 429].includes(status);
 }
 
@@ -229,6 +231,47 @@ export function renderWorkspaceFiles(
     tab: HTMLButtonElement;
     panel: HTMLElement;
   }> = [];
+  // Reads that nothing answered and that Retry can repeat, by file. One notice above the files
+  // names them, and none of them is marked Needs attention. Each file still shows its own reason.
+  const unreached = new Map<string, () => Promise<void>>();
+  // Reads in progress. The notice waits for them, so files that fail together are announced once.
+  let reading = 0;
+  const retry = button("Retry", async () => {
+    const held = document.activeElement === retry;
+    const reads = [...unreached.values()];
+    unreached.clear();
+    showUnreached();
+    await Promise.all(reads.map((read) => read()));
+    // Retry leaves the page while its reads run, which drops focus to the page. Focus goes back
+    // to Retry, or to the file picker once the files answer (finding 2366).
+    if (held && context.isCurrent() && document.activeElement === document.body) {
+      const tab = choices.find((file) => file.name === selectedFile)?.tab;
+      const picker = tab?.offsetParent ? tab : fileSelect;
+      (retry.isConnected ? retry : picker).focus();
+    }
+  });
+  const unreachedText = element("p", { className: "status-body" });
+  const unreachedNotice = statusBlock("danger", null, unreachedText, [retry]);
+  // The alert stays in the page with no content, so the text written into it is announced.
+  const unreachedParts = [...unreachedNotice.childNodes];
+  unreachedNotice.replaceChildren();
+  function showUnreached() {
+    if (reading) {
+      return;
+    }
+    const names = workspaceFiles.map(({ name }) => name).filter((name) => unreached.has(name));
+    const listed =
+      names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    const text = names.length
+      ? `${listed} could not be read. Retry reads ${names.length > 1 ? "them" : "it"} again.`
+      : "";
+    // The same files leave the alert as it is, so it is announced once.
+    if (text !== unreachedText.textContent) {
+      unreachedText.textContent = text;
+      unreachedNotice.replaceChildren(...(text ? unreachedParts : []));
+    }
+  }
+  surface.before(unreachedNotice);
   function chooseFile(name: string) {
     const chosen = choices.find((file) => file.name === name);
     if (!chosen) {
@@ -390,7 +433,8 @@ export function renderWorkspaceFiles(
           status.textContent = "";
         }
       }
-      const needsAttention = Boolean(errorNotice.textContent) || rereadFailed;
+      const needsAttention =
+        (Boolean(errorNotice.textContent) && !unreached.has(name)) || rereadFailed;
       let state = "";
       let tone = "neutral";
       if (outcomeUnknown) {
@@ -448,6 +492,9 @@ export function renderWorkspaceFiles(
       operations += 1;
       pending = true;
       rereadFailed = false;
+      unreached.delete(name);
+      showUnreached();
+      reading += 1;
       updateControls();
       errorNotice.textContent = "";
       status.textContent = `Loading ${name}…`;
@@ -502,10 +549,18 @@ export function renderWorkspaceFiles(
         }
         status.textContent = canCreate ? missingText() : "";
         errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
+        // Retry never replaces unsaved edits or settles an unknown save. A file that holds
+        // either waits for its own Reload, and Retry reads without Reload's discard, so edits
+        // kept from an earlier visit come back.
+        if (unanswered(cause.status) && !outcomeUnknown && editor.value === (baseline ?? "")) {
+          unreached.set(name, () => load());
+        }
       } finally {
+        reading -= 1;
         if (context.isCurrent()) {
           pending = false;
           writing = false;
+          showUnreached();
           updateControls();
           returnFocus(held, reload);
           // A version change during this request may have been answered by the old version.
@@ -570,7 +625,7 @@ export function renderWorkspaceFiles(
           context.onExpired();
           return;
         }
-        outcomeUnknown = writeOutcomeUnknown(cause.status);
+        outcomeUnknown = unanswered(cause.status);
         status.textContent = "";
         errorNotice.textContent = fileError(cause, true, failure);
       } finally {

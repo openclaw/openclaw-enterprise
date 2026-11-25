@@ -6,7 +6,7 @@ import {
   RevisionId,
   Meta,
   SandboxPolicyVersion,
-  RepositoryNetworkGrantSchema,
+  RepositoryNetworkGrantSchema as RepositoryNetworkLimitSchema,
 } from "./common.ts";
 import { maxRepositoryNetworkGrants } from "../repository-network-policy.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
@@ -25,6 +25,33 @@ export const SandboxPolicyParams = Type.Object(
 );
 export const SandboxPolicyRevisionParams = Type.Object(
   { ...SandboxPolicyParams.properties, revisionId: RevisionId },
+  { additionalProperties: false },
+);
+
+const RepositoryApiLevelSchema = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("read"),
+  Type.Literal("write"),
+]);
+const RepositoryNetworkGrantSchema = Type.Object(
+  {
+    ...RepositoryNetworkLimitSchema.properties,
+    apiLimits: Type.Optional(
+      Type.Object(
+        {
+          default: Type.Optional(Type.Literal("none")),
+          issues: Type.Optional(RepositoryApiLevelSchema),
+          pull_requests: Type.Optional(RepositoryApiLevelSchema),
+        },
+        {
+          additionalProperties: false,
+          minProperties: 1,
+          description:
+            "Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply.",
+        },
+      ),
+    ),
+  },
   { additionalProperties: false },
 );
 
@@ -82,17 +109,34 @@ export const SandboxPolicyViewResponse = Type.Object(
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Union([Type.Boolean(), Type.Null()], {
           description:
-            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone.",
+            "Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy uses protected or standalone credential execution. The selected Drivers must admit the proposed repository grants and network additions.",
         }),
         ceiling: SandboxNetworkGrantsSchema,
-        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkGrantSchema, {
+        repositoryNetworkPolicyCeiling: Type.Array(RepositoryNetworkLimitSchema, {
           description:
             "Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently.",
           maxItems: maxRepositoryNetworkGrants,
         }),
+        repositoryApiMaxima: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                ...RepositoryNetworkLimitSchema.properties,
+                issues: RepositoryApiLevelSchema,
+                pull_requests: RepositoryApiLevelSchema,
+              },
+              { additionalProperties: false },
+            ),
+            {
+              maxItems: maxRepositoryNetworkGrants,
+              description:
+                "Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy.",
+            },
+          ),
+        ),
         repositoryNetworkPolicySaveSupported: Type.Boolean({
           description:
-            "Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list.",
+            "Whether the editor can request withdrawal or submit a repository list for legacy protected Git. PUT validates the complete list against the Agent selections and policy ceiling.",
         }),
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),
@@ -133,7 +177,7 @@ export const SandboxPolicyUpdateBody = Type.Object(
     repositoryNetworkPolicy: Type.Optional(
       Type.Array(RepositoryNetworkGrantSchema, {
         description:
-          "Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
+          "Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported.",
         maxItems: maxRepositoryNetworkGrants,
       }),
     ),

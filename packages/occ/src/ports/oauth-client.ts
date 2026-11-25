@@ -1,6 +1,6 @@
-import type { OAuthClient } from "@openclaw-enterprise/contracts";
+import type { CredentialClient } from "@openclaw-enterprise/contracts";
 
-/** Private registration ownership. Only the selected Secret Driver can resolve the material. */
-export interface StoredOAuthClient extends OAuthClient {
-  readonly secretDriverId?: string;
-}
+/** Private custody ownership; client metadata returned to callers excludes this field. */
+export type StoredCredentialClient = CredentialClient & {
+  readonly tokenServiceInstanceId?: string;
+};

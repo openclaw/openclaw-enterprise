@@ -1,3 +1,4 @@
+import { repositoryGitRestOperations } from "../access/delivery.ts";
 import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
@@ -80,7 +81,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   constructor(
     owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
-    options: { readonly sessionDurationSeconds: number },
+    options: {
+      readonly sessionDurationSeconds: number;
+      readonly allowNameOnlyNativeRepositories?: boolean;
+    },
   ) {
     const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
@@ -90,7 +94,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     if (typeof backendId !== "string") {
       throw new Error("The GitHub repository policy must declare its owning Backend.");
     }
-    this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
+    this.#registry = validateGitHubRepositoryRegistry(registry, backendId, options);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||
@@ -190,15 +194,19 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       const selected = bindings.some((binding) => binding.profile === "github-repository")
         ? resolveSelectedRepositoryScope(this.#registry, input.namespaceId, bindings)
         : undefined;
+      const selectedGrants = selected && selectedRepositoryGitNetworkGrants(selected);
       return Object.freeze({
         bindings,
         sessionDurationSeconds: this.#duration,
-        ...(selected === undefined
-          ? {}
-          : {
-              selectedRepositoryNetworkGrants: selectedRepositoryGitNetworkGrants(selected),
-              ...(selected.nativeGit && { nativeGit: selected.nativeGit }),
+        ...(selected &&
+          selectedGrants && {
+            requiresNetworkPolicy: selected.requiresNetworkPolicy,
+            selectedRepositoryNetworkGrants: selectedGrants,
+            ...(selected.nativeGit && {
+              nativeGit: selected.nativeGit,
+              repositoryApiMaxima: repositoryGitRestOperations(selectedGrants, selected.scopedRest),
             }),
+          }),
       });
     } catch {
       throw new ScopeViolationError(

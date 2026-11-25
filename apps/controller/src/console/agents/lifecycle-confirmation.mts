@@ -37,6 +37,10 @@ export function grantRefusal(cause: unknown) {
   );
 }
 
+export function confirmationAgentId(id: string, agentId: string) {
+  return element("p", { id }, "Agent ID: ", element("span", { className: "resource-id" }, agentId));
+}
+
 // Agent list and detail use the same confirmation and explain which resources deletion keeps.
 export const STOP_CONFIRMATION =
   "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";

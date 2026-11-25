@@ -242,17 +242,21 @@ Use a complete pre-loss `openclaw skills library read <skill-id> --json` export
 (`backup`) and its independently recorded `backup_sha256`. Preserve every support
 file and executable flag. Use this [Gateway call](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/cli/gateway/query.md#L423)
 only for small, non-sensitive bundles. Process arguments expose their contents.
+Check and restore from the same private copy of the export.
 
 ```bash
 (
-  digest=$(sha256sum < "${backup:?}") || exit 1
+  backup_copy=$(mktemp) || exit 1
+  trap 'rm -f -- "$backup_copy"' EXIT
+  cat < "${backup:?}" > "$backup_copy" || exit 1
+  digest=$(sha256sum < "$backup_copy") || exit 1
   [[ "${digest%% *}" == "${backup_sha256:?}" ]] || { echo "Backup checksum mismatch" >&2; exit 1; }
   params=$(jq -cse --arg id "${skill_id:?}" --arg rev "${revision:?}" --arg slug "${slug:?}" '
     select(length == 1) | .[0]
     | select(.entry.skillId == $id and .entry.revision == $rev and .entry.slug == $slug)
     | select((.files | type == "array") and (.content | type == "string"))
     | {skillId:$id, expectedRevision:$rev, slug:.entry.slug, content, files}
-  ' < "${backup:?}") &&
+  ' < "$backup_copy") &&
     openclaw gateway call skills.library.save --params "$params" --json
 )
 ```

@@ -3,37 +3,35 @@ import type { ClientRequest, IncomingMessage } from "node:http";
 import type { Clock } from "../../../access/backend-contracts.ts";
 import type { ProviderAttempt, ProviderResponse } from "../provider-transport.ts";
 import type { ProviderScope } from "./request-options.ts";
-import { providerRequestOptions } from "./request-options.ts";
+import { appIdentityRequestOptions, providerRequestOptions } from "./request-options.ts";
 import {
   observeProvider,
   providerErrorClass,
   type ProviderObservation,
 } from "../provider-diagnostics.ts";
 
-interface ProviderRequestDependencies {
-  readonly endpoint: ProviderScope;
+type ProviderRequestDependencies = {
   readonly ca: Uint8Array | undefined;
   readonly clock: Clock;
-  readonly operation: "issue" | "revoke";
   readonly authorization: string;
   readonly attempt: ProviderAttempt;
   readonly assertMaterialCurrent: () => void;
   /** Synchronous borrow. Capture owned material here; the transport clears the body on return. */
   readonly consumeResponse: (response: ProviderResponse) => undefined;
   readonly observe?: (observation: ProviderObservation) => void;
-}
+} & (
+  | { readonly endpoint: ProviderScope; readonly operation: "issue" | "revoke" }
+  | { readonly endpoint: string; readonly operation: "verify-app" }
+  | {
+      readonly endpoint: string;
+      readonly operation: "verify-installation";
+      readonly installationId: number;
+    }
+);
 
-export function sendProviderRequest({
-  endpoint,
-  ca,
-  clock,
-  operation,
-  authorization,
-  attempt,
-  assertMaterialCurrent,
-  consumeResponse,
-  observe,
-}: ProviderRequestDependencies): Promise<void> {
+export function sendProviderRequest(input: ProviderRequestDependencies): Promise<void> {
+  const { ca, clock, authorization, attempt, assertMaterialCurrent, consumeResponse, observe } =
+    input;
   return new Promise((resolve, reject) => {
     const responseChunks: Buffer[] = [];
     let responseBytes = 0;
@@ -147,7 +145,12 @@ export function sendProviderRequest({
     };
 
     try {
-      const prepared = providerRequestOptions(endpoint, operation, authorization, ca);
+      const prepared =
+        input.operation === "verify-app"
+          ? appIdentityRequestOptions(input.endpoint, authorization, ca)
+          : input.operation === "verify-installation"
+            ? appIdentityRequestOptions(input.endpoint, authorization, ca, input.installationId)
+            : providerRequestOptions(input.endpoint, input.operation, authorization, ca);
       attempt.assertAdmitted();
       assertMaterialCurrent();
       const remaining = attempt.deadlineMonoMs - clock.monotonicNow();

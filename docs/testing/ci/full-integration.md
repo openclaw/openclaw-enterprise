@@ -27,7 +27,10 @@ receipt before starting the full suite. Missing admission metadata fails visibly
 Manual dispatch selects one supported `lane` or `all` on `main` and requires the
 dispatcher's [team approval](configuration.md#environments). The ordinary PR
 and merge-group checks still provide targeted premerge feedback. QA Advisory
-has its own schedule.
+has its own schedule. [Release OCE](../../release/README.md) calls Full Integration
+with `lane=all` for the selected commit in protected `main` history and
+requires a successful aggregate for that SHA in its own run. Release
+runs do not count toward scheduled coverage.
 
 ## Scenarios
 
@@ -179,8 +182,9 @@ Use the [shared cleanup procedure](run-lanes.md#results-and-cleanup) for local r
 
 First-attempt scheduled and manual `all` runs can reuse eligible ordinary CI
 lanes from a successful push CI run on official `main` at the exact source SHA.
-Discovery waits at most 12 minutes. Required producer jobs must pass, and
-current-attempt artifacts must contain complete case and cleanup evidence.
+Discovery polls every 30 seconds for up to 14 minutes within the 18-minute
+reuse job timeout. Required producer jobs must pass, and current-attempt
+artifacts must contain complete case and cleanup evidence.
 Validated results must be published as `full-ci-reused-results` before their lanes
 are omitted from fresh execution. Ineligible lanes and unavailable, invalid or
 unpublished results fall back to fresh runs. Preflight supplies the full matrix
