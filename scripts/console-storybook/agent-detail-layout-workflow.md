@@ -3,6 +3,17 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
+then press End and Left to focus the tab before last. Narrow the window to
+920 px, then 390 px. Confirm the label and focus ring stay clear of both faded
+edges and the selected panel stays open.
+
+Open **Pages / Agent detail / Plugin selections, viewer cannot update the Agent**
+and **Plugins in admitted version**. Select **Plugins** in each story. At
+390 px and 920 px, check that the entire long plugin ID and the indented JSON fit
+inside the card without horizontal scrolling. Focus **Plugins** and press Tab to
+reach the JSON. At desktop width, check that the long ID fits on one line.
+
 At 1280 × 1000, open **Pages / Agent detail / Edit Configuration** and make a valid
 edit. Scroll until **Save Configuration** is near the middle of the window and
 **Danger zone** is out of view below it. Save and check that **Edit Configuration**
@@ -12,6 +23,22 @@ in `tests/browser/console-agent-saves.test.ts` delays a real Configuration save.
 Reopen **Edit Configuration**. In **Configuration JSON**, select a few characters
 with Shift+Left. Switch browser tabs and return. After the access check, press
 Shift+Left again. The selection should extend one more character to the left.
+
+At desktop and 390-pixel widths, open **Pages / Agent detail / Channels access
+could not be checked on tab return** in its own preview tab. Open **Edit Slack**
+with the keyboard, then choose **Cancel** and confirm focus returns to **Edit
+Slack**. Switch to another browser tab and return. The fixture returns one
+HTTP 503 for the Agent permission check. Confirm **Channels** stays selected
+and receives focus. Read the access-check message on the Channels panel and
+check that the Slack card and **Deploy new version** describe why their actions
+are unavailable. Choose **Refresh** in the page header and check that **Edit
+Slack** is available again and the access-check message clears. Reload the
+preview to repeat.
+
+After Cancel, scroll to the bottom with **Channels** in view. Switch browser
+tabs and return twice to see the failed check and recovery. Each time, the
+Channels tab should stay in the same place on screen unless the page is too
+short to allow it.
 
 For retained Harness settings, open **Pages / Agent detail / Retained Harness
 history** (`retainedHarnessHistory`). Load older versions, select v1 and read the
@@ -81,6 +108,13 @@ another tab and return. The simulated grant clears the refusal and enables
 Deploy on the same draft. Returning to the tab sends no Deploy request.
 Use **Deployment needs Secret operate** to check access that stays denied.
 
+Use **Current version's Sandbox lost** to check the warning while returning to the same version.
+
+In **Bootstrap failure with cleanup pending**, stay on the page as the replacement
+fails. The selected version stays the same. **Sandbox running** changes to
+**Sandbox lost** with **Deploy a new version** after one fresh Sandbox check.
+Cleanup updates do not trigger more checks. The story simulates both responses.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent
@@ -135,6 +169,10 @@ Use **Deployment needs Secret operate** to check access that stays denied.
    missing file shows **Missing** in the tabs and phone picker. The browser
    regression also checks that a later missing-file response clears a previous
    **Needs attention** indicator.
+   Check **Components / Workspace / Gateway unreachable**: one notice above the
+   files names the four files, each file shows the reason under its editor, and
+   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
+   four files load.
 7. Open **Pages / Agent detail / New version in progress, then current**. Follow
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during
@@ -146,6 +184,8 @@ Use **Deployment needs Secret operate** to check access that stays denied.
 8. In **New version queued**, fold **Deployment details**, then Tab to **Run
    diagnostics for this version**. Routine polls keep the fold and the visible
    focused button in place. Repeat expanded, at desktop and phone widths.
+   In **Deployment activity loading**, Configuration shows **Deploying version**
+   on reply. **Deployment activity unavailable** stays neutral.
    In **New version in progress, one status read fails**, open Deployment before
    the failed poll. The fold stays as chosen through the transient error; the
    selected record shows the error outside it, with one visible alert. Completion
@@ -201,6 +241,13 @@ answers are not IAM enforcement; saved feedback is not backend persistence proof
 Open **Pages / Agent detail / Danger zone on Configuration** on desktop and phone.
 Switch from Workspace files to Configuration to see stop status and deletion controls.
 Switch back to verify the entire card disappears.
+
+Open **Components / Deletion / Status unavailable after deletion request** on
+desktop and at 390 px. Wait for the status check to return you to **Agents** in
+the same Namespace. Check that an information notice above the list says deletion
+was requested and cleanup could not be confirmed. The row still shows **Deleting**.
+Open **Namespaces**, then return to **Agents** and check that the notice has cleared.
+Use **Reset story** to repeat the simulated status response.
 
 11. Open **Components / Stop Agent / First Deployment Failed**. The Agent has no
     selected version and its latest readable deployment failed. Check that **Stop

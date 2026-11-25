@@ -116,7 +116,7 @@ function modelRecoveryStep(canEdit: boolean, canDeploy: boolean) {
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
   credentials: "Open Credentials",
-  configuration: "Open Configuration",
+  configuration: "Open Configuration draft",
 };
 
 /** Recovery actions for the latest readable failed deployment. The API authorizes every destination. */
@@ -267,7 +267,7 @@ export function createDeploymentRecovery(
     // page disables its editors without them (finding 2441). Open Credentials leads to one.
     const agentEditable =
       permissions?.update === true && agentSaveDenial(permissions) === undefined;
-    // Open Configuration leads to the Configuration editor, which saves with Configuration update
+    // The link opens the Configuration draft. Saving it requires Configuration update
     // and Secret operate on each Secret the Configuration binds, not with an Agent update
     // (finding 2450). A positive answer is required, as before.
     const configurationEditable =

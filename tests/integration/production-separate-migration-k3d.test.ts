@@ -67,9 +67,30 @@ test(
   "separate migration Helm upgrades keep writers stopped until the database passes verification",
   observabilitySelection,
   async (t) => {
+    const recordPhaseTiming = (
+      stage:
+        | "fixture-bootstrap"
+        | "initial-apply-writer-pause"
+        | "migration-apply-verify"
+        | "attested-resume",
+      startedAt: number,
+    ) => {
+      const timing = {
+        kind: "production-migration-phase",
+        stage,
+        outcome: "passed",
+        elapsedMs: Math.round(performance.now() - startedAt),
+      };
+      t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(timing)}`);
+    };
+
     // Use the same approved manifest in both runtime slots. The explicit incumbent
     // tag makes the dedicated slot a distinct reference for the image upgrade.
-    const f = await installObservabilityControlPlane(t, { initialAgentImageTag: "incumbent" });
+    const bootstrapStarted = performance.now();
+    const f = await installObservabilityControlPlane(t, {
+      initialAgentImageTag: "incumbent",
+      metricsProbes: false,
+    });
     const installation = record(await f.api("GET", "/installation"));
     const installationId = string(installation.id);
     const { kubeconfigPath, kubernetesContext } = f.selection;
@@ -113,6 +134,8 @@ test(
           await sql("SELECT count(*) FROM occ.controller_work WHERE state IN ('queued', 'claimed')")
         ).trim() === "0",
     );
+    recordPhaseTiming("fixture-bootstrap", bootstrapStarted);
+
     // The upgrade workflow requires the same Installation binding as prepare.
     await f.kubectl(
       "-n",
@@ -125,8 +148,8 @@ test(
     // Exercise the ordinary helper against this installed API and database. A
     // runtime-only plan selects the incumbent controller for compatibility checks;
     // no Agent is admitted until these checks finish.
+    // Reuse the fixture-local CLI that bootstrap built and ran.
     const occ = join(f.directory, "occ");
-    await f.run("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
     const source = (await f.run("git", ["rev-parse", "HEAD"])).trim();
     const keyPath = join(f.directory, "service-key.json");
     // The fixture has already removed the fresh-install credential Secret.
@@ -261,11 +284,11 @@ test(
         ],
         upgradeExecution,
       );
-    // Keep full dumps private. Authenticating the real CLI updates exactly this
+    // Keep full dumps in memory. Authenticating the real CLI updates exactly this
     // key's last_request and updated_at. Ignore COPY row order, but retain every
     // value, duplicate and non-COPY byte, including all other keys' timestamps.
     // Verify the two expected timestamps independently.
-    const databaseSnapshot = async (name: string) => {
+    const databaseSnapshot = async () => {
       // Decode only after complete byte capture: pipe chunks can split UTF-8 characters.
       // Keep command failures generic because both streams may contain private data.
       const { stdout: bytes } = await promisify(execFile)(
@@ -286,7 +309,6 @@ test(
       ).catch(() => {
         throw new Error("database snapshot capture failed");
       });
-      await writeFile(join(f.directory, `${name}.sql`), bytes, { mode: 0o600 });
       const dump = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
       const captured: { timestamps?: number[] } = {};
       const timestampNormalized = dump.replace(
@@ -323,11 +345,8 @@ test(
         timestamps: captured.timestamps,
       };
     };
-    const assertDatabase = async (
-      before: Awaited<ReturnType<typeof databaseSnapshot>>,
-      name: string,
-    ) => {
-      const after = await databaseSnapshot(name);
+    const assertDatabase = async (before: Awaited<ReturnType<typeof databaseSnapshot>>) => {
+      const after = await databaseSnapshot();
       // Report table names and ordering only; snapshot values remain private.
       const sections = (dump: string) =>
         new Map(
@@ -500,7 +519,7 @@ test(
     assert.match(interiorHash, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(interiorId));
     await sql(`UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=${interiorId}`);
-    const corruptSnapshot = await databaseSnapshot("corrupt-before");
+    const corruptSnapshot = await databaseSnapshot();
     // The earlier migration check runs without installation.yaml. Stage
     // the same Installation bytes and runtime image as standalone preflight for apply.
     await writeFile(join(profileDirectory, "installation.yaml"), await readFile(installationPath), {
@@ -536,7 +555,7 @@ test(
       await assert.rejects(run(name), /migration.*preflight|migration history/i);
       const log = await readFile(join(f.directory, name, "preflight-migration.log"), "utf8");
       assert.match(log, /MIGRATION_HISTORY_UNSUPPORTED/);
-      await assertDatabase(corruptSnapshot, `${name}-after`);
+      await assertDatabase(corruptSnapshot);
       assert.equal(await helmRevision(), revision);
       await assertIncumbent();
       await assertPreflightClean();
@@ -546,13 +565,13 @@ test(
     await sql(
       `UPDATE drizzle.__drizzle_migrations SET hash='${interiorHash}' WHERE id=${interiorId}`,
     );
-    const repairedSnapshot = await databaseSnapshot("repaired-before");
+    const repairedSnapshot = await databaseSnapshot();
     await preflight("compatible-preflight");
     assert.match(
       await readFile(join(f.directory, "compatible-preflight", "preflight-migration.log"), "utf8"),
       /"event":"migration.checked","history":"completed"/,
     );
-    await assertDatabase(repairedSnapshot, "compatible-after");
+    await assertDatabase(repairedSnapshot);
     await assertIncumbent();
 
     // Retain a provisioned, undeployed Agent through the handoff. The fixture
@@ -624,6 +643,7 @@ test(
     };
 
     // The real CLI stops the writers and records their identity before submitting Helm.
+    const initialApplyStarted = performance.now();
     const pauseStartedAt = Date.now();
     const paused = await runUpgrade(["apply", "--evidence-dir", upgradeRun]);
     const pauseFinishedAt = Date.now();
@@ -671,6 +691,7 @@ test(
       await assertPreflightClean();
     };
     await assertWriterFence();
+    recordPhaseTiming("initial-apply-writer-pause", initialApplyStarted);
 
     const attempt = record(
       JSON.parse(await readFile(join(upgradeRun, "prepared-helm-attempt.json"), "utf8")),
@@ -695,7 +716,7 @@ test(
     // PostgreSQL compatibility tests cover applying pending SQL from a canonical
     // predecessor. Here the installed release starts current, so applying and
     // verifying through the real Jobs must preserve its schema, data and receipts.
-    const fencedDatabase = await databaseSnapshot("migration-fenced-before");
+    const fencedDatabase = await databaseSnapshot();
 
     // Declining approval must leave the original run untouched while Helm and
     // both writers stay fenced.
@@ -715,10 +736,11 @@ test(
     assert.match(declined.stdout, /cancelled; no command dispatched/);
     assert.deepEqual((await readdir(upgradeRun)).sort(), beforeDecline);
     await assert.rejects(stat(`${upgradeRun}.migration-state.json`), { code: "ENOENT" });
-    await assertDatabase(fencedDatabase, "migration-declined-after");
+    await assertDatabase(fencedDatabase);
     await assertWriterFence();
 
     // Both Jobs must complete and clean up before the explicit resume.
+    const migrationApplyStarted = performance.now();
     const applied = await runUpgrade(migrationApply);
     assert.equal(applied.code, 0, applied.stdout + applied.stderr);
     assert.match(applied.stdout, /Database migration verified and its Jobs and Pods are gone/);
@@ -743,14 +765,16 @@ test(
       ),
       /"event":"migration.checked","history":"completed"/,
     );
-    await assertDatabase(fencedDatabase, "migration-verified-after");
+    await assertDatabase(fencedDatabase);
     await assertWriterFence();
+    recordPhaseTiming("migration-apply-verify", migrationApplyStarted);
 
     // The original run also needs the explicit resume attestation.
     const resume = ["resume", upgradeRun];
     assertMigrationPause(await runUpgrade(resume));
     await assertWriterFence();
 
+    const attestedResumeStarted = performance.now();
     const resumeStartedAt = Date.now();
     const resumed = await runUpgrade(resume, ["--migration-history-checked"]);
     const resumeFinishedAt = Date.now();
@@ -790,6 +814,7 @@ test(
     const admission = await agent.deploy();
     assert.equal(admission.agentId, agentId);
     assert.deepEqual(await revisionIds(), [admission.id]);
+    recordPhaseTiming("attested-resume", attestedResumeStarted);
     await agent.stop();
 
     // Separately submit a real chart upgrade to exercise Helm's own safety gate

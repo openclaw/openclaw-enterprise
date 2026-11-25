@@ -22,14 +22,11 @@
     "selfProvisionedFiles": [
       "tests/integration/local-first-agent-openshell-real.test.mjs",
       "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
-      "tests/integration/openshell-git-retention-real.test.ts",
-      "tests/integration/openshell-git-finite-removal-real.test.ts"
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs"
     ],
     "sourceBuildFiles": [
       "tests/integration/dev-up-openshell-k3d-real.test.mjs",
-      "tests/integration/openshell-git-retention-real.test.ts",
-      "tests/integration/openshell-git-finite-removal-real.test.ts"
+      "tests/integration/openshell-optional-plugin-withdrawal-real.test.ts"
     ]
   },
   "files": [
@@ -66,6 +63,27 @@
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "optionalEnv": ["OCC_TEST_OPENSHELL_MODEL_BASE_URL"]
+    },
+    {
+      "path": "tests/integration/openshell-optional-plugin-withdrawal-real.test.ts",
+      "env": { "OCC_TEST_OPENSHELL_HARNESS": "openclaw" },
+      "expectedTests": [
+        "OpenShell optional Slack withdrawal preserves model, Google, independent policy, and Source custody"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_GATEWAY_CA_CERT_PATH",
+        "OCC_TEST_GATEWAY_CA_KEY_PATH"
+      ]
     },
     {
       "path": "tests/integration/openshell-credentials-real.test.ts",
@@ -106,7 +124,7 @@
       "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE"],
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
-        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
+        "staged native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
     },
     {
@@ -176,7 +194,7 @@
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
-        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
+        "staged native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
     },
     {
@@ -215,21 +233,6 @@
         "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART"
       ],
       "env": { "OCC_TEST_NAMESPACE_OPENSHELL_REAL": "1", "OCC_TEST_OPENSHELL_HARNESS": "openclaw" }
-    },
-    {
-      "path": "tests/integration/openshell-git-retention-real.test.ts",
-      "expectedTests": [
-        "OpenShell standing Git remains available when a controller-only upgrade refuses worker replacement",
-        "OpenShell retains its runtime after Git expiry and worker restart",
-        "OpenShell isolates Git withdrawal before worker replacement and retains denial afterward",
-        "OpenShell enforces installed Git repository ACLs with managed Basic credentials"
-      ]
-    },
-    {
-      "path": "tests/integration/openshell-git-finite-removal-real.test.ts",
-      "expectedTests": [
-        "OpenShell retains a finite Agent after repository removal until model authority is withdrawn"
-      ]
     }
   ],
   "focusedEnv": ["OCC_TEST_OPENSHELL_HARNESS", "OCC_TEST_OPENSHELL_MODEL_BASE_URL"],

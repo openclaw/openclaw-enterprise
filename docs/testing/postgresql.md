@@ -345,6 +345,16 @@ OCC_TEST_REHEARSAL_RECOVERY_SOURCE="$RECOVERY_SOURCE" \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/production-tui-k3d-real.test.mjs
 ```
 
+To check Console sessions, set `OCC_TEST_PRODUCTION_TUI_BROWSER=1` for this
+in-place run. On Linux, provide `certutil` and sandboxed Chromium. Set
+`OCC_TEST_BROWSER_EXECUTABLE` to use an installed browser. Each image must
+serve its source revision in the Console HTML's `occ-build-revision` meta element.
+
+With one login, verify saved Agents in four tabs at each switch. Keep one open,
+load one fresh, delay the third tab's entry and delay the fourth tab's imports.
+Compare the delayed entry and Agent detail module with the fresh tab.
+Local HTTPS tests compatibility across a switch. It cannot establish continuous availability.
+
 Require a pass without skips. The test performs an ordinary controller-only
 forward upgrade. After the candidate acknowledges an Agent draft save, it checks
 the recovery migrator against the upgraded history and uses the same candidate

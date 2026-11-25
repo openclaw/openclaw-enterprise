@@ -548,6 +548,7 @@ case "$*" in
       ],
     },
   )}' ;;
+  *" get nodes "*) printf '%s' '{"items":[{"status":{"nodeInfo":{"operatingSystem":"linux","architecture":"amd64"}}}]}' ;;
   *" config view "*) printf '%s' '${JSON.stringify({
     "current-context": context,
     clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],

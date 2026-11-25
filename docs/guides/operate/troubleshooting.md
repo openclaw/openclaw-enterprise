@@ -87,16 +87,18 @@ with the same profile and state directory, and start the profile again.
 
 ## Local startup stalls on cert-manager
 
-On some Linux hosts, especially Ubuntu with Docker 29, the k3d node cannot
-resolve container registries. Startup then waits on the cert-manager rollout
-while its pods stay in `ContainerCreating`. The launcher does not print those
-Pod events, and it prints the kubeconfig path only after startup succeeds.
+On some Linux hosts, especially Ubuntu with Docker 29, k3d nodes cannot resolve
+registries. Startup waits on cert-manager while Pods remain in `ContainerCreating`.
+The launcher omits Pod events and prints the kubeconfig path only on success.
 
-Describe cert-manager Pods in another terminal. `<cluster>` comes from
-`Creating Kubernetes-only k3d cluster ...`. `<state-directory>` is the OCC
-process’s `OCC_DEVELOPMENT_STATE_DIRECTORY` if set. Otherwise use its `TMPDIR`
-(`/tmp` on Linux when unset) plus `openclaw-development`. Ignore the second
-terminal’s `TMPDIR`. See [development settings](../../reference/settings/development.md#required-development-controller-environment).
+While startup waits, inspect Pods from another terminal before rollback.
+`<cluster>` follows `Creating k3d cluster ...` or
+`Creating Kubernetes-only k3d cluster ...`.
+For `<state-directory>`, use the OCC process’s nonempty
+`OCC_DEVELOPMENT_STATE_DIRECTORY`; otherwise use its resolved temporary directory
+(`TMPDIR`, or `/tmp` on Linux if empty or unset) plus `openclaw-development`.
+Ignore the second terminal’s `TMPDIR`. See
+[development settings](../../reference/settings/development.md#required-development-controller-environment).
 
 ```bash
 kubectl --kubeconfig '<state-directory>/kubeconfig' \
@@ -104,11 +106,10 @@ kubectl --kubeconfig '<state-directory>/kubeconfig' \
   -n cert-manager describe pods
 ```
 
-A registry DNS failure shows up as a lookup error in the Pod events. Follow
+Registry DNS failures appear as lookup errors in events. Follow
 [Resolve node DNS failures](../deploy/local-kubernetes-development.md#resolve-node-dns-failures)
-and set a reachable resolver for a fresh start. That recovery changes only the
-owned node's resolver. If startup rolls the cluster back, wait until that
-command exits before starting again.
+and set a reachable resolver for a fresh start; this changes only the owned
+node's resolver. If rollback starts, wait for startup to exit before retrying.
 
 ## Local Agent Sandbox controller image pull fails
 
@@ -116,8 +117,8 @@ Default startup preloads the pinned controller. Check registry access and the
 import error; Pod pull policy cannot fix this. Keep state after incomplete cleanup
 and retry `occ dev down`; uncertain/replaced tags retain recovery state.
 
-For a custom manifest, inspect Pod events during rollout using the
-[state directory and cluster name](#local-startup-stalls-on-cert-manager) described above.
+For custom manifests, inspect Pod events during startup's rollout wait, before
+rollback, using the [state directory and cluster name](#local-startup-stalls-on-cert-manager).
 
 ```bash
 kubectl --kubeconfig '<state-directory>/kubeconfig' \

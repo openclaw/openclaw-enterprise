@@ -87,6 +87,24 @@ administrator to attach the identity, and the audit reason is
 If OCE's own database or audit store fails during the callback, the browser returns
 with `authReason=unavailable`.
 
+### First GitHub sign-in fails through Keycloak
+
+If returning users can sign in but new users see a 404, check where the browser
+goes after GitHub returns to Keycloak. In Keycloak 26.7.5, a path-filtering proxy
+can block `GET /realms/<realm>/broker/after-first-broker-login` after Keycloak
+creates the user but before it links GitHub. A retry can then fail with HTTP 409
+and “User with email … already exists.”
+
+Allow that exact GET under the issuer’s context path. Forward the query string
+and cookies without logging them. Keep administration routes private. Test first
+and repeat sign-in through the proxy with a fresh eligible account. Confirm both
+sign-ins return the same subject and the expected group claim if required.
+
+Fixing the route leaves existing account conflicts unresolved. Check the
+[Keycloak subject](oidc-keycloak.md#find-a-persons-subject), linked GitHub ID and
+OCE account before recovery. An email match alone is insufficient to link or
+delete an account.
+
 ## Offboard a person
 
 OCE does not learn when the IdP disables someone. Disabling the user in the IdP stops

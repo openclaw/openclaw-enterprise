@@ -152,17 +152,22 @@ test("promotion validation writes only the artifact ID for the selected publicat
     `
 const env = process.env;
 const repository = ${JSON.stringify(repository)};
-const workflow = ${JSON.stringify(publishWorkflow)};
+const workflow = env.FIXTURE_WORKFLOW ?? ${JSON.stringify(publishWorkflow)};
+const headSha = env.FIXTURE_PUBLICATION_SHA ?? env.SOURCE_SHA;
 const repo = { full_name: repository, default_branch: "main", private: false };
 const run = {
-  id: 123, run_attempt: 2, workflow_id: 89, path: workflow, repository: repo,
-  head_repository: repo, head_branch: "main", head_sha: env.SOURCE_SHA,
+  id: 123, run_attempt: Number(env.PUBLICATION_ATTEMPT), workflow_id: 89, path: workflow, repository: repo,
+  head_repository: repo, head_branch: "main", head_sha: headSha,
   event: "workflow_dispatch", status: "completed", conclusion: "success",
 };
 const artifact = {
   id: 789, name: "container-publication-123-" + env.FIXTURE_ARTIFACT_ATTEMPT,
-  expired: false, workflow_run: { id: 123, head_sha: env.SOURCE_SHA },
+  expired: false, workflow_run: { id: 123, head_sha: headSha },
 };
+const qualified = (sha) => [
+  "Approve release", "Verify approval", "Full Integration / Full Integration Aggregate", "Record qualified release"
+].map(name => ({name, head_sha: sha, status: "completed",
+  conclusion: name === "Full Integration / Full Integration Aggregate" ? env.FIXTURE_SUITE_RESULT ?? "success" : "success"}));
 const prefix = "/repos/" + repository;
 const responses = new Map([
   [prefix, repo],
@@ -176,9 +181,22 @@ const responses = new Map([
     branch_policies: [{ name: "main", type: "branch" }],
   }],
   [prefix + "/actions/runs/123", run],
-  [prefix + "/actions/workflows/container-publish.yml", { id: 89, path: workflow, state: "active" }],
+  [prefix + "/actions/workflows/" + workflow.split("/").at(-1), { id: 89, path: workflow, state: "active" }],
+  [prefix + "/actions/runs/123/attempts/1/jobs", { jobs: [...qualified(headSha), {
+    name: "Publish / Aliases / aliases", head_sha: headSha, status: "completed",
+    conclusion: env.FIXTURE_ALIAS_RESULT,
+  }] }],
   [prefix + "/actions/runs/123/artifacts", { artifacts: [artifact] }],
 ]);
+if (headSha !== env.SOURCE_SHA) {
+  responses.set(prefix + "/compare/" + env.SOURCE_SHA + "..." + headSha, {status: "ahead"});
+}
+if (env.FIXTURE_ORIGINAL_SHA) {
+  const original = env.FIXTURE_ORIGINAL_SHA;
+  responses.set(prefix + "/actions/runs/456", { ...run, id: 456, head_sha: original, conclusion: "failure" });
+  responses.set(prefix + "/actions/runs/456/attempts/1/jobs", { jobs: qualified(original) });
+  responses.set(prefix + "/compare/" + env.SOURCE_SHA + "..." + original, {status: "ahead"});
+}
 globalThis.fetch = async (url) => {
   const { origin, pathname } = new URL(url);
   return origin === "https://api.github.com" && responses.has(pathname)
@@ -188,8 +206,13 @@ globalThis.fetch = async (url) => {
 `,
   );
   const command = new URL("../../scripts/ci/container-promote.ts", import.meta.url);
-  const validate = (artifactAttempt: string, outputPath: string) =>
-    spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), "validate"], {
+  const validate = (
+    artifactAttempt: string,
+    outputPath: string,
+    fixture: NodeJS.ProcessEnv = {},
+    args = ["validate"],
+  ) =>
+    spawnSync(process.execPath, ["--import", preload, fileURLToPath(command), ...args], {
       encoding: "utf8",
       env: {
         ...env,
@@ -202,6 +225,7 @@ globalThis.fetch = async (url) => {
         GITHUB_OUTPUT: outputPath,
         GH_TOKEN: "synthetic-workflow-token",
         FIXTURE_ARTIFACT_ATTEMPT: artifactAttempt,
+        ...fixture,
       },
     });
   const admitted = validate("2", output);
@@ -215,4 +239,61 @@ globalThis.fetch = async (url) => {
     [1, "", "The exact successful publication receipt is required.\n\n0 !== 1\n\n"],
   );
   await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
+
+  // A recovery uses the final publisher's newer workflow commit for artifact
+  // and job lookup. A green rehearsal with a skipped alias job cannot promote.
+  const recovered = {
+    FIXTURE_WORKFLOW: ".github/workflows/release-oce.yml",
+    FIXTURE_PUBLICATION_SHA: "d".repeat(40),
+    FIXTURE_ALIAS_RESULT: "success",
+    PUBLICATION_ATTEMPT: "1",
+  };
+  const recoveredOutput = join(directory, "recovered-output");
+  assert.equal(validate("1", recoveredOutput, recovered).status, 0);
+  assert.equal(await readFile(recoveredOutput, "utf8"), "artifact_id=789\n");
+  const skipped = validate("1", refusedOutput, { ...recovered, FIXTURE_ALIAS_RESULT: "skipped" });
+  assert.equal(skipped.status, 1);
+  assert.match(skipped.stderr, /skipped/);
+  await assert.rejects(readFile(refusedOutput), { code: "ENOENT" });
+
+  // Reach the Docker Hub destination check through both publication paths.
+  // The test supplies no destination credentials or registry writes.
+  const receiptPath = join(directory, "publication.json");
+  const originalSha = "e".repeat(40);
+  const qualify = async (runId: string, workflowSha: string, suiteResult = "success") => {
+    const images = ["controller", "runtime"].map((image) => ({
+      image,
+      sourceSha,
+      workflowSha,
+      runId,
+      attempt: "1",
+      digest,
+      nodeBaseImage: env.NODE_BASE_IMAGE,
+      platforms: ["linux/amd64", "linux/arm64"],
+      archiveSha256: "c".repeat(64),
+      destination: `ghcr.io/openclaw/enterprise-${image}`,
+      tag: `sha-${sourceSha}`,
+    }));
+    await writeFile(receiptPath, JSON.stringify(images));
+    return validate(
+      "1",
+      recoveredOutput,
+      {
+        ...recovered,
+        FIXTURE_ORIGINAL_SHA: originalSha,
+        FIXTURE_SUITE_RESULT: suiteResult,
+        ARTIFACT_ID: "789",
+      },
+      ["promote", receiptPath],
+    );
+  };
+  const destinations = /Use separate Docker Hub repositories/;
+  assert.match((await qualify("123", recovered.FIXTURE_PUBLICATION_SHA)).stderr, destinations);
+  const missingSuite = await qualify("123", recovered.FIXTURE_PUBLICATION_SHA, "skipped");
+  assert.match(missingSuite.stderr, /skipped/);
+  assert.match((await qualify("456", originalSha)).stderr, destinations);
+  assert.match(
+    (await qualify("456", recovered.FIXTURE_PUBLICATION_SHA)).stderr,
+    /Prepared image workflowSha/,
+  );
 });

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-07
-updated: "2026-11-24 23:32"
-last_updated_session: "authoring-run/b64d1ba0-cd47-4cf2-a42e-74d6fdf1c2db"
+updated: "2026-11-25 05:27"
+last_updated_session: "authoring-run/1d922c92-8b45-44c2-a262-4ffbc2dbb2a0"
 ---
 
 # Local Keycloak startup and teardown
@@ -22,22 +22,23 @@ Installation; see the [operator procedure](../../guides/deploy/local-kubernetes-
 
 ```mermaid
 graph TD
-  A["Validate profile and ports"] --> B["Claim private state and create owned k3d"]
-  B --> C["First Helm pass: password sign-in and routing CA"]
-  C --> D["Install Keycloak, Pod DNS and TLS"]
-  D --> E["Verify discovery, client and OCE readiness"]
-  E --> F["Second Helm pass: OIDC and recovery-only passwords"]
-  F --> G["Recovery sign-in and versioned Alice attachment"]
+  A["Validate profile and ports<br/>Record private state"] -->|Recorded| B
+  A -->|Record incomplete| T["Inspect state<br/>No cluster creation attempted"]
+  subgraph setup[" "]
+    B["Create the k3d cluster"] --> C["First Helm pass<br/>Password sign-in and routing CA"]
+    C --> D["Install Keycloak, Pod DNS and TLS"]
+    D --> E["Verify discovery, client and OCE readiness"]
+    E --> F["Second Helm pass<br/>OIDC and recovery-only passwords"]
+    F --> G["Recovery sign-in and versioned Alice attachment"]
+  end
   G --> H["Print browser setup and credential paths"]
-  D -- "Failure" --> K{"Keep failed stack?"}
-  F -- "Failure" --> K
-  G -- "Failure" --> K
-  K -- "Yes" --> S["Retain stack and private state"]
-  K -- "No" --> X["Delete realm namespace and cluster"]
-  S -- "occ dev down" --> X
-  H -- "occ dev down" --> X
-  X -- "Complete" --> Y["Remove private state"]
-  X -- "Cluster deletion fails" --> Z["Retain state for explicit cleanup retry"]
+  setup -->|Failure at any step| K{"Keep failed stack?"}
+  K -->|Yes| S["Keep remaining resources and state"]
+  K -->|No| X["Clean up owned resources"]
+  S -->|occ dev down| X
+  H -->|occ dev down| X
+  X -->|Confirmed| Y["Remove private state"]
+  X -->|Incomplete or uncertain| Z["Inspect cleanup error<br/>Reconcile remaining resources"]
 ```
 
 ## Execution Trace
@@ -50,9 +51,9 @@ graph TD
 with sandbox `none`. Before claiming state, startup rejects another publication
 on reserved port 443 and checks that no listener already serves it. The engine
 must also be able to bind and forward that port. k3d publishes
-`127.0.0.1:443` to NodePort 30443; the dedicated Envoy listener forwards to
-Keycloak on port 8080. The API's NetworkPolicy permits the Envoy Pod's post-DNAT
-port 10443 without opening general egress.
+`127.0.0.1:443` to NodePort 30443. The Envoy Service routes TCP port 443 to
+Envoy's target port 10443, and the dedicated listener forwards to Keycloak on
+port 8080.
 
 ### 2. Provision the realm and its network path
 
@@ -83,10 +84,9 @@ After OCE readiness, the launcher signs in through the verified Console HTTPS
 endpoint with the bootstrap password and reads the administrator's ID. It
 reads the dedicated Envoy Service through the owned kubeconfig and context.
 The Service identity, Gateway ownership labels and selectors, TLS ports and
-ClusterIP addresses must validate before any second-pass change. Startup sets
-`auth.oidc.egressCidrs` to those exact IPv4 `/32` hosts, retaining the
-selector-scoped post-DNAT 10443 rule; an absent or invalid Service fails closed. The existing chart accepts IPv4
-CIDRs only, so an IPv6 Service is rejected before the second pass.
+ClusterIP addresses must validate before any second-pass change; an absent or
+invalid Service fails closed. The API uses the chart's unrestricted control-plane
+egress, so startup does not derive provider CIDRs or add an API-only egress policy.
 It replaces `helm-values.json` with complete second-pass values, applies the OIDC
 client Secret, and runs Helm again. That pass enables OIDC and recovery-only
 passwords and preserves the configured Agent browser access. Sessions use the
@@ -103,24 +103,35 @@ the Console URL, credential paths, both CAs and hosts instructions. See the
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:cleanup`.
 
 If [`OCC_DEVELOPMENT_KEEP_ON_FAILURE`](../../reference/settings/development.md)
-is nonempty, a failed startup keeps the stack and private state for inspection.
-Run `occ dev down` with the same state directory to clean up.
+is nonempty and startup fails after claiming private state, the launcher keeps that state
+and any resources already created for inspection.
+If writing the state marker or `state.json` failed, the launcher did not
+attempt cluster creation. Inspect any retained directory with its owner.
+`occ dev down` refuses an unusable record and stops nothing. With a valid
+record, use `occ dev down` and the same state directory for cleanup.
 
 Startup rollback and `occ dev down` use the recorded engine endpoint, private
-kubeconfig and exact context. Cleanup deletes the Keycloak namespace and realm
-volume first, then the cluster. Namespace deletion failure warns; cluster
-deletion failure preserves private state for `occ dev down` recovery. Successful
-cleanup removes the state directory. Teardown is destructive to the realm;
-manual host entries and browser CA imports remain the operator's responsibility.
+kubeconfig and exact context. Cleanup attempts to remove the Keycloak namespace and realm
+volume if present, then the cluster. Namespace deletion failure produces a warning.
+Cluster deletion failure or unconfirmed rollback after failed cluster creation
+keeps private state for `occ dev down` recovery. Successful cleanup removes
+the state directory. Rollback can then fail to remove a copied service key
+at an external path. Check the reported error and reconcile that file with
+its owner even if the directory is gone.
+
+Teardown destroys the realm. Operators must undo manual host entries and
+browser CA imports.
 Certificate renewal is not propagated to the copied Secret by this launcher.
 
 ## Debugging and Verification
 
 Run the [real launcher cases](../../testing/kubernetes.md#keycloak-local-launcher-coverage)
 only with their owned disposable fixture. They cover browser login, recovery,
-realm persistence, second-pass failure and cleanup. After the OIDC upgrade, API
-probes must reach Keycloak and reject unrelated HTTPS between successful
-listener controls. The browser imports the two printed CA files into a fresh
+realm persistence, second-pass failure and cleanup. After the OIDC upgrade, the
+opt-in API probe expects access to Keycloak and expects one unrelated HTTPS
+listener to be unreachable between successful listener controls. The chart allows
+all API and worker egress and does not enforce that expectation. The browser
+imports the two printed CA files into a fresh
 NSS database and maps only the printed hosts line. The realm-hash warning runs only at
 installation. A retained-state error names the directory needed by `occ dev down`;
 repair access to its recorded engine and cluster before retrying cleanup.
@@ -137,7 +148,11 @@ repair access to its recorded engine and cluster before retrying cleanup.
 
 ## Changelog
 
+- 2026-11-25 05:27: Show startup failures and distinguish the egress probe from chart policy. (authoring-run/1d922c92-8b45-44c2-a262-4ffbc2dbb2a0 - ae11b336243e2ce8eb49621c9692f646bac50caa)
+
 - 2026-11-24 23:32: Show when failed startup retains the stack for inspection. (authoring-run/b64d1ba0-cd47-4cf2-a42e-74d6fdf1c2db - 6db04e3f96928c3ef990712fb53a5bdda596c2ff)
+
+- 2026-11-24 10:41: Remove issuer CIDR derivation from API control-plane egress. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-16 16:16: Persist the initializer's normalized password for both Keycloak setup sign-ins. (authoring-run/a92d5e93-e5c6-44c1-acf1-b4d08ee54a70 - ecbcd544cb7e6eebb97ff293676af2f437fb6444)
 
