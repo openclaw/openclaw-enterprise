@@ -38469,6 +38469,7 @@
                   "summary": "Example request",
                   "value": {
                     "kind": "channels",
+                    "provider": "slack",
                     "query": "engineering",
                     "secretId": "sec_123e4567-e89b-42d3-a456-426614174000"
                   }
@@ -38479,6 +38480,18 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "cursor": {
                         "maxLength": 2048,
                         "minLength": 1,
@@ -38490,6 +38503,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "query": { "maxLength": 200, "pattern": "^[^\\u0000]*$", "type": "string" },
                       "secretId": {
@@ -38507,6 +38527,18 @@
                         "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "cursor": {
                         "maxLength": 2048,
                         "minLength": 1,
@@ -38518,6 +38550,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "query": { "maxLength": 200, "pattern": "^[^\\u0000]*$", "type": "string" },
                       "secretId": {
@@ -38535,6 +38574,18 @@
                         "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "cursor": {
                         "maxLength": 2048,
                         "minLength": 1,
@@ -38546,6 +38597,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "query": { "maxLength": 200, "pattern": "^[^\\u0000]*$", "type": "string" },
                       "secretId": {
@@ -38559,6 +38617,18 @@
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "ids": {
                         "items": {
                           "maxLength": 200,
@@ -38576,6 +38646,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "secretId": {
                         "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -38592,6 +38669,18 @@
                         "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "ids": {
                         "items": {
                           "maxLength": 200,
@@ -38609,6 +38698,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "secretId": {
                         "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -38625,6 +38721,18 @@
                         "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
+                      "context": {
+                        "additionalProperties": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                          "type": "string"
+                        },
+                        "description": "Nonsecret lookup fields that the provider's Channel Driver declares.",
+                        "maxProperties": 8,
+                        "propertyNames": { "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,63}$" },
+                        "type": "object"
+                      },
                       "ids": {
                         "items": {
                           "maxLength": 200,
@@ -38642,6 +38750,13 @@
                           { "const": "users", "type": "string" },
                           { "const": "channels", "type": "string" }
                         ]
+                      },
+                      "provider": {
+                        "description": "Channel provider whose installed Channel Driver serves the lookup. Omitted means `slack`.",
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "pattern": "^[a-z][a-z0-9_-]*$",
+                        "type": "string"
                       },
                       "secretId": {
                         "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

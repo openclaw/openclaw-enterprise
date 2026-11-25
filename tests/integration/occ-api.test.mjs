@@ -357,7 +357,7 @@ async function firstDeploymentFixture({ ready = true, slackFetch } = {}) {
     listRevisionMetadata,
     work,
     secretDriver,
-    channelDriver,
+    channelDrivers: [{ provider: "slack", driver: channelDriver }],
     providerCalls,
   };
 }
@@ -1220,8 +1220,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     }
     return new Response(JSON.stringify(response));
   });
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   const configuration = slackValidationConfiguration({
     appSource: bot.ref,
     botSource: app.ref,
@@ -1349,8 +1348,7 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
     tokens.push(options.headers.authorization);
     return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
   });
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   // Configuration save accepts the whole-reference form and Edit Slack keeps it; OpenClaw reads
   // it as the env SecretRef to that name (finding 2511).
   const configuration = slackValidationConfiguration({
@@ -1400,8 +1398,7 @@ test("Slack activation without managed egress fails before provider transport", 
     undefined,
     { expectProxy: true },
   );
-  fixture.controller.registerDriver(channel);
-  fixture.controller.selectDriver("channel", channel.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   const configuration = slackValidationConfiguration({
     appSource: app.ref,
     botSource: app.ref,

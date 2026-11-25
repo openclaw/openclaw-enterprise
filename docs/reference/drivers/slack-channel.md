@@ -14,6 +14,9 @@ one page without a query. It returns a cursor when more pages remain. The
 Console displays the workspace and saves selected IDs, never names. An empty,
 null, or absent provider cursor marks the final page, as defined by
 [Slack pagination](https://docs.slack.dev/apis/web-api/pagination/).
+Slack lookups use provider `slack`, the default when a request omits it. The
+Slack Driver declares an empty lookup `context` schema: an empty `context` passes,
+and OCC refuses any key in it with `400 INVALID_REQUEST` before it calls Slack.
 
 For exact-ID searches and saved IDs, the Driver calls [`users.info`](https://docs.slack.dev/reference/methods/users.info/)
 or [`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)

@@ -167,6 +167,7 @@ export interface DeploymentAdmissionDependencies {
     | "prepareOrdinaryDeploymentChannels"
     | "validatePreparedChannels"
     | "assertPreparedDeploymentDrivers"
+    | "assertEnabledChannelsInstalled"
   >;
   readonly harnessAuth: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
@@ -1202,6 +1203,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         admittedConfiguration,
         configuration.secretBindings,
       );
+      // After the Compute's own channel rules, which name more specific fixes; this refuses
+      // what a Compute that resolves no channels, such as SSH, would admit.
+      dependencies.channels.assertEnabledChannelsInstalled(configuration.values);
       // Every preparation attempt would refuse such a gateway setting and the deployment would
       // fail as an unavailable dependency, so refuse it here with the 409 provisioning answers.
       // Any other refusal stays with preparation, which checks the same document again.

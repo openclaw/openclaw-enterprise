@@ -450,6 +450,11 @@ test("guarded first deployment supports trusted registered validators and hides 
       implementation: "test",
       capability: "channel",
       enableRouting: () => [],
+      directoryContextSchema: () => ({
+        type: "object",
+        additionalProperties: false,
+        properties: {},
+      }),
       async lookupDirectory() {
         assert.fail("Unexpected directory lookup");
       },
@@ -460,8 +465,7 @@ test("guarded first deployment supports trusted registered validators and hides 
         }
       },
     };
-    controller.fixture.controller.registerDriver(custom);
-    controller.fixture.controller.selectDriver("channel", custom.id);
+    controller.fixture.controller.installChannelDrivers([{ provider: "slack", driver: custom }]);
     const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
     assert.equal(result.status, fails ? 500 : 202, JSON.stringify(result.body));
     assert.equal(calls, 1);
@@ -532,12 +536,19 @@ test("guarded first deployment rechecks configuration after outside-transaction 
             : createTestConfigurationDriver({ id: "late-configuration" });
         if (change === "late-channel") {
           Object.defineProperty(driver, "id", { value: "late-channel" });
+        } else {
+          controller.fixture.controller.registerDriver(driver);
         }
-        controller.fixture.controller.registerDriver(driver);
         // The second Configuration validation runs inside admission, after its
         // initial Driver checks. A database lock cannot prevent this selection change.
         controller.fixture.configurationDriver.validate = async () => {
-          controller.fixture.controller.selectDriver(driver.capability, driver.id);
+          if (change === "late-channel") {
+            controller.fixture.controller.installChannelDrivers([
+              { provider: "slack", driver: driver as InstanceType<typeof SlackChannelDriver> },
+            ]);
+          } else {
+            controller.fixture.controller.selectDriver(driver.capability, driver.id);
+          }
         };
       } else if (change === "configuration") {
         const driver = controller.fixture.configurationDriver;
@@ -550,8 +561,7 @@ test("guarded first deployment rechecks configuration after outside-transaction 
       } else if (change === "channel") {
         const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
         Object.defineProperty(driver, "id", { value: "replacement-channel" });
-        controller.fixture.controller.registerDriver(driver);
-        controller.fixture.controller.selectDriver("channel", driver.id);
+        controller.fixture.controller.installChannelDrivers([{ provider: "slack", driver }]);
       }
       release();
       const result = await admission;

@@ -11,6 +11,7 @@ import {
   type ChannelDriver,
   type Restriction,
 } from "../../packages/contracts/src/index.ts";
+import { ChannelDirectoryError, DriverSelectionError } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   bootstrapInstallation,
@@ -75,10 +76,9 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
     });
   });
   assert(fixture.controller, "bootstrap must create the controller");
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("channel", driver.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver }]);
   const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secretData.id, kind: "channels", query: "ann" };
+  const body = { provider: "slack", secretId: secretData.id, kind: "channels", query: "ann" };
   const found = await controller.request("POST", path, { body });
   assert.deepEqual(checkedInjectedBody(found, 200, ChannelDirectoryLookupResponse).data, {
     workspaceId: "TWORKSPACE",
@@ -95,6 +95,161 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
     checkedInjectedBody(invalid, 503, ErrorResponse).error.code,
     "CHANNEL_DIRECTORY_INVALID_RESPONSE",
   );
+});
+
+test("Channel directory lookup reaches only the named provider's Driver", async () => {
+  // Count Secret value reads: refused lookups must not read the credential at all.
+  const secretDriver = createTestSecretDriver();
+  const withValue = secretDriver.withValue.bind(secretDriver);
+  let secretReads = 0;
+  secretDriver.withValue = (secret, use) => {
+    secretReads += 1;
+    return withValue(secret, use);
+  };
+  const { controller, fixture, namespace } = await readyNamespaceFixture(
+    await configuredController(secretDriver),
+    "channel-provider-dispatch",
+  );
+  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "directory-bot", value: "xoxb-provider-dispatch" },
+  });
+  const { data: secretData } = checkedInjectedBody(secret, 201, SecretResponse);
+  const slackCalls: string[] = [];
+  const slack = new SlackChannelDriver(async (url) => {
+    const request = new URL(url instanceof Request ? url.url : url);
+    slackCalls.push(request.pathname);
+    if (request.pathname === "/api/auth.test") {
+      return Response.json({ ok: true, bot_id: "BFIXTURE", team_id: "TWORKSPACE" });
+    }
+    return Response.json({
+      ok: true,
+      members: [{ id: "U123", name: "member", profile: { display_name: "Member" } }],
+      response_metadata: { next_cursor: "" },
+    });
+  });
+  // A second provider's Driver defines its own lookup field: a required `team`.
+  const otherInputs: ChannelDirectoryLookupInput[] = [];
+  const other: ChannelDriver = {
+    id: "other-channel",
+    capability: "channel",
+    implementation: "test/other-channel",
+    enableRouting: () => [],
+    directoryContextSchema: () => ({
+      type: "object",
+      additionalProperties: false,
+      required: ["team"],
+      properties: { team: { type: "string", pattern: "^T-[A-Z]+$" } },
+    }),
+    async lookupDirectory(input) {
+      otherInputs.push(input);
+      if (input.cursor === "foreign") {
+        // A rule no schema can express: a cursor issued for another lookup.
+        throw new ChannelDirectoryError("invalid_request", [
+          { path: "/cursor", code: "INVALID_VALUE", message: "Issued for another Team." },
+        ]);
+      }
+      return { workspaceId: input.context?.team ?? "", candidates: [], complete: true };
+    },
+  };
+  assert(fixture.controller, "bootstrap must create the controller");
+  // OCC refuses a lookup schema that is open or that Driver configuration schemas would refuse
+  // (malformed keywords, unknown formats, bad patterns) when it installs the set, not per request.
+  const closed = { type: "object", additionalProperties: false };
+  for (const directoryContextSchema of [
+    () => ({ type: "object" }),
+    () => ({ ...closed, properties: { team: { type: "string", pattern: "(" } } }),
+    () => ({ ...closed, required: "team", properties: { team: { type: "string" } } }),
+    () => ({ ...closed, properties: { team: { type: "string", format: "team-reference" } } }),
+  ]) {
+    assert.throws(
+      () =>
+        fixture.controller!.installChannelDrivers([
+          { provider: "other", driver: { ...other, directoryContextSchema } },
+        ]),
+      DriverSelectionError,
+    );
+  }
+  fixture.controller.installChannelDrivers([
+    { provider: "slack", driver: slack },
+    { provider: "other", driver: other },
+  ]);
+  const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
+  const lookup = (body: Record<string, unknown>) =>
+    controller.request("POST", path, { body: { secretId: secretData.id, kind: "users", ...body } });
+
+  // Clients written before provider selection send no provider; they keep reaching Slack.
+  const legacy = await lookup({ query: "mem" });
+  assert.deepEqual(checkedInjectedBody(legacy, 200, ChannelDirectoryLookupResponse).data, {
+    workspaceId: "TWORKSPACE",
+    candidates: [{ id: "U123", name: "member", displayName: "Member" }],
+    complete: true,
+  });
+  assert.deepEqual(slackCalls, ["/api/auth.test", "/api/users.list"]);
+  const legacyHydration = await lookup({ ids: ["U123"] });
+  assert.equal(legacyHydration.status, 200, JSON.stringify(legacyHydration.body));
+  assert.equal(otherInputs.length, 0);
+  const readsBeforeRefusals = secretReads;
+
+  // A named provider reaches only its own Driver, with the context that Driver defines.
+  slackCalls.length = 0;
+  const routed = await lookup({ provider: "other", context: { team: "T-OTHER" }, query: "a" });
+  assert.equal(
+    checkedInjectedBody(routed, 200, ChannelDirectoryLookupResponse).data.workspaceId,
+    "T-OTHER",
+  );
+  assert.deepEqual(
+    otherInputs.map(({ context }) => context),
+    [{ team: "T-OTHER" }],
+  );
+  assert.deepEqual(slackCalls, []);
+
+  // OCC checks context against the schema the provider's Driver declares, before any
+  // credential read or provider call, and names the refused field.
+  const refused = async (body: Record<string, unknown>, details: unknown) => {
+    const error = checkedInjectedBody(await lookup(body), 400, ErrorResponse).error;
+    assert.equal(error.code, "INVALID_REQUEST");
+    assert.deepEqual(error.details, details);
+  };
+  await refused({ provider: "other", query: "a" }, [{ path: "/context/team", code: "REQUIRED" }]);
+  await refused({ provider: "other", context: { team: "lowercase" } }, [
+    { path: "/context/team", code: "INVALID_FORMAT" },
+  ]);
+  // Slack declares no lookup fields, with or without an explicit provider.
+  for (const provider of [{ provider: "slack" }, {}]) {
+    await refused({ ...provider, context: { team: "T-OTHER" }, query: "a" }, [
+      { path: "/context", code: "UNKNOWN_FIELD" },
+    ]);
+  }
+  // The API contract refuses a malformed key before OCC or a Driver sees it.
+  const malformed = checkedInjectedBody(
+    await lookup({ provider: "other", context: { "tenant-id": "x", team: "T-OTHER" } }),
+    400,
+    ErrorResponse,
+  ).error;
+  assert.equal(malformed.code, "INVALID_REQUEST");
+  assert.equal(otherInputs.length, 1);
+  assert.deepEqual(slackCalls, []);
+  // One successful routed lookup read the Secret; no refusal did.
+  assert.equal(secretReads, readsBeforeRefusals + 1);
+
+  // A Driver's own refusal keeps its field path and code, never its message.
+  const foreign = checkedInjectedBody(
+    await lookup({
+      provider: "other",
+      context: { team: "T-OTHER" },
+      query: "a",
+      cursor: "foreign",
+    }),
+    400,
+    ErrorResponse,
+  ).error;
+  assert.equal(foreign.code, "INVALID_REQUEST");
+  assert.deepEqual(foreign.details, [{ path: "/cursor", code: "INVALID_VALUE" }]);
+
+  // A provider without an installed Driver is unavailable, not a provider failure.
+  const uninstalled = await lookup({ provider: "discord", query: "a" });
+  assert.equal(checkedInjectedBody(uninstalled, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
+  assert.equal(otherInputs.length, 2);
 });
 
 test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
@@ -126,7 +281,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   const { data: agentData } = checkedInjectedBody(agent, 201, AgentResponse);
 
   const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secretData.id, kind: "users", query: "mem" };
+  const body = { provider: "slack", secretId: secretData.id, kind: "users", query: "mem" };
   const unavailable = await controller.request("POST", path, { body });
   assert.equal(checkedInjectedBody(unavailable, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
 
@@ -144,6 +299,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     capability: "channel",
     enableRouting: () => [],
     implementation: "test-directory",
+    directoryContextSchema: () => ({ type: "object", additionalProperties: false, properties: {} }),
     async lookupDirectory(input) {
       providerCalls += 1;
       lastProviderInput = input;
@@ -152,8 +308,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     },
   };
   assert(fixture.controller, "bootstrap must create the controller");
-  fixture.controller.registerDriver(channelDriver);
-  fixture.controller.selectDriver("channel", channelDriver.id);
+  fixture.controller.installChannelDrivers([{ provider: "slack", driver: channelDriver }]);
   const expected = {
     workspaceId: "T123",
     workspaceName: "Example workspace",
@@ -168,7 +323,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   assert.equal(JSON.stringify(created.body).includes(token), false);
   assert.equal(providerCalls, 1);
   const hydrated = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123", "U999"] },
+    body: { provider: "slack", secretId: secretData.id, kind: "users", ids: ["U123", "U999"] },
   });
   assert.deepEqual(
     checkedInjectedBody(hydrated, 200, ChannelDirectoryLookupResponse).data,
@@ -194,7 +349,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   assert.deepEqual(longQueryError.details, [{ path: "/query", code: "TOO_LONG" }]);
   // A string array declared uniqueItems names the rule, not just an unsupported value.
   const repeatedIds = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123", "U123"] },
+    body: { provider: "slack", secretId: secretData.id, kind: "users", ids: ["U123", "U123"] },
   });
   const repeatedIdsError = checkedInjectedBody(repeatedIds, 400, ErrorResponse).error;
   assert.equal(
@@ -205,6 +360,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   // At most 20 IDs are hydrated in one request.
   const tooManyIds = await controller.request("POST", path, {
     body: {
+      provider: "slack",
       secretId: secretData.id,
       kind: "users",
       ids: Array.from({ length: 21 }, (_, index) => `U${index}`),
@@ -305,7 +461,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
 
   providerResult = { workspaceId: "T123", candidates: [], complete: false, nextCursor: "more" };
   const incompleteHydration = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123"] },
+    body: { provider: "slack", secretId: secretData.id, kind: "users", ids: ["U123"] },
   });
   assert.equal(
     checkedInjectedBody(incompleteHydration, 503, ErrorResponse).error.code,

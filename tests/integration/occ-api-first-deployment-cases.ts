@@ -7,6 +7,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import type { ChannelDriver } from "../../packages/contracts/src/index.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
@@ -485,6 +486,8 @@ export async function runOrdinaryChannelAdmission(t: TestContext) {
     "configuration-driver",
     "channel",
     "channel-validator",
+    "second-channel",
+    "second-channel-validator",
   ]) {
     await t.test(change, async () => {
       const { promise: reached, resolve: reach } = Promise.withResolvers<void>();
@@ -498,6 +501,25 @@ export async function runOrdinaryChannelAdmission(t: TestContext) {
       });
       const { controller, namespace, agent, path, work, channelDriver, providerCalls } = deployment;
       const fixture = controller.fixture;
+      // A second installed provider: admission runs its validator too, and it returns because
+      // this Configuration has no section for it.
+      let otherValidations = 0;
+      const other: ChannelDriver = {
+        id: "other-channel",
+        implementation: "test/other-channel",
+        capability: "channel",
+        enableRouting: () => [],
+        directoryContextSchema: () => ({ type: "object", additionalProperties: false }),
+        validateCredentials: async (values) => {
+          otherValidations += 1;
+          assert.equal((values.channels as Record<string, unknown> | undefined)?.other, undefined);
+        },
+        lookupDirectory: async () => assert.fail("Unexpected lookup"),
+      };
+      fixture.controller.installChannelDrivers([
+        { provider: "slack", driver: channelDriver },
+        { provider: "other", driver: other },
+      ]);
       const replacement = await createConfiguration(controller, namespace.id);
       const app = fixture.createApp(undefined, createFastifyApp);
       try {
@@ -534,10 +556,14 @@ export async function runOrdinaryChannelAdmission(t: TestContext) {
         } else if (change === "channel") {
           const driver = new SlackChannelDriver(async () => assert.fail("Unexpected provider"));
           Object.defineProperty(driver, "id", { value: "replacement-channel" });
-          fixture.controller.registerDriver(driver);
-          fixture.controller.selectDriver("channel", driver.id);
+          fixture.controller.installChannelDrivers([{ provider: "slack", driver }]);
         } else if (change === "channel-validator") {
           channelDriver.validateCredentials = async () => assert.fail("Unexpected validation");
+        } else if (change === "second-channel") {
+          // Removing a provider from the installed set invalidates the checked list.
+          fixture.controller.installChannelDrivers([{ provider: "slack", driver: channelDriver }]);
+        } else if (change === "second-channel-validator") {
+          other.validateCredentials = async () => assert.fail("Unexpected validation");
         }
         const successes = () =>
           fixture.auditSink.events.filter(
@@ -553,6 +579,8 @@ export async function runOrdinaryChannelAdmission(t: TestContext) {
           JSON.stringify(result.body),
         );
         assert.equal(providerCalls(), 2, "one provider request per attempted deployment");
+        // Each attempt ran the other provider's captured validator as well.
+        assert.equal(otherValidations, 2);
         assert.equal(work().length - beforeWork, change === "unchanged" ? 1 : 0);
         assert.equal(successes() - beforeAudit, change === "unchanged" ? 1 : 0);
         const revisions = await deployment.listRevisionMetadata();

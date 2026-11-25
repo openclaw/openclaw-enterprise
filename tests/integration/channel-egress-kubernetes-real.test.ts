@@ -1707,6 +1707,7 @@ test(
       "POST",
       `/namespaces/${namespaceId}/channel-directory/lookup`,
       {
+        provider: "slack",
         agentId,
         secretId: topology.secretApi.slackBot.id,
         kind: "channels",

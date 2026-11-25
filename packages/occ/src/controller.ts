@@ -115,6 +115,7 @@ import type {
   PluginCatalogPage,
   PluginDriver,
   ChannelDirectoryResult,
+  ChannelProviderDriver,
   RepositoryOptions,
   ResourceRef,
   Role,
@@ -202,6 +203,11 @@ export class OpenClawController {
   /** Install one trusted catalog per Harness family. */
   installPluginDrivers(drivers: readonly PluginDriver[]): void {
     this.composition.drivers.installPluginDrivers(drivers);
+  }
+
+  /** Install the provider-to-Driver set that trusted composition also gives Compute. */
+  installChannelDrivers(providers: readonly ChannelProviderDriver[]): void {
+    this.composition.drivers.installChannelDrivers(providers);
   }
 
   /** Register one configured owner, then select its exact capability views. */

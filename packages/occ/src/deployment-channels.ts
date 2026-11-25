@@ -4,6 +4,7 @@ import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { driverOperation } from "./driver-operation.ts";
 import { deploymentSandboxPolicy } from "./sandbox-policy.ts";
 import type {
+  ChannelCredentialReader,
   ChannelDriver,
   Configuration,
   ConfigurationDriver,
@@ -17,9 +18,12 @@ import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import { exactConfiguration, storedSecretBindings } from "./configuration-operations.ts";
 import { secretOperation, sameSecretBackend } from "./secret-operations.ts";
+import { enabledChannelEntries } from "./channel-secret-bindings.ts";
+import { configurationSettingMessage, keyedSettingPath } from "./environment-references.ts";
 import {
   AuthorizationDeniedError,
   ChannelCredentialError,
+  ConfigurationHarnessError,
   DependencyUnavailableError,
   RepositoryPolicyDeploymentConflict,
   ResourceConflictError,
@@ -39,8 +43,9 @@ type DeploymentConfigurationMetadata = Readonly<
 export interface PreparedDeploymentChannels {
   readonly configuration: Readonly<Configuration>;
   readonly configurationDriver: ConfigurationDriver;
-  readonly channel: ChannelDriver | undefined;
-  readonly channelValidator: ChannelDriver["validateCredentials"];
+  /** Every installed Channel Driver, in composition order, and the validator each exposed. */
+  readonly channels: readonly ChannelDriver[];
+  readonly channelValidators: readonly ChannelDriver["validateCredentials"][];
 }
 
 type CheckChannelPolicy = () => Promise<() => void>;
@@ -67,8 +72,15 @@ interface DeploymentChannelUse {
 interface DeploymentChannelDependencies {
   readonly transactions: Pick<ControllerTransactions, "read" | "hasContext" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority">;
-  readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
-  readonly selectedChannel: () => ChannelDriver;
+  readonly drivers: Pick<
+    DriverRegistry,
+    | "selection"
+    | "hasChannelDrivers"
+    | "installedChannelDrivers"
+    | "installedChannelProviders"
+    | "ownsChannelDriverSet"
+    | "channelDriver"
+  >;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly requireBundledChannelBindings: (
     values: OpenClawConfigurationDocument,
@@ -169,13 +181,15 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     driverFailure: () => SecretDriverOwnershipError,
     use: DeploymentChannelUse | (() => Promise<void>),
   ): Promise<void> {
-    const driver =
+    const drivers =
       typeof use === "function"
-        ? (dependencies.drivers.selection("channel")?.driver as ChannelDriver | undefined)
-        : use.prepared.channel;
-    const channelValidator =
-      typeof use === "function" ? driver?.validateCredentials : use.prepared.channelValidator;
-    if (driver === undefined || channelValidator === undefined) {
+        ? dependencies.drivers.installedChannelDrivers()
+        : use.prepared.channels;
+    const validators =
+      typeof use === "function"
+        ? drivers.map((driver) => driver.validateCredentials)
+        : use.prepared.channelValidators;
+    if (validators.every((validator) => validator === undefined)) {
       return;
     }
     if (dependencies.transactions.hasContext()) {
@@ -191,105 +205,109 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
               authorizeDeploymentChannelUse(state, principalId, use),
             );
     const bindings = storedSecretBindings(configuration.secretBindings);
-    await Reflect.apply(channelValidator, driver, [
-      configuration.values,
-      async (binding, path, validate) => {
-        const source = bindings[binding]?.source;
-        if (source === undefined) {
-          throw new ChannelCredentialError("binding_required", path);
-        }
-        if (source.namespaceId !== namespaceId) {
-          throw new ScopeViolationError("Secret references cannot cross Namespaces.");
-        }
+    const withSecret: ChannelCredentialReader = async (binding, path, validate) => {
+      const source = bindings[binding]?.source;
+      if (source === undefined) {
+        throw new ChannelCredentialError("binding_required", path);
+      }
+      if (source.namespaceId !== namespaceId) {
+        throw new ScopeViolationError("Secret references cannot cross Namespaces.");
+      }
 
-        const authorizeOperate = () =>
-          dependencies.authority.authorize(principalId, "operate", source);
-        const readSecret = async () => {
-          await authorizeOperate();
-          return dependencies.transactions.read(async (state) => {
-            await exactNamespace(state, namespaceId);
-            return state.secrets.findSecret(namespaceId, source.id);
-          });
-        };
-        const secret = await readSecret();
-        if (secret === undefined) {
-          throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
-        }
-        const storage = dependencies.ownedSecretDriver(secret.driverId, driverFailure);
-        if (storage.withValue === undefined) {
-          throw new ChannelCredentialError("unavailable", path);
-        }
-        await authorizeUse();
+      const authorizeOperate = () =>
+        dependencies.authority.authorize(principalId, "operate", source);
+      const readSecret = async () => {
         await authorizeOperate();
-        const refusal = (error: unknown) => ({
-          error:
-            error instanceof ChannelCredentialError ||
-            error instanceof ChannelPolicyRefused ||
-            error instanceof RepositoryPolicyDeploymentConflict ||
-            error instanceof AuthorizationDeniedError
-              ? error
-              : new ChannelCredentialError("unavailable", path),
+        return dependencies.transactions.read(async (state) => {
+          await exactNamespace(state, namespaceId);
+          return state.secrets.findSecret(namespaceId, source.id);
         });
-        const outcome = await secretOperation(() =>
-          storage.withValue!(secret, async (value) => {
-            // The Driver runs with its original context, outside the controller unit.
-            // Call it synchronously under the lock and await its result after release.
-            const send = AsyncLocalStorage.bind(async (): Promise<ChannelOutcome> => {
-              try {
-                await validate(value);
-                return undefined;
-              } catch (error) {
-                // Only the Channel contract's credential outcome can leave this callback.
-                return {
-                  error:
-                    error instanceof ChannelCredentialError
-                      ? error
-                      : new ChannelCredentialError("unavailable", path),
-                };
-              }
-            });
-            const handoff = (current: Readonly<Secret> | undefined, assertPolicy?: () => void) => {
-              if (
-                current === undefined ||
-                !sameSecretBackend(secret, current) ||
-                dependencies.ownedSecretDriver(current.driverId, driverFailure) !== storage
-              ) {
-                throw new ChannelCredentialError("unavailable", path);
-              }
-              if (typeof use !== "function") {
-                assertPreparedDeploymentDrivers(use.prepared);
-              }
-              try {
-                assertPolicy?.();
-              } catch {
-                throw new ChannelPolicyRefused();
-              }
-              return { completed: send() };
-            };
+      };
+      const secret = await readSecret();
+      if (secret === undefined) {
+        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
+      }
+      const storage = dependencies.ownedSecretDriver(secret.driverId, driverFailure);
+      if (storage.withValue === undefined) {
+        throw new ChannelCredentialError("unavailable", path);
+      }
+      await authorizeUse();
+      await authorizeOperate();
+      const refusal = (error: unknown) => ({
+        error:
+          error instanceof ChannelCredentialError ||
+          error instanceof ChannelPolicyRefused ||
+          error instanceof RepositoryPolicyDeploymentConflict ||
+          error instanceof AuthorizationDeniedError
+            ? error
+            : new ChannelCredentialError("unavailable", path),
+      });
+      const outcome = await secretOperation(() =>
+        storage.withValue!(secret, async (value) => {
+          // The Driver runs with its original context, outside the controller unit.
+          // Call it synchronously under the lock and await its result after release.
+          const send = AsyncLocalStorage.bind(async (): Promise<ChannelOutcome> => {
             try {
-              if (typeof use === "function") {
-                await authorizeUse();
-                return await handoff(await readSecret()).completed;
-              }
-              const result = await startDeploymentValidation(principalId, use, source, handoff);
-              return await result.completed;
+              await validate(value);
+              return undefined;
             } catch (error) {
-              return refusal(error);
+              // Only the Channel contract's credential outcome can leave this callback.
+              return {
+                error:
+                  error instanceof ChannelCredentialError
+                    ? error
+                    : new ChannelCredentialError("unavailable", path),
+              };
             }
-          }),
-        );
-        if (outcome?.error !== undefined) {
-          throw outcome.error;
-        }
-      },
-    ]);
+          });
+          const handoff = (current: Readonly<Secret> | undefined, assertPolicy?: () => void) => {
+            if (
+              current === undefined ||
+              !sameSecretBackend(secret, current) ||
+              dependencies.ownedSecretDriver(current.driverId, driverFailure) !== storage
+            ) {
+              throw new ChannelCredentialError("unavailable", path);
+            }
+            if (typeof use !== "function") {
+              assertPreparedDeploymentDrivers(use.prepared);
+            }
+            try {
+              assertPolicy?.();
+            } catch {
+              throw new ChannelPolicyRefused();
+            }
+            return { completed: send() };
+          };
+          try {
+            if (typeof use === "function") {
+              await authorizeUse();
+              return await handoff(await readSecret()).completed;
+            }
+            const result = await startDeploymentValidation(principalId, use, source, handoff);
+            return await result.completed;
+          } catch (error) {
+            return refusal(error);
+          }
+        }),
+      );
+      if (outcome?.error !== undefined) {
+        throw outcome.error;
+      }
+    };
+    // Each Driver checks only its own provider section, so every installed validator runs.
+    for (const [index, driver] of drivers.entries()) {
+      const validator = validators[index];
+      if (validator !== undefined) {
+        await Reflect.apply(validator, driver, [configuration.values, withSecret]);
+      }
+    }
   }
 
   async function prepareOrdinaryDeploymentChannels(
     principalId: string,
     input: DeployAgentInput,
   ): Promise<PreparedDeploymentChannels | undefined> {
-    if (dependencies.drivers.selection("channel")?.driver === undefined) {
+    if (!dependencies.drivers.hasChannelDrivers()) {
       return undefined;
     }
     await dependencies.authority.authorize(principalId, "deploy", {
@@ -341,14 +359,12 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
       configuration.secretBindings ?? {},
     );
     await configurationDriver.validate(configuration);
-    const channel = dependencies.drivers.hasSelection("channel")
-      ? dependencies.selectedChannel()
-      : undefined;
+    const channels = dependencies.drivers.installedChannelDrivers();
     return {
       configuration,
       configurationDriver,
-      channel,
-      channelValidator: channel?.validateCredentials,
+      channels,
+      channelValidators: channels.map((driver) => driver.validateCredentials),
     };
   }
   async function validatePreparedChannels(
@@ -372,13 +388,16 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
 
   function assertPreparedDeploymentDrivers(prepared: PreparedDeploymentChannels): void {
     const configuration = dependencies.drivers.selection("configuration");
-    const channel = dependencies.drivers.selection("channel");
+    const channels = dependencies.drivers.installedChannelDrivers();
     if (
       configuration?.driver !== prepared.configurationDriver ||
       !unchangedDriver(configuration) ||
-      channel?.driver !== prepared.channel ||
-      (channel !== undefined && !unchangedDriver(channel)) ||
-      prepared.channel?.validateCredentials !== prepared.channelValidator
+      channels.length !== prepared.channels.length ||
+      channels.some(
+        (driver, index) =>
+          driver !== prepared.channels[index] ||
+          driver.validateCredentials !== prepared.channelValidators[index],
+      )
     ) {
       throw new ResourceStateConflictError(
         "The selected Drivers changed after guarded validation.",
@@ -386,7 +405,33 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
     }
   }
 
+  // Every Compute: an enabled channel needs an installed Channel Driver, or OCC can neither check
+  // its credentials nor own its egress. Kubernetes Compute also refuses it at Configuration save.
+  // Only a controller that owns the Installation's Channel Driver set applies this: the API, for
+  // deployment and provisioning requests. The provisioning worker has no Channel Drivers, since
+  // it cannot reach provider egress, and admits only work the API already checked.
+  function assertEnabledChannelsInstalled(values: OpenClawConfigurationDocument): void {
+    if (!dependencies.drivers.ownsChannelDriverSet()) {
+      return;
+    }
+    const installed = dependencies.drivers.installedChannelProviders();
+    for (const provider of enabledChannelEntries(values)) {
+      if (dependencies.drivers.channelDriver(provider) === undefined) {
+        // The same message as Kubernetes Compute's save-time rule.
+        throw new ConfigurationHarnessError(
+          configurationSettingMessage(
+            keyedSettingPath("channels", provider),
+            installed.length === 0
+              ? "is not a supported channel: install its Channel Driver, or set its enabled to false"
+              : `is not a supported channel: use ${installed.join(" or ")}, or set its enabled to false`,
+          ),
+        );
+      }
+    }
+  }
+
   return {
+    assertEnabledChannelsInstalled,
     validateChannelCredentials,
     prepareOrdinaryDeploymentChannels,
     validatePreparedChannels,

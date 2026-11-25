@@ -537,8 +537,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     return new Response(JSON.stringify({ ok: true, bot_id: "B123", team_id: "T123" }));
   });
   const controller = controllerOf(fixture);
-  controller.registerDriver(channel);
-  controller.selectDriver("channel", channel.id);
+  controller.installChannelDrivers([{ provider: "slack", driver: channel }]);
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);

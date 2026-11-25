@@ -472,7 +472,12 @@ export const requestExamples = {
   },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
-  lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
+  lookupChannelDirectory: {
+    provider: "slack",
+    kind: "channels",
+    secretId: secret.id,
+    query: "engineering",
+  },
   startAgentDeviceAuthorization: { harnessId: "codex" },
   startSavedAgentDeviceAuthorization: { harnessId: "codex" },
   pollAgentDeviceAuthorization: {},

@@ -39,7 +39,7 @@ import {
   type AuditEventKind,
   type AuthorizationEvidence,
   type BackendSummary,
-  type ChannelDriver,
+  type ChannelProviderDriver,
   type ComputeDriver,
   type ConfigurationDriver,
   type IAMDriver,
@@ -208,7 +208,7 @@ export interface ControllerAppOptions {
   readonly iamDriver: IAMDriver;
   readonly computeDriver?: ComputeDriver;
   readonly configurationDriver?: ConfigurationDriver;
-  readonly channelDriver?: ChannelDriver;
+  readonly channelDrivers?: readonly ChannelProviderDriver[];
   readonly secretDriver?: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly resolveHarness: HarnessResolver;
@@ -1711,9 +1711,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.registerDriver(options.secretDriver);
           created.selectDriver("secret", options.secretDriver.id);
         }
-        if (options.channelDriver) {
-          created.registerDriver(options.channelDriver);
-          created.selectDriver("channel", options.channelDriver.id);
+        if (options.channelDrivers) {
+          created.installChannelDrivers(options.channelDrivers);
         }
         if (options.sandboxDriver) {
           created.registerDriver(options.sandboxDriver);
@@ -2042,6 +2041,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (operation.operationId === "lookupChannelDirectory") {
       const directory = await controller.lookupChannelDirectory(context.actorId, namespaceId, {
         secretId: body?.secretId as string,
+        // Clients written before provider selection omit it; their lookups are Slack lookups.
+        provider: (body?.provider as string | undefined) ?? "slack",
+        ...(body?.context === undefined ? {} : { context: body.context as Record<string, string> }),
         kind: body?.kind as "users" | "channels",
         ...(body?.query === undefined ? {} : { query: body.query as string }),
         ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),

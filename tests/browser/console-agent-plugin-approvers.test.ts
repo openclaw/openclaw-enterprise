@@ -2880,6 +2880,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   directoryAvailable = true;
   assert.deepEqual(directoryBodies[0], {
+    provider: "slack",
     secretId: botSecret.id,
     kind: "users",
     agentId: agent.id,

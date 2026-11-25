@@ -10,9 +10,9 @@ kind: reference/driver
 credentials and looks up provider identities for an authorized Namespace edit.
 OpenClaw Control Plane (OCC) owns caller authorization, Secret access, and the
 saved Agent or Configuration. The Driver owns the provider request and returns
-display candidates with stable provider IDs. It does not send messages
-or grant channel access. The current controller selects the bundled Slack
-implementation for directory lookup; see [Driver selection](selection.md).
+bounded display candidates with stable provider IDs. It does not send messages
+or grant channel access. Each implementation serves one channel provider; see
+[Installation selection](#installation-selection).
 
 ## Interface
 
@@ -32,19 +32,65 @@ require an explicit matching IP or CIDR rule. Installation address restrictions
 still apply. See [Kubernetes enforcement limits](kubernetes-compute/channel-egress.md).
 
 The [shared interface](../../../packages/contracts/src/drivers/channel/index.ts) requires a
-Driver identity and `lookupDirectory({ token, kind, query?, cursor?, ids? })`. `kind`
-selects users or channels. `ids` resolves saved IDs directly and cannot be
-combined with a search query or cursor. The method returns workspace identity, candidates,
-an optional next cursor, and `complete`. A returned name is a display hint;
-callers save IDs. A missing selected Driver makes lookup unavailable.
+Driver identity and `lookupDirectory({ token, context?, kind, query?, cursor?, ids? })`.
+`kind` selects users or channels. Optional `context` contains the provider's own
+lookup fields: at most eight nonsecret strings of at most 200 characters. Each
+Driver declares those fields with `directoryContextSchema()`, a closed JSON
+Schema object; OCC refuses to install a Driver whose schema is open or that the
+Driver configuration schema rules refuse. OCC validates `context`, an absent one as `{}`, against it before it
+reads the Secret, and returns `400 INVALID_REQUEST` with details. A missing or
+malformed field is named, for example `/context/team`; an unknown key is
+reported as `/context`. A provider without lookup fields declares a closed empty
+schema: an empty `context` passes and any key is refused. The Driver owns
+authentication and pagination, and can refuse input that a schema cannot
+express, such as a cursor from another lookup, with the `invalid_request` reason
+and field details. That refusal comes after OCC reads the Secret and calls the
+Driver. `ids` resolves saved IDs directly and
+cannot be combined with a search query or cursor. The method returns workspace
+identity, candidates, an optional next cursor, and `complete`. A returned name
+is a display hint; callers save IDs.
+
+The lookup request names its `provider`. OCC sends the request only to the
+Driver that composition installed for that provider and does not interpret
+`context`. A request without `provider` is a Slack lookup, so clients written
+before provider selection keep working. A provider without an installed Driver
+returns `501 NOT_IMPLEMENTED`.
 
 The optional `validateCredentials(values, withSecret)` method checks configured
-channel credentials before API provisioning or deployment. `withSecret(binding,
+channel credentials before API provisioning or deployment. OCC runs it for every
+installed Driver, so each Driver reads only its own provider section and returns
+when that section is absent or disabled. `withSecret(binding,
 path, validate)` authorizes the exact same-Namespace Secret and supplies its value
 only inside the SecretDriver callback. Provider calls run before the write
 transaction. Deployment admission retains the Configuration and selected Driver
 identities that were checked and rejects changes before recording a revision.
 Validation does not pin Secret versions or revalidate queued work.
+
+## Installation selection
+
+`drivers.channel` lists the bundled Channel Drivers to install. Each entry has
+an `id` and a closed `configuration` object:
+
+```yaml
+drivers:
+  channel:
+    - id: slack-channel
+      configuration: {}
+```
+
+| ID              | Provider | Configuration |
+| --------------- | -------- | ------------- |
+| `slack-channel` | `slack`  | None.         |
+
+If you omit `drivers.channel`, startup installs every bundled Driver with
+default configuration. If you supply the list, startup installs only the listed
+Drivers. The API refuses to deploy or provision an Agent that enables a channel
+whose Driver is not installed, on every Compute; the provisioning worker, which
+has no Channel Drivers, deploys only Agents the API admitted. Kubernetes Compute
+also refuses that Agent Configuration at save.
+Startup refuses an unknown ID, a repeated ID and unknown or invalid
+configuration. OCC directory lookup and Compute admission use the same
+installed set.
 
 ## IAM
 

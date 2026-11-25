@@ -41,7 +41,11 @@ export async function prepareFixture({
   });
   const secretDriver = createTestSecretDriver();
   const fixture = await createInjectedControllerFixture(
-    { recordOperations: true, channelDriver, secretDriver },
+    {
+      recordOperations: true,
+      channelDrivers: [{ provider: "slack", driver: channelDriver }],
+      secretDriver,
+    },
     {
       wrapPlatformState: (state) => state,
       invokeApplication(factory, { backendSummaries, ...options }) {
