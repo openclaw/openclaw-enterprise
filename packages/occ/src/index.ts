@@ -171,6 +171,8 @@ import type {
   AuthorizationDecision,
   AuthorizationRequest,
   ComputeDriver,
+  ObserverExecutionContext,
+  ObserverExecutor,
   AgentChatCompletionsResolution,
   Configuration,
   ConfigurationDriver,
@@ -1277,6 +1279,19 @@ export type AgentProvisioningWorkerOutcome =
     };
 
 export interface AgentProvisioningWorkerOptions {
+  readonly runEffect?: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+}
+
+export type ObserverWorkerOutcome =
+  | { readonly outcome: "succeeded" }
+  | {
+      readonly outcome: "retry" | "permanent" | "pending";
+      readonly code: string;
+      readonly reason?: string;
+    };
+
+export interface ObserverWorkerOptions {
+  readonly executor: ObserverExecutor;
   readonly runEffect?: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>;
 }
 
@@ -4541,6 +4556,251 @@ export class OpenClawController {
         ...(orphanedConfigurationId === undefined ? {} : { orphanedConfigurationId }),
       });
     }
+  }
+
+  async processObserverInvocation(
+    claim: ClaimedWork,
+    options: ObserverWorkerOptions,
+  ): Promise<Readonly<ObserverWorkerOutcome>> {
+    if (!isNonEmptyString(claim.idempotencyKey) || !isNonEmptyString(claim.claimToken)) {
+      throw new ScopeViolationError("Observer execution requires an exact claimed work item.");
+    }
+
+    const observed = await this.read((state) => state.observer.findWithWork(claim.idempotencyKey));
+    if (observed === undefined) {
+      return Object.freeze({
+        outcome: "permanent" as const,
+        code: "OBSERVER_INVOCATION_NOT_FOUND",
+      });
+    }
+
+    const { record, work } = observed;
+    if (
+      work === undefined ||
+      work.kind !== "observer" ||
+      work.idempotencyKey !== claim.idempotencyKey ||
+      work.namespaceId !== record.namespaceId ||
+      work.agentId !== record.agentId ||
+      work.revisionId !== record.revisionId ||
+      work.actorId !== record.actorId ||
+      work.state !== "claimed" ||
+      work.claimToken !== claim.claimToken ||
+      work.leaseActive !== true
+    ) {
+      throw new ScopeViolationError(
+        "Observer execution requires its exact persisted controller work.",
+      );
+    }
+
+    if (record.status === "succeeded") {
+      return Object.freeze({ outcome: "succeeded" as const });
+    }
+    if (record.status === "failed") {
+      return Object.freeze({ outcome: "permanent" as const, code: "OBSERVER_FAILED" });
+    }
+    if (record.status === "cancelled") {
+      return Object.freeze({ outcome: "permanent" as const, code: "OBSERVER_CANCELLED" });
+    }
+
+    if (record.plan.backendVersion !== options.executor.backendVersion) {
+      return Object.freeze({
+        outcome: "permanent" as const,
+        code: "OBSERVER_BACKEND_UNAVAILABLE",
+      });
+    }
+
+    const context: Readonly<ObserverExecutionContext> = Object.freeze({
+      workId: record.workId,
+      namespaceId: record.namespaceId,
+      agentId: record.agentId,
+      revisionId: record.revisionId,
+      targetRole: record.targetRole,
+      plan: record.plan,
+    });
+
+    const runEffect =
+      options.runEffect ??
+      (<T>(operation: (signal: AbortSignal) => Promise<T>) =>
+        operation(new AbortController().signal));
+
+    if (
+      record.completedPhase === "cleanup" &&
+      record.status === "running" &&
+      record.progress.retryResume?.resumeFrom === "target_resolution"
+    ) {
+      const targetResolution = await runEffect((signal) =>
+        options.executor.resolveTarget(context, signal),
+      );
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "target_resolved",
+          status: "running",
+          progress: { targetResolution },
+        }),
+      );
+      return Object.freeze({
+        outcome: "pending" as const,
+        code: "OBSERVER_TARGET_RESOLVED",
+      });
+    }
+
+    if (record.completedPhase === "admitted") {
+      const targetResolution = await runEffect((signal) =>
+        options.executor.resolveTarget(context, signal),
+      );
+
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "target_resolved",
+          status: "running",
+          progress: {
+            ...record.progress,
+            targetResolution,
+          },
+        }),
+      );
+
+      return Object.freeze({
+        outcome: "pending" as const,
+        code: "OBSERVER_TARGET_RESOLVED",
+      });
+    }
+
+    if (record.completedPhase === "target_resolved") {
+      const targetResolution = record.progress.targetResolution;
+      if (targetResolution === undefined) {
+        throw new ScopeViolationError(
+          "Observer creation requires persisted target-resolution evidence.",
+        );
+      }
+      if (record.progress.observerCreateDispatch !== undefined) {
+        const reconciliation = await runEffect((signal) =>
+          options.executor.reconcileObserverCreation(
+            context,
+            targetResolution,
+            record.progress.observerCreateDispatch!,
+            signal,
+          ),
+        );
+        if (reconciliation.outcome === "unresolved") {
+          return Object.freeze({
+            outcome: "pending" as const,
+            code: "OBSERVER_CREATION_RECONCILIATION_REQUIRED",
+          });
+        }
+        const { retryResume, ...reconciledProgress } = record.progress;
+        void retryResume;
+        await this.mutate((state) =>
+          state.observer.checkpoint(claim, {
+            completedPhase: "observer_created",
+            status: "running",
+            progress: {
+              ...reconciledProgress,
+              observer: reconciliation.observer,
+            },
+          }),
+        );
+        return Object.freeze({
+          outcome: "pending" as const,
+          code: "OBSERVER_CREATED",
+        });
+      }
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "target_resolved",
+          status: "running",
+          progress: {
+            ...record.progress,
+            observerCreateDispatch: {
+              invocationId: record.workId,
+              dispatchedAt: new Date().toISOString(),
+            },
+            retryResume: {
+              failedPhase: "observer_created",
+              resumeFrom: "observer_creation_reconciliation",
+            },
+          },
+        }),
+      );
+      return Object.freeze({
+        outcome: "pending" as const,
+        code: "OBSERVER_CREATION_DISPATCH_RECORDED",
+      });
+    }
+
+    if (record.completedPhase === "observer_created") {
+      const targetResolution = record.progress.targetResolution;
+      const observer = record.progress.observer;
+      if (targetResolution === undefined || observer === undefined) {
+        throw new ScopeViolationError(
+          "Observer readiness requires persisted target and observer evidence.",
+        );
+      }
+      const readiness = await runEffect((signal) =>
+        options.executor.awaitReadiness(context, targetResolution, observer, signal),
+      );
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "ready",
+          status: "running",
+          progress: { ...record.progress, readiness },
+        }),
+      );
+      return Object.freeze({ outcome: "pending" as const, code: "OBSERVER_READY" });
+    }
+
+    if (record.completedPhase === "ready") {
+      const targetResolution = record.progress.targetResolution;
+      const observer = record.progress.observer;
+      const readiness = record.progress.readiness;
+      if (targetResolution === undefined || observer === undefined || readiness === undefined) {
+        throw new ScopeViolationError(
+          "Observer terminal observation requires persisted target, observer, and readiness evidence.",
+        );
+      }
+      const terminal = await runEffect((signal) =>
+        options.executor.observe(context, targetResolution, observer, readiness, signal),
+      );
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "terminal",
+          status: "running",
+          progress: { ...record.progress, terminal },
+        }),
+      );
+      return Object.freeze({ outcome: "pending" as const, code: "OBSERVER_TERMINAL" });
+    }
+
+    if (record.completedPhase === "terminal") {
+      const targetResolution = record.progress.targetResolution;
+      const observer = record.progress.observer;
+      if (targetResolution === undefined || observer === undefined) {
+        throw new ScopeViolationError(
+          "Observer cleanup requires persisted target and observer evidence.",
+        );
+      }
+      const cleanup = await runEffect((signal) =>
+        options.executor.cleanup(context, targetResolution, observer, signal),
+      );
+      if ("reason" in cleanup) {
+        throw new ScopeViolationError(
+          "Successful observer execution requires ordinary cleanup evidence.",
+        );
+      }
+      await this.mutate((state) =>
+        state.observer.checkpoint(claim, {
+          completedPhase: "cleanup",
+          status: "succeeded",
+          progress: { ...record.progress, cleanup },
+        }),
+      );
+      return Object.freeze({ outcome: "succeeded" as const });
+    }
+
+    return Object.freeze({
+      outcome: "pending" as const,
+      code: "OBSERVER_EXECUTION_PENDING",
+    });
   }
 
   async diagnoseAgentDeployment(

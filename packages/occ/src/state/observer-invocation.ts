@@ -5,31 +5,6 @@ import type { ControllerWork, WorkClaim } from "./controller-work.ts";
 
 export type ObserverInvocationStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
-export type ObserverTargetRole = "agent" | "gateway";
-
-export interface ObserverImageIdentity {
-  readonly reference: string;
-  readonly digest: string;
-  readonly qualificationId: string;
-}
-
-export interface ObserverObservationScope {
-  readonly kind: "dns";
-  readonly interfaceName: string;
-  readonly filterIdentity: string;
-}
-
-export interface ObserverInvocationLimits {
-  readonly maximumDurationMs: number;
-  readonly maximumCapturedRecords: number;
-  readonly maximumEncodedOutputBytes: number;
-}
-
-export interface ObserverCancellationContract {
-  readonly kind: "claim_abort";
-  readonly gracePeriodMs: number;
-}
-
 export interface ObserverInvocationQualification {
   readonly qualificationId: string;
   readonly backendVersion: string;
@@ -42,89 +17,34 @@ export interface ObserverInvocationQualification {
   readonly maximumCancellationGraceMs: number;
 }
 
-export interface ObserverEvidenceDestination {
-  readonly contractId: string;
-  readonly destinationId: string;
-}
+import type {
+  ObserverAbsenceEvidence,
+  ObserverCleanupEvidence,
+  ObserverContainerEvidence,
+  ObserverCreateDispatchEvidence,
+  ObserverInvocationPlan,
+  ObserverInvocationPlanInput,
+  ObserverReadinessEvidence,
+  ObserverTargetResolutionEvidence,
+  ObserverTargetRole,
+  ObserverTerminalEvidence,
+} from "@openclaw-enterprise/contracts";
 
-export interface ObserverSecurityProfile {
-  readonly profileId: string;
-  readonly capabilities: readonly [];
-  readonly privileged: false;
-}
-
-export interface ObserverInvocationPlanInput {
-  readonly backendVersion: string;
-  readonly image: Readonly<ObserverImageIdentity>;
-  readonly observationScope: Readonly<ObserverObservationScope>;
-  readonly limits: Readonly<ObserverInvocationLimits>;
-  readonly cancellation: Readonly<ObserverCancellationContract>;
-  readonly evidenceDestination: Readonly<ObserverEvidenceDestination>;
-  readonly cleanupPolicy: "observer_first";
-  readonly securityProfile: Readonly<ObserverSecurityProfile>;
-}
-
-export interface ObserverInvocationPlan extends ObserverInvocationPlanInput {
-  readonly qualificationId: string;
-}
-
-export interface ObserverTargetResolutionEvidence {
-  readonly targetContainerId: string;
-  readonly namespaceNetworkId: string;
-  readonly targetIdentity: string;
-  readonly observedAt: string;
-}
-
-export interface ObserverContainerEvidence {
-  readonly observerContainerId: string;
-  readonly createdAt: string;
-}
-
-export interface ObserverReadinessEvidence {
-  readonly targetContainerId: string;
-  readonly interfaceName: string;
-  readonly filterIdentity: string;
-  readonly readyAt: string;
-}
-
-export type ObserverInvocationOutcome = "succeeded" | "failed" | "cancelled" | "timed_out";
-
-export type ObserverBoundReached = "duration" | "record_count" | "encoded_output";
-
-export interface ObserverTerminalEvidence {
-  readonly startedAt: string;
-  readonly captureDeadlineAt: string;
-  readonly captureStoppedAt: string;
-  readonly terminalCompletedAt: string;
-  readonly startOutcome: ObserverInvocationOutcome;
-  readonly stopOutcome: ObserverInvocationOutcome;
-  readonly boundsReached: readonly ObserverBoundReached[];
-  readonly capturedRecordCount: number;
-  readonly encodedOutputBytes: number;
-}
-
-export interface ObserverAbsenceEvidence {
-  readonly reason: "observer_not_created";
-  readonly absenceVerifiedAt: string;
-  readonly targetTeardownAuthorized: true;
-}
-
-export interface ObserverCleanupEvidence {
-  readonly terminationRequestedAt: string;
-  readonly graceDeadline: string;
-  readonly forceRemovalOutcome: "not_required" | "removed";
-  readonly removalCompletedAt?: string;
-  readonly absenceVerifiedAt: string;
-  readonly targetTeardownAuthorized: true;
+export interface ObserverInvocationRetryResume {
+  readonly failedPhase: ObserverInvocationPhase;
+  readonly resumeFrom: "target_resolution" | "observer_creation_reconciliation" | "cleanup";
 }
 
 export interface ObserverInvocationProgress {
   readonly observerAbsence?: Readonly<ObserverAbsenceEvidence>;
   readonly targetResolution?: Readonly<ObserverTargetResolutionEvidence>;
+  readonly observerCreateDispatch?: Readonly<ObserverCreateDispatchEvidence>;
+
   readonly observer?: Readonly<ObserverContainerEvidence>;
   readonly readiness?: Readonly<ObserverReadinessEvidence>;
   readonly terminal?: Readonly<ObserverTerminalEvidence>;
   readonly cleanup?: Readonly<ObserverCleanupEvidence>;
+  readonly retryResume?: Readonly<ObserverInvocationRetryResume>;
 }
 
 export type ObserverInvocationPhase =
@@ -334,6 +254,70 @@ function observerInvocationProgressForPersistence(
 ): Readonly<ObserverInvocationProgress> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new ScopeViolationError("Observer invocation progress must be an object.");
+  }
+  const observerCreateDispatch = value.observerCreateDispatch;
+  if (observerCreateDispatch !== undefined) {
+    if (
+      typeof observerCreateDispatch !== "object" ||
+      observerCreateDispatch === null ||
+      Array.isArray(observerCreateDispatch)
+    ) {
+      throw new ScopeViolationError("Observer create-dispatch evidence must be an object.");
+    }
+    if (
+      Object.keys(observerCreateDispatch).length !== 2 ||
+      !Object.hasOwn(observerCreateDispatch, "invocationId") ||
+      !Object.hasOwn(observerCreateDispatch, "dispatchedAt")
+    ) {
+      throw new ScopeViolationError("Observer create-dispatch evidence fields are invalid.");
+    }
+    safeToken(observerCreateDispatch.invocationId, "Observer create-dispatch invocation ID");
+    if (!isNonEmptyString(observerCreateDispatch.dispatchedAt)) {
+      throw new ScopeViolationError("Observer create-dispatch time is unavailable.");
+    }
+    if (value.targetResolution === undefined || value.observerAbsence !== undefined) {
+      throw new ScopeViolationError(
+        "Observer create dispatch requires target resolution without verified observer absence.",
+      );
+    }
+  }
+
+  const retryResume = value.retryResume;
+  if (retryResume !== undefined) {
+    if (typeof retryResume !== "object" || retryResume === null || Array.isArray(retryResume)) {
+      throw new ScopeViolationError("Observer retry-resume state must be an object.");
+    }
+    const failedPhase = invocationPhase(retryResume.failedPhase);
+    if (
+      retryResume.resumeFrom !== "target_resolution" &&
+      retryResume.resumeFrom !== "observer_creation_reconciliation" &&
+      retryResume.resumeFrom !== "cleanup"
+    ) {
+      throw new ScopeViolationError("Observer retry-resume target is invalid.");
+    }
+    if (
+      retryResume.resumeFrom === "target_resolution" &&
+      value.cleanup === undefined &&
+      value.observerAbsence === undefined
+    ) {
+      throw new ScopeViolationError(
+        "Observer retry target resolution requires verified cleanup or observer absence.",
+      );
+    }
+    if (
+      retryResume.resumeFrom === "observer_creation_reconciliation" &&
+      (failedPhase !== "observer_created" ||
+        value.observerCreateDispatch === undefined ||
+        value.observer !== undefined)
+    ) {
+      throw new ScopeViolationError(
+        "Observer create reconciliation requires uncertain dispatched observer creation without observer evidence.",
+      );
+    }
+
+    if (retryResume.resumeFrom === "cleanup" && failedPhase !== "cleanup") {
+      throw new ScopeViolationError("Observer retry cleanup requires cleanup as the failed phase.");
+    }
   }
   return Object.freeze({ ...value });
 }

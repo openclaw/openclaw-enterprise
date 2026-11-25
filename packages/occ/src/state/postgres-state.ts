@@ -5879,6 +5879,24 @@ export class PostgresPlatformState implements PlatformStateStore {
           }
           const next = validateObserverInvocationCheckpoint(checkpoint, current.plan);
           const failed = validateObserverInvocationFailure(failure);
+          const retryResume = next.progress?.retryResume;
+          if (failed.disposition === "retry" && retryResume?.resumeFrom !== "target_resolution") {
+            throw new ScopeViolationError(
+              "Observer retry requires verified cleanup and target-resolution resume.",
+            );
+          }
+          if (
+            failed.disposition === "defer" &&
+            retryResume !== undefined &&
+            retryResume.resumeFrom !== "cleanup"
+          ) {
+            throw new ScopeViolationError("Deferred observer resume may continue cleanup only.");
+          }
+          if (failed.disposition === "permanent" && retryResume !== undefined) {
+            throw new ScopeViolationError(
+              "Permanent observer failure cannot persist retry-resume state.",
+            );
+          }
           const terminalFailure = next.completedPhase === "cleanup" && next.status === "failed";
           if (failed.disposition === "permanent" && !terminalFailure) {
             throw new ScopeViolationError(
@@ -5896,14 +5914,42 @@ export class PostgresPlatformState implements PlatformStateStore {
           }
           if (
             failed.disposition === "retry" &&
-            next.status !== undefined &&
-            next.status !== "running" &&
-            !terminalFailure
+            (next.completedPhase !== "cleanup" || next.status !== "running")
           ) {
             throw new ScopeViolationError(
-              "Retryable observer failure requires a nonterminal or verified failed-cleanup checkpoint.",
+              "Retryable observer failure requires verified cleanup with running status.",
             );
           }
+          if (failed.disposition === "retry") {
+            const retryWork = await queue.retry(
+              claim,
+              { code: failed.code },
+              { observerSettlement: true },
+            );
+            const exhausted = retryWork.state === "failed_permanent";
+            const retryProgress = exhausted
+              ? { ...next.progress!, retryResume: undefined }
+              : next.progress!;
+            const retried = rows(
+              (
+                await client.query(
+                  "UPDATE occ.observer_invocations AS invocation SET completed_phase = $2::text, status = $3::text, progress = $4::jsonb, updated_at = clock_timestamp() WHERE invocation.work_id = $1 AND invocation.status NOT IN ('succeeded', 'failed', 'cancelled') AND invocation.progress = $5::jsonb RETURNING invocation.*",
+                  [
+                    claim.idempotencyKey,
+                    "cleanup",
+                    exhausted ? "failed" : "running",
+                    JSON.stringify(retryProgress),
+                    JSON.stringify(current.progress),
+                  ],
+                )
+              ).rows,
+            );
+            if (retried[0] === undefined) {
+              throw new WorkClaimLostError();
+            }
+            return observerInvocationRecordFromRow(retried[0]);
+          }
+
           const checkpointed = rows(
             (
               await client.query(
@@ -5963,20 +6009,9 @@ export class PostgresPlatformState implements PlatformStateStore {
             );
             return observerInvocationRecordFromRow(checkpointed[0]);
           }
-          const work = await queue.retry(
-            claim,
-            { code: failed.code },
-            { observerSettlement: true },
+          throw new ScopeViolationError(
+            "Observer failure disposition is invalid after validation.",
           );
-          const exhausted = work.state === "failed_permanent";
-          if (exhausted !== terminalFailure) {
-            throw new ScopeViolationError(
-              exhausted
-                ? "Observer retry exhaustion requires verified failed cleanup."
-                : "Observer retry before exhaustion requires a nonterminal checkpoint.",
-            );
-          }
-          return observerInvocationRecordFromRow(checkpointed[0]);
         },
         cancel: async (claim, checkpoint: ObserverInvocationCheckpoint, error) => {
           const code = typeof error.code === "string" ? error.code : "";

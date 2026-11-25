@@ -689,6 +689,14 @@
       "tag": "0086_observer_invocation_work",
       "breakpoints": true,
       "sha256": "bf317367ae03520566560ec6610d008166c19546d3bf632b865f99243ed552da"
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1787000000087,
+      "tag": "0087_observer_invocation_retry_resume",
+      "breakpoints": true,
+      "sha256": "3e5c5c45e0612f34674b4d77d068eba51b961f3afc0fd42c226ee5cc6b2c31bc"
     }
   ],
   "initialSchemaStates": {

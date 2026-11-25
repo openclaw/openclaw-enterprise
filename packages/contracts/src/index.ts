@@ -192,6 +192,29 @@ export {
   validateConnectionTemplateDestinations,
 } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
+export type {
+  ObserverAbsenceEvidence,
+  ObserverBoundReached,
+  ObserverCancellationContract,
+  ObserverCleanupEvidence,
+  ObserverContainerEvidence,
+  ObserverCreationReconciliation,
+  ObserverCreateDispatchEvidence,
+  ObserverEvidenceDestination,
+  ObserverExecutionContext,
+  ObserverExecutor,
+  ObserverImageIdentity,
+  ObserverInvocationLimits,
+  ObserverInvocationOutcome,
+  ObserverInvocationPlan,
+  ObserverInvocationPlanInput,
+  ObserverObservationScope,
+  ObserverReadinessEvidence,
+  ObserverSecurityProfile,
+  ObserverTargetResolutionEvidence,
+  ObserverTargetRole,
+  ObserverTerminalEvidence,
+} from "./observer-execution.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
