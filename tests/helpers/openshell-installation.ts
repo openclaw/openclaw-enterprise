@@ -3,7 +3,7 @@ import {
   maxInstallationInvocations,
   type InstallationPhase,
 } from "../../scripts/ci/openshell-installation-phase.ts";
-import { openShellProgressPrefix } from "../../scripts/ci/openshell-progress.mjs";
+import { openShellProgressPrefix } from "../../scripts/ci/openshell-progress.ts";
 
 type Operation<T> = () => Promise<T>;
 

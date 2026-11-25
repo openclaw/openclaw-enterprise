@@ -8,7 +8,7 @@ import {
   credentialReplacementDiagnostic,
   openShellReplacementCheckpoints,
   upstreamOutageCase,
-} from "./openshell-progress.mjs";
+} from "./openshell-progress.ts";
 import {
   failureDetails,
   optionalReporterField,

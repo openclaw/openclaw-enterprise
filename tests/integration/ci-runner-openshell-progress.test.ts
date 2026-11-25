@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 import {
   openShellProgressPrefix,
   upstreamOutageCase,
-} from "../../scripts/ci/openshell-progress.mjs";
+} from "../../scripts/ci/openshell-progress.ts";
 import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { readFileEvidence, type FileEvidence } from "../../scripts/ci/runner-reporter-output.ts";
@@ -433,7 +433,7 @@ async function observeRequest(root: string, entry: string, progress: readonly st
      import { join } from "node:path";
      import { fileURLToPath } from "node:url";
      import { isRecord } from ${JSON.stringify(new URL("scripts/ci/records.ts", repositoryUrl).href)};
-     import { upstreamOutageCase } from ${JSON.stringify(new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href)};
+     import { upstreamOutageCase } from ${JSON.stringify(new URL("scripts/ci/openshell-progress.ts", repositoryUrl).href)};
      import reporter from ${JSON.stringify(reporterUrl.href)};
      import { runNode as runNative } from ${JSON.stringify(processUrl)};
      export * from ${JSON.stringify(processUrl)};
@@ -506,7 +506,7 @@ test("CI records only observed upstream replacement checkpoints on failure", asy
     "tests/fixtures/ci-runner-openshell-replacement-child.ts",
     repositoryUrl,
   ).href;
-  const progressModule = new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href;
+  const progressModule = new URL("scripts/ci/openshell-progress.ts", repositoryUrl).href;
   const reporterPath = fileURLToPath(new URL("scripts/ci/reporter.ts", repositoryUrl));
 
   await t.test("the upstream wrapper registers the helper-declared case", async (t) => {

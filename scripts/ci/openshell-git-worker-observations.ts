@@ -8,7 +8,7 @@ import {
 
 type FieldValue = string | number | boolean | null | object;
 type ProjectionField = readonly [source: string, read: (value: unknown) => FieldValue | undefined];
-type ProjectionFields = Readonly<Record<string, ProjectionField>>;
+export type ProjectionFields = Readonly<Record<string, ProjectionField>>;
 type Projected<Fields extends ProjectionFields> = {
   [Key in keyof Fields]: Exclude<ReturnType<Fields[Key][1]>, undefined>;
 };

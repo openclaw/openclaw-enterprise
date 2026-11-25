@@ -9,8 +9,8 @@ const { runOpenShellStage }: typeof import("../helpers/openshell-stage.ts") = aw
 const { boundedTeardown }: typeof import("../helpers/bounded-teardown.ts") = await import(
   new URL("tests/helpers/bounded-teardown.ts", repositoryUrl).href
 );
-const { openShellProgressPrefix }: typeof import("../../scripts/ci/openshell-progress.mjs") =
-  await import(new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href);
+const { openShellProgressPrefix }: typeof import("../../scripts/ci/openshell-progress.ts") =
+  await import(new URL("scripts/ci/openshell-progress.ts", repositoryUrl).href);
 
 test("original failure", async (t) => {
   const { context } = boundedTeardown(t);

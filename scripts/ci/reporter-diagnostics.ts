@@ -1,4 +1,4 @@
-import { credentialReplacementDiagnostic } from "./openshell-progress.mjs";
+import { credentialReplacementDiagnostic } from "./openshell-progress.ts";
 import type { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
 import { skipperOperationDiagnostic } from "./skipper-release.ts";
 import { isRecord } from "./records.ts";

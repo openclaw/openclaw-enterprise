@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { DeploymentParams } from "@openclaw-enterprise/contracts";
 
-import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.mjs";
+import { emitOpenShellReplacementCheckpoint } from "../../scripts/ci/openshell-progress.ts";
 import { isRecord } from "./egress-observation-values.ts";
 import type { createKubernetesClient } from "./kubernetes-real.ts";
 
