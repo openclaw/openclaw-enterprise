@@ -318,6 +318,8 @@ export async function discoverMcpAuthorization(
       metadata.token_endpoint.length > 2048 ||
       !isTemplateOAuthUrl(metadata.token_endpoint, true) ||
       !metadata.response_types_supported.includes("code") ||
+      (metadata.grant_types_supported &&
+        !metadata.grant_types_supported.includes("authorization_code")) ||
       (metadata.code_challenge_methods_supported &&
         !metadata.code_challenge_methods_supported.includes("S256"))
     ) {

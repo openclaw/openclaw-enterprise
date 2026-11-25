@@ -403,10 +403,14 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       return { version, client };
     });
     const issuer = requireIssuer();
-    await issuer.revalidate(
-      { ...version, tokenEndpointAuthMethod: client.tokenEndpointAuthMethod },
-      AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
-    );
+    // Registration stores the grant already obtained by the verified callback. Revalidate
+    // only when resolving a saved Source for a new issuer request, before opening its secret.
+    if (registrationSource === undefined) {
+      await issuer.revalidate(
+        { ...version, tokenEndpointAuthMethod: client.tokenEndpointAuthMethod },
+        AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+      );
+    }
     return {
       registration: {
         issuer: client.issuer,

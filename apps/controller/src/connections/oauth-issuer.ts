@@ -1,6 +1,7 @@
 import { buildDiscoveryUrls } from "@modelcontextprotocol/client";
 import {
   ConnectionTemplateValidationError,
+  type McpAuthorizationMetadata,
   type OAuthClientAuthMethod,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -29,6 +30,8 @@ function transportMode(mode: OAuthIssuerEndpoint["mode"]): OAuthTransportMode {
 export interface OAuthTemplateIssuer extends OAuthIssuerEndpoint {
   readonly authorizationUrl: string;
   readonly revocationUrl?: string;
+  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
+  readonly observed?: McpAuthorizationMetadata;
 }
 
 export interface OAuthIssuerVerification {
@@ -45,6 +48,24 @@ function invalidIssuer(): never {
   throw new ConnectionTemplateValidationError(
     "issuer",
     "The issuer returned invalid OAuth metadata.",
+  );
+}
+
+function normalizeTokenEndpointAuthMethods(value: unknown): readonly OAuthClientAuthMethod[] {
+  const advertised = value ?? ["client_secret_basic"];
+  if (!Array.isArray(advertised) || !advertised.every((method) => typeof method === "string")) {
+    return invalidIssuer();
+  }
+  return [...new Set(advertised)].filter((method): method is OAuthClientAuthMethod =>
+    supportedMethods.has(method as OAuthClientAuthMethod),
+  );
+}
+
+function metadataIncludes(value: unknown, expected: string): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string") &&
+    value.includes(expected)
   );
 }
 
@@ -78,29 +99,52 @@ async function issuerMetadata(input: OAuthIssuerEndpoint, transport: OAuthTransp
     invalidIssuer();
   }
   await transport.pinEndpoint(input.tokenUrl);
-  const advertised = metadata.token_endpoint_auth_methods_supported ?? ["client_secret_basic"];
-  if (!Array.isArray(advertised) || !advertised.every((value) => typeof value === "string")) {
-    invalidIssuer();
-  }
-  const tokenEndpointAuthMethods = [...new Set(advertised)].filter(
-    (method): method is OAuthClientAuthMethod =>
-      supportedMethods.has(method as OAuthClientAuthMethod),
+  const tokenEndpointAuthMethods = normalizeTokenEndpointAuthMethods(
+    metadata.token_endpoint_auth_methods_supported,
   );
   return { metadata, tokenEndpointAuthMethods };
 }
 
 /** Call only after installation administration has authorized the proposed Template. */
-export function verifyOAuthTemplateIssuer(
+export async function verifyOAuthTemplateIssuer(
   input: OAuthTemplateIssuer,
   signal?: AbortSignal,
   options?: OAuthTransportOptions,
 ): Promise<OAuthIssuerVerification> {
+  if (input.mode === "mcp_discovery") {
+    // The Template owner obtains this observation from production MCP discovery, not API input.
+    signal?.throwIfAborted();
+    const { observed, mcp } = input;
+    if (
+      !observed ||
+      !mcp ||
+      observed.serverUrl !== mcp.serverUrl ||
+      observed.resource !== mcp.resource ||
+      !observed.issuers.includes(input.issuer) ||
+      observed.issuer !== input.issuer ||
+      observed.authorizationUrl !== input.authorizationUrl ||
+      observed.tokenUrl !== input.tokenUrl ||
+      observed.revocationUrl !== input.revocationUrl
+    ) {
+      invalidIssuer();
+    }
+    return {
+      tokenEndpointAuthMethods: normalizeTokenEndpointAuthMethods(
+        observed.tokenEndpointAuthMethods,
+      ),
+    };
+  }
   return withOAuthTransport(
     transportMode(input.mode),
     "metadata",
     async (transport) => {
       const { metadata, tokenEndpointAuthMethods } = await issuerMetadata(input, transport);
       if (
+        !metadataIncludes(metadata.response_types_supported, "code") ||
+        (metadata.grant_types_supported !== undefined &&
+          !metadataIncludes(metadata.grant_types_supported, "authorization_code")) ||
+        (metadata.code_challenge_methods_supported !== undefined &&
+          !metadataIncludes(metadata.code_challenge_methods_supported, "S256")) ||
         metadata.authorization_endpoint !== input.authorizationUrl ||
         input.authorizationUrl.length > 2048
       ) {

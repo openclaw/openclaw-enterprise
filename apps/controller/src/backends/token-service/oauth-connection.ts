@@ -477,7 +477,9 @@ export class OAuthAccountTokens {
         refreshGrant: this.codexRefresh,
       };
     }
-    return this.client(ref, source);
+    // Only a Source being registered can reuse the callback's pre-exchange validation.
+    // Saved Sources must revalidate their issuer before each renewal.
+    return this.client(ref, registrationSource);
   }
 
   /** Publish the ready Source and its usable private grant as one database mutation. */

@@ -865,11 +865,19 @@ test(
         .statusCode,
       400,
     );
+    const beforeSave = fetched.length;
     const result = await inject("POST", "/connection-templates", {
       ...config,
       scopes: ["messages.read"],
     });
     assert.equal(result.statusCode, 201, result.body);
+    assert.equal(
+      fetched
+        .slice(beforeSave)
+        .filter((url) => url === issuer + "/.well-known/oauth-authorization-server").length,
+      1,
+      "saving an MCP Template reuses its authenticated issuer discovery",
+    );
     const unrestricted = await inject("PATCH", `/connection-templates/${result.json().data.id}`, {
       ...config,
       scopes: [],

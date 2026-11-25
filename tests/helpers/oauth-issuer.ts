@@ -60,6 +60,8 @@ export function fixtureOAuthIssuer(
 }
 
 export interface ControlledTokenRequest {
+  readonly host: string;
+  readonly path: string;
   readonly authorization: string | undefined;
   readonly parameters: URLSearchParams;
 }
@@ -77,6 +79,7 @@ export async function controlledOAuthIssuer(t: TestContext) {
   t.after(() => setDefaultCACertificates(previous));
   const requests: ControlledTokenRequest[] = [];
   let metadataTokenUrl: string | undefined;
+  let metadataCapabilities: Record<string, readonly string[]> = {};
   let answerToken: (request: ControlledTokenRequest) => Promise<Response> | Response = () =>
     Response.json({ error: "invalid_grant" }, { status: 400 });
   const server = createServer(
@@ -100,15 +103,12 @@ export async function controlledOAuthIssuer(t: TestContext) {
               "client_secret_basic",
               "client_secret_post",
             ],
+            ...metadataCapabilities,
           }),
         );
         return;
       }
-      if (
-        request.method !== "POST" ||
-        host !== new URL(tokenUrl).host ||
-        request.url !== "/token"
-      ) {
+      if (request.method !== "POST") {
         response.writeHead(404).end();
         return;
       }
@@ -117,10 +117,16 @@ export async function controlledOAuthIssuer(t: TestContext) {
         body += chunk.toString();
       }
       const entry = {
+        host,
+        path: request.url ?? "",
         authorization: request.headers.authorization,
         parameters: new URLSearchParams(body),
       };
       requests.push(entry);
+      if (host !== new URL(tokenUrl).host || request.url !== "/token") {
+        response.writeHead(404).end();
+        return;
+      }
       const result = await answerToken(entry);
       response.writeHead(result.status, Object.fromEntries(result.headers));
       response.end(await result.text());
@@ -158,6 +164,9 @@ export async function controlledOAuthIssuer(t: TestContext) {
     requests,
     setMetadataTokenUrl(value: string | undefined) {
       metadataTokenUrl = value;
+    },
+    setMetadataCapabilities(value: Record<string, readonly string[]>) {
+      metadataCapabilities = value;
     },
     setTokenHandler(handler: typeof answerToken) {
       answerToken = handler;

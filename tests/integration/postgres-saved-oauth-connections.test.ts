@@ -147,7 +147,7 @@ test(
       0,
       "approval never sends a code or credential to the forged endpoint",
     );
-    const template = await inject("POST", "/connection-templates", {
+    const templateInput = {
       mode: "manual",
       namespaceId,
       displayName: "Issuer scope grant",
@@ -156,7 +156,17 @@ test(
       tokenUrl,
       destinations,
       scopes: ["read"],
-    });
+    };
+    for (const capabilities of [
+      { grant_types_supported: ["refresh_token"] },
+      { code_challenge_methods_supported: ["plain"] },
+    ]) {
+      controlled.setMetadataCapabilities(capabilities);
+      const incompatible = await inject("POST", "/connection-templates", templateInput);
+      assert.equal(incompatible.statusCode, 400, incompatible.body);
+    }
+    controlled.setMetadataCapabilities({});
+    const template = await inject("POST", "/connection-templates", templateInput);
     assert.equal(template.statusCode, 201, template.body);
     let selectedSecret = randomUUID();
     const client = await inject("POST", "/credential-clients", {
@@ -263,6 +273,9 @@ test(
       if (grantType === "authorization_code") {
         exchangeReached.resolve();
         await resumeExchange.promise;
+        // Once the code has been consumed, storing its grant must not depend on another
+        // issuer metadata request. The next issuer operation will revalidate independently.
+        controlled.setMetadataTokenUrl(`${localIssuer}/changed-token`);
       }
       if (grantType === "refresh_token") {
         refreshCalls++;
@@ -297,6 +310,7 @@ test(
     assert.equal(inUse.statusCode, 409, inUse.body);
     resumeExchange.resolve();
     const callback = await callbackPromise;
+    controlled.setMetadataTokenUrl(undefined);
     assert.match(String(callback.headers.location), /connection=connected/);
     assert.equal(grantType, "authorization_code");
     const sources = `/namespaces/${namespaceId}/credential-sources`;
@@ -322,6 +336,19 @@ test(
       oauth_granted_scopes: ["read", "issuer.default"],
     });
     const rotate = () => inject("POST", `${sources}/${source.id}/rotate`);
+    const refreshSecretReads = t.mock.method(secrets.privateSecrets, "withValue");
+    const clientSecretReads = () =>
+      refreshSecretReads.mock.calls.filter((call) => call.arguments[0].id.includes(clientId))
+        .length;
+    const clientReadsBefore = clientSecretReads();
+    const requestsBefore = controlled.requests.length;
+    controlled.setMetadataTokenUrl(`${localIssuer}/changed-token`);
+    const rejectedRefresh = await rotate();
+    controlled.setMetadataTokenUrl(undefined);
+    assert.equal(rejectedRefresh.statusCode, 503, rejectedRefresh.body);
+    assert.equal(clientSecretReads(), clientReadsBefore, "refusal does not open the Client secret");
+    assert.equal(controlled.requests.length, requestsBefore, "refusal does not send the grant");
+    refreshSecretReads.mock.restore();
     const replacementSecret = randomUUID();
     const rotatedClient = await inject("POST", `/credential-clients/${clientId}/rotate`, {
       kind: "oauth2",

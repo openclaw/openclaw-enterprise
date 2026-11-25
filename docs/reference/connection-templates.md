@@ -56,6 +56,15 @@ An OAuth Source keeps the Template version and client selected at consent. Updat
 
 See the [API reference](api.md#connections) for request and response fields.
 
+## Upgrade cutover (WIP)
+
+Migration `0097` refuses to upgrade while any Template-backed OAuth Source, pending OAuth consent state, or confidential OAuth Client remains. Complete this cutover on the old release while its Worker and selected TokenService can still remove secrets at their old addresses:
+
+1. Stop starting new OAuth connections. Clear saved Plugin selections and other blocking Agent references, then retire each Template-backed OAuth Source with the [Source DELETE operation](credential-sources.md#delete-a-source). Wait for retirement to finish; retry a failed retirement while the old release is running.
+2. Let pending consent attempts expire. They expire after ten minutes, and the old Worker deletes expired states during its cleanup sweep. There is no public consent cancellation or cleanup endpoint; expiration alone does not remove the database row until the Worker runs. Recheck Sources and retire any created by an in-flight callback.
+3. Delete each confidential OAuth Client with `DELETE /credential-clients/{credentialClientId}`. A Source or pending consent blocks deletion. A successful `204` queues private-material cleanup; keep the old Worker and TokenService running until that cleanup completes. The Client disappearing from the list does not prove its private material has been removed. Keep the provider registration details and a way to supply its secret again.
+4. Upgrade after the migration guard can pass. On the new release, edit and save OAuth Templates to approve verified versions, re-register the deleted confidential Clients, and have account owners reconnect. Select the new Sources for any consumers that previously used the retired Sources.
+
 ## Connect an account
 
 OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Delivery through a running Plugin Agent remains unqualified.
