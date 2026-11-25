@@ -564,7 +564,7 @@ export function createHarnessAuthFields(
     "p",
     { className: "hint" },
     providerId === "codex"
-      ? `${CODEX_SOURCE_DESTINATION_HINT} A Codex PAT Source uses a fixed destination. At deployment, choose Use Installation default instead of retaining or overriding the model provider.`
+      ? `${CODEX_SOURCE_DESTINATION_HINT} Codex PAT and built-in ChatGPT OAuth Sources have fixed destinations. When the Console can read the Source, it selects Use Installation default and disables model provider overrides. Deployment checks compatibility.`
       : CODEX_SOURCE_DESTINATION_HINT,
   );
   const accountField = element(

@@ -1187,11 +1187,11 @@ test("a lost successful Source create reply blocks another create until Refresh 
     .waitFor();
 });
 
-test("Create Agent reuses a Source without enrolling it; replacement persists the exact Reference", async (t) => {
+test("Create Agent reuses API key and Codex PAT Sources without enrollment; replacement persists the exact Reference", async (t) => {
   const { fixture } = await modelSourceFixture(t);
   const namespace = await readyNamespace(fixture, "Existing model Source");
   const original = await enrollModelSource(fixture, namespace.id, "Research model");
-  const wrongPreset = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
+  const patSource = await enrollModelSource(fixture, namespace.id, "Codex PAT", "codex-pat");
   const template = await fixture.request("POST", "/connection-templates", {
     body: {
       namespaceId: namespace.id,
@@ -1239,7 +1239,7 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
   const picker = page.getByLabel("Existing Credential Source", { exact: true });
   await picker.selectOption(original);
   assert.equal(pathRequests(requests, "GET", sourcePath).length, 2);
-  for (const excluded of [wrongPreset, templateSourceId]) {
+  for (const excluded of [patSource, templateSourceId]) {
     assert.equal(await picker.locator(`option[value="${excluded}"]`).count(), 0);
   }
   const replacement = await enrollModelSource(fixture, namespace.id, "Replacement model");
@@ -1294,7 +1294,7 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
     .waitFor();
   const detailPicker = page.getByLabel("Existing Credential Source", { exact: true });
   await detailPicker.selectOption(replacement);
-  for (const excluded of [wrongPreset, templateSourceId]) {
+  for (const excluded of [patSource, templateSourceId]) {
     assert.equal(await detailPicker.locator(`option[value="${excluded}"]`).count(), 0);
   }
   const patched = page.waitForResponse(
@@ -1313,6 +1313,41 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
     0,
   );
+
+  // The Service Accounts authentication method can select an already stored PAT without
+  // accepting new credential material or enrolling another Source.
+  const { page: patPage } = await newPage(t, fixture, { browser });
+  const patRequests = apiRequests(patPage, fixture.origin);
+  await login(patPage, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await patPage.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await patPage.getByLabel("Provider", { exact: true }).selectOption("openai");
+  await patPage.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await patPage.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+  await patPage.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
+  const patPicker = patPage.getByLabel("Existing Credential Source", { exact: true });
+  await patPicker.selectOption(patSource);
+  for (const excluded of [original, replacement, templateSourceId]) {
+    assert.equal(await patPicker.locator(`option[value="${excluded}"]`).count(), 0);
+  }
+  await patPage.getByLabel("Agent name", { exact: true }).fill("Saved PAT Agent");
+  await patPage.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await patPage.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await patPage.getByLabel("Model ID", { exact: true }).press("Tab");
+  const patResponse = await submitCreateAgent(patPage, fixture, namespace.id, { status: 201 });
+  const patCreated = object(object(await patResponse.json()).data);
+  const patAgentId = resourceId(patCreated);
+  await patPage.waitForURL(
+    (url) =>
+      url.pathname === `/console/agents/${patAgentId}` &&
+      url.searchParams.get("revision") === "draft",
+  );
+  await patPage.getByText(`Saved · Credential Source · ${patSource}`, { exact: true }).waitFor();
+  const patSaved = object(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${patAgentId}`)).data,
+  );
+  assert.deepEqual(patSaved.harnessAuth, { method: "credential_source", sourceId: patSource });
+  assert.deepEqual(patSaved.credentialSources, [{ sourceId: patSource }]);
+  assert.equal(pathRequests(patRequests, "POST", sourcePath).length, 0);
 
   await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(original);
   revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
@@ -1438,7 +1473,11 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   assert.equal(await codexPicker.locator(`option[value="${codexPat}"]`).count(), 1);
   await codexPicker.selectOption(codexPat);
   assert.equal(
-    await page.getByText(/Codex PAT Source.*Use Installation default.*retain/i).isVisible(),
+    await page
+      .getByText(
+        /Codex PAT and built-in ChatGPT OAuth Sources.*When the Console can read the Source.*selects Use Installation default.*disables model provider overrides/i,
+      )
+      .isVisible(),
     true,
   );
 
