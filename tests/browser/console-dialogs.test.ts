@@ -253,7 +253,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
 
   // A short desktop page has an empty, stable scrollbar gutter outside the native backdrop.
   // Compare its actual paint to the adjacent canvas, without assuming a scrollbar width or colour.
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1440, height: 1200 });
   await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
   const create = page.getByRole("button", { name: "Create Secret", exact: true });
   await create.click();

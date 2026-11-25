@@ -8,7 +8,7 @@ Use the Kubernetes-only OpenShell profile to run a dedicated Codex Agent with an
 
 ## Register the key
 
-In the Console, open **Create Agent**. In the authentication picker, choose the **OpenAI** key or **Codex service account token** option and enroll the credential as a Source. Check that the Source is ready before deploying.
+In the Console, open **Create Agent**. Choose Provider **OpenAI**, Harness **Codex**, and **OpenAI API key** or **Service Accounts** authentication. Under **Model credential**, choose **Add new credential…** to enroll the key or token as a Source. Check that the Source is ready before deploying.
 
 For CLI or API use, follow [Register a managed static Source](../../reference/credential-sources/managed-static.md). The built-in key preset covers the approved OpenAI endpoint. For a key or token that was saved only as a Namespace Secret or a Gateway Source, submit it again as a new TokenService Source.
 

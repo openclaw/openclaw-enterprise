@@ -1083,8 +1083,8 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 });
 
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
-// uncertain outcome, an admitted provisioning job, an uncertain Credential Source write, a job that
-// created its Agent and a repository policy refusal keep none (finding 1965).
+// uncertain outcome, an admitted provisioning job, a job that created its Agent and a repository
+// policy refusal keep none (finding 1965).
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
 async function expectNoKeptDraft(page: Page) {
@@ -1177,33 +1177,6 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await fillProvisionedAgent(page, fixture, namespace, "Failed job Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^The initial deployment failed\. Open this Agent/).waitFor();
-  await expectNoKeptDraft(page);
-});
-
-test("an uncertain Credential Source creation keeps no draft", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Source create", { ready: true }));
-  const { page } = await newPage(t, fixture);
-  await page.route(`**/namespaces/${namespace.id}/credential-sources`, async (route, request) => {
-    if (request.method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-    // The response is interrupted before the Console can establish whether custody completed.
-    await route.fulfill(proxyErrorResponse(503));
-  });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Source Agent");
-  await page.getByLabel("API key", { exact: true }).fill("synthetic-guard-model-key");
-  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
-  await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
-    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
-    .waitFor();
   await expectNoKeptDraft(page);
 });
 

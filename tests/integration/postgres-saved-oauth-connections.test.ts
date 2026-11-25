@@ -18,7 +18,7 @@ import {
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import {
   keycloakRealmAdmin,
   keycloakRealmRows,

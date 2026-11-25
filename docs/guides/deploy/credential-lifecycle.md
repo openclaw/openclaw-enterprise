@@ -94,14 +94,15 @@ the Agent references.
 ## Enroll a Codex PAT Source
 
 Use an Installation with OCC TokenService selected. In **Create Agent**, choose
-Dedicated Codex, **Service Accounts**, and **Credential Source**. Enter the
-Agent name and PAT, then choose **Save service account token**. The Console
+Dedicated Codex and **Service Accounts**. Under **Model credential**, choose
+**Add new credential…**. Enter the Agent name and PAT, then choose
+**Save service account token**. The Console
 enrolls a Source before it loads hosted Apps. When you save the Agent, the
 Console binds that Source as its model credential.
 
 For an existing Agent using a PAT Secret, use the Source API to register the
 PAT with `type: static`, `config.provider_preset: codex-pat`, and the
-write-only input `secret.opaque`. Use an authenticated client that keeps the
+write-only input `secret`. Use an authenticated client that keeps the
 credential out of logs and shell history. Update the Agent draft's
 `harnessAuth` to `{ "method": "credential_source", "sourceId": "<new-source-id>" }`
 and grant the Agent permission to use that Source. See [Credential Sources](../../reference/credential-sources.md#use-a-codex-pat-source).
@@ -118,8 +119,11 @@ The initial Codex exchange runs in the OCE API Pods. If sign-in reports
 `auth.openai.com` unreachable, check API Pod DNS, routing, and HTTPS connectivity
 to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 
-1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
-   verification link, enter the displayed code, and complete sign-in.
+1. Choose **ChatGPT OAuth (Experimental)** when creating a Dedicated Codex Agent.
+   Under **Model credential**, select a readable, ready built-in Codex OAuth Source
+   in the same Namespace to reuse it. Saving needs `operate` on that Source.
+   Otherwise, choose **Sign in with OAuth**, open the verification link, enter the
+   displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create
    the Agent. When the Installation network ceiling allows one stock Codex binary
    to reach `chatgpt.com:443`, OCC adds the [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
@@ -129,14 +133,14 @@ to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
    resolves a usable access token through TokenService. Another device login is
    needed only when replacing or recovering the connection.
-4. To replace the connection, sign in from the credential editor and save the new
-   Source. Complete **Stop** before deploying the replacement; deploying managed
+4. To replace the connection, choose a compatible existing Source or sign in from
+   the credential editor, then save the Source. Complete **Stop** before deploying the replacement; deploying managed
    credentials over an active revision returns `409`. Once no Agent, active
    revision, or pending deployment references the old Source,
    [delete it](../../reference/credential-sources.md#delete-a-source). A refused
    deletion leaves the Source and grant unchanged.
 
-Starting requires Agent-create and credential-source-create in the Namespace.
+Starting a new login requires Agent-create and credential-source-create in the Namespace.
 For an existing Agent, exact Agent `read` and `update` replace Agent-create.
 Only the person who started the login can poll or close it, while retaining
 those Agent permissions. Completing a pending login rechecks

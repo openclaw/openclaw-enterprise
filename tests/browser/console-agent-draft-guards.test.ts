@@ -1323,6 +1323,7 @@ async function openRepositoryCreate(
   await login(page, fixture, `/console/agents/new?namespace=${namespaceId}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Scoped assistant");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   await page.getByLabel("API key", { exact: true }).fill("synthetic-console-model");
   const model = page.getByLabel("Model ID", { exact: true });
   if (!(await model.isVisible())) {
@@ -1498,7 +1499,10 @@ test("a Namespace member enrolls a TokenService model credential before saving a
   const capabilities = record(data.capabilities);
   assert.equal(capabilities.agentProvisioning, undefined);
   assert.deepEqual(capabilities.modelCredentialSourcePresets, ["openai", "codex-pat"]);
-  assert.equal(await page.getByLabel("Credential storage").isVisible(), false);
+  // The same credential field offers enrollment even when Namespace Secrets are unavailable.
+  const credential = page.getByLabel("Model credential", { exact: true });
+  assert.equal(await credential.isVisible(), true);
+  await credential.selectOption("new");
   await page.getByLabel("Agent name", { exact: true }).fill("Member model Agent");
   await page.getByLabel("API key", { exact: true }).fill("synthetic-console-member-model");
   const model = page.getByLabel("Model ID", { exact: true });

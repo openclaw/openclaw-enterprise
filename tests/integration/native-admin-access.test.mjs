@@ -18,7 +18,7 @@ import {
   publicOrigin,
 } from "./native-admin-access-fixture.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import {

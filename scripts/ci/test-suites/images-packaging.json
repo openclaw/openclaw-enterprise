@@ -35,7 +35,7 @@
     "tests/integration/logging-packaging.test.ts",
     "tests/integration/repository-runtime-volume.test.ts",
     "tests/integration/production-image-qualification.test.ts",
-    "tests/integration/development-packaging.test.mjs",
+    "tests/integration/development-packaging.test.ts",
     "tests/integration/container-publication-workflow.test.ts",
     "tests/integration/oidc-ca-trust.test.ts",
     "tests/integration/ci-runtime-artifact.test.ts",
@@ -140,7 +140,7 @@
       ]
     },
     {
-      "path": "tests/integration/development-packaging.test.mjs",
+      "path": "tests/integration/development-packaging.test.ts",
       "expectedTests": [
         "development packaging isolates precreated credential inputs to the bootstrap service"
       ]

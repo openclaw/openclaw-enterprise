@@ -54,6 +54,12 @@ at 390.
     to ask about logs and offers no Logs link. In **New version failed, viewer
     may deploy**, **Open draft** is the only recovery action. Press Tab to
     reach it, then Enter to open the draft.
+    In **New version failed, viewer may inspect runtime status** at 1440 and
+    390, check that recovery says who can deploy after the fix and whom to
+    ask about logs. Use Tab and Enter to
+    open **View v7 runtime status in Logs**, go Back and open it again. Check
+    that v7’s simulated runtime status appears both times while log text
+    remains unavailable.
 16. Open **Pages / Agent detail / New version failed, protected admission
     changed** and **New version failed, stored records inconsistent**. Each
     message ends with its own step and no logs advice after it. The first

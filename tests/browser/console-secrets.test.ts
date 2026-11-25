@@ -171,7 +171,7 @@ async function clientConsoleFixture(
   return fixture;
 }
 
-test("Credentials opens Secrets and lets an Installation administrator manage shared templates", async (t) => {
+test("Credentials opens the unified inventory and lets an Installation administrator manage shared templates", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors", {
     oauthIssuer: fixtureOAuthIssuer(googleIssuer),
   });
@@ -182,7 +182,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   await page.getByRole("link", { name: "Credentials", exact: true }).click();
   const sections = page.getByRole("navigation", { name: "Credential sections" });
   await sections
-    .getByRole("link", { name: "Secrets", exact: true })
+    .getByRole("link", { name: "Credentials", exact: true })
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
   await sections.getByRole("link", { name: "Connection templates" }).click();
@@ -248,7 +248,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   await editor.getByRole("button", { name: "Cancel" }).click();
   await page.goBack();
   await sections
-    .getByRole("link", { name: "Secrets", exact: true })
+    .getByRole("link", { name: "Credentials", exact: true })
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
   // A bookmark naming an unavailable Namespace must not silently select the readable one.

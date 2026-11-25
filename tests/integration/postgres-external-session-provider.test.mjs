@@ -16,7 +16,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { fakeGoogle, googleSignIn } from "../helpers/google-sign-in.ts";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { providerInstanceId } from "../helpers/human-login-transport.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";

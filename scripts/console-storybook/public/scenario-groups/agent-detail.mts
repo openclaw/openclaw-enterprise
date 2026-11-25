@@ -2391,6 +2391,32 @@ export function createAgentDetailScenarios({
         ],
         gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
       },
+      deploymentFailedStatusOnly: {
+        group: "Pages/Agent detail",
+        name: "New version failed, viewer may inspect runtime status",
+        path: currentVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+        agentPermissionSummary: {
+          update: false,
+          deploy: false,
+          operate: true,
+          readLogs: false,
+          delete: false,
+          administer: false,
+        },
+        description:
+          "The viewer can inspect failed v7’s runtime status but cannot read log text or deploy. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
+        steps: [
+          "Check that the startup failure says who can deploy a new version after the fix.",
+          "At 1440 and 390 wide, check that View v7 runtime status in Logs and the advice about checking logs are both visible.",
+          "Press Tab to reach the action and Enter to open it. Viewing version changes from v6 to v7 and the Logs tab receives focus.",
+          "Inspect the simulated runtime status. Log text, Follow and Download remain unavailable.",
+          "Use Back to return to v6. Reach the same action with Tab and press Enter again. Check that v7’s runtime status appears again.",
+        ],
+        gap: "Permissions and runtime status are simulated. This story does not verify Controller authorization, a live runtime or which reads the Console sends.",
+      },
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",

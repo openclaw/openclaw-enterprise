@@ -111,6 +111,10 @@ async function setup(t: TestContext) {
 // Start from the default Preset with the Namespace's model Secret and a manual model ID.
 async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await fillDefaultPresetFields(page, secret, name);
+}
+
+async function fillDefaultPresetFields(page: Page, secret: SecretWire, name: string) {
   await page.getByLabel("Agent name", { exact: true }).fill(name);
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
@@ -333,7 +337,7 @@ test("a member whose permission check failed is told so and retries only that ch
   assert.equal(await focusedId(page), "create-agent-access");
   assert.equal(
     await status.textContent(),
-    "This Agent will be saved as a draft with its Credential Source. Deploy it from the Agent page after creation.",
+    "Agents you create here are saved as drafts for later deployment.",
   );
   assert.equal(await retry.count(), 0);
   assert.deepEqual(
@@ -795,14 +799,23 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   const rolesPath = `${fixture.origin}/namespaces/${namespace.id}/iam/roles`;
   await page.route(rolesPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
-  await fillDefaultPreset(page, secret, "Member Agent");
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   const retryPermissions = page.getByRole("button", {
     name: "Retry permission check",
     exact: true,
   });
   await waitForEnabled(retryPermissions);
+  const namespaceCapabilities = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/agent-capabilities`,
+  );
   await retryPermissions.click();
   await retryPermissions.waitFor({ state: "hidden" });
+  // The Namespace capability answer confirms this Preset uses a Secret. Until permission is
+  // known, the form cannot choose between the Secret and Credential Source paths.
+  assert.equal((await namespaceCapabilities).status(), 200);
+  await fillDefaultPresetFields(page, secret, "Member Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();
@@ -871,7 +884,6 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
   await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
   await page.locator("#create-agent-access").waitFor();
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.getAttribute("aria-describedby"), null);
   status = "failed";
@@ -931,7 +943,6 @@ test("a member's refused Configuration create and empty Secret list name the acc
     noSecretRead.credentials,
   );
   await other.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  await other.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await other
     .getByText(
       "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an Installation administrator for Secret read and operate on an existing one.",
@@ -961,7 +972,6 @@ test("a member without Secret create sees the inline Create Secret action disabl
     noSecretCreate.credentials,
   );
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const denial = SECRET_CREATE_DENIED;
   await page.getByText(`Choose an existing Secret. ${denial}`, { exact: true }).first().waitFor();
   await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
