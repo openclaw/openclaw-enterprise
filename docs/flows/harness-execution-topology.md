@@ -143,15 +143,11 @@ Renewal and cleanup preserve exact ownership.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
 projects `models.providers.openai` and an environment SecretRef. It retains
 normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first
-as provider default. Custom endpoints require `credential_source`; Secret-backed
-keys stay OpenAI-only. Invalid URLs fail admission.
-`apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
-checks each selected model (`apps/controller/src/drivers/native-openai-catalog.ts:nativeOpenAiModelSelections`,
-the selection Compute renders) against the authorized shared endpoint. Conflicting
-model URLs fail before attachment. Catalog ids match after trimming, as OpenClaw
-merges such entries, so a second match fails. The startup model probe gets only the primary model's entry as rendered
-for the worker, with its endpoint and API as the provider defaults, and no other
-provider setting.
+as provider default. Invalid URLs fail admission. The managed Source path
+requires an approved model preset and the corresponding admitted credential
+projection. Compute prepares the Sandbox and the Worker checks Source access
+before asking Credential Proxy to configure delivery. See the
+[credential Source lifecycle](credential-source-lifecycle.md#3-prepare-credential-delivery).
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
 writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
 Compute and Sandbox supply private temporary directories.

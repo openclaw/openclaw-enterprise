@@ -8,11 +8,11 @@ last_updated_session: authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc
 
 ## Overview
 
-Trace the Create Agent form from plugin, model, and repository choices to a
-provisioning request or an ordinary draft, then Secret grants and authentication.
-The [parent flow](../platform-console.md) authorizes the page first; the
-[creation reference](../../reference/console/create-and-deploy.md) owns
-user-visible behavior.
+Trace how the Console saves an Agent draft or queues guided provisioning after
+checking the selected model, Plugins, and repositories. The
+[parent flow](../platform-console.md) authorizes the page. The
+[creation reference](../../reference/console/create-and-deploy.md) owns the
+operator procedure.
 
 ## Entry Points
 
@@ -24,23 +24,35 @@ user-visible behavior.
 
 ## Flow
 
+The Console saves a draft for managed credentials and per-repository Git access.
+
 ```mermaid
-graph TD
-  A["Create Agent form"] --> B["Plugins, model, and repository choices"]
-  B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|Gateway model Secret| K["Validate and register the Secret with Credential Gateway"]
-  K --> P["Prepare Agent request with the selected credential"]
-  B -->|other authentication| P
-  P -->|eligible for guided provisioning| C["Queue provisioning with inline Configuration"]
-  C --> D["Worker creates resources, grants and first deployment"]
-  P -->|member, per-repository access, or other draft| E["Save Configuration and Agent draft"]
-  B -->|existing ready model Source| E
-  B -->|direct static Source| S["Validate and register the static Source with TokenService"]
-  S --> E
-  E -->|GitHub access per repository| I["Confirm saved GitHub grants"]
-  I --> F
-  E -->|no per-repository policy| F["Grant Agent access when needed"]
-  F -->|failed| G["Retry credential access"]
+---
+config:
+  htmlLabels: true
+  theme: base
+  themeVariables:
+    fontSize: 15px
+  flowchart:
+    nodeSpacing: 24
+    rankSpacing: 32
+---
+flowchart TB
+  Form["<b>Create Agent</b><br/>Model, Plugins, Git"] --> Gate{"<b>Check selections</b>"}
+  Gate -->|Required Git missing| Refused["<b>Explain missing access</b>"]
+  Gate -->|Enroll a model Source| Source["<b>TokenService</b><br/>Enroll credential"]
+  Gate -->|Source already saved,<br/>scoped Git, or other draft| Draft["<b>Save Agent draft</b><br/>Configuration and bindings"]
+  Gate -->|Eligible guided setup| Queue["<b>Queue provisioning</b><br/>Inline Configuration"]
+  Source --> Draft
+  Queue --> Worker["<b>Worker</b><br/>Create and deploy"]
+  Draft -->|When needed| Grants["<b>Confirm grants</b><br/>Repository and credential"]
+
+  classDef stored fill:#e4eff8,stroke:#547995,color:#17344a
+  classDef action fill:#e2f1ed,stroke:#4c7b6d,color:#143a30
+  classDef gate fill:#fbefdc,stroke:#9d733b,color:#52370e
+  class Form,Draft,Queue stored
+  class Source,Worker,Grants action
+  class Gate,Refused gate
 ```
 
 ## Execution Trace
@@ -58,11 +70,10 @@ While mounted, Available and Configured retain separate selected plugins, querie
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.
 
-`agents/plugin-discovery.mjs:createPluginDiscovery` (`loadCatalog`, `loadTools`) implements
-[PAT discovery](../agent-plugins.md#credential-scoped-discovery): the selected or
-Preset Secret takes precedence over an entered token. OCC reads the
-Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
-Credential, provider, and Harness changes clear results and invalidate pending reads.
+`agents/plugin-discovery.mts:createPluginDiscovery` (`loadCatalog`, `loadTools`) uses
+a ready model CredentialSource reference for [credential-scoped Codex discovery](../agent-plugins.md#credential-scoped-discovery).
+Console does not send a Secret or raw token for discovery. Pagination is upstream;
+filtering is local. Credential, provider, and Harness changes invalidate pending reads.
 
 Fields for model Namespace Secrets, people search, and Slack tokens use the shared
 [Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
@@ -142,7 +153,9 @@ policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` or `meta.notConfigured` (no
 `repository` settings), with no retained selections, permits creation without bindings.
 Other failures block submission.
 
-The credential catalog includes ordinary Gateway Sources when a Git Proxy is selected. Repository access remains optional. Managed model Source admission and delivery follow the [credential Source lifecycle](../credential-source-lifecycle.md); legacy protected Git traffic follows its [egress flow](../credential-source-egress.md).
+Repository access is optional and independent of model authentication. Native
+Git uses its selected GitHub App Client and repository grants.
+[Source admission and delivery](../credential-source-lifecycle.md)
 
 ### 4. Submit provisioning or an ordinary draft
 
@@ -155,7 +168,14 @@ credential access. Deployment refuses stale policy versions with HTTP 409.
 
 With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-Dedicated provisioning passes inline Configuration, repositories, and Secret references. The **Model credential** picker (`harness-auth.mts:createModelCredentialSourceField`) lists readable, ready Namespace Sources matching the API-key/PAT preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse skips enrollment and login; save checks exact Source `operate` and stores its ID in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls a key or PAT with TokenService and clears the input. **Sign in with OAuth** starts device login. Both bind the resulting Source.
+Eligible guided provisioning uses inline Configuration and Secret references. The
+**Model credential** picker (`harness-auth.mts:createModelCredentialSourceField`)
+lists readable, ready Namespace Sources compatible with the selected API-key/PAT
+preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse
+skips enrollment and login. Save checks exact Source `operate` and records its ID
+in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls
+a key or PAT through TokenService and clears the input; **Sign in with OAuth**
+starts device login. Both bind the resulting Source.
 
 Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.
 

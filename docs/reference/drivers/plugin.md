@@ -36,11 +36,11 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
   or authenticated discovery. OCC calls this before save and deployment admission.
 - `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
   (optional): check whether the selected packages can run on this Harness and
-  Compute Driver. `credentialRuntime` gives the implementations of the selected
-  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
-  undefined. A plugin that needs a bound credential can refuse an Installation
-  that cannot deliver it. OCC checks placement before saving selections and
-  again when it admits deployment.
+  Compute Driver. OCC passes the Sandbox implementation as `sandbox` and reports
+  eligible managed credential selections as `stagedPluginIds`. The shared
+  `gateway` field remains in the interface and OCC passes `undefined`. The
+  Plugin Driver can refuse placements that cannot deliver its credential. OCC
+  checks placement on save and deployment.
 - `describeDeployment({plugin, selection, connections})` (optional) returns
   [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
   for one admitted catalog identity. The OpenClaw Driver accepts
@@ -136,8 +136,10 @@ For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 
 
 Both pre-Agent routes require Agent `create` in the Namespace. OCC authorizes the
 exact Source, resolves fresh material through its owning TokenService, and rechecks
-access and Source state before dispatch. Credentials and trusted account metadata
-pass to the PluginDriver only in server memory; refresh remains with TokenService.
+access and Source state before dispatch. Hosted Codex discovery passes the
+credential and trusted account metadata to the PluginDriver only in server
+memory. Managed MCP discovery keeps the bearer in OCC's transport and sends the
+Driver only discovered names. Refresh remains with TokenService.
 A wrong-Namespace reference returns `400 INVALID_REQUEST`; a missing or non-ready
 Source returns `409 RESOURCE_CONFLICT`, and denied Source access returns `403`.
 For details of an ID that a bundled catalog (`occ-plugin` or the curated
@@ -162,9 +164,9 @@ See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalo
 OCC authorizes the exact Agent operation. Reading or changing Agent selections
 does not grant provider access, plugin permissions, or approval to perform a
 plugin action. Plugin approval settings are separate from platform IAM, workload
-isolation, and the external provider's authentication. Runtime credentials use
-the existing Harness and ServiceAccount path; never put credential values or
-native command output in startup diagnostics. The Driver supplies no sandbox,
+isolation, and the external provider's authentication. Runtime Plugin
+credentials use admitted [Source bindings](../credential-sources.md#bind-a-source-to-an-agent).
+Keep credential values and native command output out of startup diagnostics. The Driver supplies no sandbox,
 egress grant, filesystem grant, approval service, OAuth interface, or IAM hook.
 See [Agent plugin permissions](../agent-plugins.md) and [authorization](../authorization.md).
 

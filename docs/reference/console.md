@@ -46,7 +46,7 @@ HTML.
 
 ## Browse and select a Namespace
 
-**Credentials** opens Namespace Secrets; administrators can open [Connection templates](connection-templates.md). **Refresh** rereads. Configure models during creation. [Experimental Backends](backends.md) stay hidden. Namespaces open Agents.
+**Credentials** lists Namespace Sources and Secrets; administrators can open [Connection templates](connection-templates.md). **Refresh** rereads. Configure models during creation. [Experimental Backends](backends.md) stay hidden. Namespaces open Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -130,8 +130,8 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Manage Namespace Secrets
 
-The **Secrets** page lists metadata, creates Secrets, replaces values, inspects
-consumers, and deletes unreferenced Secrets through the existing Secret API.
+In **Credentials**, view Secret metadata and consumers, create Secrets, replace
+values, or delete unreferenced Secrets.
 Creation needs collection `secret:create`; replacement and deletion need exact
 `secret:update` and `secret:delete`. Read access does not grant mutation or use.
 The API authorizes each operation; a refusal disables the submitted action.
