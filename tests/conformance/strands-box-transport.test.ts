@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { tmpdir } from "node:os";
@@ -23,6 +23,11 @@ import {
 } from "../../deploy/runtime/strands-box/transport.mjs";
 import { connect as tlsConnect } from "node:tls";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import {
+  acceptStockControl,
+  connectStockControl,
+  pipeStockBox,
+} from "../../deploy/runtime/strands-box/stock-launch-transport.mjs";
 import { serveHarness } from "../../deploy/runtime/strands-box/supervisor.mjs";
 
 type Frame =
@@ -761,3 +766,74 @@ test(
     assert.equal(requests, attempts);
   },
 );
+
+test(
+  "stock control waits for its pin, connects once and stops the child on loss",
+  { timeout: 5000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "stock-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "control.sock");
+    const receipt = join(directory, "certificate");
+    const { cert } = await harnessTlsFixture(t);
+    const waiting = acceptStockControl(cert, path, receipt, 3000);
+    await assert.rejects(connectStockControl(path, 25), /timed out/u);
+    await writeFile(receipt, cert);
+    const [workload, trusted] = await Promise.all([connectStockControl(path, 3000), waiting]);
+    const child = spawn(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"], {
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const { done, stop } = pipeStockBox(workload, child);
+    t.after(() => {
+      trusted.destroy();
+      stop();
+    });
+    await assert.rejects(connectStockControl(path, 15), /timed out/u);
+    const response = once(trusted, "data");
+    trusted.write("probe\n");
+    assert.equal((await response)[0].toString(), "probe\n");
+    trusted.end();
+    assert.equal(await done, 1);
+    assert.equal(child.signalCode, "SIGTERM");
+  },
+);
+
+test("a missing pin or a replacement Pod cannot activate stock control", async (t) => {
+  const first = await harnessTlsFixture(t);
+  const replacement = await harnessTlsFixture(t);
+  const path = join(first.directory, "control.sock");
+  const receipt = join(first.directory, "receipt");
+  await assert.rejects(acceptStockControl(first.cert, path, receipt, 10), /receipt timed out/u);
+  await writeFile(receipt, first.cert);
+  await assert.rejects(acceptStockControl(replacement.cert, path, receipt), /receipt mismatch/u);
+  await assert.rejects(connectStockControl(path, 15), /timed out/u);
+});
+
+test("stock bootstrap refuses missing or overridden placeholders without logging credentials", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "stock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const manifest = join(directory, "workload.json");
+  const secret = "synthetic-model-credential";
+  const placeholder = { OPENAI_API_KEY: `strands_box_${"a".repeat(64)}` };
+  for (const { env, environment, secretEnvironment } of [
+    { env: {}, environment: {} },
+    { env: { OPENAI_API_KEY: secret }, environment: {} },
+    { env: { ...placeholder, OCE_STRANDS_OPENAI_KEY: secret }, environment: {} },
+    { env: placeholder, environment: { OPENAI_API_KEY: secret } },
+    { env: placeholder, environment: {}, secretEnvironment: { OPENAI_API_KEY: "/private/key" } },
+  ]) {
+    await writeFile(
+      manifest,
+      JSON.stringify({ stockTransport: true, environment, secretEnvironment }),
+    );
+    const child = spawnSync(process.execPath, ["deploy/runtime/strands-box/inner.mjs", manifest], {
+      env,
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    assert.equal(child.status, 1);
+    assert.match(child.stderr, /Invalid Strands Box credential environment/u);
+    assert.ok(!child.stderr.includes(secret));
+    assert.equal(child.stdout, "");
+  }
+});

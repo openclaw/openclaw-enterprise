@@ -13,6 +13,7 @@ import { networkPolicyToSdk } from "../kubernetes/network-policy.ts";
 import type { KubernetesAuthentication } from "../kubernetes/authentication.ts";
 import { requireWorkspaceSetupConfiguration } from "../compute/workspace-setup-runtime.ts";
 import { withComputeAbortSignal } from "../compute/operation-context.ts";
+import { stockModelKey, validStockConfiguration } from "./strands-box-model.ts";
 import {
   strandsBoxResources,
   strandsBoxService,
@@ -53,6 +54,7 @@ import { setTimeout as delay } from "node:timers/promises";
 export interface StrandsBoxOptions {
   readonly kubernetes: {
     readonly seccompProfile: string;
+    readonly stockLauncher?: { readonly namespace: string };
     readonly nodeSelector: Readonly<Record<string, string>>;
     readonly controlPlanePeer: {
       readonly namespace: string;
@@ -76,6 +78,12 @@ export const configurationSchema = Object.freeze({
       required: ["seccompProfile", "nodeSelector", "controlPlanePeer"],
       additionalProperties: false,
       properties: {
+        stockLauncher: {
+          type: "object",
+          additionalProperties: false,
+          required: ["namespace"],
+          properties: { namespace: { type: "string", minLength: 1, maxLength: 63 } },
+        },
         seccompProfile: { type: "string", minLength: 1, maxLength: 240 },
         controlPlanePeer: {
           type: "object",
@@ -140,6 +148,14 @@ export const configurationSchema = Object.freeze({
 
 export function validateConfiguration(input: Readonly<StrandsBoxOptions>): readonly ErrorDetail[] {
   const errors: ErrorDetail[] = [];
+  if (input.kubernetes?.stockLauncher !== undefined && !validStockConfiguration(input)) {
+    errors.push({
+      path: "/kubernetes/stockLauncher",
+      code: "INVALID_VALUE",
+      message:
+        "Stock Box requires a tenant namespace, oce-strands-box-v0.3.1.json and only api.openai.com:443.",
+    });
+  }
   const profile = input.kubernetes?.seccompProfile;
   if (
     typeof profile !== "string" ||
@@ -481,6 +497,8 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
         "This Strands Box driver supports ordinary dedicated Codex revisions only.",
       );
     }
+    // Recheck the revision and tenant before adopting an existing deployment.
+    stockModelKey(context, this.options);
     const hash = sha256Hex(
       JSON.stringify([4, context.requirements, this.options, this.dns, this.routing]),
     );
