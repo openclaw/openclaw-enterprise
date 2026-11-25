@@ -18,10 +18,44 @@ A Gateway needs usable credentials to connect to services such as Slack. Today, 
 
 1. OCC admits a ready static Source from the same Namespace when its recorded owner matches the selected TokenService instance and dedicated Gateway export is supported. Model presets, Connection Templates, and other consumer bindings do not disqualify it. Record the selected instance in the revision. Reject unsupported or embedded Source delivery before saving the revision.
 2. The [worker](../../apps/controller/src/worker.ts) calls Compute's `prepareRevision`. Compute runs in the worker process and invokes `context.gatewayStartupCredentials.resolve(signal)`. The worker verifies the claim, Agent, revision, owner, supported binding, and both principals' grants before and after reading from TokenService (or the selected Secret Driver for a supported export). It returns only the explicitly bound Gateway environment names and values in memory.
-3. The selected Compute Driver owns delivery. **Kubernetes Compute** writes the exported values through the Kubernetes API into a revision-specific Secret in the Gateway Pod namespace. It configures the Gateway container's `env[].valueFrom.secretKeyRef` to reference that Secret; the kubelet reads it and supplies the environment when starting the Pod. Existing canonical Namespace Secrets remain direct references. A different Compute Driver must provide its own qualified startup transport or reject the binding; it does not automatically create a Kubernetes Secret. Where used, the selected Secret Driver owns Secret storage or export; it does not choose Compute's startup transport.
+3. The selected Compute Driver owns delivery. Kubernetes Compute creates a revision-specific Secret in the Gateway Pod namespace and references it from the Gateway Deployment, as shown below. Existing canonical Namespace Secrets remain direct references. Other Compute Drivers must use their own qualified transport or refuse delivery. The Secret Driver owns storage or export, not startup transport.
 4. For exported delivery, Compute authorizes all Gateway bindings immediately before any mutation that can start the Gateway, including mixed bindings and retries. Authorization, read, and staging failures precede that mutation; a later Kubernetes `Recreate` rollout failure can interrupt the predecessor. Sanitize errors and remove abandoned or retired copies without deleting owner material.
 
 If a candidate staged A but has not launched when the owner changes to B, retry with B. Observe the same workload after an uncertain launch. An OCC-managed redeploy uses the newly resolved value. A kubelet-only restart can reuse the old staged copy; revocation blocks subsequent OCC-managed starts.
+
+### Kubernetes Compute example
+
+Suppose the worker resolves `GW_HOOK_TOKEN` from TokenService and passes its value to Compute in memory. Kubernetes Compute creates this Secret through the Kubernetes API (the value below is synthetic):
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-credentials-rev-123
+  namespace: tenant-example
+type: Opaque
+data:
+  GW_HOOK_TOKEN: ZXhhbXBsZQ==
+```
+
+It then references the Secret in the Gateway Deployment's Pod template:
+
+```yaml
+# Deployment excerpt; the Deployment uses the same namespace as the Secret.
+spec:
+  template:
+    spec:
+      containers:
+        - name: gateway
+          env:
+            - name: GW_HOOK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-credentials-rev-123
+                  key: GW_HOOK_TOKEN
+```
+
+The kubelet reads that Secret and supplies the decoded value in the Gateway container's environment at startup. The Deployment, container image, and OCC Configuration do not contain the token. The Kubernetes Secret does contain a usable copy: `data` is base64-encoded, not encrypted by that encoding.
 
 ## Interface changes
 
