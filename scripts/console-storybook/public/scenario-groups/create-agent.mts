@@ -311,6 +311,7 @@ export const createAgentFormScenarios = {
     description:
       "The Agent form offers an optional Network proxy URL and existing Secret selector for Gateway channel traffic only.",
     steps: [
+      "At 360 px with enlarged text, check that the Basic authentication example fits inside the form.",
       "Enter an HTTP or HTTPS endpoint without URL credentials.",
       "Select a proxy credential Secret when authentication is required, then create the Agent.",
     ],
