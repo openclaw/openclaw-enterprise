@@ -133,13 +133,10 @@ During the outage, a second request goes directly to the API Pod.
 Expect HTTP 503. After recovery, the receipt and result must share a
 request ID. The result must show `PERMISSION_CHECK_UNAVAILABLE`.
 
-Before the second message, the test makes PostgreSQL refuse
-`openclaw.runtime.turn.started` for the revision. The user must receive
-a reply while the database refuses this record. After writes resume,
-the audit API must return the original event ID once for the same turn.
-Retrying delivery must cause no extra
-model request. The test counts requests in the OpenShell log for dedicated
-OpenClaw and in the test provider’s log for the other two runtimes.
+PostgreSQL rejects `openclaw.runtime.turn.started` until the second reply
+arrives. After recovery, expect the original event ID once for that turn
+and no extra model request. The test counts requests in the OpenShell log
+for dedicated OpenClaw and the provider log otherwise.
 
 For Codex, the test makes OCC reject the Gateway audit credential during
 a third HTTP turn. The Gateway must hold the events after HTTP 401.
@@ -148,12 +145,14 @@ The test restores access and runs the
 for each held event. The API must then show the turn start, result,
 HTTP attempt and provider response without another model request.
 
-In both OpenClaw modes, the test also sends two user messages in one
-HTTP request. The turn must finish. Its audit event must omit the message
-ID because the turn has two inputs. The message lookup must return HTTP 404.
+In both OpenClaw modes, two user inputs in one HTTP request must produce
+a completed turn without a message ID. Message lookup must return HTTP 404.
 
-For embedded OpenClaw, the smoke test finds the model call and its result
-by turn ID.
+For embedded OpenClaw, the test compares three HTTPS requests per tool turn
+with the audit API. With HTTP 200, 503 and 200, expect three call IDs
+and a reply while PostgreSQL rejects the turn start. With HTTP 200,
+400 (`previous_response_not_found`) and 200, the last two attempts share
+a call ID and have numbers 1 and 2. Only the call with HTTP 503 fails.
 
 For dedicated Codex, the simulated provider requests a tool. It returns
 HTTP 503 when Codex sends the tool result, then accepts the retry.

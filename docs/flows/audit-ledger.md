@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 16:06"
-last_updated_session: "authoring-run/7db9d106-49fe-478e-be1d-69a8a1709b11"
+updated: "2026-11-24 16:32"
+last_updated_session: "authoring-run/952e24f7-42a2-4586-9b70-95b040806b9e"
 ---
 
 # Audit ledger flow
@@ -71,6 +71,7 @@ graph TD
   Lookup -->|Recheck access| Disclose["Commit the disclosure"]
   Disclose -->|Confirmed| Text["Return message text"]
   Codex["Worker filters Codex traces"] -->|Gateway matches turn| Gateway
+  Embedded["OpenClaw receives HTTP headers"] -->|Trace matches call| Gateway
   Gateway["Gateway reports runtime activity"] --> Local{"Queue event on disk?"}
   Local -->|Yes| Continue["Continue chat"]
   Local -->|Yes| Deliver["Send to OCC in background"]
@@ -216,18 +217,13 @@ control those effects or establish the outcome of an unobserved transport failur
 
 `packages/occ/src/state/postgres-state.ts:auditFromRow`
 
-List returns an empty frozen array when no Installation exists. Otherwise it
-reads all visible rows ordered by `occurred_at, id`, attaches the current
-server-owned Installation ID, and decodes each row. A list on the same unit can
-include its own uncommitted append. The table has no Installation ID column.
-The decoder validates resource kind, outcome, kind, timestamp and object-shaped
-JSON; invalid persisted data rejects the list. It removes the reserved metadata
-object from details, copies only the nine recognized metadata keys, and leaves
-other ordinary details in place. Unknown reserved keys cannot replace or extend
-the top-level row envelope. Recognized metadata values are copied without
-individual type or semantic validation or authentication, and decoding does not
-re-sanitize them. The returned event
-copies and array are immutable.
+State returns an empty list without an Installation. Otherwise it reads
+visible rows in `occurred_at, id` order, including the transaction's
+uncommitted rows. State supplies the Installation ID because the table
+omits it. State rejects the list for invalid resource kinds, outcomes,
+event kinds, timestamps or JSON objects. It removes reserved metadata from details
+and copies only the nine recognized keys into the event. It does not
+validate, authenticate or sanitize their values. Events and lists are immutable.
 
 ### 6. The Agent audit API saves a disclosure for each page
 
@@ -262,10 +258,17 @@ the original deployer's authority and can restart the Gateway and Codex
 worker. With audit off, Compute revokes
 the grant after Gateway replacement.
 
-The plugin records new sessions when OpenClaw emits `session_start`.
+The plugin records new sessions on `session_start`.
 `deploy/runtime/managed-runtime-audit/index.mjs:recordLifecycle` records
-turn starts and results from lifecycle events with session and run IDs.
-It needs no session record or OCC confirmation.
+turn starts and results with session and run IDs. It needs no prior
+session record or OCC confirmation.
+
+For embedded OpenClaw, `model_call_started` supplies a trace and call ID.
+`deploy/runtime/managed-runtime-audit/openclaw.mjs:subscribeOpenClawAttempts`
+observes Undici POST requests to paths ending in `/responses`. The
+`traceparent` header must match one active OpenAI Responses call.
+The plugin numbers requests at creation. It queues an attempt after
+response headers arrive. It retains neither the URL nor the body.
 
 In a managed dedicated Codex Pod on the control cluster,
 `deploy/runtime/managed-runtime-audit/codex-worker.mjs:startAttemptAudit`
@@ -347,6 +350,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 16:32: Trace embedded OpenClaw HTTP attempts. (authoring-run/952e24f7-42a2-4586-9b70-95b040806b9e - f3feee183fc2ab1b78e398371df27c41d77d6a3b)
 
 - 2026-11-24 16:06: Trace Codex HTTP attempts through the worker and Gateway. (authoring-run/7db9d106-49fe-478e-be1d-69a8a1709b11 - 3d5608cc7f1cf05a79b460fa3b208ab2560fc567)
 

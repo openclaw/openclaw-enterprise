@@ -171,14 +171,22 @@ export function registerGatewayRuntimeAudit(
           );
         }
         if (
-          ((event.action === "openclaw.runtime.model_response.observed" ||
-            event.action === "openclaw.runtime.model_attempt.observed") &&
+          (event.action === "openclaw.runtime.model_response.observed" &&
             grant.runtimeSource !== "codex") ||
+          (event.action === "openclaw.runtime.model_attempt.observed" &&
+            (grant.runtimeSource === "codex") !== (event.provider === "codex")) ||
           ((event.action === "openclaw.runtime.model_call.started" ||
             event.action === "openclaw.runtime.model_call.completed") &&
             grant.runtimeSource !== "openclaw")
         ) {
           throw failure(403, "FORBIDDEN", "The runtime source cannot report this model event.");
+        }
+        if (
+          event.action === "openclaw.runtime.model_attempt.observed" &&
+          event.provider === "codex" &&
+          !/^[0-9a-f]{64}$/.test(event.modelCallId)
+        ) {
+          throw failure(400, "INVALID_REQUEST", "The Codex model call ID is invalid.");
         }
         return auditEvidence(installationId, grant, event);
       });

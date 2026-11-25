@@ -530,10 +530,13 @@ async function savedUserMessageIds(
   return { first, second };
 }
 
-function openHttpChat(stack: KubernetesAccess & Pick<LocalSetup, "api">, agent: SmokeAgent) {
+function openHttpChat(
+  stack: KubernetesAccess & Pick<LocalSetup, "api">,
+  agent: SmokeAgent,
+  nonce = `OCE_SMOKE_${randomUUID()}`,
+) {
   const signal = stack.commandOptions?.signal;
   const user = `audit-http-${randomUUID()}`;
-  const nonce = `OCE_SMOKE_${randomUUID()}`;
   const text = `Reply with exactly this nonce and no other text: ${nonce}`;
 
   function post(inputs: string[], expectedStatus: number) {
@@ -862,7 +865,7 @@ export async function checkLinkedChat(
   return first;
 }
 
-async function checkCodexRetry(
+async function checkModelRetry(
   label: string,
   {
     nonce,
@@ -873,6 +876,7 @@ async function checkCodexRetry(
     runId: string;
     events: () => Promise<AgentAuditPage["events"]>;
   },
+  status: 400 | 503 = 503,
 ) {
   // Count actual provider requests independently of the Gateway observations.
   // The failed request and its retry must both contain the real tool result.
@@ -888,16 +892,19 @@ async function checkCodexRetry(
   );
   assert.deepEqual(
     provider.flatMap((e) => (e.status === undefined ? [] : [e.status])),
-    [200, 503, 200],
+    [200, status, 200],
   );
   assert.deepEqual(
     provider.filter((e) => e.event === "audit-tool-result").map((e) => wireField(e, "verified")),
     [true, true],
   );
 
-  // The attempt records can arrive after the turn has settled.
+  // OpenClaw starts another call on 503. Its continuation repair and
+  // Codex's HTTP retry each send a second request within the same call.
+  const codex = label === "codex";
+  const callCount = !codex && status === 503 ? 3 : 2;
   const recorded = await waitFor(
-    "three Codex model attempts and two responses on the retried turn",
+    `${label} model attempts after HTTP ${status}`,
     async () => {
       const turn = (await events())
         .filter((event) => event.event === "runtime_activity")
@@ -908,30 +915,54 @@ async function checkCodexRetry(
       const responses = turn
         .filter((e) => e.action === "openclaw.runtime.model_response.observed")
         .map((e) => e.details);
+      const starts = turn.filter((e) => e.action === "openclaw.runtime.model_call.started");
+      const results = turn.filter((e) => e.action === "openclaw.runtime.model_call.completed");
       return {
-        done: attempts.length >= 3 && responses.length >= 2,
-        state: { attempts: attempts.length, responses: responses.length },
-        value: { attempts, responses },
+        done:
+          attempts.length >= 3 &&
+          (codex
+            ? responses.length >= 2
+            : starts.length >= callCount && results.length >= callCount),
+        state: {
+          attempts: attempts.length,
+          responses: responses.length,
+          starts: starts.length,
+          results: results.length,
+        },
+        value: { attempts, responses, starts, results },
       };
     },
     minute,
   );
   assert.ok(recorded);
-  const { attempts, responses } = recorded;
+  const { attempts, responses, starts, results } = recorded;
   assert.equal(attempts.length, 3);
   assert.equal(new Set(attempts.map((e) => e.modelAttemptId)).size, 3);
-  assert.ok(attempts.every((e) => e.provider === "codex" && e.model === defaultAgentModel));
-  // The tool request belongs to its own model call. Only the HTTP 503 and
-  // the subsequent 200 share a call ID, with consecutive attempt numbers.
-  const tool = attempts.find((e) => e.attempt === 1 && e.httpStatus === 200);
-  const refused = attempts.find((e) => e.attempt === 1 && e.httpStatus === 503);
-  const retry = attempts.find((e) => e.attempt === 2 && e.httpStatus === 200);
   assert.ok(
-    tool && refused && retry,
-    "expected one HTTP 200 and a second request retried after HTTP 503",
+    attempts.every(
+      (e) => e.provider === (codex ? "codex" : "openai") && e.model === defaultAgentModel,
+    ),
   );
-  assert.notEqual(tool.modelCallId, refused.modelCallId);
-  assert.equal(refused.modelCallId, retry.modelCallId);
+  const ids = [...new Set(attempts.map((e) => e.modelCallId))].sort();
+  assert.equal(ids.length, callCount);
+  const refused = attempts.find((e) => e.httpStatus === status);
+  assert.ok(refused);
+  assert.equal(refused.attempt, 1);
+  const accepted = attempts.filter((e) => e.httpStatus === 200);
+  assert.equal(new Set(accepted.map((e) => e.modelCallId)).size, 2);
+  for (const result of accepted) {
+    assert.equal(result.attempt, result.modelCallId === refused.modelCallId ? 2 : 1);
+  }
+  if (!codex) {
+    assert.deepEqual(starts.map((e) => e.details.modelCallId).sort(), ids);
+    assert.deepEqual(results.map((e) => e.details.modelCallId).sort(), ids);
+    for (const { details } of results) {
+      const failed: boolean = status === 503 && details.modelCallId === refused.modelCallId;
+      assert.equal(details.outcome, failed ? "failed" : "succeeded");
+    }
+    log(`${label}: three HTTP attempts matched ${callCount} calls after ${status}`);
+    return;
+  }
   const first = codexResponse(nonce);
   assert.ok(responses.every((e) => e.provider === "codex" && e.model === first.model));
   assert.deepEqual(
@@ -939,6 +970,42 @@ async function checkCodexRetry(
     [first.responseIdHash, codexResponse(nonce, 2).responseIdHash].sort(),
   );
   log(`${label}: three model attempts and two response IDs matched the same tool turn`);
+}
+
+export async function proveEmbeddedRetries(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  revisionId: string,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  for (const status of [503, 400] as const) {
+    // The nonce also identifies the tool result. OpenClaw limits function call ID length.
+    const scenario = status === 503 ? "retry" : "repair";
+    const nonce = `OCE_SMOKE_${scenario}-${randomUUID().replaceAll("-", "").slice(0, 20)}`;
+    const chat = openHttpChat(stack, agent, nonce);
+    // PostgreSQL rejects the start until the caller receives the successful reply.
+    const { turn: runId, refusedId } =
+      status === 503
+        ? await withRefusedTurnWrite(stack, revisionId, chat.send)
+        : { turn: await chat.send(), refusedId: undefined };
+    const turn = await assertAgentTurnAudit(readAudit, {
+      label: agent.label,
+      revisionId,
+      runtimeSource: "openclaw",
+      turnId: runId,
+      model: defaultAgentModel,
+      ...(refusedId ? { startId: refusedId } : {}),
+    });
+    const events = async () =>
+      (await readAudit()).events.filter(
+        (e) =>
+          e.event === "runtime_activity" &&
+          e.details.agentRevisionId === revisionId &&
+          e.details.runtimeSource === "openclaw" &&
+          e.details.sessionId === turn.details.sessionId,
+      );
+    await checkModelRetry(agent.label, { nonce, runId, events }, status);
+  }
 }
 
 export async function proveCodexAuditInterruptions(
@@ -1001,7 +1068,7 @@ export async function proveCodexAuditInterruptions(
     turnId: retried.runId,
     ...codexResponse(retried.nonce, 2),
   });
-  await checkCodexRetry(agent.label, retried);
+  await checkModelRetry(agent.label, retried);
 
   // Match both explicit session hooks to the ID returned by chat.history.
   await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });

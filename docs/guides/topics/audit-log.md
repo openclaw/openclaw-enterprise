@@ -92,12 +92,12 @@ If PostgreSQL loses confirmation of a result commit, `worker.error` reports
 ### Agent runtime activity
 
 Enable [Control Plane audit](../../reference/settings/production.md#control-plane-audit)
-on a Helm installation with managed Gateway routing. OCE supplies the
-`oce-runtime-audit` plugin and a credential for each Agent revision whose
-Gateway runs on the control cluster. Disabling this plugin prevents setup.
+with Helm-managed Gateway routing. Each Gateway on the control cluster
+gets the `oce-runtime-audit` plugin and a revision credential.
+Disabling the plugin prevents setup.
 
-Changing the audit setting can restart Gateways and dedicated Codex workers without changing
-revisions or chat history. Turns can fail or use the old setting.
+Changing the setting can restart Gateways and dedicated Codex workers.
+Revisions and chat history remain. Turns can fail or use the old setting.
 If the next turn is missing, check maintenance.
 The original deployer needs permission to deploy. After permanent failure,
 correct the cause and deploy the Agent.
@@ -112,32 +112,32 @@ The API returns these `runtime_activity` records.
 | `openclaw.runtime.turn.completed`          | Final turn result in `details.outcome`.                                                |
 | `openclaw.runtime.model_call.started`      | Start of an embedded OpenClaw model call.                                              |
 | `openclaw.runtime.model_call.completed`    | Embedded OpenClaw result for the same `modelCallId`.                                   |
-| `openclaw.runtime.model_attempt.observed`  | Codex HTTP request attempt.                                                            |
+| `openclaw.runtime.model_attempt.observed`  | Embedded OpenClaw or dedicated Codex HTTP attempt.                                     |
 | `openclaw.runtime.model_response.observed` | Codex provider response. `responseIdHash` identifies it without storing its text.      |
 
-Each turn record includes `sessionId` and `turnId`, even without a session
-start record. Recovery can reuse a turn ID. A missing result means
-the outcome is unknown. OCE hashes IDs that fail format checks or exceed
+Each turn includes `sessionId` and `turnId`, even without a session start.
+Recovery can reuse a turn ID. Without a result, the outcome is unknown.
+OCE hashes IDs that fail format checks or exceed
 256 characters. [Message links](#open-the-message-for-a-turn) require
 original session and message IDs but allow hashed turn IDs.
 
-Dedicated OpenClaw omits individual calls. Embedded OpenClaw can miss retries.
+Group HTTP attempts within a revision and turn by `modelCallId`. Each
+identifies the `model`, `provider` and a distinct `modelAttemptId`.
+`attempt` starts at 1 per call. Optional `httpStatus` comes from response headers.
+HTTP 200 cannot confirm stream completion. With different call IDs,
+the records alone cannot identify a retry.
 
-HTTP attempt records require an OCE-managed dedicated Codex Pod on the
-control cluster with a direct Gateway connection. Within a revision,
-group attempts by `sessionId`, `turnId` and `modelCallId`. Each identifies
-the `model`, `provider` (`codex`) and a distinct `modelAttemptId`. Within a call,
-`attempt` starts at 1. A retry after HTTP 503 can share the call ID.
-A retry after a stream interruption starts a new call. The optional
-`httpStatus` reports the status from the response headers. HTTP 200
-alone cannot confirm stream completion.
+- Embedded OpenClaw reports OpenAI Responses POST requests only after
+  response headers arrive. The request’s `traceparent` must match one
+  model call. A trace exporter can change the header and prevent that match.
+- Dedicated OpenClaw omits individual calls and attempts.
+- Dedicated Codex requires a managed Pod on the control cluster with a
+  direct Gateway connection. An HTTP 503 retry can share the call ID.
+  A stream retry starts a new call. Check Gateway logs for reporting warnings.
 
-Attempts can arrive after the turn result. These records omit WebSocket
-requests and can miss failures before Codex sends a request. Missing or
-unrecognized traces and missing or ambiguous turn IDs can leave gaps.
-Restart or overflow can erase attempts before the
-[Gateway queues them](../../flows/audit-ledger.md#7-a-gateway-reports-work-for-one-revision).
-Check Gateway logs for Codex reporting warnings.
+Attempts can arrive after the result. WebSockets, failures before sending,
+missing traces and ambiguous matches can leave gaps. Restart or overflow
+can erase attempts before the [Gateway queues them](../../flows/audit-ledger.md#7-a-gateway-reports-work-for-one-revision).
 
 The Gateway queues events locally and sends them in the background.
 Chat continues if PostgreSQL cannot save a runtime event.

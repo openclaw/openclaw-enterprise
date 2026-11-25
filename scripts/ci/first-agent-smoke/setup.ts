@@ -1011,7 +1011,7 @@ export async function routeModelProvider(
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
     `${journey}=1`,
-    ...(auditFailures ? ["--env", "PROBE_CODEX_AUDIT_FAILURES=1"] : []),
+    ...(auditFailures ? ["--env", "PROBE_AUDIT_FAILURES=1"] : []),
     ...(slackStandIn ? ["--env", "PROBE_SLACK_STANDIN=1"] : []),
     // With digests, the stand-in answers only these credentials and names each caller.
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),

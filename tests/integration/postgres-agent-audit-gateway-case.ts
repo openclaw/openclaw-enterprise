@@ -187,6 +187,8 @@ export async function checkGatewayAudit(
     ...attemptDetails,
   };
   assert.equal(await post(codexAttempt, token), 403);
+  // A shared event name must not let a Codex revision report an OpenClaw request.
+  assert.equal(await post({ ...codexAttempt, provider: "openai" }, codex.token, "codex"), 403);
   assert.equal(await post(codexAttempt, codex.token, "codex"), 204);
   // A Gateway restart can queue the same provider attempt with a new delivery ID.
   // Both deliveries must succeed and the audit page must show just one attempt.

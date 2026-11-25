@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/agent-lifecycle";
 
 import { subscribeCodexAttempts, subscribeCodexResponses } from "./codex.mjs";
+import { subscribeOpenClawAttempts } from "./openclaw.mjs";
 import { createAuditSink } from "./sink.mjs";
 
 const id = "oce-runtime-audit";
@@ -119,11 +120,17 @@ function recordLifecycle({ sessionId, runId, ts, data }) {
   });
 }
 
-function recordModel({ sessionId, runId, callId, model, provider, outcome, failureKind }) {
+function recordModel(
+  { sessionId, runId, callId, model, provider, outcome, failureKind, api },
+  context,
+) {
   if (active?.sink.source !== "openclaw" || !sessionId || !runId) {
     return;
   }
   const fields = { sessionId, turnId: runId, modelCallId: callId, model, provider };
+  if (api === "openai-responses") {
+    active.embedded?.model(fields, context?.trace, outcome === undefined);
+  }
   if (outcome === undefined) {
     return active.sink.emit({ action: "openclaw.runtime.model_call.started", ...fields });
   }
@@ -158,6 +165,10 @@ function createService(runtime) {
       const inputs = new Map();
       const owner = { sink, turns: new Map(), inputs };
       setup.defer(runtime.events.onSessionTranscriptUpdate((update) => recordInput(owner, update)));
+      if (sink.source === "openclaw" && !process.env.OPENCLAW_NATIVE_WORKER_PROFILE) {
+        owner.embedded = subscribeOpenClawAttempts(sink.emit);
+        setup.defer(owner.embedded.close);
+      }
       if (sink.source === "codex") {
         setup.defer(subscribeCodexResponses(sink.emit));
         if (process.env.OCE_CODEX_ATTEMPT_AUDIT === "1") {

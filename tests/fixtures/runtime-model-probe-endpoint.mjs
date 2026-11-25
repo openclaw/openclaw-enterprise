@@ -27,7 +27,7 @@ const echoPattern =
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
 const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
-const codexAuditFailures = process.env.PROBE_CODEX_AUDIT_FAILURES === "1";
+const auditFailures = process.env.PROBE_AUDIT_FAILURES === "1";
 const slackStandIn = process.env.PROBE_SLACK_STANDIN === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
@@ -110,37 +110,52 @@ function answerText(request) {
 const failedAuditNonces = new Set();
 const auditToolResults = new Map();
 
-function auditFault(transport, model, request, caller) {
-  if (!codexAuditFailures || caller !== "codex") {
-    return undefined;
+function auditScenario(caller, text) {
+  if (!auditFailures) {
+    return;
   }
+  if (caller === "codex") {
+    return /^OCE_SMOKE_(retry|cancel|restart)-[0-9a-f-]{36}$/u.exec(text)?.[1];
+  }
+  if (caller === "embedded") {
+    return /^OCE_SMOKE_(retry|repair)-[0-9a-f]{20}$/u.exec(text)?.[1];
+  }
+}
+
+function auditFault(transport, model, request, caller) {
   const text = answerText(request);
-  const fault = /^OCE_SMOKE_(retry|cancel|restart)-[0-9a-f-]{36}$/u.exec(text)?.[1];
+  const fault = auditScenario(caller, text);
   if (fault === undefined) {
     return undefined;
   }
-  if (fault === "retry") {
+  if (fault === "retry" || fault === "repair") {
     const expected = auditToolResults.get(text);
     if (!expected) {
       return undefined;
     }
-    const result = JSON.parse(request).input.findLast(
+    const { input, previous_response_id } = JSON.parse(request);
+    const result = input.findLast(
       (item) => item.type === "function_call_output" && item.call_id === text,
     );
-    const verified = JSON.stringify(result?.output ?? "").includes(expected);
+    const retried = failedAuditNonces.has(text);
+    // Only reject a real continuation. Recovery must resend history without the reference.
+    const verified =
+      JSON.stringify(result?.output ?? "").includes(expected) &&
+      (fault !== "repair" || (retried ? !previous_response_id : !!previous_response_id));
     emit({ event: "audit-tool-result", transport, caller, text, verified });
-    if (!verified || failedAuditNonces.has(text)) {
+    if (!verified || retried) {
       return undefined;
     }
     failedAuditNonces.add(text);
+    const status = fault === "repair" ? 400 : 503;
     emit({
       event: "audit-provider-retry",
       transport,
       caller,
       text,
-      status: transport === "https" ? 503 : undefined,
+      status: transport === "https" ? status : undefined,
     });
-    return { fault };
+    return { fault: "retry", status };
   }
   emit({ event: `audit-provider-${fault}`, transport, caller, text });
   const events = answerEvents(model, text);
@@ -153,7 +168,7 @@ function auditFault(transport, model, request, caller) {
 const auditResponseCounts = new Map();
 
 function nextResponseId(text) {
-  if (!codexAuditFailures || !text.startsWith("OCE_SMOKE_")) {
+  if (!auditFailures || !text.startsWith("OCE_SMOKE_")) {
     return "resp_runtime_probe";
   }
   // Two requests with the same text must still get different provider response IDs.
@@ -227,16 +242,25 @@ function answerEvents(model, text) {
 // A real tool must join the pieces before we refuse the next request. An error
 // that echoes the command cannot pass this check. Never log the tool output.
 function auditToolEvents(model, text, caller) {
-  if (
-    !codexAuditFailures ||
-    caller !== "codex" ||
-    !/^OCE_SMOKE_retry-[0-9a-f-]{36}$/u.test(text) ||
-    auditToolResults.has(text)
-  ) {
+  const scenario = auditScenario(caller, text);
+  if ((scenario !== "retry" && scenario !== "repair") || auditToolResults.has(text)) {
     return undefined;
   }
   const expected = randomUUID();
   auditToolResults.set(text, expected);
+  if (caller === "embedded") {
+    // Code Mode can join two strings without granting access to a shell or workspace.
+    return functionCallEvents(model, nextResponseId(text), {
+      id: `fc_${randomUUID().replaceAll("-", "")}`,
+      type: "function_call",
+      status: "completed",
+      call_id: text,
+      name: "exec",
+      arguments: JSON.stringify({
+        code: `text('${expected.slice(0, 18)}' + '${expected.slice(18)}')`,
+      }),
+    });
+  }
   const command = `printf '%s%s' '${expected.slice(0, 18)}' '${expected.slice(18)}'`;
   // A continuation can carry just the tool output. Its call ID identifies the turn.
   return execCommandEvents(model, nextResponseId(text), text, command);
@@ -376,8 +400,12 @@ function workspaceHistoryEvents(model, request) {
     name: "read",
     arguments: JSON.stringify({ path: "gateway-history.txt" }),
   };
+  return functionCallEvents(model, "resp_gateway_history", item);
+}
+
+function functionCallEvents(model, id, item) {
   const slot = { item_id: item.id, output_index: 0 };
-  const base = { id: "resp_gateway_history", object: "response", model, created_at: 1 };
+  const base = { id, object: "response", model, created_at: Math.floor(Date.now() / 1000) };
   return [
     { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
     {
@@ -528,8 +556,17 @@ const server = createServer(
       const audit = auditFault("https", model, body, caller);
       if (audit !== undefined) {
         if (audit.fault === "retry") {
-          response.writeHead(503, { "content-type": "application/json" });
-          response.end(JSON.stringify({ error: { message: "Probe temporary unavailability" } }));
+          const error =
+            audit.status === 400
+              ? {
+                  code: "previous_response_not_found",
+                  param: "previous_response_id",
+                  type: "invalid_request_error",
+                  message: "Previous response not found.",
+                }
+              : { type: "server_error", message: "Probe temporary unavailability" };
+          response.writeHead(audit.status, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error }));
           return;
         }
         response.writeHead(200, { "content-type": "text/event-stream" });

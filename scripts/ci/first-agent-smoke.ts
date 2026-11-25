@@ -49,6 +49,7 @@ import {
   createCodexAgent,
   deployAgent,
   proveCodexAuditInterruptions,
+  proveEmbeddedRetries,
   readLogs,
   runFirstAgent,
   startAuditSwitchChat,
@@ -264,6 +265,7 @@ async function smoke() {
           embeddedReader,
           "embedded-openclaw",
         );
+        await proveEmbeddedRetries(stack, embedded.agent, embeddedRevision, readEmbeddedAudit);
         await expectPersistedRuntimeAudit(stack, embeddedRevision, await readEmbeddedAudit());
       },
       async () => {
