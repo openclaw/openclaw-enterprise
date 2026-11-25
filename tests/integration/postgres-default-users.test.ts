@@ -16,8 +16,8 @@ import {
   type ControllerOptions,
   type PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
-import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.ts";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";

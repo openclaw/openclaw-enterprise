@@ -2,7 +2,6 @@ import {
   assertChatGPTStartupMetadata,
   checkNativeRepositoryStartup,
   checkProtectedRepositoryWorker,
-  checkRepositoryLifecycle,
   checkRepositoryResolution,
   prepareRepositoryFiles,
   createChatGPTInstallation,
@@ -192,14 +191,17 @@ async function repositoryInstallation(t) {
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
 
-for (const mode of ["native", "selected-blocked", "selected"]) {
-  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
-    await checkRepositoryLifecycle(t, mode, fixture, {
-      native: async () => (await repositoryInstallation(t)).configuration,
-      proxy: credentialProxyInstallation,
-    });
-  });
-}
+test("Installation rejects the retired protected GitHub metadata signer setting", async (t) => {
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+    custodyKeyPath: "/nonexistent/fixture-custody.key",
+  };
+  const path = await fixture(t, configuration);
+  await assert.rejects(
+    loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+    /preparedGitHub/,
+  );
+});
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);
@@ -715,26 +717,26 @@ test("production embedded replacements preserve their active Service across fail
   activeAgent.activeRevisionId = predecessor.id;
 
   // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
-  const newerGateway = computeDriver.deployment(
+  const newerGateway = computeDriver.deployment({
     name,
     ownership,
-    { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
-    {
+    namespace: { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
+    images: {
       runtime: "openclaw-enterprise/gateway-fixture:local",
       workspaceSetup: computeDriver.options.images.gateway,
     },
-    `agent-${shortHash(agentId, 12)}`,
-    "gateway",
-    {},
-    "info",
-    computeDriver.gatewayConfiguration(candidate),
-    true,
-    servicePrincipalId,
-    computeDriver.harnessAuthForRevision(candidate, authContext, {
+    serviceAccountName: `agent-${shortHash(agentId, 12)}`,
+    role: "gateway",
+    environment: {},
+    loggingLevel: "info",
+    configuration: computeDriver.gatewayConfiguration(candidate),
+    embedded: true,
+    workloadServicePrincipalId: servicePrincipalId,
+    harnessAuth: computeDriver.harnessAuthForRevision(candidate, authContext, {
       name: kubernetesNamespaceName(namespaceId),
       plane: "control",
     }),
-  );
+  });
   const originalGet = computeDriver.get;
   computeDriver.get = async (kind, requestedName) => {
     assert.equal(kind, "Deployment");

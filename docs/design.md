@@ -59,7 +59,7 @@ OpenClaw gateway multi-tenant.
 The platform supports global Namespace settings. Resource references follow the
 scope and authorization rules of each resource type.
 
-OCC governs platform resource authorization and composition. The selected TokenService owns [CredentialSource lifecycle](reference/credential-sources/managed-static.md); OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
+OCC governs platform resource authorization and composition. The selected TokenService owns the [managed CredentialSource lifecycle](reference/credential-sources.md), and OCC owns its IAM, policy, and Agent bindings. At deployment, OCC records the selected configuration and execution settings in an Agent revision. Later edits leave that revision unchanged. External systems retain ownership of infrastructure, provider accounts, credentials, and model sources. Drivers operate their resources through defined contracts and cannot grant themselves authorization.
 
 <a id="non-goals"></a>
 
@@ -99,7 +99,7 @@ These approved requirements are not established by the implemented architecture:
 | Shared context               | The shared layer for knowledge retrieval, grounding, session history, and long-term memory is planned.                                                                                                                                                                                                                                                 |
 | External admission           | Sessions and service keys authenticate to OCC. The separate OpenClaw Access Gateway (OAG) and trusted-ingress admission protocol remain planned. See [access design](design/access.md).                                                                                                                                                                |
 | Agent Identity               | The Agent Identity component is planned. Agents own ServicePrincipals and may receive projected Kubernetes tokens. OCC token verification, identity exchange, and workload API authentication remain deferred. See [authorization](reference/authorization.md#principals).                                                                             |
-| Model mediation              | Model Registry and Router are planned additions. Harnesses receive scoped model credentials. General `InferenceDriver` mediation, restricted model egress, and credential-free execution remain planned; OpenShell credential substitution is not a supported deployment substitute. See [runtime isolation](reference/security/runtime-isolation.md). |
+| Model mediation              | Model Registry and Router, general `InferenceDriver` mediation, and credential-free inference remain planned. Managed credential delivery covers a limited path and does not establish qualification. See [credential status](reference/credential-sources.md#implementation-status) and [runtime isolation](reference/security/runtime-isolation.md). |
 | Runtime trust                | Separate placement is implemented; general mutually authenticated, workload-bound transport and complete two-cluster runtime acceptance remain pending. See [Kubernetes Compute](reference/drivers/kubernetes-compute.md).                                                                                                                             |
 | Resource and policy coverage | Agent-owned SandboxPolicy network additions are implemented. General shared containment policies, the published Harness and Channel resource model, and Restrictions across every integration remain beyond the current contracts. See [resource requirements](design/resources.md) and [Sandbox contract](reference/drivers/sandbox.md).              |
 
@@ -156,8 +156,7 @@ selected credentials.
 Embedded OpenClaw runs its gateway and Harness together in the data plane.
 Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
 and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
-mounting the Harness workspace. Only the model-executing consumer receives its
-model credential; a dedicated Gateway does not.
+mounting the Harness workspace. Direct authentication gives the model credential to the executing Harness; managed delivery gives it a placeholder. A dedicated Gateway does not receive the model credential.
 
 <a id="agent-provisioning-sequence"></a>
 
@@ -172,10 +171,12 @@ Agent's enabled-channel requirements through a dedicated Envoy egress fleet,
 separate from private workspace ingress. Protected listener ports select Agent
 policies until verified Gateway workload identities are available. See
 [channel egress](reference/drivers/kubernetes-compute/channel-egress.md).
+When an Agent selects an upstream proxy, Envoy authorizes CONNECT host and port;
+the proxy owns final destination resolution and address enforcement.
 
 Installation configuration selects compute, configuration, IAM, and Secret
-implementations, plus channel and optional service-account, plugin, repository, Sandbox, and
-Credential Gateway integrations. [Driver development](contributing/driver-development.md)
+implementations, plus channel and optional service-account, plugin, repository, Sandbox,
+TokenService, and Credential Proxy integrations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
 to related Drivers within their documented experimental scope. Driver-owned
@@ -190,12 +191,19 @@ An optional SandboxDriver participates through Compute and can provision a
 dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
-A CredentialGatewayDriver holds registered model credentials and supplies
-attachments for each Agent revision to its paired Sandbox; activation waits for applied
-attachments. The OpenShell development profile implements a plugin-free
-dedicated Codex path through experimental provider files and bearer passthrough.
-Real activation remains conditional on the documented identity, storage,
-admission, and gateway-authentication preconditions. See
+TokenService owns custody for managed Credential Sources. On the managed
+delivery path, OCC admits Source access and separate network and credential
+injection policies. Credential Proxy and Sandbox prepare and enforce delivery
+before activation. Start with [how Agent credentials work](design/credential-proxy.md)
+and check [current support](reference/credential-sources.md#implementation-status).
+The [Credential Design 1.0 RFC](../specs/rfcs/20261124-credential-design-1-0/index.md)
+records the detailed decisions.
+Credential Gateway and Credential Refresh selections are retired and unsupported.
+The separate [legacy credential-egress Driver](reference/drivers/credential-proxy.md#legacy-protected-egress)
+is deprecated and pending removal. Its special protected metadata and repository exchanges are retired from the 1.0 design.
+
+The OpenShell integration supports dedicated Harness delivery within the documented
+identity, storage, admission, and gateway-authentication limits. See
 [Sandbox](reference/drivers/sandbox.md) and
 [OpenShell limits](reference/drivers/openshell-sandbox.md).
 Other Drivers participate through
@@ -216,8 +224,7 @@ mounts and NetworkPolicies do not restrict a namespace administrator.
 Kubernetes uses restricted Pod security, scoped ServiceAccounts, and
 NetworkPolicies. Controller credentials remain trusted within their granted
 tenant namespaces: workload-write authority can expose Secrets indirectly.
-Model credentials currently reach the executing Harness, and same-cluster
-Codex transport uses capability-token `ws://`, not mutually authenticated TLS.
+In direct model authentication paths, the credential reaches the executing Harness. The managed Proxy path gives the Harness a placeholder and keeps the credential in trusted delivery custody. Same-cluster Codex transport uses capability-token `ws://`, not mutually authenticated TLS.
 [Security](reference/security.md) and
 [runtime isolation](reference/security/runtime-isolation.md) own these limits.
 
@@ -279,7 +286,7 @@ supported capabilities:
 - [Agent gateways and deployment](design/workloads.md)
 - [Drivers and Backends](design/drivers.md)
 - [Platform safeguards](design/safeguards.md)
-- [Credential Proxy](design/credential-proxy.md)
+- [Credential design](design/credential-proxy.md)
 
 ## Related Documentation
 

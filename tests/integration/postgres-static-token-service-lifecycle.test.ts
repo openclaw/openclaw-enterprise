@@ -4,12 +4,11 @@ import test from "node:test";
 import type { Pool } from "pg";
 
 import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/auth/index.ts";
+import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type {
-  AuditEvent,
-  CredentialSourceReference,
-  SourceProviderPresetId,
-} from "../../packages/contracts/src/index.ts";
+import type { AuditEvent, CredentialSourceReference } from "../../packages/contracts/src/index.ts";
 import {
   AuditAppendUnavailableError,
   AuthorizationDeniedError,
@@ -19,7 +18,7 @@ import {
   TokenServiceSourceInputError,
   type UpdateManagedCredentialSourceInput,
 } from "../../packages/occ/src/index.ts";
-import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
+import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, testPool } from "../helpers/postgres-database.mjs";
@@ -85,15 +84,22 @@ test(
     await controller.applyIAMConfiguration();
     // PostgreSQL, Native IAM, and both concrete Drivers are real; only the Kubernetes API transport is simulated.
     const { core, driver } = useInstallationSecretDriver(controller);
-    assert.ok(driver.installationSecrets);
+    assert.ok(driver.privateSecrets);
     const ownerId = "staged-token-service";
     const instanceId = await controller.activateTokenServiceInstance(ownerId, randomUUID());
     const owner = new OCCTokenServiceDriver(
       ownerId,
       controller.installation.id,
-      driver.installationSecrets,
+      driver.privateSecrets,
       instanceId,
       state,
+      undefined,
+      new OAuthAccountTokens(
+        state,
+        driver.privateSecrets,
+        controller.resolveConnectionClient.bind(controller),
+        refreshCodexOAuthGrant,
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);
@@ -127,9 +133,10 @@ test(
         principal.id,
         namespaceId,
         {
+          type: "static",
           name,
-          lifecycleConfig: { type: "static", settings: {} },
-          secret: { opaque: credential },
+          lifecycleConfig: { settings: {} },
+          secret: credential,
           ...(providerPreset === undefined ? {} : { providerPreset }),
         },
         createAudit,
@@ -153,15 +160,16 @@ test(
       ).rows;
 
     const createsBefore = core.calls.createNamespacedSecret;
-    // The owner resolves one static value; ambiguous material must fail before custody starts.
+    // A blank credential fails before custody starts.
     await assert.rejects(
       controller.createManagedCredentialSource(
         principal.id,
         namespaceId,
         {
-          name: "Ambiguous credential",
-          lifecycleConfig: { type: "static", settings: {} },
-          secret: { first: randomUUID(), second: randomUUID() },
+          type: "static",
+          name: "Blank credential",
+          lifecycleConfig: { settings: {} },
+          secret: " ",
         },
         createAudit,
       ),
@@ -183,9 +191,10 @@ test(
         principal.id,
         namespaceId,
         {
+          type: "static",
           name: "Lifecycle cannot approve a provider",
-          lifecycleConfig: { type: "static", settings: { provider_preset: "openai" } },
-          secret: { opaque: randomUUID() },
+          lifecycleConfig: { settings: { provider_preset: "openai" } },
+          secret: randomUUID(),
         },
         createAudit,
       ),
@@ -215,7 +224,7 @@ test(
     const unknown = await inject("POST", base, {
       name: "Unknown credential write",
       type: "static",
-      secret: { opaque: unknownKey },
+      secret: unknownKey,
     });
     assert.equal(unknown.statusCode, 503, unknown.body);
     assert.equal(unknown.json().error.code, "DEPENDENCY_UNAVAILABLE");
@@ -279,6 +288,7 @@ test(
 
     // Static custody accepts no settings. Successful registration proves OCC did not forward the approval.
     const approved = await createSource("Approved provider", randomUUID(), "openai");
+    assert.equal(approved.type, "static");
     assert.deepEqual(approved.config, { provider_preset: "openai" });
     assert.deepEqual(
       (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [approved.id]))
@@ -298,7 +308,7 @@ test(
     const duplicate = await inject("POST", base, {
       name: "Approved provider",
       type: "static",
-      secret: { opaque: randomUUID() },
+      secret: randomUUID(),
     });
     assert.equal(duplicate.statusCode, 409, duplicate.body);
     assert.equal(core.calls.createNamespacedSecret, beforeDuplicate);
@@ -306,6 +316,7 @@ test(
 
     const key = randomUUID();
     const source = await createSource("Private credential", key);
+    assert.equal(source.type, "static");
     assert.deepEqual(source.config, {});
     const sourceId = source.id;
     const ref = source.ref;
@@ -360,14 +371,15 @@ test(
         }),
       );
     const update = (actorId: string, credential: string) =>
-      updateSource(actorId, { secret: { replacement: credential } });
+      updateSource(actorId, { secret: credential });
     const sourceConfig = async () =>
       (await pool.query("SELECT config FROM occ.credential_sources WHERE id=$1", [sourceId]))
         .rows[0].config;
-    await assert.rejects(
-      updateSource(principal.id, { providerPreset: "unknown" as SourceProviderPresetId }),
-      ScopeViolationError,
-    );
+    await assert.rejects(updateSource(principal.id, { providerPreset: "unknown" }), (error) => {
+      assert.ok(error instanceof CredentialSourceConfigError);
+      assert.equal(error.field, "provider_preset");
+      return true;
+    });
     const replacementsBeforePreset = core.calls.replaceNamespacedSecret;
     const readsBeforePreset = core.reads;
     // Metadata and its attributable audit must commit together; custody is untouched.
@@ -379,6 +391,7 @@ test(
     });
     assert.deepEqual(await sourceConfig(), {});
     const presetUpdate = await updateSource(principal.id, { providerPreset: "openai" });
+    assert.equal(presetUpdate.type, "static");
     assert.deepEqual(presetUpdate.config, { provider_preset: "openai" });
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     assert.equal(core.calls.replaceNamespacedSecret, replacementsBeforePreset);
@@ -386,7 +399,7 @@ test(
     // A mixed approval and material change is rejected before custody changes.
     await assert.rejects(
       updateSource(principal.id, {
-        secret: { replacement: randomUUID() },
+        secret: randomUUID(),
         providerPreset: null,
       }),
       ResourceStateConflictError,
@@ -402,11 +415,11 @@ test(
       ).rows,
       [{ preset: "openai" }],
     );
-    await updateSource(principal.id, { lifecycleConfig: { type: "static", settings: {} } });
+    await updateSource(principal.id, { lifecycleConfig: { settings: {} } });
     assert.deepEqual(await sourceConfig(), { provider_preset: "openai" });
     const replacementKey = randomUUID();
     await updateSource(principal.id, {
-      secret: { replacement: replacementKey },
+      secret: replacementKey,
       providerPreset: "openai",
     });
     assert.equal(await resolve(), replacementKey);
@@ -558,5 +571,116 @@ test(
       ).rows[0].count,
       0,
     );
+
+    // This is the trusted post-exchange boundary, not a public enrollment request or a device-flow proof.
+    core.addNamespace(namespaceId);
+    const codexAccount = { accountId: "account-1", planType: "plus", isFedramp: false };
+    const accessToken = randomUUID();
+    const refreshToken = randomUUID();
+    const builtin = await owner.createSource(
+      {
+        type: "oauth2-refresh-token",
+        namespaceId,
+        name: "Built-in Codex account",
+        consent: {
+          kind: "builtin_codex",
+          ownerPrincipalId: principal.id,
+          account: codexAccount,
+        },
+        grant: {
+          accessToken,
+          refreshToken,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          requestedScopes: ["openid"],
+          grantedScopes: ["openid"],
+        },
+      },
+      AbortSignal.timeout(5_000),
+    );
+    assert.equal(builtin.type, "oauth2-refresh-token");
+    const rawConsent = {
+      kind: "builtin_codex",
+      ownerPrincipalId: principal.id,
+      requestedScopes: ["openid"],
+      grantedScopes: ["openid"],
+      account: codexAccount,
+    };
+    const persistedBuiltin = await state.read((view) =>
+      view.credentialSources.findCredentialSource(namespaceId, builtin.id),
+    );
+    assert.ok(
+      persistedBuiltin?.ownerCapability === "token_service" &&
+        persistedBuiltin.type === "oauth2-refresh-token",
+    );
+    assert.deepEqual(persistedBuiltin.consent, rawConsent);
+    const exact = await inject("GET", `${base}/${builtin.id}`);
+    assert.equal(exact.statusCode, 200, exact.body);
+    assert.deepEqual(exact.json().data.consent, { ...rawConsent, ...BUILTIN_CODEX_OAUTH_PRESET });
+    const list = await inject("GET", base);
+    assert.equal(list.statusCode, 200, list.body);
+    assert.deepEqual(
+      list.json().data.find((entry: { id: string }) => entry.id === builtin.id)?.consent,
+      exact.json().data.consent,
+    );
+    assert.equal(Object.hasOwn(exact.json().data, "connectionTemplateId"), false);
+    assert.equal(exact.body.includes(accessToken) || exact.body.includes(refreshToken), false);
+    const resolved = await owner.resolveCredential(
+      {
+        sourceRef: { kind: "credential_source", namespaceId, id: builtin.id },
+        tokenServiceInstanceId: instanceId,
+      },
+      AbortSignal.timeout(5_000),
+    );
+    assert.equal(resolved.credential, accessToken);
+    assert.deepEqual(exact.json().data.consent.account, codexAccount);
+    assert.equal(
+      Object.hasOwn(resolved, "accountId") || Object.hasOwn(resolved, "isFedramp"),
+      false,
+    );
+    const directEnrollment = await inject("POST", base, {
+      name: "Caller-selected Codex account",
+      type: "oauth2-refresh-token",
+      consent: { kind: "builtin_codex", account: codexAccount },
+    });
+    assert.equal(directEnrollment.statusCode, 400, directEnrollment.body);
+
+    const template = await inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "OAuth authorization",
+      mode: "manual",
+      issuer: "https://issuer.example.test",
+      authorizationUrl: "https://issuer.example.test/authorize",
+      tokenUrl: "https://issuer.example.test/token",
+      scopes: [],
+      destinations: [{ host: "api.example.test", port: 443, path: "/**" }],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const templateId: string = template.json().data.id;
+    const insertInvalid = (templateId: string | null, invalidAccount: object) =>
+      pool.query(
+        `INSERT INTO occ.credential_sources
+           (id,namespace_id,name,type,config,state,created_at,owner_capability,token_service_instance_id,
+            connection_template_id,oauth_provenance,oauth_account,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes)
+         SELECT $2,namespace_id,$3,type,config,state,created_at,owner_capability,token_service_instance_id,
+                $4,oauth_provenance,$5::jsonb,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes
+         FROM occ.credential_sources WHERE id=$1`,
+        [
+          builtin.id,
+          `cs_${randomUUID()}`,
+          randomUUID(),
+          templateId,
+          JSON.stringify(invalidAccount),
+        ],
+      );
+    // Persisted provenance cannot combine the built-in preset with a Template or smuggle fields into account metadata.
+    await assert.rejects(insertInvalid(templateId, codexAccount), { code: "23514" });
+    for (const extra of [{ arbitrary: "value" }, { accessToken }, { refreshToken }]) {
+      await assert.rejects(insertInvalid(null, { ...codexAccount, ...extra }), {
+        code: "23514",
+        constraint: "credential_sources_oauth_shape",
+      });
+    }
+    assert.equal((await inject("DELETE", `${base}/${builtin.id}`)).statusCode, 204);
+    assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
   },
 );

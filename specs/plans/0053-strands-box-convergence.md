@@ -11,8 +11,9 @@ rfc: ../rfcs/20261118-strands-box/index.md
 
 ## Outcome and scope
 
-On a clean ARM64 Helm installation, the normal Worker deploys a Codex Agent in Box. The Agent must
-complete a real HTTP model turn, push a commit to its assigned GitHub repository, and open a draft
+On a clean ARM64 Helm installation, the normal Worker deploys one saved Codex Agent revision
+admitted for model and Git together in Box. The Agent must complete a real HTTP model turn, push a
+commit to its assigned GitHub repository, and open a draft
 pull request. Withdraw its Git access. The next Git operation must fail, and the next model turn
 must succeed in the same conversation.
 
@@ -21,14 +22,15 @@ interactive login, and WebSocket credential delivery. All five milestones below 
 
 ## Credential and execution boundary
 
-Qualify one trusted native Box parent that directly starts its trampoline and contained child in the
-same Agent Pod container. This RFC builds on the Installation credential ownership amendment.
+Experiment with one trusted native Box parent that directly starts its trampoline and contained
+child in the same Agent Pod container. The current split Pod launches the receiver independently.
+This RFC builds on the Installation credential ownership amendment.
 
-| Decision                                                                          | Contract                                                                                                                 |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Who holds, issues, and delivers credentials?                                      | [Installation credential ownership](../rfcs/0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md) |
-| How does Installation select the Drivers, and when can Compute release the child? | [Held startup](../rfcs/20261118-strands-box/strands-box-held-launch.md)                                                  |
-| When may every process in one Sandbox use a binding?                              | [Agent-wide Box policy for the isolated pilot](../rfcs/20261118-strands-box/strands-box-agent-policy.md)                 |
+| Decision                                                                          | Contract                                                                                                         |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Who holds, issues, and delivers credentials?                                      | [Installation credential ownership](../rfcs/20261124-credential-design-1-0/installation-credential-ownership.md) |
+| How does Installation select the Drivers, and when can Compute release the child? | [Held startup](../rfcs/20261118-strands-box/strands-box-held-launch.md)                                          |
+| When may every process in one Sandbox use a binding?                              | [Agent-wide Box policy for the isolated pilot](../rfcs/20261118-strands-box/strands-box-agent-policy.md)         |
 
 ## Ordered pull requests
 
@@ -54,17 +56,21 @@ The [overview criteria](../rfcs/20261118-strands-box/index.md#acceptance-criteri
    another destination, a dangerous redirect, a missing credential, incompatible presentation, and
    unsupported authentication. Require refusal. Use invented sentinels to verify that the injector
    blocks known disclosures in response headers, bodies, trailers, errors, and logs.
-3. **Enable prepared Git.** Extend the
-   [Worker path](../../docs/reference/drivers/selection.md#select-a-protected-sender) through
-   Sandbox `repositoryAccess` and `CredentialProxyDriver.bindRepositoryGit`. Reuse the selected
-   issuer.
+3. **Admit model and Git together.** Use the saved Agent revision already admitted for both grants.
+   Current staged `credentialDeployment` admission (v8) can represent both bindings under one
+   TokenService owner and checks the complete policy, but only OpenShell currently qualifies.
+   No signed joint Strands release exists. The legacy `egressPlan` path requires exact dispatch,
+   `policyReduction.version` 2, a successful `assertAvailable` check, and v7 for mixed model and Git;
+   Git-only can also use v7. `bindRepositoryGit` belongs to that legacy path, not staged delivery.
+   Leave revision format selection to its existing owner. Reject an unsupported Driver pair before
+   provisioning and reuse the selected issuer.
    - Limit pushes to permitted refs in the assigned repository and REST pull request operations to
      explicit grants and head/base refs. Deny GraphQL by default.
    - Stock `gh` needs a selector change for its exact GraphQL requests and variables, repository
      identity, head/base refs, and draft restrictions. Qualify that change with trusted effect
      readback and recovery that reconciles an uncertain creation to a single draft. Keep
      installation-wide GitHub API access out of scope.
-   - Only then push and create a draft from the running Agent. Read back both effects at GitHub.
+   - Only then push and create a draft from that running Agent revision. Read back both effects at GitHub.
      Refuse another eligible repository, unauthorized refs, and out-of-scope PR actions. Preserve
      OpenShell Git behavior and coverage.
 4. **Rotate and withdraw access.** Exercise a failed delivery, a stale serving copy, a rejected
@@ -76,7 +82,9 @@ The [overview criteria](../rfcs/20261118-strands-box/index.md#acceptance-criteri
    reconcile any unknown effect without replay. After confirmed withdrawal, attempt a fresh push of a
    different commit. For expiry, let the separate grant expire, then attempt a fresh push of a different
    commit. In each journey, require an authorization denial, verify the GitHub ref is unchanged from
-   its last readback, and require the next model turn to succeed in the same conversation.
+   its last readback, and require the next model turn to succeed in the same conversation on the
+   same Agent revision. Use independent provider readback to prove that Git withdrawal did not
+   withdraw the model grant.
 5. **Qualify the installation.** Install the Helm chart and Worker built from the exact reviewed
    candidate on clean ARM64. Record chart, image, and source identities. Check installer egress,
    RBAC, DNS, bootstrap, and diagnostics for held startups. Run the

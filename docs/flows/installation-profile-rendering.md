@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-11-19
-last_updated_session: authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a
+updated: 2026-11-24
+last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 ---
 
 # Installation Profile Rendering Flow
@@ -19,8 +19,7 @@ service accounts, the repository registry, and Slack consumers.
 
 - Trigger: `node scripts/render-installation-profile.ts --profile openclaw|codex --input <json> --out-dir <dir>`.
 - Source: `scripts/render-installation-profile.ts:runInstallationProfileCli`,
-  `scripts/render-installation-profile.ts:buildRendered`, and
-  `scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`.
+  and `scripts/render-installation-profile.ts:buildRendered`.
 - Assumptions: The caller runs from the repository root with installed
   dependencies, a trusted profile under `deploy/profiles/`, and site inputs that
   contain no plaintext credentials.
@@ -40,13 +39,7 @@ graph TD
   E --> F["Build objects and validate consumed inputs"]
   F --> G{"Any diagnostics errors?"}
   G -->|Yes| H["Write preflight.json with ok:false"]
-  G -->|No| I{"Hosted codex-plugin without a supplied CIDR list?"}
-  I -->|Yes| M["Resolve auth.openai.com and chatgpt.com IPv4 addresses"]
-  M --> N{"Resolution succeeded?"}
-  N -->|No| H
-  N -->|Yes| O["Set API-only HTTPS CIDRs from sorted unique addresses"]
-  I -->|No| J["Render YAML"]
-  O --> J
+  G -->|No| J["Render YAML"]
   J --> K["Write values.yaml and installation.yaml"]
   K --> L["Write preflight.json with prerequisites and next steps"]
 ```
@@ -80,8 +73,7 @@ files remain untouched.
 
 `deploy/profiles/` supplies profile identity and PluginDriver selection. JSON
 supplies site images, domains, CIDRs, Secrets, and repository registry names.
-Explicit discovery CIDRs keep rendering offline and stable; omitted hosted
-Codex CIDRs make Helm values depend on DNS.
+Rendering does not resolve hosted provider addresses.
 
 ### 3. Validate every supplied input
 
@@ -193,9 +185,7 @@ listener from that configuration; Compute assigns each enabled Agent its own
 listener. See [channel egress](channel-egress.md).
 
 Repository values render only when the input explicitly sets
-`repository.enabled: true`. Repository provider CIDRs pass through unchanged,
-so operators can keep their existing GitHub ranges without DNS snapshots. The
-renderer copies `repository.serviceName` only when the input sets it, and only
+`repository.enabled: true`. The renderer copies `repository.serviceName` only when the input sets it, and only
 when that name is a DNS-1035 Service label of at most 63 characters. The
 chart's upgrade guard still requires an explicit current broker Service name,
 and the same DNS-1035 check cannot fail after a successful preflight.
@@ -244,23 +234,7 @@ Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
 Installation YAML. A trailing hyphen in the prefix remains valid; a trailing
 dot does not, because the suffix would start a new label with a hyphen.
 
-### 6. Resolve hosted discovery egress
-
-`scripts/render-installation-profile.ts:resolveHostedDiscoveryCidrs`
-
-After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
-IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
-mutates no Kubernetes resources.
-
-Supplied lists bypass DNS unchanged; `[]` requires external HTTPS policy for
-both hosts. Other driver selections bypass resolution. DNS failure records a
-preflight error and revokes both YAML files, including after successful renders.
-This snapshot needs operator verification of API Pod DNS/NAT, authenticated
-Console discovery, and rerender/upgrade after address changes; it never
-refreshes live policy.
-
-### 7. Write outputs and preflight
+### 6. Write outputs and preflight
 
 `scripts/render-installation-profile.ts:renderYaml`
 
@@ -297,16 +271,17 @@ activation, and repository registry creation need separate evidence.
   values through the renderer and `helm template`, plus the API parser or
   Compute where they apply.
 - Inspect `<out-dir>/preflight.json` first. `ok:false` means required input is
-  missing, supplied input is invalid, or hosted discovery DNS failed; `values.yaml` and
-  `installation.yaml` are intentionally absent.
-- Run `helm template oce deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`
-  to check chart-level validation before applying the chart.
+  missing or supplied input is invalid; `values.yaml` and `installation.yaml` are
+  intentionally absent.
+- Preview chart validation without cluster changes with
+  `helm template <release-name> deploy/helm/openclaw-enterprise --namespace <namespace> --values <out-dir>/values.yaml`.
+  Use the input JSON’s `controlPlane.releaseName` for `<release-name>` and
+  `controlPlane.namespace` for `<namespace>`.
 - Startup-only input changes should change `controlPlane.installationChecksum`
   in `values.yaml` and the API/worker deployment pod-template annotations in
   Helm output.
-- Check the release API selector and TCP 443 `/32` grants in
-  `openclaw-enterprise-api-model-discovery-egress`, then verify **Load plugins**;
-  rendering alone proves no catalog access.
+- Check that the control-plane egress policy selects the API and worker, then
+  verify **Load plugins**. Rendering alone does not prove catalog access.
 - For runtime proof, continue through the production installation and Agent
   deployment guides. Rendered files alone do not prove native admin access,
   Codex sandboxing, hosted discovery, Slack connectivity, or repository
@@ -324,6 +299,10 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:41: Render unrestricted API and refresh Worker egress without provider CIDRs. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
+
+- 2026-11-23 12:51: Match Helm preview name. (authoring-run/07352eb0-f0e9-4aa3-bbe2-6be9c96a1476 - 7ef4d08319f4ad8dfd1dd52473db764ccad53235)
 
 - 2026-11-19 05:13: Replace the shared channel proxy setting with managed channel egress inputs. (authoring-run/64d7828e-4701-4e9c-8c92-0b3617945c7a - fc683cdfe9b73215d0503cdfaf7917f54be7f17e)
 

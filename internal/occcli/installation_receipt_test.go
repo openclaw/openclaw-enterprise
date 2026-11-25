@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -118,6 +119,114 @@ func TestInstallRefusesHelmTargetOverride(t *testing.T) {
 	}
 }
 
+func TestInstallLegacyBootstrapValuesNotice(t *testing.T) {
+	for _, tool := range []string{"helm", "kubectl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("requires " + tool)
+		}
+	}
+	current, err := os.ReadFile("../../deploy/examples/production/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const privateValue = "fixture-private-pvc-name"
+	for _, tc := range []struct {
+		name, mode, addition, extraDocument, preflightError string
+		warn, missingSelection                              bool
+	}{
+		{name: "generated mixed values", mode: "generate", addition: "  password: {claimName: " + privateValue + "}\n  serviceKey: {}\n", warn: true},
+		{name: "existing mixed values", mode: "existing", addition: "  'serviceKey': {fileName: " + privateValue + "}\n", warn: true},
+		{name: "existing second document", mode: "existing", extraDocument: "\n---\nbootstrap: {password: {claimName: " + privateValue + "}}\n", warn: true},
+		{name: "existing current values", mode: "existing", addition: "  # password: {claimName: " + privateValue + "}\n"},
+		{name: "existing malformed values", mode: "existing", addition: "  password: [" + privateValue + "\n", preflightError: "cannot validate the selected chart and values offline"},
+		{name: "generate requires Secret selection", mode: "generate", addition: "  password: {claimName: " + privateValue + "}\n", preflightError: "Check bootstrap.credentials.secretName", warn: true, missingSelection: true},
+		{name: "existing requires Secret selection", mode: "existing", addition: "  serviceKey: {fileName: " + privateValue + "}\n", preflightError: "Check bootstrap.credentials.secretName", warn: true, missingSelection: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			receipt := filepath.Join(root, "receipt")
+			t.Setenv("XDG_STATE_HOME", root)
+			var announced atomic.Bool
+			var requests atomic.Int32
+			// Valid inputs reach a denied release lookup after the warning.
+			// Invalid inputs must stop before even querying this API.
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.Method != http.MethodGet || announced.Load() != tc.warn {
+					t.Error("installation reached the API before issuing the expected notice")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"kind":"Status","apiVersion":"v1","reason":"Forbidden","code":403}`)
+			}))
+			defer server.Close()
+			values := filepath.Join(root, "values.yaml")
+			content := strings.Replace(string(current), "\nbootstrap:\n", "\nbootstrap:\n"+tc.addition, 1) + tc.extraDocument
+			if tc.missingSelection {
+				withoutSelection := strings.Replace(content, "  credentials:\n    secretName: occ-bootstrap-credentials\n", "", 1)
+				if withoutSelection == content {
+					t.Fatal("shipped example does not contain the expected Secret selection")
+				}
+				content = withoutSelection
+			}
+			if err := os.WriteFile(values, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr strings.Builder
+			cmd := New(&stdout, installationNoticeWriter(func(data []byte) (int, error) {
+				announced.Store(true)
+				return stderr.Write(data)
+			}))
+			chart := "../../deploy/helm/openclaw-enterprise"
+			if tc.mode == "generate" && !tc.missingSelection {
+				// Require the same attempt override that Helm install receives.
+				custom := filepath.Join(root, "chart")
+				if err := os.CopyFS(custom, os.DirFS(chart)); err != nil {
+					t.Fatal(err)
+				}
+				chart = custom
+				hook := filepath.Join(chart, "templates", "check-attempt.yaml")
+				const check = `{{ if not .Values.installation.attemptId }}{{ fail "missing attempt" }}{{ end }}`
+				if err := os.WriteFile(hook, []byte(check), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd.SetArgs([]string{"installation", "install", "--bootstrap-credentials", tc.mode,
+				"--kubeconfig", installationDoctorKubeconfig(t, server.URL), "--context", "read",
+				"--release", "demo", "--kube-namespace", "operations", "--receipt", receipt,
+				"--chart", chart, "--values", values})
+			err := cmd.Execute()
+			if tc.preflightError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.preflightError) || requests.Load() != 0 {
+					t.Fatalf("expected offline refusal before any API requests, got %v with %d requests", err, requests.Load())
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "cannot establish that the Helm release is unused") || requests.Load() == 0 {
+				t.Fatalf("expected the ordinary Helm release check to refuse the install, got %v", err)
+			}
+			if tc.warn {
+				for _, guidance := range []string{"bootstrap.password", "bootstrap.serviceKey", "do not write credential files", "occ installation migrate-values --help"} {
+					if !strings.Contains(stderr.String(), guidance) {
+						t.Errorf("warning omits %q", guidance)
+					}
+				}
+			} else if stderr.Len() != 0 {
+				t.Error("unexpected bootstrap warning")
+			}
+			if strings.Contains(stdout.String()+stderr.String()+err.Error(), privateValue) {
+				t.Error("installation disclosed a values file entry")
+			}
+			for _, path := range []string{receipt, filepath.Join(root, "occ")} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("refused install left installation state at %s: %v", path, err)
+				}
+			}
+			if retained, err := os.ReadFile(values); err != nil || string(retained) != content {
+				t.Fatal("installer changed the original values")
+			}
+		})
+	}
+}
+
 func TestEmptyInstallationReceiptCannotSelectUnboundDoctor(t *testing.T) {
 	out, _, err := runHelp(t, "installation", "doctor", "--kubeconfig", "unused", "--context", "read",
 		"--kube-namespace", "operations", "--release", "demo", "--receipt=")
@@ -193,6 +302,7 @@ esac
 			write("helm", `#!/bin/sh
 printf '%s\n' "$1" >> "$TEST_INSTALL_HELM_CALLS" || exit 1
 case "$1" in
+  template) ;;
   list) printf '%s\n' '[]' ;;
   install) test -f "$TEST_INSTALL_DISPATCH" ;;
   *) exit 1 ;;
@@ -243,12 +353,12 @@ esac
 				if _, err := os.Stat(dispatch); !errors.Is(err, os.ErrNotExist) {
 					t.Errorf("expected no dispatch record after the write failure, stat error = %v", err)
 				}
-				if string(calls) != "list\n" {
-					t.Errorf("Helm calls after the write failure = %q, want only list", calls)
+				if string(calls) != "template\nlist\n" {
+					t.Errorf("Helm calls after the write failure = %q, want only offline validation and list", calls)
 				}
 				return
 			}
-			if runErr != nil || string(calls) != "list\ninstall\n" ||
+			if runErr != nil || string(calls) != "template\nlist\ninstall\n" ||
 				!strings.HasPrefix(stdout.String(), wantNotice+"Helm outcome: succeeded.\n") {
 				t.Fatalf("writable output: error = %v, Helm calls = %q, stdout = %q", runErr, calls, stdout.String())
 			}

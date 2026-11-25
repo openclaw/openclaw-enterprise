@@ -229,17 +229,26 @@ export class DriverRegistry {
     return owner;
   }
 
-  backendDrivers(): Partial<Record<DriverCapability, Driver>> {
+  selectedCredentialDeliveryOwner(): InstalledDriver {
     const delivery = this.selections.get("credential_proxy_delivery");
+    const sandbox = this.selections.get("sandbox");
+    const owner = delivery?.owner;
     if (
-      delivery !== undefined &&
-      (!delivery.owner ||
-        delivery.owner !== this.selections.get("sandbox")?.owner ||
-        delivery.owner.require("credential_proxy_delivery") !== delivery.driver)
+      !owner ||
+      owner !== sandbox?.owner ||
+      owner.require("sandbox") !== sandbox.driver ||
+      owner.require("credential_proxy_delivery") !== delivery.driver
     ) {
       throw new DriverSelectionError(
         "Credential delivery and Sandbox must come from the same registered Driver.",
       );
+    }
+    return owner;
+  }
+
+  backendDrivers(): Partial<Record<DriverCapability, Driver>> {
+    if (this.selections.has("credential_proxy_delivery")) {
+      this.selectedCredentialDeliveryOwner();
     }
     return Object.fromEntries(
       [...this.selections.entries()].map(([capability, selection]) => [

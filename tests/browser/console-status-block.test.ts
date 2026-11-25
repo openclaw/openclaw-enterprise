@@ -7,7 +7,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
@@ -506,7 +506,7 @@ test("Authentication source save outcomes", async (t) => {
       const { page, save, feedback } = await authenticationSourcePage(t, "auth-oauth", {
         harnessId: "codex",
       });
-      await page.getByLabel("Authentication source").selectOption("credential_source");
+      await page.getByLabel("Authentication source").selectOption("device_login");
       await save.click();
       const refusal = page
         .getByRole("alert")
@@ -754,6 +754,7 @@ test("Configuration save outcomes", async (t) => {
         await lineState(feedback),
         quietStatus("Reload this draft before leaving the editor."),
       );
+      await assertFocusedInView(t, feedback);
     },
   );
 

@@ -1,17 +1,18 @@
 ---
 created: 2026-09-21
-updated: "2026-11-19 18:56"
-last_updated_session: "01a1f528-3827-7cb0-9d72-19b91cbb6f69"
+updated: "2026-11-25"
+last_updated_session: "authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2"
 ---
 
 # Container publication flow
 
 ## Overview
 
-Manual publication verifies Linux amd64 and arm64 controller and runtime images
+The standalone **Enterprise Containers** workflow verifies Linux amd64 and arm64 controller and runtime images
 and publishes their indexes to public GHCR packages. Image-only is the default.
 With `publish_chart: true`, a separate protected job tags both indexes with
-the OCE version and publishes the Helm chart.
+the OCE version and publishes the Helm chart. [Release OCE](release-oce.md)
+reuses native preparation for both full releases and image-only publication.
 
 ## Entry Points
 
@@ -20,7 +21,7 @@ the OCE version and publishes the Helm chart.
   optional mutable image tag, and opt-in chart flag.
 - `scripts/ci/container-release.ts:main`: validation, smoke, seal, and publication
   commands called by the workflow.
-- `scripts/ci/chart-release.ts:publish`: version-tag and chart publication after
+- `scripts/ci/chart-release.ts:publishChart`: version-tag and chart publication after
   the image receipt exists.
 - Publication requires pre-existing public packages. The manual dispatch
   authorizes publication without a separate environment approval. GitHub grants
@@ -50,8 +51,6 @@ graph TD
   L -->|publish_chart true| M["Separate job tags image digests and pushes chart"]
   M --> N["Pull chart, verify bytes and write release receipt"]
 ```
-
-Source review does not prove a hosted build or registry transfer succeeded.
 
 ## Execution Trace
 
@@ -196,7 +195,7 @@ with Bun. Success writes `platform.json`, binding source, workflow, run/attempt,
 CI, image, base and platform digest. Failure blocks `platform-*` uploads.
 Recovery requires both runtime smoke jobs to pass.
 
-`.github/workflows/container-publish.yml:jobs.assemble` downloads both qualified
+`.github/workflows/container-check.yml:jobs.assemble` downloads both qualified
 platform artifacts from this run/attempt. `scripts/ci/container-release/oci.ts:assemble`
 rejects receipt, platform, size or hash mismatches before linking blobs into one
 OCI layout. Descriptors retain media type, digest, size and platform, excluding
@@ -233,26 +232,20 @@ child manifests.
 After both source tags verify, ordinary publication copies each sealed archive to
 `latest` or the selected custom alias, then checks both source and alias digests.
 The custom alias replaces `latest` for that dispatch; recovery does not move an
-alias. The two aliases are updated separately, so a failed run can leave them on
-different digests. The receipt is written only after both verify.
+alias. Aliases update separately. Failure can leave one on the previous build.
+The receipt follows verification of both aliases.
 
-Package metadata must report the expected name and public visibility. Reported
-repository linkage must match the public Enterprise repository. Omitted linkage
-is accepted without review-history lookups; package setup owns that connection.
+Package names, public visibility, and any reported repository linkage must
+match. Deploy using each verified index digest. The container runtime selects
+its architecture. After a partial failure, recovery uses the original
+multi-platform archives and producer identity. It rejects older amd64-only seals.
 
-Each remote index digest must match before the receipt is written. Deployment
-uses that index digest, letting the container runtime select its architecture.
-A partial failure leaves existing published bytes intact. Recovery consumes the
-same retained multi-platform archives and original producer identity; it does
-not rebuild them. Old amd64-only seals cannot satisfy this platform contract.
-
-The optional `jobs.publish-chart` downloads this run/attempt's image receipt only
-after `jobs.publish` succeeds. `scripts/ci/chart-release.ts` requires
-both entries to match the current source, producer run, CI run, package names,
-and immutable digests. Root `package.json`, the chart version, and appVersion
-must agree before a version tag is written. The staged chart carries the source
-SHA and both digest references in annotations; its default controller image is
-the verified controller digest. Operator values can override that default.
+For an optional chart, `scripts/ci/prepare-release-chart.ts:stageReleaseChart`
+packages both image digests and the source SHA in chart annotations. The
+controller digest is the default image. Operator values can override it.
+After image publication, `jobs.publish-chart` checks the prepared chart and
+image receipt against the source, CI run, producer, package names, and digests.
+It requires matching package, chart, and appVersion values before writing tags.
 
 The [client projection](../guides/deploy/published-images.md#read-runtime-download-client-identities)
 checks image and executable provenance against the authenticated receipt.
@@ -294,9 +287,14 @@ owns package-write access and coordination.
   registry index identity is stable; the second run must retain the existing
   source tag. Mutable external package inputs can still produce a legitimate
   conflict, which remains fail-closed.
-- Use `docker buildx imagetools inspect` on both the source tag and selected alias.
-  Require Linux amd64 and arm64 plus the receipt's index digest. Startup checks
-  do not establish native ARM64 performance, cluster behavior, or model turns.
+- Inspect each image's source tag and selected alias with `docker buildx imagetools inspect`.
+  Require Linux amd64 and arm64. Compare both index digests with the digest recorded
+  for that image in the publication receipt.
+  After alias failure, compare tags with `digest` from its verified original
+  `metadata.json` for the same trusted run and attempt.
+  [Use verified digest references](../release/containers.md#prepare-and-publish)
+  until publication updates both aliases. Startup checks do not establish native
+  ARM64 performance, cluster behavior, or model turns.
 
 ## Related docs
 
@@ -308,6 +306,12 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 08:08: Link the Release OCE image-only path to native preparation. (authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2 - 67865414220f9d67820f165fe932fe23df025322)
+
+- 2026-11-24 11:32: Trace shared native assembly and chart preparation. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 6908216b29038bd850b44f084b07ba7f886614d5)
+
+- 2026-11-23 01:11: Correct alias digest verification. (authoring-run/815d54c2-4420-4421-8561-9b92e61353c1 - b4f0775e12dcd79f2ee4724d8b73baeda139f6db)
 
 - 2026-11-19 18:56: Remove the custom Node build and worker-termination patch; use stock Node from the pinned bases. (01a1f528-3827-7cb0-9d72-19b91cbb6f69 - 32662b9d2)
 

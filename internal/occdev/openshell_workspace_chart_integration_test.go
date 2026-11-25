@@ -19,10 +19,10 @@ import (
 func TestOpenShellPackagedWorkspaceResources(t *testing.T) {
 	directory := os.Getenv("OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY")
 	if directory == "" {
-		t.Fatal("set OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY to the packaged stock OpenShell 0.1.8 charts")
+		t.Fatal("set OCC_TEST_OPENSHELL_STOCK_CHART_DIRECTORY to the packaged stock OpenShell 0.1.9 charts")
 	}
-	gateway := filepath.Join(directory, "helm-chart-0.1.8.tgz")
-	workspace := filepath.Join(directory, "openshell-workspace-0.1.8.tgz")
+	gateway := filepath.Join(directory, "helm-chart-0.1.9.tgz")
+	workspace := filepath.Join(directory, "openshell-workspace-0.1.9.tgz")
 	for _, chart := range []string{gateway, workspace} {
 		data, err := exec.Command("helm", "show", "chart", chart).Output()
 		if err != nil {
@@ -35,8 +35,8 @@ func TestOpenShellPackagedWorkspaceResources(t *testing.T) {
 		if err := yaml.Unmarshal(data, &metadata); err != nil {
 			t.Fatal(err)
 		}
-		if metadata.Version != "0.1.8" || metadata.AppVersion != "0.1.8" {
-			t.Fatalf("expected the stock 0.1.8 chart, got %+v", metadata)
+		if metadata.Version != "0.1.9" || metadata.AppVersion != "0.1.9" {
+			t.Fatalf("expected the stock 0.1.9 chart, got %+v", metadata)
 		}
 	}
 	r := newRunner(Options{})

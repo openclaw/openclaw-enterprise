@@ -1,13 +1,26 @@
 import {
+  describePluginBindings,
+  selectedPluginBindings,
+  pluginSourceIds,
+  validatePluginRequestAuthority,
+} from "./plugin-credential-bindings.ts";
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
+import {
+  storedSecretBindings,
+  rejectCrossNamespaceSecretSources,
+} from "./configuration-operations.ts";
+import { isManagedTokenServiceSource } from "./credential-source-metadata.ts";
+import {
   isName,
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
   type Agent,
+  type AgentNetworkProxy,
   type AgentCredentialSourceBinding,
   type BackendRef,
   type Configuration,
   type ConfigurationDriver,
-  type CredentialSource,
+  type StoredCredentialSource,
   type HarnessAuthBinding,
   type HarnessExecutionMode,
   type InitialWorkspaceFiles,
@@ -15,10 +28,11 @@ import {
   type OpenClawConfigurationDocument,
   type PluginApprovers,
   type PluginDesiredState,
+  type PluginDriver,
   type RepositoryAccess,
-  type RepositoryBindingRequest,
   type ResourceRef,
   type SecretBindings,
+  type SecretDriver,
   type ComputeDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -51,7 +65,15 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
   ConfigurationHarnessError,
+  NetworkProxySecretDriverError,
+  type SecretDriverOwnershipError,
 } from "./errors.ts";
+import {
+  admitNetworkProxy,
+  authorizeNetworkProxySecret,
+  requestNetworkProxy,
+  validateNetworkProxyCredential,
+} from "./agent-network-proxy.ts";
 import {
   harnessAuthBinding,
   plannedHarnessAuth,
@@ -91,9 +113,10 @@ interface AgentDraftDependencies {
   >;
   readonly repositoryPolicy: Pick<
     ReturnType<typeof createRepositoryPolicyOperations>,
-    "repositorySettings" | "reconcileAgentBindings"
+    "repositorySettings" | "reconcileAgentBindings" | "validateRepositoryClientSelection"
   >;
   readonly validateSavedAgentTopology: ReturnType<typeof createSavedAgentTopologyValidator>;
+  readonly pluginDrivers: () => readonly PluginDriver[];
   readonly validateAgentPlugins: ReturnType<
     typeof createAgentPluginValidation
   >["validateAgentPlugins"];
@@ -110,21 +133,18 @@ interface AgentDraftDependencies {
   readonly backendId: (value: BackendRef | undefined, preserve?: BackendRef) => BackendRef;
   readonly credentialAccess: Pick<
     AgentCredentialAccess,
-    "authorizeBoundCredentialSources" | "authorizeAgentCredentialSources"
+    | "authorizeBoundCredentialSources"
+    | "authorizeAgentCredentialSources"
+    | "authorizePluginCredentialSources"
+    | "savedStagedPluginIds"
+    | "grantSelectedPluginSources"
   >;
-  readonly isManagedTokenServiceSource: (source: Readonly<CredentialSource> | undefined) => boolean;
-  readonly bindings: (value: unknown) => SecretBindings;
   readonly authorizeBindings: (
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     bindings: SecretBindings,
   ) => Promise<unknown>;
-  readonly rejectCrossNamespaceSecretSources: (
-    namespaceId: string,
-    bindings: SecretBindings | undefined,
-    harnessAuth: HarnessAuthBinding | null | undefined,
-  ) => void;
   readonly configurationDriver: () => ConfigurationDriver;
   readonly validateConfigurationContent: (
     values: OpenClawConfigurationDocument,
@@ -144,15 +164,15 @@ interface AgentDraftDependencies {
   ) => Promise<Readonly<Configuration>>;
   readonly installationId: string;
   readonly selectedCompute: () => ComputeDriver | undefined;
+  readonly ownedSecretDriver: (
+    id: string,
+    failure: () => SecretDriverOwnershipError,
+  ) => SecretDriver;
   readonly refuseRepositoryNetworkOverlap: (
     principalId: string,
     policy: Awaited<ReturnType<PlatformReadView["sandboxPolicies"]["find"]>>,
   ) => Promise<void>;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    resource: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly bindCreator: IAMPolicyOperations["bindCreator"];
   readonly nextAgentId: () => string;
   readonly timestamp: () => string;
 }
@@ -168,9 +188,9 @@ export interface CreateAgentInput {
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
 }
 
@@ -191,6 +211,7 @@ export interface ValidateAgentCreateInput {
   readonly initialWorkspaceFiles?: InitialWorkspaceFiles;
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   /**
@@ -211,9 +232,9 @@ export interface UpdateAgentInput {
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy | null;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers | null;
-  readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
 }
 
@@ -233,7 +254,58 @@ function requireNamespaceAcceptsAgents(namespace: Pick<Namespace, "status">): vo
   }
 }
 
+function rejectDraftRepositorySources(sources: readonly StoredCredentialSource[] | undefined) {
+  if (sources?.some(({ type }) => type === "github-app-installation")) {
+    throw new ResourceStateConflictError(
+      "Choose a GitHub App Client and Repository grants. Deployment selects the Repository credential Source.",
+    );
+  }
+}
+
 export function createAgentDraftOperations(dependencies: AgentDraftDependencies) {
+  async function validatePluginSelection(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver | undefined,
+    plugins: PluginDesiredState | undefined,
+    harnessAuth: HarnessAuthBinding | null | undefined,
+    resolveSource: (sourceId: string) => Promise<Readonly<StoredCredentialSource> | undefined>,
+    resolved: readonly StoredCredentialSource[] = [],
+  ) {
+    const selected = selectedPluginBindings(driver, plugins);
+    const plugin = await dependencies.credentialAccess.authorizePluginCredentialSources(
+      state,
+      principalId,
+      namespaceId,
+      selected,
+      resolveSource,
+      resolved,
+    );
+    await validatePluginCredentialSources(
+      driver,
+      plugins,
+      plugin.sources,
+      harnessAuth,
+      plugin.templates,
+    );
+    const staged = selected.filter(({ sourceId }) => plugin.templates.has(sourceId));
+    if (staged.length > 0) {
+      const descriptions = await describePluginBindings(driver, plugins, staged, plugin.sources);
+      validatePluginRequestAuthority(descriptions, plugin.templates);
+    }
+    const stagedPluginIds = new Set(staged.map(({ pluginId }) => pluginId));
+    for (const { pluginId, sourceId } of selected) {
+      if (!plugin.templates.has(sourceId)) {
+        stagedPluginIds.delete(pluginId);
+      }
+    }
+    return {
+      sourceIds: pluginSourceIds(staged),
+      stagedPluginIds,
+    };
+  }
+
   async function readAgentConfiguration(
     state: PlatformReadView,
     principalId: string,
@@ -350,6 +422,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     }
     const harnessAuth = harnessAuthBinding(input.harnessAuth ?? null);
     const credentialSources = parseAgentCredentialSources(input.credentialSources);
+    const networkProxy =
+      input.networkProxy === undefined ? undefined : requestNetworkProxy(input.networkProxy);
     const executionMode = input.executionMode ?? "embedded";
     if (!validExecutionMode(executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
@@ -389,7 +463,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         namespace.id,
         existingConfiguration.id,
       );
-      dependencies.rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
+      rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
       await dependencies.harnessAuth.authorizeHarnessAuthSource(
         state,
         principalId,
@@ -403,12 +477,21 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         credentialSources ?? [],
         harnessAuth,
       );
+      rejectDraftRepositorySources(sources);
       const agentId = dependencies.nextAgentId();
       await dependencies.authorizeBindings(
         state,
         principalId,
         namespace.id,
-        dependencies.bindings(existingConfiguration.secretBindings),
+        storedSecretBindings(existingConfiguration.secretBindings),
+      );
+      await authorizeNetworkProxySecret(
+        state,
+        dependencies.authority,
+        dependencies.ownedSecretDriver,
+        principalId,
+        namespace.id,
+        networkProxy,
       );
       const configuration =
         configurationPreparation === undefined
@@ -422,24 +505,48 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               configurationPreparation,
             );
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
+      if (networkProxy !== undefined) {
+        await admitNetworkProxy(
+          dependencies.selectedCompute(),
+          networkProxy,
+          executionMode,
+          (await savedConfiguration()).values,
+        );
+      }
       const driver = await dependencies.validateAgentPlugins(
         plugins,
         pluginApprovers,
         async () => (await savedConfiguration()).values,
       );
-      await validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
-      const { repositoryBindings, repositoryAccess } =
-        dependencies.repositoryPolicy.repositorySettings(namespace.id, input);
+      const { sourceIds, stagedPluginIds } = await validatePluginSelection(
+        state,
+        principalId,
+        namespace.id,
+        driver,
+        plugins,
+        harnessAuth,
+        (sourceId) => state.credentialSources.lockCredentialSource(namespace.id, sourceId),
+        sources,
+      );
+      const repositoryAccess = dependencies.repositoryPolicy.repositorySettings(
+        namespace.id,
+        input.repositoryAccess,
+      );
+      await dependencies.repositoryPolicy.validateRepositoryClientSelection(state, principalId, {
+        namespaceId: namespace.id,
+        ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+      });
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
         {
           executionMode,
           harnessAuth: () =>
             dependencies.harnessAuth.savedHarnessAuthSnapshot(state, namespace.id, harnessAuth),
-          repositoryBindings,
+          repositoryAccess,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
           pluginDriver: driver,
+          stagedPluginIds,
         },
         savedConfiguration,
       );
@@ -456,18 +563,24 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           : { credentialSources }),
         executionMode,
         gatewayManagedMode,
+        ...(networkProxy === undefined ? {} : { networkProxy }),
         ...(plugins === undefined ? {} : { plugins }),
         ...(driver && plugins && Object.keys(plugins).length
           ? { pluginDriver: pluginOwner(driver) }
           : {}),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
-        ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         servicePrincipalId: `service-agent-${agentId}`,
         desiredRuntimeState: "stopped",
         status: "active",
         createdAt: dependencies.timestamp(),
       });
+      await dependencies.credentialAccess.grantSelectedPluginSources(
+        state,
+        principalId,
+        agent,
+        sourceIds,
+      );
       await dependencies.bindCreator(state, principalId, {
         kind: "agent",
         id: agent.id,
@@ -508,6 +621,8 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     const harnessAuth = plannedHarnessAuth(input.harnessAuth ?? null);
+    const networkProxy =
+      input.networkProxy === undefined ? undefined : requestNetworkProxy(input.networkProxy);
     namespaceIdentity(input.namespaceId);
     await dependencies.authority.authorize(principalId, "create", {
       kind: "agent",
@@ -528,6 +643,28 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         throw new ScopeViolationError("The Configuration kind must identify an Agent.");
       }
       const values = freezeConfigurationValues(input.configuration.values);
+      await admitNetworkProxy(dependencies.selectedCompute(), networkProxy, executionMode, values);
+      if (networkProxy?.credentialSecretId !== undefined) {
+        await dependencies.authority.authorize(principalId, "operate", {
+          kind: "secret",
+          namespaceId: namespace.id,
+          id: networkProxy.credentialSecretId,
+        });
+        const secret = await state.secrets.findSecret(
+          namespace.id,
+          networkProxy.credentialSecretId,
+        );
+        if (!secret) {
+          throw new ScopeViolationError(
+            "The Network proxy Secret does not belong to the exact Namespace.",
+          );
+        }
+        const driver = dependencies.ownedSecretDriver(
+          secret.driverId,
+          () => new NetworkProxySecretDriverError(),
+        );
+        await validateNetworkProxyCredential(driver, secret);
+      }
       const secretBindings =
         input.configuration.secretBindings === undefined
           ? undefined
@@ -537,7 +674,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             );
       // The form saves the Configuration first, so its content rules answer first, in
       // createConfiguration's order.
-      dependencies.rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
+      rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
       const configurationDriver = dependencies.configurationDriver();
       // Use one unsaved Configuration for Driver admission and Agent topology checks.
       const configuration: Configuration = Object.freeze({
@@ -556,10 +693,19 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         pluginApprovers,
         () => values,
       );
-      dependencies.rejectCrossNamespaceSecretSources(
+      rejectCrossNamespaceSecretSources(
         namespace.id,
         undefined,
         harnessAuth === null || "source" in harnessAuth ? harnessAuth : null,
+      );
+      const { stagedPluginIds } = await validatePluginSelection(
+        state,
+        principalId,
+        namespace.id,
+        driver,
+        plugins,
+        harnessAuth?.method === "credential_source" ? harnessAuth : null,
+        (sourceId) => state.credentialSources.findCredentialSource(namespace.id, sourceId),
       );
       await dependencies.validateSavedAgentTopology(
         resolveHarness,
@@ -567,10 +713,14 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           executionMode,
           harnessAuth: async () =>
             dependencies.harnessAuth.plannedHarnessAuthSnapshot(namespace.id, harnessAuth),
-          repositoryBindings: undefined,
+          plannedHarnessAuth:
+            (harnessAuth?.method === "api_key" || harnessAuth?.method === "codex_pat") &&
+            !("source" in harnessAuth),
+          repositoryAccess: undefined,
           workspaceSetup: initialWorkspaceFiles !== undefined,
           plugins,
           pluginDriver: driver,
+          stagedPluginIds,
         },
         async () => configuration,
       );
@@ -592,14 +742,20 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
     if (input.configurationId !== undefined && !isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    if (input.configurationId === undefined && input.gatewayManagedMode === undefined) {
+    if (
+      input.configurationId === undefined &&
+      input.gatewayManagedMode === undefined &&
+      input.networkProxy === undefined
+    ) {
       throw new ScopeViolationError(
-        "An Agent update must name a Configuration or Gateway managed mode.",
+        "An Agent update must name a Configuration, Gateway managed mode, or Network proxy.",
       );
     }
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : harnessAuthBinding(input.harnessAuth);
     const requestedSources = parseAgentCredentialSources(input.credentialSources);
+    const requestedProxy =
+      input.networkProxy == null ? input.networkProxy : requestNetworkProxy(input.networkProxy);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
@@ -646,6 +802,23 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.guardAgentProvisioning(state, namespace.id, agent.id);
       await dependencies.guardProvisioningConfiguration(state, namespace.id, configurationId);
       const previousAuth = harnessAuthBinding(agent.harnessAuth);
+      if (agent.networkProxy?.credentialSecretId !== undefined) {
+        await dependencies.authority.authorize(principalId, "operate", {
+          kind: "secret",
+          namespaceId: namespace.id,
+          id: agent.networkProxy.credentialSecretId,
+        });
+      }
+      if (requestedProxy != null) {
+        await authorizeNetworkProxySecret(
+          state,
+          dependencies.authority,
+          dependencies.ownedSecretDriver,
+          principalId,
+          namespace.id,
+          requestedProxy,
+        );
+      }
       // Every update needs the caller's grant on each source the Agent binds now, but not a
       // usable record: after a Secret Driver or Credential Gateway change, an update must still
       // be able to replace or drop what the new driver does not own. Only what the update
@@ -663,7 +836,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         agent.credentialSources ?? [],
       );
       if (requestedAuth !== undefined) {
-        dependencies.rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
+        rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
         await dependencies.harnessAuth.authorizeHarnessAuthSource(
           state,
           principalId,
@@ -682,6 +855,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               requestedSources,
               auth,
             );
+      rejectDraftRepositorySources(sources);
       if (requestedSources === undefined && requestedAuth !== undefined) {
         const retained = agent.credentialSources ?? [];
         assertHarnessSourceListed(retained, requestedAuth);
@@ -699,7 +873,7 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
             namespace.id,
             previousAuth.sourceId,
           );
-          if (dependencies.isManagedTokenServiceSource(source)) {
+          if (isManagedTokenServiceSource(source)) {
             throw new ResourceStateConflictError(
               "This TokenService source must remain the selected Harness authentication source.",
             );
@@ -710,9 +884,18 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
       // Configuration write (or naming another Configuration) can replace them, so loosening this
       // would not unblock the Agent. SecretBindingDriverError names that fix.
-      const secretBindings = dependencies.bindings(configuration.secretBindings);
+      const secretBindings = storedSecretBindings(configuration.secretBindings);
       await dependencies.authorizeBindings(state, principalId, namespace.id, secretBindings);
       const savedConfiguration = dependencies.savedConfigurationReader(configuration);
+      const selectedProxy = requestedProxy === undefined ? agent.networkProxy : requestedProxy;
+      if (selectedProxy != null) {
+        await admitNetworkProxy(
+          dependencies.selectedCompute(),
+          selectedProxy,
+          input.executionMode ?? agent.executionMode,
+          (await savedConfiguration()).values,
+        );
+      }
       const selections = plugins ?? agent.plugins;
       const driver = await dependencies.validateAgentPlugins(
         selections,
@@ -721,33 +904,71 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         agent,
         plugins === undefined ? "stored" : "request",
       );
+      let selectedSourceIds: readonly string[] = [];
+      let stagedPluginIds: ReadonlySet<string>;
       if (
-        sources === undefined &&
-        driver?.credentials &&
-        plugins &&
-        Object.values(plugins).some((p) => p.driverPolicy !== undefined)
+        plugins !== undefined &&
+        agent.plugins &&
+        Object.values(agent.plugins).some((selection) => selection.driverPolicy !== undefined)
       ) {
-        sources = await dependencies.credentialAccess.authorizeAgentCredentialSources(
+        const previousDriver = dependencies
+          .pluginDrivers()
+          .find(
+            ({ id, implementation }) =>
+              id === agent.pluginDriver?.id && implementation === agent.pluginDriver.implementation,
+          );
+        if (!previousDriver) {
+          throw new ConfigurationHarnessError("The Agent's saved Plugin Driver is unavailable.");
+        }
+        const previous = selectedPluginBindings(previousDriver, agent.plugins);
+        await dependencies.credentialAccess.authorizeBoundCredentialSources(
+          principalId,
+          namespace.id,
+          pluginSourceIds(previous).map((sourceId) => ({ sourceId })),
+        );
+      }
+      if (plugins !== undefined || sources !== undefined) {
+        if (sources === undefined) {
+          sources = await dependencies.credentialAccess.authorizeAgentCredentialSources(
+            state,
+            principalId,
+            namespace.id,
+            agent.credentialSources ?? [],
+            auth,
+          );
+        }
+        const selected = await validatePluginSelection(
           state,
           principalId,
           namespace.id,
-          agent.credentialSources ?? [],
+          driver,
+          selections,
           auth,
+          (sourceId) => state.credentialSources.lockCredentialSource(namespace.id, sourceId),
+          sources,
+        );
+        selectedSourceIds = selected.sourceIds;
+        stagedPluginIds = selected.stagedPluginIds;
+      } else {
+        stagedPluginIds = await dependencies.credentialAccess.savedStagedPluginIds(
+          state,
+          agent,
+          selectedPluginBindings(driver, agent.plugins),
         );
       }
-      if (sources !== undefined) {
-        await validatePluginCredentialSources(driver, selections, sources, auth);
-      }
       const backendId = dependencies.backendId(input.backendId, agent.backendId);
-      const repositoryChange =
-        input.repositoryBindings !== undefined || input.repositoryAccess !== undefined;
-      const settings = repositoryChange
-        ? dependencies.repositoryPolicy.repositorySettings(namespace.id, input)
-        : undefined;
-      const repositoryBindings =
-        settings === undefined ? undefined : (settings.repositoryBindings ?? []);
-      const repositoryAccess =
-        settings === undefined ? undefined : (settings.repositoryAccess ?? null);
+      const repositoryAccess = dependencies.repositoryPolicy.repositorySettings(
+        namespace.id,
+        input.repositoryAccess,
+      );
+      if (repositoryAccess !== undefined) {
+        await dependencies.repositoryPolicy.validateRepositoryClientSelection(
+          state,
+          principalId,
+          { namespaceId: namespace.id, repositoryAccess },
+          agent.repositoryAccess?.githubAppClientId,
+        );
+      }
       // The pair as it will be stored. A pending workspace setup is delivered by the first
       // deployment, so it is checked against the Configuration this update names. A completed
       // setup is delivered by every deployment, so it is checked when the update names another
@@ -768,17 +989,18 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
               namespace.id,
               requestedAuth === undefined ? previousAuth : requestedAuth,
             ),
-          repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
+          repositoryAccess: repositoryAccess ?? agent.repositoryAccess,
           workspaceSetup:
             workspaceSetup !== undefined && (!workspaceSetup.completed || topologyChanged),
           plugins: selections,
           pluginDriver: driver,
+          stagedPluginIds,
         },
         savedConfiguration,
       );
       // The reverse of the policy save's check: a binding added beside a saved grant that
       // reaches the repository hosts (finding 2144).
-      if ((repositoryBindings ?? agent.repositoryBindings ?? []).length > 0) {
+      if ((repositoryAccess ?? agent.repositoryAccess)?.repositories.length) {
         await dependencies.refuseRepositoryNetworkOverlap(
           principalId,
           await state.sandboxPolicies.find(namespace.id, agent.id),
@@ -792,7 +1014,6 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
         requestedAuth,
         input.backendId === undefined ? undefined : backendId,
         plugins,
-        repositoryBindings,
         pluginApprovers,
         repositoryAccess,
         requestedSources,
@@ -802,16 +1023,25 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
           : driver && Object.keys(plugins).length
             ? pluginOwner(driver, agent)
             : null,
+        requestedProxy,
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
+      }
+      if (plugins !== undefined) {
+        await dependencies.credentialAccess.grantSelectedPluginSources(
+          state,
+          principalId,
+          updated,
+          selectedSourceIds,
+        );
       }
       await dependencies.repositoryPolicy.reconcileAgentBindings(
         state,
         principalId,
         agent,
         updated,
-        repositoryBindings !== undefined,
+        repositoryAccess !== undefined,
         input.repositoryStandingApproval,
       );
       return updated;

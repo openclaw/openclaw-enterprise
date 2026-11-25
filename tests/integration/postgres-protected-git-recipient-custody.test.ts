@@ -13,12 +13,14 @@ import {
   CredentialDeliveries,
   repositoryApprovalFingerprint,
 } from "../../packages/occ/src/index.ts";
+import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
   RepositoryGitSendDecision,
+  RepositoryNetworkPolicy,
   RepositoryRevisionState,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -391,7 +393,11 @@ test(
         undefined,
         undefined,
         undefined,
-        [{ repositoryRef: f.binding.repositoryRef, profile: f.binding.profile }],
+        undefined,
+        {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: f.binding.repositoryRef, profile: f.binding.profile }],
+        },
       );
       assert.ok(
         await u.agents.compareAndSetActiveRevision(namespaceId, agentId, revisionId, prior.id),
@@ -486,7 +492,11 @@ test(
         undefined,
         undefined,
         undefined,
-        [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        undefined,
+        {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        },
       );
       return u.repositorySessions.approveStanding({
         id: randomUUID(),
@@ -648,6 +658,109 @@ test(
     const material = await selected.readMaterial(route, t.signal);
     assert.ok(material && "value" in material);
     assert.equal(f.gh.issuesOfTokens.length, 1);
+  },
+);
+
+test(
+  "bundled OpenShell custody discovers and prepares a native v9 repository session",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t, { sessionLifetimeMs: 600_000 });
+    await disposeNativeSession(f);
+    const { namespaceId } = f.revision;
+    const entries = [
+      { repositoryRef: "source", repository: "fixture/repository", repositoryId: "73" },
+    ];
+    const peer = await standingGitOrigin(t, namespaceId, 600_000, undefined, false, {
+      entries,
+      selectedRepositoryIds: ["73"],
+      permissions: { contents: "write", metadata: "read" },
+    });
+    const registry = { ...peer.registry, backendId: f.registry.backendId };
+    const binding = resolveGitHubRepositoryBinding(registry, {
+      namespaceId,
+      repositoryRef: "source",
+      profile: "github-repository",
+    });
+    const driver = {
+      id: "native-custody",
+      implementation: "openshell",
+      configurationId: "c".repeat(64),
+    };
+    const grants = [{ repository: "fixture/repository", access: "write" }] as const;
+    const { installation, revisionId, sessionId } = await admitProtectedSession(
+      f,
+      driver,
+      binding,
+      {
+        mode: 9,
+        nativePolicy: admitRepositoryNetworkPolicy(grants, grants),
+      },
+    );
+    const revision = await f.pool.query(
+      `SELECT admitted_spec->'execution_admission' AS admission
+       FROM occ.agent_revisions WHERE id=$1`,
+      [revisionId],
+    );
+    assert.deepEqual(revision.rows, [
+      { admission: { version: 9, mode: "protected", repositoryNetworkPolicyVersion: 1 } },
+    ]);
+    const obsoleteId = `rev_${randomUUID()}`;
+    await assert.rejects(
+      f.pool.query(
+        `INSERT INTO occ.agent_revisions
+           (id,namespace_id,agent_id,revision_number,backend_id,admitted_spec,gateway_managed_mode,admitted_at)
+         SELECT $1,namespace_id,agent_id,revision_number+1,backend_id,
+           jsonb_set(jsonb_set(jsonb_set(admitted_spec,'{execution_admission,version}','8'),
+             '{harness_auth,protectedExecutionVersion}','8'),'{egress_plan,execution,revisionId}',to_jsonb($1::text)),
+           gateway_managed_mode,admitted_at
+         FROM occ.agent_revisions WHERE id=$2`,
+        [obsoleteId, revisionId],
+      ),
+      { code: "23514", constraint: "agent_revisions_execution_admission" },
+    );
+    const { observed } = await recordBootstrapRoute(
+      f,
+      new PostgresOpenShellGitRouteStore(f.pool),
+      installation,
+      revisionId,
+    );
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      registry,
+      repositoryGitCustody: selectBundledRepositoryGitCustody(driver),
+      privateKeyPath: peer.privateKeyPath,
+      custodyKeyPath: peer.custodyKeyPath,
+      apiOrigin: peer.gh.origin,
+      ca: peer.tls.ca,
+    });
+    const authority = owner.protectedGit?.networkPolicy;
+    assert.ok(authority);
+    const route = { revisionId, fence: 1, observed };
+    assert.deepEqual(await authority.readMaterial(route, t.signal), { absent: "unprepared" });
+    await owner.maintain();
+    assert.equal(peer.gh.issuesOfTokens.length, 1, "native v9 must discover and claim one session");
+    const material = await authority.readMaterial(route, t.signal);
+    assert.ok(
+      material && "value" in material,
+      "the selected native recipient can read the material",
+    );
+    assert.equal(material.scope, "github-repository");
+    assert.equal(material.sessionId, sessionId);
+    assert.deepEqual(material.repositories, [
+      { repositoryId: "73", repository: "fixture/repository" },
+    ]);
+    assert.deepEqual(
+      (
+        await f.pool.query(
+          `SELECT a.state,a.custody,a.material_version
+           FROM occ.prepared_github_attempts a JOIN occ.prepared_github_families f USING (source_id)
+           WHERE a.id=$1 AND f.source#>>'{session,revisionId}'=$2`,
+          [material.preparationAttemptId, revisionId],
+        )
+      ).rows,
+      [{ state: "committed", custody: "current", material_version: material.materialVersion }],
+    );
   },
 );
 
@@ -1015,7 +1128,7 @@ async function assertTerminalRetirement(
         `SELECT f.source, f.enabled, a.id, a.custody, a.sealed IS NULL AS erased,
           s.session_id, s.phase, s.live_revision_id,
           s.deadline_wall_ms > extract(epoch FROM clock_timestamp())*1000 AS unexpired,
-          g.active_revision_id, g.desired_runtime_state, g.repository_bindings
+          g.active_revision_id, g.desired_runtime_state, g.repository_access
          FROM occ.prepared_github_families f
          JOIN occ.prepared_github_attempts a USING (source_id)
          JOIN occ.repository_session_attempts s ON s.admission_id=$2
@@ -1038,7 +1151,10 @@ async function assertTerminalRetirement(
     unexpired: true,
     active_revision_id: revisionId,
     desired_runtime_state: "running",
-    repository_bindings: [{ repositoryRef: "A", profile: "github-repository" }],
+    repository_access: {
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: "A", profile: "github-repository" }],
+    },
   });
   assert.deepEqual(original[0].source.session.memberSessions, [
     { repositoryRef: "A", admissionId, sessionId },
@@ -1565,8 +1681,14 @@ async function recordBootstrapRoute(
     randomUUID(),
   );
   const recipient = installation.enforcement.repositoryGitRecipient;
-  const { providerId, attachmentEpoch, processInstanceId, networkInstanceId, observedHook } =
-    recipient;
+  const {
+    providerId,
+    attachmentEpoch,
+    processInstanceId,
+    networkInstanceId,
+    observedHook,
+    nativeStartupId,
+  } = recipient;
   const observed = {
     providerId,
     attachmentEpoch,
@@ -1578,9 +1700,8 @@ async function recordBootstrapRoute(
     sandboxId: installation.sandboxId,
     executionId: revisionId,
     provider:
-      (recipient.deliveryProfile === "github_installation"
-        ? "oce-github-installation-"
-        : "oce-git-") + "a".repeat(32),
+      (recipient.deliveryProfile !== undefined ? "oce-github-installation-" : "oce-git-") +
+      "a".repeat(32),
     providerResourceVersion: "1",
     profileVersion: "1",
     credentialState: "bootstrap" as const,
@@ -1588,6 +1709,14 @@ async function recordBootstrapRoute(
     configRevision: "1",
     policyHash: installation.enforcement.policyHash,
     supervisorSessionId: "session",
+    ...(nativeStartupId && {
+      enrollment: {
+        configurationId: installation.enforcement.configurationId,
+        bootstrapRevision: "1",
+        release: "held" as const,
+        nativeStartupId,
+      },
+    }),
   };
   const generation = {
     providerId: observed.providerId,
@@ -1612,13 +1741,15 @@ async function admitProtectedSession(
     deadlineWallMs = f.deadlineWallMs,
     pendingMember,
     mode,
+    nativePolicy,
     previous = f.revision as AgentRevision,
     standingApproval,
   }: {
     bindings?: readonly AdmittedRepositoryBinding[];
     deadlineWallMs?: number | undefined;
     pendingMember?: string;
-    mode?: 5 | 6 | 7 | undefined;
+    mode?: 5 | 6 | 7 | 9 | undefined;
+    nativePolicy?: RepositoryNetworkPolicy | undefined;
     previous?: AgentRevision;
     standingApproval?: Pick<
       RepositoryRevisionState,
@@ -1638,12 +1769,29 @@ async function admitProtectedSession(
     assert.equal(binding.profile, "git-write");
     assert.deepEqual(bindings, [binding]);
   }
+  assert.equal(mode === 9, nativePolicy !== undefined);
+  const admissionAuthorization: NonNullable<
+    AgentRevision["egressPlan"]
+  >["repositoryGitAuthorization"] =
+    mode === 9
+      ? "network-policy"
+      : mode === 6
+        ? "request-hook-observed"
+        : mode === 5 || binding.profile === "github-repository"
+          ? "online-request"
+          : undefined;
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
+  assert.ok(repositoryCredentials && repositoryCredentials.authorization !== "credential_source");
   const admissionId = randomUUID();
   const sessionId = randomUUID();
   const revisionId = "rev_" + randomUUID();
   const executionId = randomUUID().replaceAll("-", "");
   const createdAt = new Date().toISOString();
+  const sandboxId = "recipient-" + randomUUID();
+  const policy = nativePolicy
+    ? await f.state.read((view) => view.sandboxPolicies.find(namespaceId, agentId))
+    : undefined;
+  assert.equal(policy !== undefined, nativePolicy !== undefined);
   const plan = {
     id: "custody-proof",
     generation: 1,
@@ -1658,27 +1806,26 @@ async function admitProtectedSession(
     },
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
-    repositoryGit: { ...repositoryCredentials!, ...standingApproval, bindings, deadlineWallMs },
+    repositoryGit: { ...repositoryCredentials, ...standingApproval, bindings, deadlineWallMs },
     ...(mode === 7 && { policyReductionVersion: 2 as const }),
-    ...(mode === 5 && { repositoryGitAuthorization: "online-request" as const }),
-    ...(mode === 6 && { repositoryGitAuthorization: "request-hook-observed" as const }),
-    ...(binding.profile === "github-repository" && {
-      repositoryGitAuthorization: "online-request" as const,
+    ...(admissionAuthorization !== undefined && {
+      repositoryGitAuthorization: admissionAuthorization,
     }),
     routes: [],
   };
   const installation = {
     plan,
-    sandboxId: "recipient-" + randomUUID(),
+    sandboxId,
     sender: { id: driver.id, generation: 1 },
     installedAt: createdAt,
     enforcement: {
-      instanceId: "one-execution",
-      configurationId: "one-config",
+      instanceId: mode === 9 ? sandboxId : "one-execution",
+      configurationId: mode === 9 ? driver.configurationId : "one-config",
       policyHash: "one-policy",
       authorityScope: "execution" as const,
       ...(mode !== 5 &&
         mode !== 6 &&
+        mode !== 9 &&
         binding.profile !== "github-repository" && { peerKeyId: "authenticated-test-peer" }),
       repositoryGitRecipient: {
         providerId: "provider",
@@ -1687,11 +1834,10 @@ async function admitProtectedSession(
         networkInstanceId: "net",
         ...(binding.profile === "github-repository" && {
           deliveryProfile: "github_repository" as const,
-          authorization: "online-request" as const,
         }),
-        ...(mode === 5 && { authorization: "online-request" as const }),
+        ...(admissionAuthorization !== undefined && { authorization: admissionAuthorization }),
+        ...(mode === 9 && { nativeStartupId: randomUUID() }),
         ...(mode === 6 && {
-          authorization: "request-hook-observed" as const,
           observedHook: { startupId: randomUUID(), observationId: "d".repeat(64) },
         }),
         ...(binding.profile === "github-installation" && {
@@ -1710,6 +1856,18 @@ async function admitProtectedSession(
     },
     egressPlan: plan,
     repositoryCredentials: plan.repositoryGit,
+    ...(nativePolicy &&
+      policy && {
+        sandboxDriverId: driver.id,
+        sandboxPolicy: {
+          driverId: driver.id,
+          implementation: driver.implementation,
+          version: policy.version + 1,
+          defaults: {},
+          additions: policy.additions,
+          repositoryNetworkPolicy: nativePolicy,
+        },
+      }),
   };
   await f.state.transact(async (u) => {
     const sessions = u.repositorySessions;
@@ -1721,8 +1879,19 @@ async function admitProtectedSession(
       undefined,
       undefined,
       undefined,
-      bindings.map(({ repositoryRef, profile }) => ({ repositoryRef, profile })),
+      undefined,
+      {
+        defaultProfile: "git-write",
+        repositories:
+          bindings.map(({ repositoryRef, profile }) => ({ repositoryRef, profile })) ?? [],
+      },
     );
+    if (nativePolicy && policy) {
+      await u.sandboxPolicies.save(
+        { ...policy, version: policy.version + 1, repositoryNetworkPolicy: nativePolicy.grants },
+        policy.version,
+      );
+    }
     await u.revisions.createRevision(revision);
     assert.ok(
       await u.agents.compareAndSetActiveRevision(namespaceId, agentId, previous.id, revisionId),
@@ -1993,24 +2162,33 @@ for (const removal of [
             undefined,
             undefined,
             undefined,
-            [],
+            undefined,
+            { defaultProfile: "git-write", repositories: [] },
           ),
         );
       } else {
-        await f.pool.query("UPDATE occ.agents SET repository_bindings=$2::jsonb WHERE id=$1", [
+        await f.pool.query("UPDATE occ.agents SET repository_access=$2::jsonb WHERE id=$1", [
           f.revision.agentId,
           null,
         ]);
       }
       assert.deepEqual(
         (
-          await f.pool.query("SELECT repository_bindings FROM occ.agents WHERE id=$1", [
+          await f.pool.query("SELECT repository_access FROM occ.agents WHERE id=$1", [
             f.revision.agentId,
           ])
-        ).rows[0].repository_bindings,
+        ).rows[0].repository_access,
         removal.startsWith("B ")
-          ? entries.map(({ repositoryRef }) => ({ repositoryRef, profile: "github-repository" }))
-          : null,
+          ? {
+              defaultProfile: "git-write",
+              repositories: entries.map(({ repositoryRef }) => ({
+                repositoryRef,
+                profile: "github-repository",
+              })),
+            }
+          : removal === "empty selection"
+            ? { defaultProfile: "git-write", repositories: [] }
+            : null,
       );
       const denied = await selected.authorize(request(), installed, t.signal);
       const unavailable = await selected.readMaterial(installedRoute, t.signal);

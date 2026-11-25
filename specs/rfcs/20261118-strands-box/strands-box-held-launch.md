@@ -33,7 +33,8 @@ and routing checks. Bypassing Pod readiness globally could expose an untrusted w
 
 ## CredentialProxy contract selection
 
-For `credential_proxy`, compare the Installation setting `drivers.credential_proxy.contract` with
+The current Installation parser rejects a `contract` setting. Under this proposal, compare
+the new Installation setting `drivers.credential_proxy.contract` with
 `oce.credentialProxyContract` in the pinned, verified installed package manifest. Each defaults to
 legacy when absent. The rule applies only to this Driver category and manifest key.
 
@@ -45,7 +46,7 @@ legacy when absent. The rule applies only to this Driver category and manifest k
 
 Installation, Compute preparation, and the normal Worker must consume the typed deployment view from
 the same selected CredentialProxy registration. Prohibit unchecked casts and second owners. Preserve
-the [Installation's credential ownership](../0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md), delivery profiles,
+the [Installation's credential ownership](../20261124-credential-design-1-0/installation-credential-ownership.md), delivery profiles,
 and legacy Git authority. Current registration rejects a deployment-only CredentialProxy. This
 selection mechanism is proposed.
 
@@ -85,7 +86,8 @@ flowchart TB
   Read -.->|pending| Check["<b>Compute</b><br/>Verify release conditions"]
   Check -.->|missing or stale| Wait["Keep child held"]
   Check -.->|all checks pass| Sign["<b>Compute</b><br/>Sign for this startup"]
-  Sign -.->|verify release| Run["<b>Sandbox</b><br/>Release bound child"]
+  Sign -.->|release stale at use| Wait
+  Sign -.->|verify current release| Run["<b>Sandbox</b><br/>Release bound child"]
   Run -.->|serving and ready| Active["<b>Compute</b><br/>Activate"]
   classDef control fill:#EDF2F7,stroke:#879AB0,color:#25364A
   classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532
@@ -100,11 +102,14 @@ flowchart TB
    process instance, and fresh startup challenge. Compute validates terminal diagnostics against
    that identity. Missing, forged, stale, foreign, ambiguous, or unauthenticated status keeps
    startup held.
-2. **Release.** CredentialProxy confirms the expected policy and credential version on the target
-   and every applicable serving copy. The trusted launcher acknowledges installation of the reviewed
-   projections for that same startup. Compute rechecks tool, network, proxy, and workload conditions
-   before signing. Sandbox must verify the release against the full startup identity. A transport
-   bearer alone confers no release authority.
+2. **Release.** TokenService's committed version of each Source is authoritative. CredentialProxy
+   must confirm those versions and the expected policy on the target and every applicable serving copy.
+   Both model and Git grants must apply to the same execution and recipient. The trusted launcher
+   acknowledges installation of the reviewed projections for that startup. Compute checks tool,
+   network, proxy, and workload conditions before signing. At the point of use, Sandbox must verify
+   the full startup identity and reject a release signed for a Source version that is no longer
+   current. An inventory read before signing is insufficient; a transport bearer confers no release
+   authority.
 3. **Maintain protection.** Loss of authorization, revocation, expiry, replacement, companion loss,
    or an unreadable current version blocks release and protected use at the next authorization
    check. CredentialProxy acknowledges a credential push, policy change, rotation, or withdrawal
@@ -123,11 +128,28 @@ Worker checks again, it finds a replacement child. That child must reject the ol
 projections, acknowledgment, and release. Compute must verify delivery and installation against the
 replacement’s fresh challenge before signing.
 
+If TokenService commits version 2 but delivery fails before the proxy learns of it, every serving
+copy can still report version 1. Startup must remain held, and a previously signed version-1
+release must fail at use. This is a stronger proposed requirement for held startup. It does not
+change the general delivery contract's deferred detection of missed updates or Git sends that
+already passed their final authorization check. The implementation and wire representation remain
+open.
+
 ## Trust boundary
 
 In the native experiment, one trusted Box parent directly starts its trampoline and contained Codex
 child in the same Agent Pod container. Kubernetes NetworkPolicy applies to the Pod as a whole.
 Qualify the native boundary before protected use.
+
+The current split Pod instead starts the receiver independently. Its confinement profile may need
+to permit specific mounts. The file node must reach the Gateway but must not open the live Box
+loopback proxy. Pod NetworkPolicy cannot distinguish these callers. Qualify any per-container
+profile with seccomp, user namespaces, proc masks, dropped capabilities, and TLS retained. A
+profile label alone is not proof of enforcement. Verify real file operations and reconnect, a Box
+HTTPS request before and after, a refused sibling connection to the same live proxy port, and a
+successful connection to that port at another address. Check new processes, replacements, and
+already-connected sockets. A connection policy alone cannot revoke a socket that another process
+already opened and passed to the file node. Test descriptor transfer separately.
 
 | Boundary            | Sandbox requirement                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -145,14 +167,14 @@ this child run; it does not grant route access or credential use.
 
 Extend maintained integration coverage through the real Agent workflow.
 
-| Criterion                            | Required evidence                                                                                                                                                                                                                                                                                                                                                                 |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| AC-0 — Contract selection (P0)       | Exercise real OCC Installation setup, default installed-package loading, and Worker/Compute. Verify both valid selections, legacy Git success and refusal with the selector omitted, and the same typed deployment owner throughout. Check each [selection decision](#credentialproxy-contract-selection), including the call counts, cleanup, and refusal to infer or fall back. |
-| AC-1 — Held observation              | Read pending and validated terminal status from an unready Pod without activation. Reject forged, cross-revision, stale-incarnation, and replacement reports.                                                                                                                                                                                                                     |
-| AC-2 — Release                       | Prove the [release sequence](#ownership-and-release) through authenticated serving and activation. Exercise each blocking condition, including one stale peer, and reject attempts to use the launcher’s authority for another startup. Reconcile failed pushes and lost replies.                                                                                                 |
-| AC-3 — Launch authority              | Through the native caller and child, verify provenance, process binding, file identities, read-only CA access, and cleanup. Refuse substitution, replacement, stale release, unintended descriptor inheritance, and writable aliases. Apply the endpoint checks below if transferring a descriptor.                                                                               |
-| AC-4 — Containment and compatibility | Probe the [trust boundary](#trust-boundary) with invented sentinels. Verify Box Policy permit, deny, and absence independently of OCE admission. Exercise the [pilot criteria](strands-box-agent-policy.md#acceptance-criteria), including executable and port restrictions. Preserve OpenShell success, refusal, readiness, and exposure withdrawal.                             |
-| AC-5 — Installed qualification       | Complete the [clean ARM64 Helm journey](../../plans/0053-strands-box-convergence.md#outcome-and-scope) with exact reviewed source and images, independent provider readback, and the [installation checks](../../plans/0053-strands-box-convergence.md#ordered-pull-requests).                                                                                                    |
+| Criterion                            | Required evidence                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| AC-0 — Contract selection (P0)       | Exercise real OCC Installation setup, default installed-package loading, and Worker/Compute. Verify both valid selections, legacy Git success and refusal with the selector omitted, and the same typed deployment owner throughout. Check each [selection decision](#credentialproxy-contract-selection), including the call counts, cleanup, and refusal to infer or fall back.                                   |
+| AC-1 — Held observation              | Read pending and validated terminal status from an unready Pod without activation. Reject forged, cross-revision, stale-incarnation, and replacement reports.                                                                                                                                                                                                                                                       |
+| AC-2 — Release                       | Prove the [release sequence](#ownership-and-release) through authenticated serving and activation. Commit a new Source version before a failed delivery; keep startup held when all copies agree on the old version or one peer is stale. Reject an old signed release at use and authority for another startup. Verify both grants for the same execution and recipient. Reconcile failed pushes and lost replies. |
+| AC-3 — Launch authority              | Through the native caller and child, verify provenance, process binding, file identities, read-only CA access, and cleanup. Refuse substitution, replacement, stale release, unintended descriptor inheritance, and writable aliases. Apply the endpoint checks below if transferring a descriptor.                                                                                                                 |
+| AC-4 — Containment and compatibility | Probe the [trust boundary](#trust-boundary) with invented sentinels. Verify Box Policy permit, deny, and absence independently of OCE admission. Exercise the [pilot criteria](strands-box-agent-policy.md#acceptance-criteria), including executable and port restrictions. Preserve OpenShell success, refusal, readiness, and exposure withdrawal.                                                               |
+| AC-5 — Installed qualification       | Complete the [clean ARM64 Helm journey](../../plans/0053-strands-box-convergence.md#outcome-and-scope) with exact reviewed source and images, independent provider readback, and the [installation checks](../../plans/0053-strands-box-convergence.md#ordered-pull-requests).                                                                                                                                      |
 
 ## Delivery, alternatives, and open decisions
 
@@ -162,9 +184,9 @@ owners retain the public fields. Keep Box internals in the paired Drivers. Their
 real callback and trusted recipient, generic observation and release, delivery, independent review,
 and provider and installed qualification remain pending.
 
-**Conditional descriptor transfer.** Direct child creation avoids a separate receiver bootstrap. If
-a future design introduces an independently launched receiver, the installer or runtime must
-authenticate both exact endpoint incarnations on the live connection using independent trust, or
+**Conditional descriptor transfer.** Direct child creation would avoid a separate receiver bootstrap.
+The current split Pod already launches its receiver independently. For that handoff, the installer
+or runtime must authenticate both exact endpoint incarnations on the live connection using independent trust, or
 independently provision an authenticated preconnected channel for that pair. Before transfer, prove
 refusal of substitute listeners, foreign first connectors, stale or cross-run peers, and unbound
 same-UID processes. A UID, mode-0700 directory, peer-supplied image digest, in-band nonce, or

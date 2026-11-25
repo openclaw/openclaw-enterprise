@@ -21,6 +21,7 @@ import {
 } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import {
+  confirmationAgentId,
   DELETE_CONFIRMATION,
   grantRefusal,
   keptResources,
@@ -308,8 +309,6 @@ export function renderAgentList(context: AgentListContext) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
-  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
-  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -790,16 +789,18 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
+    const targetId = confirmationAgentId("agent-row-confirm-id", item.id);
     const description = element(
       "p",
       { id: "agent-row-confirm-description", "aria-live": "polite" },
       stopping ? stopConfirmation(item, latestDeployments.get(item.id)) : DELETE_CONFIRMATION,
     );
     const kept = stopping ? null : keptResources(item);
+    const descriptionIds = `${targetId.id} ${description.id}`;
     const dialog = element("dialog", {
       className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
-      "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
+      "aria-describedby": kept ? `${descriptionIds} ${kept.summary.id}` : descriptionIds,
     });
     let pending = false;
     let submitted = false;
@@ -844,6 +845,7 @@ export function renderAgentList(context: AgentListContext) {
         { id: "agent-row-confirm-title" },
         `${stopping ? "Stop" : "Delete"} ${item.name}?`,
       ),
+      targetId,
       description,
       ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
@@ -1058,16 +1060,10 @@ export function renderAgentList(context: AgentListContext) {
         element(
           "section",
           { className: "state-panel" },
-          // A reader without create sees only Agents shared with them, not every Agent here
-          // (finding 2548).
           element(
             "h2",
             {},
-            query
-              ? "No matching Agents"
-              : sharedOnly
-                ? "No Agents are shared with you"
-                : "No Agents yet",
+            query ? "No matching Agents" : createDenied ? "No Agents to show" : "No Agents yet",
           ),
           element(
             "p",
@@ -1075,11 +1071,7 @@ export function renderAgentList(context: AgentListContext) {
             query
               ? "Try another name or ID."
               : createDenied
-                ? // Under the note above: say what the reader can expect, not invite creating
-                  // (finding 1521).
-                  sharedOnly
-                  ? "Agents in this Namespace that are shared with you appear here."
-                  : "Agents in this Namespace appear here."
+                ? "Agents you can read in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."

@@ -110,12 +110,16 @@ const source = {
   id: id("cs"),
   namespaceId,
   name: "Model credentials",
-  type: "openai",
-  config: {},
-  secrets: { api_key: secretRef },
-  ownerCapability: "credential_gateway",
+  type: "static",
+  config: { provider_preset: "openai" },
   state: "ready",
+  createdAt: time,
   ref: { kind: "credential_source", namespaceId, id: id("cs") },
+};
+const codexAccountSource = {
+  kind: "credential_source",
+  namespaceId,
+  id: "cs_123e4567-e89b-42d3-a456-426614174004",
 };
 const account = { id: id("sa"), namespaceId, name: "Model service account" };
 const role = {
@@ -193,23 +197,6 @@ const sessionKey = "example-session-binding-not-a-credential";
 
 const connectionTemplateId = id("ctp");
 const inferenceConnectionTemplateId = "ctp_223e4567-e89b-42d3-a456-426614174000";
-const inferenceConnectionTemplateValues = {
-  mode: "static_bearer",
-  destinations: [
-    { host: "inference.example.com", port: 443, path: "/v1/responses", method: "POST" },
-  ],
-};
-const inferenceConnectionTemplate = {
-  id: inferenceConnectionTemplateId,
-  displayName: "Research inference",
-  createdAt: time,
-  current: {
-    ...inferenceConnectionTemplateValues,
-    templateId: inferenceConnectionTemplateId,
-    version: 1,
-    createdAt: time,
-  },
-};
 const modelProviderSettings = {
   displayName: "Research inference",
   baseUrl: "https://inference.example.com/v1",
@@ -252,14 +239,16 @@ const inferenceAgent = {
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
+  namespaceId,
   displayName: "Example provider client",
   clientId: "example-client",
+  issuer: "https://accounts.example.com",
+  tokenUrl: "https://accounts.example.com/token",
   tokenEndpointAuthMethod: "client_secret_basic",
 };
 const oauthClient = {
   ...oauthClientInput,
-  issuer: "https://accounts.example.com",
-  tokenUrl: "https://accounts.example.com/token",
+  kind: "oauth2",
   id: oauthClientId,
   createdAt: time,
 };
@@ -268,11 +257,10 @@ const connectionTemplateInput = {
   issuer: oauthClient.issuer,
   authorizationUrl: "https://accounts.example.com/authorize",
   tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
   scopes: ["profile.read"],
   destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
-const connectionTemplate = {
+const createdConnectionTemplate = {
   id: connectionTemplateId,
   namespaceId,
   displayName: "Example account",
@@ -284,6 +272,10 @@ const connectionTemplate = {
     version: 1,
     createdAt: time,
   },
+};
+const connectionTemplate = {
+  ...createdConnectionTemplate,
+  current: { ...createdConnectionTemplate.current, version: 2 },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -298,27 +290,38 @@ const discovered = {
   tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
-const savedAccount = {
-  issuer: oauthClient.issuer,
-  tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
-  clientId: oauthClient.clientId,
-  destinations: connectionTemplateInput.destinations,
-  requestedScopes: connectionTemplateInput.scopes,
-  grantedScopes: connectionTemplateInput.scopes,
+const oauthSourceId = "cs_123e4567-e89b-42d3-a456-426614174001";
+const oauthSource = {
+  id: oauthSourceId,
   namespaceId,
-  credentialSourceId: source.id,
-  ownerPrincipalId: userId,
+  name: "Example account",
+  type: "oauth2-refresh-token",
+  state: "ready",
   connectionTemplateId,
-  connectionTemplateVersion: 1,
   createdAt: time,
+  ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
+  consent: {
+    kind: "connection_template",
+    version: 2,
+    oauthClientId,
+    ownerPrincipalId: userId,
+    requestedScopes: connectionTemplateInput.scopes,
+    grantedScopes: connectionTemplateInput.scopes,
+    issuer: oauthClient.issuer,
+    tokenUrl: oauthClient.tokenUrl,
+    clientId: oauthClient.clientId,
+    destinations: connectionTemplateInput.destinations,
+  },
 };
 
 export const parameterExamples = {
+  automationId: "cron-example",
+  expectedConfigRevision: "revision-1",
   modelProviderId: modelProvider.id,
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
+  credentialClientId: oauthClientId,
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
@@ -355,6 +358,7 @@ export const parameterExamples = {
   download: "false",
   tailLines: "100",
   sinceSeconds: "300",
+  offset: "0",
   limit: "20",
   cursor: "opaque-cursor-from-the-previous-response",
   code: "example-provider-code",
@@ -365,31 +369,38 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  createAgentAutomation: {
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+    prompt: "Prepare a report.",
+  },
+  updateAgentAutomation: { expectedConfigRevision: "revision-1", enabled: false },
   chatWithAgent: {
     messages: [{ role: "user", content: "Reply with a short greeting." }],
     stream: false,
   },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
-  startNamespaceConnection: { connectionTemplateId },
+  startNamespaceConnection: { connectionTemplateId, oauthClientId },
   createModelProvider: modelProviderSettings,
   updateModelProvider: {
     ...modelProviderSettings,
     expectedSettingsFingerprint: modelProvider.settingsFingerprint,
   },
   createConnectionTemplate: {
-    ...inferenceConnectionTemplateValues,
-    displayName: inferenceConnectionTemplate.displayName,
+    ...connectionTemplateInput,
+    namespaceId,
+    displayName: connectionTemplate.displayName,
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
-  createOAuthClient: {
+  createCredentialClient: {
+    kind: "oauth2",
     ...oauthClientInput,
-    connectionTemplateId,
-    connectionTemplateVersion: 1,
     clientSecret: "example-client-secret",
   },
-  rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
+  rotateCredentialClient: { kind: "oauth2", clientSecret: "replacement-example-client-secret" },
   deployAgent: {},
   deployAgentFirst: {
     key: "review-1",
@@ -425,10 +436,11 @@ export const requestExamples = {
   createCredentialSource: {
     name: source.name,
     type: source.type,
-    config: {},
-    secrets: source.secrets,
+    config: source.config,
+    secret: "replace-with-your-authorized-model-key",
   },
-  updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  updateCredentialSource: { secret: "replace-with-your-rotated-model-key" },
+  pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
   updateServiceAccountCredential: {
@@ -452,8 +464,12 @@ export const requestExamples = {
     authMethod: "api_key",
     apiKey: "replace-with-your-authorized-model-key",
   },
-  discoverAgentPlugins: { harnessId: "codex", secretRef },
-  discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
+  discoverAgentPlugins: { harnessId: "codex", credentialSource: codexAccountSource },
+  discoverAgentPluginDetails: {
+    harnessId: "codex",
+    credentialSource: codexAccountSource,
+    pluginId: plugin.id,
+  },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
   lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
@@ -496,6 +512,29 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  createAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-1",
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+    payload: { kind: "agentTurn", message: "Prepare a report." },
+  },
+  getAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-1",
+    name: "Morning report",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
+  },
+  updateAgentAutomation: {
+    id: "cron-example",
+    configRevision: "revision-2",
+    name: "Morning report",
+    enabled: false,
+  },
+  listAgentAutomations: { jobs: [], total: 0, nextOffset: null },
+  listAgentAutomationRuns: { entries: [], total: 0, nextOffset: null },
   createModelProvider: modelProvider,
   updateModelProvider: modelProvider,
   getModelProvider: modelProvider,
@@ -511,20 +550,19 @@ export const responseExamples = {
     ],
   },
   listUsableConnectionTemplates: [connectionTemplate],
-  listNamespaceConnections: [savedAccount],
+  listEligibleOAuthClients: [oauthClient],
   startNamespaceConnection: {
-    credentialSourceId: source.id,
     authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
     expiresAt: time,
   },
   listConnectionTemplates: [connectionTemplate],
   getConnectionTemplate: connectionTemplate,
-  createConnectionTemplate: inferenceConnectionTemplate,
+  createConnectionTemplate: createdConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
-  listOAuthClients: [oauthClient],
-  createOAuthClient: oauthClient,
-  rotateOAuthClientSecret: oauthClient,
+  listCredentialClients: [oauthClient],
+  createCredentialClient: oauthClient,
+  rotateCredentialClient: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {
@@ -751,6 +789,7 @@ export const responseExamples = {
   validateAgentSandboxPolicy: { success: true, data: [] },
   getAgentSandboxRecommendations: { recommendations: [], truncated: false },
   withdrawAgentCredentialSource: withdrawal,
+  pushAgentCredentials: { results: [{ sourceId: source.id, outcome: "succeeded" }] },
   getAgentCredentialWithdrawal: withdrawal,
   getAgentWorkspaceFile: {
     name: "AGENTS.md",
@@ -778,11 +817,11 @@ export const responseExamples = {
     },
     callerPermissions: { update: true, delete: true },
   },
-  listCredentialSources: [source],
+  listCredentialSources: [source, oauthSource],
   createCredentialSource: source,
-  getCredentialSource: source,
+  getCredentialSource: oauthSource,
   updateCredentialSource: source,
-  rotateCredentialSource: source,
+  rotateCredentialSource: oauthSource,
   deleteServiceAccount: { id: account.id, namespaceId, revocation: "skipped" },
   listServiceAccounts: [account],
   createServiceAccount: account,

@@ -35,7 +35,7 @@ import {
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
@@ -502,7 +502,8 @@ export async function createConsoleAppFixture(t, options = {}) {
       : { nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey }),
     resolveHarness: resolveApprovedHarness,
     createController(installation) {
-      controller = new OpenClawController(installation, {
+      /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
+      const controllerOptions = {
         state: platformState,
         authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
@@ -512,11 +513,21 @@ export async function createConsoleAppFixture(t, options = {}) {
             : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
-        ...(options.pluginSourceReader === undefined
+        modelCredentialSourcePresets: options.modelCredentialSourcePresets,
+        ...(options.modelCredentialPreset === undefined
           ? {}
-          : { pluginSourceReader: options.pluginSourceReader }),
+          : { modelCredentialPreset: options.modelCredentialPreset }),
+        ...(options.supportsCredentialDeployment === undefined
+          ? {}
+          : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
-        repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling,
+        ...(options.prepareStagedRepositorySource === undefined
+          ? {}
+          : { prepareStagedRepositorySource: options.prepareStagedRepositorySource }),
+        ...(options.repositoryNetworkPolicyCeiling === undefined
+          ? {}
+          : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
+        ...(options.createId === undefined ? {} : { createId: options.createId }),
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,
@@ -530,7 +541,18 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
-      });
+        ...(options.credentialSourceDelivery === undefined
+          ? {}
+          : { credentialSourceDelivery: options.credentialSourceDelivery }),
+      };
+      controller =
+        options.repositoryAdmission === undefined
+          ? new OpenClawController(installation, controllerOptions)
+          : OpenClawController.forInstallation(
+              installation,
+              controllerOptions,
+              options.repositoryAdmission,
+            );
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
         const unexpectedBackendCall = async () =>

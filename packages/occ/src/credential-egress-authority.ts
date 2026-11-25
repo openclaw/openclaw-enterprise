@@ -1,3 +1,5 @@
+import { driverOperation } from "./driver-operation.ts";
+import { lockNamespace } from "./resource-scope.ts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -10,7 +12,7 @@ import {
   type CapturedEgressUse,
   type ComputeDriver,
   type DriverByCapability,
-  type CredentialSource,
+  type LegacyCredentialSource,
   type EgressExchangeOwner,
   type EgressRefusal,
   type EgressRoute,
@@ -46,10 +48,6 @@ interface EgressAuthorityDependencies {
   readonly inTransaction: () => boolean;
   readonly readSnapshot: <T>(work: (state: PlatformReadView) => Promise<T>) => Promise<T>;
   readonly transact: <T>(work: (state: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
-  readonly lockNamespace: (
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-  ) => Promise<Readonly<Namespace>>;
   readonly proxyDriver: () => DriverByCapability["credential_proxy"];
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly secretDriver: (id: string) => SecretDriver;
@@ -59,7 +57,6 @@ interface EgressAuthorityDependencies {
     resolve: NonNullable<ComputeDriver["resolveSandboxNamespace"]>;
   };
   readonly credentialNamespace: (namespace: Readonly<Namespace>) => Promise<Readonly<Namespace>>;
-  readonly credentialGatewayOperation: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly authorizationAuthority: (principalId: string) => IAMDriver;
   readonly authorizationDecision: (
     principalId: string,
@@ -73,7 +70,7 @@ interface EgressAuthorityDependencies {
     authorize: IAMDriver["authorize"],
   ) => boolean;
   readonly currentCredentialSourceOwner: (
-    source: CredentialSource,
+    source: LegacyCredentialSource,
     revision: AgentRevision,
   ) => boolean;
   readonly preparedTokens: TokenService | undefined;
@@ -83,7 +80,7 @@ interface EgressAuthorityDependencies {
 
 /** The source, binding and single permitted metadata operation must describe the same grant. */
 function matchesCredentialFreeMetadataGrant(
-  source: Readonly<CredentialSource>,
+  source: Readonly<LegacyCredentialSource>,
   route: EgressRoute,
 ) {
   const admitted = source.egress;
@@ -222,7 +219,12 @@ export function createEgressAuthority(
       execution.revisionId,
       target.id,
     );
-    if (!source || source.state !== "ready" || withdrawal !== undefined) {
+    if (
+      !source ||
+      source.ownerCapability === "token_service" ||
+      source.state !== "ready" ||
+      withdrawal !== undefined
+    ) {
       return deny("withdrawn");
     }
     const admitted = source.egress;
@@ -502,8 +504,9 @@ export function createEgressAuthority(
       const { namespace, revision } = runtime;
       const verified = await Reflect.apply(verify, driver, [
         {
-          namespace: await dependencies.credentialGatewayOperation(() =>
-            Reflect.apply(resolve, compute, [namespace]),
+          namespace: await driverOperation(
+            () => Reflect.apply(resolve, compute, [namespace]),
+            "Compute",
           ),
           revision,
           plan: use.installation.plan,
@@ -535,7 +538,7 @@ export function createEgressAuthority(
         return deny("unauthorized");
       }
       return dependencies.transact(async (state) => {
-        await dependencies.lockNamespace(state, execution.namespaceId);
+        await lockNamespace(state, execution.namespaceId);
         const decision = observed ?? (await decide());
         await state.agents.lockAgent(execution.namespaceId, execution.agentId);
         const current = await checkEgressUseIn(

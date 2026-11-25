@@ -34,12 +34,13 @@ Gateways use the control-cluster Gateway namespace. Required
 `runtime.gatewayStorageClassName` selects an operator-provisioned local or cloud
 block StorageClass by DNS-subdomain name.
 
-Select `runtime.gatewayStorageSizeGiB` before creating claims: integer 1–65536 GiB,
-default 10, subject to provider support. Keep this Installation-wide setting
-fixed until normal Agent deletion removes all claims under their original setting. Reuse and final deletion reject
-different capacities without resizing, replacing or adopting claims. Preparation
-may detect the mismatch after stopping the predecessor. Restore the original setting before creating different-sized claims;
-no single setting supports a mixed population.
+Installation-wide `runtime.gatewayStorageSizeGiB` accepts 1–65536 whole GiB
+(default 10), subject to provider support. Reuse and final deletion require
+matching storage requests. The Driver never resizes, replaces or adopts mismatched
+claims. Preparation may detect mismatches after predecessor shutdown.
+Keep or restore the original size until normal Agent deletion removes every claim
+requesting it. Set the new size before creating claims.
+Mixed sizes are unsupported. Don’t edit or delete claims to bypass this check.
 
 The filesystem must support SQLite locking, durable `fsync`, and colocated
 database and WAL/SHM files. The Driver checks claim configuration, not filesystem
@@ -55,9 +56,13 @@ RWO guarantees neither SQLite compatibility nor exclusive Gateway access.
 Replacement uses one replica with `Recreate`. After a node partition or forced
 replacement, fence the old writer before allowing another.
 
-A stop deletes the Gateway and waits for its Pod to disappear before stopping the
-Harness, which finishes active work meanwhile; a refused candidate's stop deletes
-both at once. Gateways get up to 330 seconds to drain and clean up. If OpenClaw
+With a dedicated Harness, an ordinary stop deletes the Gateway and waits for
+its Pod to disappear before stopping the Harness. For a refused candidate,
+the Driver stops the dedicated Harness before waiting for the Gateway Pod to
+disappear. An embedded Harness stops with the Gateway. Shutdown can interrupt
+active work.
+
+Gateways get up to 330 seconds to drain and clean up. If OpenClaw
 exits non-zero, as when stopped during startup, its running container releases
 its locks; force-terminated or killed after that grace, the container leaves
 them and an owner lease, which the next Pod cannot verify.
@@ -272,11 +277,9 @@ Stop and retirement wait for the workload to stop, then delete its projection
 and ConfigMaps for that Agent revision by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
 Account and OCC Secret lifecycles remain independent.
 
-Source updates do not restart processes. Update the OCC Secret, redeploy each
-consumer through OCE, wait for readiness and selection, then verify a model
-request. Preparation refreshes the runtime Secret; Pod or Deployment restarts
-only reread the existing projection. See
-[update and redeploy](../kubernetes-secret.md#update-and-redeploy).
+After updating a direct OCC Secret, [redeploy each consumer](../kubernetes-secret.md#update-and-redeploy)
+and verify a model request after activation. Redeployment refreshes the
+projection. A Pod restart rereads the existing projection.
 Deleting a source or runtime Secret does not revoke bytes a process loaded or a
 provider accepted.
 Transport rotation, finite token TTL and immediate revocation remain open; see
@@ -308,31 +311,31 @@ the only Kubernetes gateway mode; the API never returns the password. Plaintext 
 is rejected.
 
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
-selects the model credential. API keys use the selected OCC Secret Driver's
-exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. The combined embedded workload
-or dedicated Harness receives the selected model credential; a dedicated Gateway does not. A
-[credential source](../../credential-sources.md) binding is the exception: Compute
-renders no model Secret and hands the Credential Gateway's attachments to the
-OpenShell Sandbox instead.
+selects the model credential. For a direct API key or imported PAT, Compute
+configures login and projects the selected Secret into the embedded workload
+or dedicated Harness. For a [TokenService model Source](../../credential-sources.md),
+Compute renders no model Secret. Credential Proxy delivers the credential
+through the Sandbox on approved requests.
 
 Enabled channels require [managed channel egress](channel-egress.md). Only the
 Gateway receives its assigned listener URL; Harness transport and model
 credential placement remain separate.
 
-Agent revisions with repository bindings support embedded OpenClaw or dedicated Codex,
-without a Sandbox Driver. Compute delivers each immutable repository-material
-generation only to the container that executes commands:
+For file-based repository sessions without a Sandbox Driver, Compute delivers each
+immutable repository-material generation only to the container that executes commands.
+The [Source-backed Git path](../../repository-credentials/access-levels.md#native-git-delivery)
+uses the Sandbox and Credential Proxy instead.
 
 | Credential material      | Embedded gateway/Harness | Dedicated gateway | Dedicated Codex |
 | ------------------------ | ------------------------ | ----------------- | --------------- |
 | Repository session files | Yes                      | No                | Yes             |
-| Model credential         | Yes                      | No                | Yes             |
+| Direct model credential  | Yes                      | No                | Yes             |
 | Slack channel tokens     | Unsupported              | Yes               | No              |
 
-Readiness must match that consumer's Agent revision ID and credential material generation.
-Credential rotation for the same Agent revision ID replaces the consuming workload; a Ready Pod carrying
-older material is insufficient. Cleanup retains Secrets while owned Deployments
+For file-based repository sessions, readiness must match the consumer's Agent
+revision ID and repository material generation. When that material changes for
+the same revision, Compute replaces the consuming workload and waits for the
+new generation. Cleanup retains Secrets while owned Deployments
 or Pods still reference them. The
 [repository credential flow](../../../flows/agent-repository-credentials.md#4-deliver-and-retain-one-complete-runtime-generation)
 covers generation rechecks, missing-material repair, and how dedicated
@@ -347,7 +350,7 @@ compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
 states when Codex `0.164.0` needs it and which components own those boundaries.
 
-See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
+See [service-account credential delivery](../../service-accounts.md#version-snapshots-and-credential-delivery)
 for provider-issued credentials and supported execution modes.
 
 ## Related

@@ -1,3 +1,4 @@
+import { repositoryGitRestOperations } from "../access/delivery.ts";
 import { hasControlCharacter } from "../access/client-contracts.ts";
 import type {
   ErrorDetail,
@@ -19,6 +20,21 @@ import {
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
 } from "./access/registry.ts";
+
+/** Desired-state bounds only. Release checks the credential’s actual delivery scope. */
+function selectedRepositoryGitNetworkGrants({
+  repositories,
+  permissions,
+  mixedNativeGit,
+}: ReturnType<typeof resolveSelectedRepositoryScope>): readonly RepositoryNetworkGrant[] {
+  if (mixedNativeGit) {
+    return [];
+  }
+  const access = permissions.contents;
+  return access === "read" || access === "write"
+    ? Object.freeze(repositories.map(({ repository }) => Object.freeze({ repository, access })))
+    : [];
+}
 
 /** Repository selection and approval policy, independent of credential transport. */
 export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
@@ -65,7 +81,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   constructor(
     owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
-    options: { readonly sessionDurationSeconds: number },
+    options: {
+      readonly sessionDurationSeconds: number;
+      readonly allowNameOnlyNativeRepositories?: boolean;
+    },
   ) {
     const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
@@ -75,7 +94,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     if (typeof backendId !== "string") {
       throw new Error("The GitHub repository policy must declare its owning Backend.");
     }
-    this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
+    this.#registry = validateGitHubRepositoryRegistry(registry, backendId, options);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||
@@ -103,6 +122,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         Object.freeze({
           repositoryRef: repository.repositoryRef,
           displayName: repository.repository,
+          ...(policy.nativeGit === "v1" ? { githubRepository: repository.repository } : {}),
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
@@ -146,14 +166,15 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution {
-    return this.resolveBindings(input);
+    const { bindings, sessionDurationSeconds } = this.resolveBindings(input);
+    return Object.freeze({ bindings, sessionDurationSeconds });
   }
 
   /** Provider policy shared by Installation admission and the legacy Driver adapter. */
   resolveBindings(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
-  }): RepositoryCredentialResolution {
+  }) {
     try {
       if (
         !Array.isArray(input.bindings) ||
@@ -162,21 +183,31 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       ) {
         throw new Error("invalid-bindings");
       }
-      const resolved = Object.freeze({
-        bindings: Object.freeze(
-          input.bindings.map((entry) =>
-            resolveGitHubRepositoryBinding(this.#registry, {
-              ...entry,
-              namespaceId: input.namespaceId,
-            }),
-          ),
+      const bindings = Object.freeze(
+        input.bindings.map((entry) =>
+          resolveGitHubRepositoryBinding(this.#registry, {
+            ...entry,
+            namespaceId: input.namespaceId,
+          }),
         ),
+      );
+      const selected = bindings.some((binding) => binding.profile === "github-repository")
+        ? resolveSelectedRepositoryScope(this.#registry, input.namespaceId, bindings)
+        : undefined;
+      const selectedGrants = selected && selectedRepositoryGitNetworkGrants(selected);
+      return Object.freeze({
+        bindings,
         sessionDurationSeconds: this.#duration,
+        ...(selected &&
+          selectedGrants && {
+            requiresNetworkPolicy: selected.requiresNetworkPolicy,
+            selectedRepositoryNetworkGrants: selectedGrants,
+            ...(selected.nativeGit && {
+              nativeGit: selected.nativeGit,
+              repositoryApiMaxima: repositoryGitRestOperations(selectedGrants, selected.scopedRest),
+            }),
+          }),
       });
-      if (resolved.bindings.some((b) => b.profile === "github-repository")) {
-        resolveSelectedRepositoryScope(this.#registry, input.namespaceId, resolved.bindings);
-      }
-      return resolved;
     } catch {
       throw new ScopeViolationError(
         "The requested repository bindings are not permitted for this Namespace.",

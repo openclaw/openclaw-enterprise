@@ -38,7 +38,21 @@ export interface RepositoryBindingSelection {
 /** Desired editing intent; admission always resolves concrete binding profiles. */
 export interface RepositoryAccess {
   readonly defaultProfile: string;
-  readonly repositories: readonly RepositoryBindingRequest[];
+  readonly githubAppClientId?: string;
+  readonly repositories: readonly (RepositoryBindingRequest & {
+    readonly access?: "read" | "write";
+  })[];
+}
+
+export function repositoryAccessSelections(
+  access: Readonly<RepositoryAccess> | undefined,
+): readonly RepositoryBindingSelection[] {
+  return access
+    ? access.repositories.map(({ repositoryRef, profile }) => ({
+        repositoryRef,
+        profile: profile ?? access.defaultProfile,
+      }))
+    : [];
 }
 
 export interface RepositoryOption {
@@ -70,6 +84,7 @@ export interface RepositoryExecutionIdentity {
 }
 
 export interface RepositoryRevisionState {
+  readonly authorization?: never;
   /** Nonempty opaque values use the same 512-byte, no-control bound as grant identities. */
   readonly driver: { readonly id: string; readonly implementation: string };
   /** Present only after an explicit, attributable standing approval. The retained
@@ -79,6 +94,17 @@ export interface RepositoryRevisionState {
   readonly standingApprovalScopeFingerprint?: string;
   readonly deadlineWallMs: number;
   readonly bindings: readonly AdmittedRepositoryBinding[];
+}
+
+/** A native Repository binding uses the revision's selected TokenService Source. */
+export interface SourceBackedRepositoryRevisionState {
+  readonly authorization: "credential_source";
+  readonly driver: RepositoryRevisionState["driver"];
+  readonly bindings: RepositoryRevisionState["bindings"];
+  readonly deadlineWallMs?: never;
+  readonly standingApprovalId?: never;
+  readonly standingApprovalGeneration?: never;
+  readonly standingApprovalScopeFingerprint?: never;
 }
 
 export interface OpenRepositorySessionInput {
@@ -179,7 +205,7 @@ export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef
 
 /** The Repo contract owns the mapping from admitted profiles to sender requirements. */
 export function repositoryGitDeliveryProfile(
-  repository: RepositoryRevisionState | undefined,
+  repository: Pick<RepositoryRevisionState, "bindings"> | undefined,
 ): RepositoryGitDeliveryProfile | undefined {
   if (
     repository?.bindings?.length &&

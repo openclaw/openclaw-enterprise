@@ -21,16 +21,14 @@ On OpenShift, select the actual DNS backend namespace and Pod labels; the
 permit both Service and backend ports. Helm merges `dns.podLabels` into the chart
 default `k8s-app: kube-dns`. Profile rendering removes that default for you. In
 hand-written values, set `dns.podLabels.k8s-app: null` when the DNS Pods lack that
-label. Verify UDP and TCP DNS resolution from
-the initialization, API, worker, and enabled supporting workloads, plus denied
-traffic to a Pod outside the configured DNS selectors.
+label.
 
 On OpenShift with OVN-Kubernetes, the CNI applies egress policy after the
 `kubernetes` Service translates port 443 to the API server port, usually 6443.
 Set Helm `cluster.cidrs` to the API server endpoint IPs and `cluster.port` to
-that port. In a profile input, set `controlPlane.clusterCidrs` and
-`controlPlane.clusterPort`. With the default 443, the API and worker fail with
-`KUBERNETES_API_UNAVAILABLE`. List the endpoints with
+that port so initialization can reach the API. In a profile input, set
+`controlPlane.clusterCidrs` and `controlPlane.clusterPort`. API and worker Pods
+have unrestricted egress. List the endpoints with
 `oc get endpoints kubernetes -n default`.
 
 ## Continue installation
@@ -38,3 +36,8 @@ that port. In a profile input, set `controlPlane.clusterCidrs` and
 Save the DNS selectors and API endpoint settings in your profile input or
 protected Helm values. Continue with [control plane installation](production-installation.md)
 in the same operator shell.
+
+If the installation runs an initialization Job, check DNS from its Pod while the
+Job runs. Check the API, worker and enabled supporting workloads as they start.
+For each workload, verify that DNS resolution works over UDP and TCP. Confirm
+that DNS traffic to a Pod outside the configured DNS selectors is denied.

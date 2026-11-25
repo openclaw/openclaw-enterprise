@@ -149,8 +149,8 @@ function safeKubectlFailure(error, child, signal, nativeTag) {
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell f3d976590d3eb1379690a2abaf0f0e26c21d487d
-// crates/openshell-driver-kubernetes/src/config.rs:476,754-785.
+// NVIDIA/OpenShell ce58cf8e9b953281352d98a637e41616295b1318
+// crates/openshell-driver-kubernetes/src/config.rs:487,789-824.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -232,7 +232,7 @@ export class OpenShellDeploymentFailedError extends Error {
 export function waitForOpenShellRevisionActivation(
   /** @type {(description: string | (() => string), read: () => Promise<unknown>) => Promise<unknown>} */ waitFor,
   /** @type {{
-   *   request: (method: string, path: string) => Promise<{status: number, data: unknown}>,
+   *   request: (method: "GET", path: string) => Promise<{status: number, data: unknown}>,
    *   agentPath: string,
    *   revisionId: string,
    *   workerEvents?: readonly Readonly<Record<string, unknown>>[],
@@ -632,7 +632,7 @@ const openshellCodexBinaries = Object.freeze([
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
-export function createOpenShellInstallationConfiguration({
+function createOpenShellSandboxConfiguration({
   authentication,
   platformNamespace,
   gatewayImage,
@@ -673,16 +673,9 @@ export function createOpenShellInstallationConfiguration({
       type: "openshell",
       // The fixture gateway is in-cluster HTTP isolated by the suite's NetworkPolicies.
       configuration: { endpoint: "http://127.0.0.1:1", insecureTransport: "network-policy" },
-      drivers: {
-        sandbox: "sandbox-openshell-kubernetes",
-        credential_gateway: "credential-gateway-openshell-kubernetes",
-      },
+      drivers: { sandbox: "sandbox-openshell-kubernetes" },
     },
   ];
-  configuration.drivers.credential_gateway = {
-    id: "credential-gateway-openshell-kubernetes",
-    configuration: { binaries: [...openshellCodexBinaries] },
-  };
   configuration.sandboxNetworkPolicyCeiling = [
     {
       id: "python-demo",
@@ -749,6 +742,23 @@ export function createOpenShellInstallationConfiguration({
     "ephemeral-storage"
   ] = "1Gi";
   return configuration;
+}
+
+export function createOpenShellTokenServiceInstallationConfiguration(options) {
+  const installation = createOpenShellSandboxConfiguration(options);
+  installation.drivers.token_service = { id: "occ", configuration: {} };
+  return installation;
+}
+
+// TODO(TokenService qualification): port the remaining Gateway-owned refresh and policy proofs.
+export function createOpenShellInstallationConfiguration(options) {
+  const installation = createOpenShellSandboxConfiguration(options);
+  installation.backend[0].drivers.credential_gateway = "credential-gateway-openshell-kubernetes";
+  installation.drivers.credential_gateway = {
+    id: "credential-gateway-openshell-kubernetes",
+    configuration: { binaries: [...openshellCodexBinaries] },
+  };
+  return installation;
 }
 
 export function openShellChartImageValues(prefix, image) {
@@ -966,7 +976,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.8",
+  openShellChartVersion = "0.1.9",
   commandTimeoutMs,
   signal,
 }) {

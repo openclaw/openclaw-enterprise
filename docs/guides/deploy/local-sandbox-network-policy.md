@@ -35,11 +35,16 @@ and the installed workspace dependencies are required for Driver validation.
 
 Supplied rules append to the generated rules. Model Credential Source profiles,
 workspace transport, filesystem/process policy, and Kubernetes NetworkPolicies
-retain their existing owners. These rules are Driver defaults, not per-Agent
-grants. Protected executions use their admitted policy instead. Only explicitly
-named [Codex artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules)
-that pass admission checks carry over from these defaults. Adding a Node or npm
-rule here alone does not grant protected executions package access.
+retain their existing owners. These rules are Driver defaults. Per-Agent grants
+have a separate policy. The file passed to `--sandbox-network-policy-file`
+accepts only `networkPolicies`. Protected executions use their admitted policy.
+To select [Codex artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules)
+for protected, dedicated Codex repository execution, use the Installation policy
+setting `codexArtifactRuleNames`. Selected rules must pass admission checks. For
+the shipped `codex-plugin-artifacts` rule, follow the full matching OpenShell
+[local quickstart](local-setup.md) and complete its configuration and reload
+before provisioning an Agent. Adding a Node or npm rule here alone does not
+grant protected executions package access.
 
 The parsed rules are saved in private `state.json` and rendered into
 `installation.yaml`, which supplies the same configuration to OCC API and worker.
@@ -55,10 +60,13 @@ for implementation ownership.
 
 ## Delegate per-Agent additions
 
-Pass a separate ceiling file when operators want authorized users to request
-per-Agent grants later:
+For a fresh launch with a ceiling, pass a separate file so authorized users can
+request per-Agent grants later.
 
 ```sh
+OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes \
+OCC_DEVELOPMENT_CONTROL_PLANE=compose \
+OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell \
 ./scripts/dev-up --sandbox-network-policy-ceiling-file ./ceiling.yaml
 ```
 

@@ -25,7 +25,7 @@ import {
   loadRuntimeArtifact,
   runtimeArtifactSelection,
 } from "./runtime-artifact.ts";
-import { cleanupResourceIds } from "./cleanup.ts";
+import { cleanupResourceIds, type RequireJournal } from "./cleanup.ts";
 import { withStateLock } from "./state-lock.ts";
 import { createPostgresPreparation } from "./prepare-postgres.ts";
 import { createK3dFixtureStorage } from "./k3d-fixture-storage.ts";
@@ -52,7 +52,10 @@ import {
 import { commandAvailable, execFile } from "./prepare-command.ts";
 import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
-import { startObservabilityPhase } from "./observability-phase-notice.ts";
+import {
+  startImageRuntimeStartupPhase,
+  startObservabilityPhase,
+} from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
@@ -196,8 +199,10 @@ async function timedPreparation<Result>(
   lane: string,
   phase: string,
   operation: () => Result | Promise<Result>,
+  noticePhase = phase,
 ) {
-  const finishTiming = startObservabilityPhase(lane, phase);
+  const finishTiming =
+    startObservabilityPhase(lane, phase) ?? startImageRuntimeStartupPhase(lane, noticePhase);
   const started = performance.now();
   let succeeded = false;
   try {
@@ -1183,12 +1188,15 @@ async function prepareK3dRuntimeImages(
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE!;
-  // This focused journey deploys only embedded OpenClaw Agents. The full lane
+  // These focused journeys deploy only embedded OpenClaw Agents. The full lane
   // still prepares Codex because its other files exercise dedicated execution.
-  const embeddedOidcOnly =
+  const embeddedOnly =
     state.lane === "gateway-routing" &&
-    state.selectedFile === "tests/integration/oidc-agent-chat-k3d-real.test.ts";
-  if (lanePrepare(state.lane).codexSeccomp && !embeddedOidcOnly) {
+    [
+      "tests/integration/oidc-agent-chat-k3d-real.test.ts",
+      "tests/integration/agent-network-proxy-kubernetes-real.test.ts",
+    ].includes(state.selectedFile ?? "");
+  if (lanePrepare(state.lane).codexSeccomp && !embeddedOnly) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,
@@ -1527,6 +1535,7 @@ async function prepareLane({
     case "postgres":
     case "postgres-application":
     case "postgres-auth":
+    case "openshell-token-service":
     case "postgres-platform":
       // Verify the same workspace that the file's migrator will use.
       await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", [
@@ -1554,13 +1563,17 @@ async function prepareLane({
       // Runtime image smoke tests run apart from packaging, in three lanes, to
       // shorten CI wall time. Only the lane whose tests run the Codex sandbox
       // sets codexSeccomp; the others skip the k3d cluster it needs. The
-      // cluster needs no image, so it is created while the image builds.
+      // cluster needs no image, so it is created while the image builds or loads.
       const codexSeccomp = lanePrepare(name).codexSeccomp;
       const [built, cluster] = await timedPreparation(name, "runtime-image-build-cluster", () =>
         prepareTogether([
           () =>
-            timedPreparation(name, "runtime-image-build", () =>
-              buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
+            timedPreparation(
+              name,
+              "runtime-image-build",
+              () =>
+                buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
+              runtimeArtifact ? "image-load" : undefined,
             ),
           ...(codexSeccomp
             ? [
@@ -2164,7 +2177,8 @@ async function prepareFile({
   statePath,
   template,
   modelSelectors,
-}: PrepareFileOptions): Promise<PreparedFile> {
+  requireJournal,
+}: PrepareFileOptions & { requireJournal?: RequireJournal | undefined }): Promise<PreparedFile> {
   const name = assertLane(lane);
   if (!file) {
     throw new Error("prepareFile requires a file.");
@@ -2175,7 +2189,7 @@ async function prepareFile({
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
   return withStateLock(resolvedStatePath, () =>
-    prepareFileWithState({ name, relativeFile, resolvedStatePath, template }),
+    prepareFileWithState({ name, relativeFile, resolvedStatePath, template, requireJournal }),
   );
 }
 
@@ -2269,13 +2283,17 @@ async function prepareFileWithState({
   relativeFile,
   resolvedStatePath,
   template,
+  requireJournal,
 }: {
   name: string;
   relativeFile: string;
   resolvedStatePath: string;
   template: string | undefined;
+  requireJournal: RequireJournal | undefined;
 }): Promise<PreparedFile> {
+  requireJournal?.(true);
   const state = await readState(resolvedStatePath);
+  requireJournal?.(state !== undefined);
   const prepare = lanePrepare(name);
   if (suiteView === "full-integration" && isOpenShellLane(name)) {
     if (
@@ -2398,7 +2416,10 @@ async function prepareFileWithState({
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;
       env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
-    if (relativeFile === "tests/integration/occ-metrics.test.ts") {
+    if (
+      relativeFile === "tests/integration/occ-metrics.test.ts" ||
+      relativeFile === "tests/integration/postgres-metrics-listener-capacity.test.ts"
+    ) {
       env.OCC_METRICS_TEST_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (relativeFile === "tests/integration/postgres-api-request-audit.test.ts") {
@@ -2472,11 +2493,10 @@ async function prepareFileWithState({
           }
         }
       } finally {
-        await cleanupResourceIds(
-          resolvedStatePath,
-          resourceIds,
-          lockTimeoutMs === undefined ? {} : { lockTimeoutMs },
-        );
+        await cleanupResourceIds(resolvedStatePath, resourceIds, {
+          ...(lockTimeoutMs === undefined ? {} : { lockTimeoutMs }),
+          requireJournal,
+        });
       }
     },
   };

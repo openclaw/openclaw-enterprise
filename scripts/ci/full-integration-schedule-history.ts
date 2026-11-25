@@ -239,73 +239,6 @@ async function workflowRuns(read: ReadGithub, event: UnmarkedEvent): Promise<Jso
   return runs;
 }
 
-// TODO: Remove this historical locator after 2026-11-22T10:51:07Z, when the completed attempt leaves the one-hour legacy clock.
-const retiredAcceptance = {
-  run: 45008839659,
-  sha: "effdc1086231ba457bf519cb2bf45e07e840d17f",
-  source: "9ffc8947c06954644ceb08da25164adbc8a184ab",
-  marker: 14748558872,
-  cleanup: 14749386802,
-  // This authenticated archive was independently audited as receipt version 1 with cleanup=true.
-  cleanupDigest: "sha256:9e1b980aef6155c096bdac1182fe146c1bceb78423dde2bfa835a243f7549c45",
-};
-
-async function cleanedRetiredAcceptance(
-  read: ReadGithub,
-  run: Json,
-  jobs: Json[],
-): Promise<boolean> {
-  if (run.id !== retiredAcceptance.run) {
-    return false;
-  }
-  const prefix = "Execute approved network proxy acceptance / ";
-  requireValid(
-    run.head_sha === retiredAcceptance.sha &&
-      run.display_title === `Network Proxy Acceptance ${retiredAcceptance.source}` &&
-      run.status === "completed" &&
-      run.conclusion === "failure" &&
-      run.run_attempt === 1,
-  );
-  const preflightJob = jobs.filter((job) => job.name === prefix + preflight);
-  const reuse = jobs.filter((job) => job.name === prefix + reuseJob);
-  const selected = jobs.filter(
-    (job) =>
-      job.name === prefix + `Slack Live Network Proxy Acceptance ${retiredAcceptance.source}`,
-  );
-  requireValid(
-    preflightJob.length === 1 &&
-      skippedFullPreparation({ ...preflightJob[0], name: executionPrefix + preflight }) &&
-      reuse.length === 1 &&
-      reuse[0]?.conclusion === "skipped" &&
-      selected.length === 1 &&
-      selected[0]?.status === "completed" &&
-      selected[0]?.conclusion === "failure",
-  );
-  for (const [artifactId, name, digest] of [
-    [retiredAcceptance.marker, `network-proxy-acceptance-posts-${retiredAcceptance.source}`, null],
-    [
-      retiredAcceptance.cleanup,
-      `network-proxy-acceptance-cleanup-${retiredAcceptance.source}`,
-      retiredAcceptance.cleanupDigest,
-    ],
-  ] as const) {
-    const artifact = record(await read(`/actions/artifacts/${artifactId}`));
-    const owner = record(artifact.workflow_run);
-    requireValid(
-      artifact.id === artifactId &&
-        artifact.name === name &&
-        artifact.expired === false &&
-        (digest === null || artifact.digest === digest) &&
-        owner.id === retiredAcceptance.run &&
-        owner.head_sha === retiredAcceptance.sha &&
-        owner.head_branch === "main" &&
-        owner.repository_id === repositoryId &&
-        owner.head_repository_id === repositoryId,
-    );
-  }
-  return true;
-}
-
 async function readUnmarkedClock(
   read: ReadGithub,
   event: UnmarkedEvent,
@@ -344,9 +277,6 @@ async function readUnmarkedClock(
       continue;
     }
     const jobs = await attemptJobs(read, marker);
-    if (event === "workflow_dispatch" && (await cleanedRetiredAcceptance(read, run, jobs))) {
-      continue;
-    }
     const live = ["queued", "in_progress", "pending", "waiting", "requested"].includes(
       String(run.status),
     );

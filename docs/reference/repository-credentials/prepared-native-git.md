@@ -125,6 +125,15 @@ that remains running, confirm a new authenticated fetch is denied and chat still
 an existing clone or recall a push already sent. If the outcome of a push is
 unknown, inspect the remote ref before deciding what to do; do not replay it.
 
+The Worker records withdrawal once the broker confirms session disposal, the
+original grant proves the native transport, and token custody and draft outcomes
+are confirmed. It verifies readiness of the same Gateway and Harness, connectivity
+of the bound workspace node, and current model authority for the active revision.
+An unconfirmed runtime observation keeps withdrawal pending while the fence holds.
+The committed removal blocks new Git requests while settlement is pending.
+The Worker queues retirement for missing grant or draft settlement proof,
+incompatible stored admission, or confirmed loss of model authority.
+
 ## Read broker refusals
 
 Git shows only the HTTP status of a refusal, so read the reason in the log of the worker
@@ -147,10 +156,9 @@ The line also carries `status`, and `operation` (such as `git-push`) once the ro
 A `not_dispatched` line carries `upstreamConnect` when the worker could not open the GitHub
 connection: `host`, the `addresses` it resolved to when known (each one a dual-stack host
 tried, or the one it reached before TLS failed), `port`, and the socket or TLS `error` code,
-such as `ECONNREFUSED` or `connect-timeout`. Worker egress allows only
-`repositoryCredentials.upstreamCidrs`. A refused or timed-out connect to an address outside
-that list usually means the list is older than GitHub's published ranges: refresh it from
-GitHub's [meta API](https://api.github.com/meta) and apply it with a Helm upgrade.
+such as `ECONNREFUSED` or `connect-timeout`. The worker has unrestricted
+control-plane egress. Check DNS, routing, the reported addresses, and TLS trust
+when a connection fails.
 A draft create that GitHub did not receive, for example because the connection failed, gets a
 `409` receipt with `not-submitted` and logs `not_dispatched`. An uncertain push or draft
 (`exchange-uncertain`, `outcome_unknown`) is not a refusal and is not logged.

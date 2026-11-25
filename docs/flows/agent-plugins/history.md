@@ -8,9 +8,18 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 ## Changelog
 
+- 2026-11-23 08:12: Qualify complete policies. (authoring-run/338bac1c-8735-4511-bc75-825589e83705 - 0d46243a3)
+- 2026-11-22 22:57: Clarify preflight outcomes and qualification limits; restore contributor history. (authoring-run/0c5f10a7-019b-4ee0-b082-146bbde6d768 - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
+- 2026-11-22 22:35: Bound WebSocket preflights independently of HTTP. (authoring-run/032774b9-7075-41b5-b108-59a16c9d3d8e - fdf309517b43823b722df9d068ba95495dcbbde6)
+- 2026-11-22 16:16: Trace Plugin Source selection and pinned admission. (authoring-run/9c1cc37f-afd5-4b33-9600-8498ec28a156 - 31fb3e9a80f31eaf63f2813bad960ed99e73eb21)
+- 2026-11-22 10:23: Distinguish existing Plugin delivery from the credential-design policy path. (authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e - 6747afc21)
+- 2026-11-21 22:12: Document saved-Agent access recovery. (authoring-run/dfd37ee2-8f11-43a2-812e-455e2951d356 - e9abd3462452c20c0919e8b96ae1db2f5cd79507)
+- 2026-11-21 21:19: Conflicts. (authoring-run/187efa80-5ecc-4bff-97f1-1898033f5a60 - 7ce0780b5f15899d0899a399460bc2b7ad3d6ed4)
+- 2026-11-21 15:08: Detail-ID refusal. (authoring-run/9fa66906-eefe-4497-818f-876448b9d7fa - b0da800df32dc5311524ef462b5c94a3cbe0264e)
 - 2026-11-21 12:38: Document rejection of duplicate hosted catalog selections. (authoring-run/c4d8dbfd-1681-4b5b-a0d6-45a805b2aa68 - 7dd321619d7400e144f805ec7b9bde5e98b59ed2)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:13: Update discovery source. (authoring-run/88a672f2-519f-40b1-8422-9bdafa6636fa - 83c718c15ec9fed6fcc77f8db70c81982bdfd566)
+- 2026-11-20 06:15: End a silent plugin-request WebSocket preflight within 400 ms. (authoring-run/b72f51ee-120b-45ad-ae2d-faa889f8b0ef - 4c9357e905eb)
 - 2026-11-19 01:12: With the runtime pin at OpenClaw `44f24d8398`, dedicated Codex lists a pinned Skill Library skill by name and description with a note to read it through `skills_read` instead of its Gateway-only path. (authoring-run/0cdd91e7-47ea-4661-a124-c23fd4479805 - cea7d46c6956c59ba9604a710022159930eb5aa4)
 - 2026-11-18 22:08: Allow Gateway-side read-only `skills_search` and `skills_read` over session-eligible skills in the default Gateway tool policy, so a dedicated Harness can read skills whose files exist only in the Gateway, such as pinned Skill Library instructions. (authoring-run/19cca54a-1443-4e43-87cd-86a89718b7e4 - 715d7cfbc45f99abdfe9181049affc68218db2c2)
 - 2026-11-18 06:02: Describe static Google action and discovery paths at admission. (authoring-run/c5b621b3-7d32-4ae1-a88e-295aab3e7532 - 99e7ca47e0d979596f3834a16a73e6ad17cf66ae)

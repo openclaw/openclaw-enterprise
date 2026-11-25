@@ -44,6 +44,8 @@ type PostgresAdminStep = {
   statements: readonly string[];
   stage: "postgres-settings" | "database-create" | "database-schema";
 };
+export type PostgresPreparationFailureReason =
+  "docker-subnet-exhausted" | "postgres-connection-refused";
 
 function databaseName(kind: DatabaseKind, label: string) {
   return ownedName(databasePrefixes[kind], label, { maxLength: 63, separator: "_" });
@@ -97,8 +99,18 @@ async function postgresAdmin(
       statements,
     });
   } catch (error) {
-    if (error instanceof Error && stage !== "postgres-settings") {
-      Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+    if (error instanceof Error) {
+      if (stage !== "postgres-settings") {
+        Object.assign(error, { code: "CI_PREPARATION_COMMAND_FAILED", stage });
+      } else if (
+        asRecord(error)?.failure === "connect" &&
+        asRecord(error.cause)?.code === "ECONNREFUSED"
+      ) {
+        Object.assign(error, {
+          prepareFailureReason:
+            "postgres-connection-refused" satisfies PostgresPreparationFailureReason,
+        });
+      }
     }
     throw error;
   }
@@ -200,12 +212,17 @@ export function createPostgresPreparation(
     resource.initSqlCreated = true;
     await writeState(statePath, state);
     await chmod(initSql, 0o644);
+    const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+    const podman = basename(docker) === "podman";
+    // Podman Compose uses an empty host port for engine-assigned loopback publication.
+    const composeEnv = {
+      OCC_POSTGRES_PORT: podman ? "" : "0",
+      OPENCLAW_CI_POSTGRES_INIT_SQL: initSql,
+    };
     try {
-      await execFile(
-        process.env.OCC_DOCKER_BIN ?? "docker",
-        dockerArgsForPostgres(resource, "up", "-d", "--wait"),
-        { env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql } },
-      );
+      await execFile(docker, dockerArgsForPostgres(resource, "up", "-d", "--wait"), {
+        env: composeEnv,
+      });
     } catch (error) {
       const output = asRecord(error);
       if (
@@ -221,26 +238,28 @@ export function createPostgresPreparation(
           `Retain the state if cleanup fails. On a shared host, ask the host administrator ` +
           `to coordinate cleanup of confirmed abandoned projects with their owners; ` +
           `do not prune shared networks or volumes. See docs/testing/postgresql.md#subnet-pool-exhaustion.`;
+        Object.assign(error, {
+          prepareFailureReason:
+            "docker-subnet-exhausted" satisfies PostgresPreparationFailureReason,
+        });
       }
       throw error;
     }
-    const docker = process.env.OCC_DOCKER_BIN ?? "docker";
     // Standalone podman-compose does not accept a service argument to ps.
-    const lookup =
-      basename(docker) === "podman"
-        ? await execFile(docker, [
-            "ps",
-            "--no-trunc",
-            "--filter",
-            `label=com.docker.compose.project=${resource.name}`,
-            "--filter",
-            "label=com.docker.compose.service=postgres",
-            "--format",
-            "{{.ID}}",
-          ])
-        : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
-            env: { OCC_POSTGRES_PORT: "0", OPENCLAW_CI_POSTGRES_INIT_SQL: initSql },
-          });
+    const lookup = podman
+      ? await execFile(docker, [
+          "ps",
+          "--no-trunc",
+          "--filter",
+          `label=com.docker.compose.project=${resource.name}`,
+          "--filter",
+          "label=com.docker.compose.service=postgres",
+          "--format",
+          "{{.ID}}",
+        ])
+      : await execFile(docker, dockerArgsForPostgres(resource, "ps", "-q", "postgres"), {
+          env: composeEnv,
+        });
     const container = lookup.stdout.trim();
     if (!/^[a-f0-9]{64}$/.test(container)) {
       throw new Error("Expected one owned PostgreSQL container for port discovery.");

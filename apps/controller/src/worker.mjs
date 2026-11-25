@@ -106,7 +106,6 @@ let metricsClosing;
 let receiptServer;
 let repositoryGitTransport;
 let preparedRepositoryGit;
-let preparedGitHub;
 let protectedDriver;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
@@ -251,7 +250,10 @@ try {
     // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
     ...(preparedRepositoryGit?.revisionMaterial === undefined
       ? {}
-      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
+      : {
+          repositoryGitMaterial: preparedRepositoryGit.revisionMaterial,
+          observeNativeRepositoryWithdrawal: preparedRepositoryGit.observeNativeWithdrawal,
+        }),
     ...(readinessPath === undefined
       ? {}
       : {
@@ -265,12 +267,7 @@ try {
             writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
-  preparedGitHub = drivers?.preparedGitHub;
-  await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code, context, severity = "error") =>
-    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
-  );
 
   let closing = false;
   async function shutdown() {
@@ -285,7 +282,6 @@ try {
         preparedRepositoryGit,
         receiptServer,
         closeMetrics,
-        preparedGitHub,
         worker,
       });
       process.exitCode = 0;
@@ -297,7 +293,6 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
-  await preparedGitHub?.close().catch(() => {});
   await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});

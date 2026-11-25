@@ -1,11 +1,13 @@
+import type { IAMPolicyOperations } from "./iam-policy-operations.ts";
 import {
   isName,
-  type ComputeDriver,
   type Namespace,
   type ResourceRef,
   type ServiceAccount,
   type ServiceAccountCredential,
   type ServiceAccountDriver,
+  type TokenServiceDriver,
+  type AuditEvent,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import { driverOperation } from "./driver-operation.ts";
@@ -16,6 +18,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
   ServiceAccountDriverNotConfiguredError,
+  NamespaceNotReadyError,
 } from "./errors.ts";
 import { accessBindingsTargeting, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
@@ -47,22 +50,17 @@ export interface ServiceAccountDeletion {
 interface ServiceAccountOperationsDependencies {
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "holdAuthority" | "readableListRows">;
-  readonly bindCreator: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<void>;
+  readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator" | "lockNamespaceForPolicyDelete">;
   readonly getNamespace: (principalId: string, namespaceId: string) => Promise<Readonly<Namespace>>;
-  readonly lockNamespaceForPolicyDelete: (
-    state: PlatformUnitOfWork,
-    principalId: string,
-    target: ResourceRef & { readonly namespaceId: string },
-  ) => Promise<Readonly<Namespace>>;
   readonly hasSelection: () => boolean;
   readonly selectDriver: () => ServiceAccountDriver;
-  readonly computeDriver: () => ComputeDriver;
   readonly configuredDriverId: string | undefined;
   readonly nextIdentifier: (kind: "service_account") => string;
+  readonly ownedTokenServiceDriver: (instanceId?: string) => TokenServiceDriver;
+  readonly currentTokenServiceInstanceId: () => string;
+  readonly supportsCodexPatSource: () => boolean;
+  readonly installationId: string;
+  readonly clock: () => Date;
 }
 
 export async function exactServiceAccount(
@@ -183,7 +181,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         namespaceId: namespace.id,
         name: input.name,
       });
-      await deps.bindCreator(state, principalId, {
+      await deps.iamPolicy.bindCreator(state, principalId, {
         kind: "service_account",
         id: account.id,
         namespaceId: namespace.id,
@@ -208,7 +206,15 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         id: serviceAccountId,
         namespaceId,
       });
+      await authorize(principalId, "create", {
+        kind: "credential_source",
+        id: namespaceId,
+        namespaceId,
+      });
       const namespace = await exactNamespace(state, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
       const account = await lockServiceAccount(state, namespace.id, serviceAccountId);
       if (account.credential !== undefined) {
         throw new ResourceStateConflictError("The ServiceAccount already has a credential.");
@@ -217,15 +223,49 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
       if (driver === undefined) {
         throw new ServiceAccountDriverNotConfiguredError("issue");
       }
+      if (!deps.supportsCodexPatSource()) {
+        throw new ResourceStateConflictError(
+          "The selected TokenService does not support Codex PAT Sources.",
+        );
+      }
+      deps.ownedTokenServiceDriver();
       const credential = await driverOperation(
         () => driver.createCredential(account),
         "ServiceAccount",
       );
-      if (credential?.kind !== "access_token") {
+      if (credential?.kind !== "access_token" || !("sourceId" in credential)) {
         throw new DependencyUnavailableError(
           "The ServiceAccount Driver returned an unsupported credential.",
         );
       }
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credential.sourceId,
+      );
+      if (
+        source?.ownerCapability !== "token_service" ||
+        source.type !== "static" ||
+        source.state !== "ready" ||
+        source.tokenServiceInstanceId !== deps.currentTokenServiceInstanceId() ||
+        source.config.provider_preset !== "codex-pat"
+      ) {
+        throw new DependencyUnavailableError("The issued credential Source is invalid.");
+      }
+      const sourceRef = { kind: "credential_source" as const, id: source.id, namespaceId };
+      await deps.iamPolicy.bindCreator(state, principalId, sourceRef);
+      const sourceAudit: AuditEvent = {
+        id: `aud_${crypto.randomUUID()}`,
+        installationId: deps.installationId,
+        namespaceId,
+        occurredAt: deps.clock().toISOString(),
+        kind: "mutation",
+        actorId: principalId,
+        source: "occ",
+        action: "openclaw.credential_sources.create",
+        resource: sourceRef,
+        outcome: "success",
+      };
+      await state.audit.append(sourceAudit);
       const updated = await state.serviceAccounts.updateCredential(
         namespace.id,
         account.id,
@@ -282,7 +322,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
   ): Promise<ServiceAccountDeletion> {
     serviceAccountIdentity(namespaceId, serviceAccountId);
     return transact(async (state) => {
-      const namespace = await deps.lockNamespaceForPolicyDelete(state, principalId, {
+      const namespace = await deps.iamPolicy.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "service_account",
         id: serviceAccountId,
         namespaceId,
@@ -313,7 +353,6 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
           namespace.id,
           account.id,
         );
-        await deleteUnrevokedCredentialSecret(account, account.credential);
         unrevokedCredential = binding === undefined ? {} : { ...binding };
       }
       if (driver !== undefined) {
@@ -333,27 +372,6 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         ...(unrevokedCredential === undefined ? {} : { unrevokedCredential }),
       };
     });
-  }
-
-  // The Compute Driver that stored the account token also owns removal of its Secret.
-  async function deleteUnrevokedCredentialSecret(
-    account: Readonly<ServiceAccount>,
-    credential: ServiceAccountCredential,
-  ): Promise<void> {
-    const compute = deps.computeDriver();
-    const deleteSecret = compute.deleteServiceAccountCredential?.bind(compute);
-    if (deleteSecret === undefined) {
-      return;
-    }
-    await driverOperation(
-      () =>
-        deleteSecret({
-          namespaceId: account.namespaceId,
-          serviceAccountId: account.id,
-          secretRef: credential.secretRef,
-        }),
-      "Compute",
-    );
   }
 
   function serviceAccountIdentity(namespaceId: string, serviceAccountId: string): void {

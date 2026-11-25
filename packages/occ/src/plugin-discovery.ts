@@ -1,11 +1,16 @@
+import { pluginOwner } from "./agent-plugin-validation.ts";
+import type { AgentCredentialAccess } from "./agent-credential-access.ts";
+import { driverOperation } from "./driver-operation.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
-  isSecretHarnessAuth,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  pathCovered,
   type Agent,
+  type AgentPluginCredentialSlot,
   type Configuration,
-  type CredentialGatewayDriver,
+  type ConnectionTemplateVersion,
   type CredentialSource,
-  type CredentialSourceContext,
+  type StoredCredentialSource,
   type CredentialSourceReference,
   type HarnessExecutionMode,
   type Namespace,
@@ -15,8 +20,8 @@ import {
   type PluginDiscoveryAuthentication,
   type PluginDriver,
   type RevisionHarnessDescriptor,
-  type SecretDriver,
-  type SecretReference,
+  type SavedAgentPluginCredentialSlot,
+  type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
@@ -38,16 +43,10 @@ import { harnessAuthBinding } from "./harness-auth.ts";
 import type { ConfigurationOwnership } from "./ports/configurations.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import { exactAgent, exactNamespace } from "./resource-scope.ts";
-import { secretOperation } from "./secret-operations.ts";
 
 export type PluginDiscoveryCredential = {
-  readonly accessToken?: string;
-  readonly secretRef?: SecretReference;
   readonly credentialSource?: CredentialSourceReference;
 };
-
-type PluginDiscoveryOutcome<T> =
-  { value: T } | { error: PluginDiscoveryError } | { validationError: unknown };
 
 export type ManagedMcpConnection = { readonly slot: string; readonly sourceId: string };
 
@@ -55,40 +54,55 @@ export type ManagedMcpToolReader = (
   endpoint: string,
   accessToken: string,
   signal?: AbortSignal,
+  options?: {
+    readonly allowedMethods: readonly ("POST" | "GET" | "DELETE")[];
+    readonly beforeRequest: () => Promise<void>;
+  },
 ) => Promise<ReadonlySet<string>>;
 
 type PluginHarness = Pick<RevisionHarnessDescriptor, "id" | "mode">;
 
+type PluginTarget = {
+  state: PlatformReadView;
+  namespace: Readonly<Namespace>;
+  driver: PluginDriver;
+  harness: PluginHarness;
+};
+
+type SavedPluginTarget = PluginTarget & { agent: Readonly<Agent> };
+
 interface PluginDiscoveryDependencies {
   readonly transactions: Pick<ControllerTransactions, "read">;
   readonly authority: Pick<ControllerAuthority, "authorize" | "authorizationDecision" | "canRead">;
-  readonly authorizedCredentialSource: (
-    principalId: string,
-    namespaceId: string,
-    sourceId: string,
-  ) => Promise<{
-    gateway: CredentialGatewayDriver;
-    context: CredentialSourceContext & { signal: AbortSignal };
-  }>;
-  readonly credentialGatewayOperation: <T>(operation: () => Promise<T>) => Promise<T>;
-  readonly sourceReader:
-    | {
-        readonly gateway: CredentialGatewayDriver;
-        readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
-      }
-    | undefined;
-  readonly secretDriver: (driverId: string) => SecretDriver;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
+  readonly qualifyPluginCredentialSource: AgentCredentialAccess["qualifyPluginCredentialSource"];
   readonly readConfiguration: (
     metadata: ConfigurationOwnership,
   ) => Promise<Readonly<Configuration>>;
   readonly modelPolicyAgent: (executionMode: HarnessExecutionMode) => ModelPolicyAgent;
   readonly pluginDriver: (harnessId: string) => PluginDriver;
-  readonly assertPluginOwner: (driver: PluginDriver, agent: Readonly<Agent>) => void;
   readonly validatePluginPlacement: (
     driver: PluginDriver,
     plugins: PluginDesiredState,
     harness: Readonly<PluginHarness>,
+    stagedPluginIds?: ReadonlySet<string>,
   ) => void;
+}
+
+function hostedAccount(
+  source: CredentialSource,
+): Omit<PluginDiscoveryAuthentication, "accessToken"> | undefined {
+  if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
+    const { accountId, isFedramp } = source.consent.account;
+    return { accountId, isFedramp };
+  }
+  if (
+    source.type === "static" &&
+    source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === "codex-pat"
+  ) {
+    // The hosted catalog derives PAT account identity from the issuer.
+    return {};
+  }
 }
 
 const PLUGIN_ID_SHAPE = /^[A-Za-z0-9._~:@-]{1,253}$/u;
@@ -121,60 +135,37 @@ function undiscoveredPlugin(
   ).withoutRequestPath();
 }
 
+function assertDiscoveryResponse(value: unknown, token?: string): void {
+  const serialized = JSON.stringify(value);
+  if (
+    serialized === undefined ||
+    (token !== undefined &&
+      (token.length === 0 || serialized.includes(JSON.stringify(token).slice(1, -1))))
+  ) {
+    throw new PluginDiscoveryError("invalid_response");
+  }
+}
+
 async function invokePluginDiscovery<T>(
   driver: PluginDriver,
   discover: (authentication: PluginDiscoveryAuthentication) => Promise<T>,
-  withCredential: (
-    invoke: (authentication: PluginDiscoveryAuthentication) => Promise<PluginDiscoveryOutcome<T>>,
-  ) => Promise<PluginDiscoveryOutcome<T>>,
-  validateCurrent: () => Promise<void>,
+  authentication: PluginDiscoveryAuthentication,
   signal?: AbortSignal,
 ): Promise<T> {
-  const invoke = async (
-    authentication: PluginDiscoveryAuthentication,
-  ): Promise<PluginDiscoveryOutcome<T>> => {
-    try {
-      await validateCurrent();
-    } catch (error) {
-      // Preserve exact authorization/binding errors across the Driver's sanitized callback.
-      return { validationError: error };
+  signal?.throwIfAborted();
+  try {
+    const value = await discover(authentication);
+    assertDiscoveryResponse(value, authentication.accessToken);
+    return value;
+  } catch (error) {
+    // Rebuild Plugin refusals without Driver-supplied text or credential material.
+    if (error instanceof PluginPolicyValidationError && error.pluginId !== undefined) {
+      throw undiscoveredPlugin(driver.id, error);
     }
-    try {
-      signal?.throwIfAborted();
-      const value = await discover(authentication);
-      const serialized = JSON.stringify(value);
-      const encodedToken =
-        authentication.accessToken === undefined
-          ? undefined
-          : JSON.stringify(authentication.accessToken).slice(1, -1);
-      if (
-        serialized === undefined ||
-        (encodedToken !== undefined &&
-          (encodedToken.length === 0 || serialized.includes(encodedToken)))
-      ) {
-        throw new PluginDiscoveryError("invalid_response");
-      }
-      return { value };
-    } catch (error) {
-      // Rebuild the unknown Plugin refusal to omit Driver-authored text.
-      if (error instanceof PluginPolicyValidationError && error.pluginId !== undefined) {
-        return { validationError: undiscoveredPlugin(driver.id, error) };
-      }
-      return {
-        error: new PluginDiscoveryError(
-          error instanceof PluginDiscoveryError ? error.reason : "unavailable",
-        ),
-      };
-    }
-  };
-  const outcome = await withCredential(invoke);
-  if ("error" in outcome) {
-    throw outcome.error;
+    throw new PluginDiscoveryError(
+      error instanceof PluginDiscoveryError ? error.reason : "unavailable",
+    );
   }
-  if ("validationError" in outcome) {
-    throw outcome.validationError;
-  }
-  return outcome.value;
 }
 
 export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies) {
@@ -191,35 +182,75 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     },
     signal?: AbortSignal,
   ): Promise<PluginCatalogPage> {
-    return withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
-      if (!driver.discoverCatalog) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "Plugin discovery is unavailable.",
-        );
-      }
-      return (authentication) => {
-        if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
-          throw new PluginDiscoveryError("credentials_rejected");
+    const page = await withNamespacePluginCredential(
+      principalId,
+      namespaceId,
+      input,
+      signal,
+      (driver) => {
+        if (!driver.discoverCatalog) {
+          throw new NotImplementedError(
+            "agent_plugins.discovery",
+            "Plugin discovery is unavailable.",
+          );
         }
-        return driver.discoverCatalog!(
-          {
-            ...authentication,
-            ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-            ...(input.q === undefined ? {} : { q: input.q }),
-          },
-          signal,
-        );
-      };
+        return (authentication) => {
+          if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          return driver.discoverCatalog!(
+            {
+              ...authentication,
+              ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+              ...(input.q === undefined ? {} : { q: input.q }),
+            },
+            signal,
+          );
+        };
+      },
+    );
+    const driver = dependencies.pluginDriver(input.harnessId);
+    if (!driver.credentials) {
+      return page;
+    }
+    const credentialSlots = await read(async (state) => {
+      const namespace = await exactNamespace(state, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      return readableCredentialSlots(state, principalId, namespaceId, driver);
     });
+    return { ...page, credentialSlots };
   }
 
   async function discoverAgentPluginDetails(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId: string; readonly pluginId: string },
+    input: PluginDiscoveryCredential & {
+      readonly harnessId: string;
+      readonly pluginId: string;
+      readonly managedConnection?: ManagedMcpConnection;
+    },
     signal?: AbortSignal,
+    readMcpTools?: ManagedMcpToolReader,
   ): Promise<PluginCatalogEntry> {
+    if (input.managedConnection) {
+      if (!readMcpTools || input.credentialSource) {
+        throw new NotImplementedError(
+          "agent_plugins.discovery",
+          "Managed MCP discovery is unavailable.",
+        );
+      }
+      return discoverManagedMcpTools(
+        principalId,
+        namespaceId,
+        { harnessId: input.harnessId },
+        input.pluginId,
+        input.managedConnection,
+        readMcpTools,
+        signal,
+      );
+    }
     return withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
       if (!driver.getCatalogPlugin) {
         throw new NotImplementedError(
@@ -280,115 +311,220 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     ) => (authentication: PluginDiscoveryAuthentication) => Promise<T>,
     validateCurrent: (
       driver: PluginDriver,
-      source: SecretReference | CredentialSourceReference | undefined,
+      source: CredentialSourceReference | undefined,
     ) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<T> {
-    const { credentialSource, accessToken, secretRef } = credential;
-    const source = secretRef ?? credentialSource;
-    if (source !== undefined) {
-      if (
-        source.namespaceId !== namespaceId ||
-        (secretRef !== undefined && source.kind !== "secret") ||
-        (credentialSource !== undefined && source.kind !== "credential_source")
-      ) {
+    const reference = credential.credentialSource;
+    if (reference !== undefined) {
+      if (reference.namespaceId !== namespaceId || reference.kind !== "credential_source") {
         throw new SecretBindingValidationError(
-          source.kind === "secret"
-            ? "Secret references cannot cross Namespaces."
-            : "Credential-source references must identify the exact Namespace.",
+          "Credential-source references must identify the exact Namespace.",
         );
       }
-      await authorize(principalId, "operate", source);
+      await authorize(principalId, "operate", reference);
     }
     const driver = getDriver();
-    if (
-      driver.discoveryCredential === "none" &&
-      (source !== undefined || credential.accessToken !== undefined)
-    ) {
+    if (driver.discoveryCredential === "none" && reference !== undefined) {
       throw new ConfigurationHarnessError(
         "The selected catalog does not accept discovery credentials. Remove the credential and try again.",
       );
     }
     const discover = prepareDiscovery(driver);
-    const recheck = () => validateCurrent(driver, source);
-    if (credentialSource !== undefined) {
-      const { gateway, context } = await dependencies.authorizedCredentialSource(
-        principalId,
-        namespaceId,
-        credentialSource.id,
-      );
-      const reader = dependencies.sourceReader;
-      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
-      if (!selectedReader && !gateway.withSourceToken) {
-        throw new NotImplementedError(
-          "agent_plugins.discovery",
-          "The Credential Gateway does not support plugin discovery.",
+    if (reference === undefined) {
+      await validateCurrent(driver, undefined);
+      return invokePluginDiscovery(driver, discover, {}, signal);
+    }
+
+    const readSource = () =>
+      read(async (state) => {
+        const namespace = await exactNamespace(state, namespaceId);
+        const source = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          reference.id,
         );
-      }
-      if (signal !== undefined) {
-        context.signal = AbortSignal.any([context.signal, signal]);
-      }
-      return invokePluginDiscovery(
-        driver,
-        discover,
-        (invoke) =>
-          dependencies.credentialGatewayOperation(() => {
-            context.signal.throwIfAborted();
-            if (selectedReader) {
-              return selectedReader(context, invoke);
-            }
-            // Preserve external callback invocation and its late/disconnect controls.
-            return gateway.withSourceToken!(context, invoke);
-          }),
-        async () => {
-          await recheck();
-          await dependencies.authorizedCredentialSource(
-            principalId,
-            namespaceId,
-            credentialSource.id,
+        if (
+          namespace.status !== "ready" ||
+          source?.state !== "ready" ||
+          source.ownerCapability !== "token_service"
+        ) {
+          throw new ResourceStateConflictError(
+            "Choose a ready TokenService account Source for this catalog.",
           );
-        },
-        signal,
-      );
+        }
+        return source;
+      });
+    const source = await readSource();
+    const account = hostedAccount(source);
+    if (!account) {
+      throw new ResourceStateConflictError("Choose a Codex account Source for this catalog.");
+    }
+    const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+    const deadline = AbortSignal.timeout(30_000);
+    const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const resolved = await driverOperation(
+      () =>
+        owner.resolveCredential(
+          { sourceRef: reference, tokenServiceInstanceId: source.tokenServiceInstanceId },
+          requestSignal,
+        ),
+      "TokenService",
+    );
+    requestSignal.throwIfAborted();
+    await validateCurrent(driver, reference);
+    const current = await readSource();
+    if (
+      current.type !== source.type ||
+      current.tokenServiceInstanceId !== source.tokenServiceInstanceId ||
+      !isDeepStrictEqual(hostedAccount(current), account) ||
+      dependencies.ownedTokenServiceDriver(current.tokenServiceInstanceId) !== owner
+    ) {
+      throw new ResourceStateConflictError("The account Source changed. Refresh and retry.");
     }
     return invokePluginDiscovery(
       driver,
       discover,
-      (invoke) => {
-        if (accessToken !== undefined) {
-          return invoke({ accessToken });
-        }
-        return secretRef === undefined
-          ? invoke({})
-          : withPluginDiscoverySecret(namespaceId, secretRef, invoke);
-      },
-      recheck,
+      { accessToken: resolved.credential, ...account },
       signal,
     );
   }
 
-  async function withPluginDiscoverySecret<T>(
+  async function readableCredentialSlots(
+    state: PlatformReadView,
+    principalId: string,
     namespaceId: string,
-    reference: SecretReference,
-    use: (authentication: PluginDiscoveryAuthentication) => Promise<T>,
-  ): Promise<T> {
-    if (reference.namespaceId !== namespaceId) {
-      throw new SecretBindingValidationError("Secret references cannot cross Namespaces.");
+    driver: PluginDriver,
+  ): Promise<readonly AgentPluginCredentialSlot[]> {
+    if (!driver.credentials) {
+      return [];
     }
-    const secret = await read(async (state) => {
-      const found = await state.secrets.findSecret(namespaceId, reference.id);
-      if (!found) {
-        throw new ScopeViolationError("The Secret does not belong to the exact Namespace.");
+    const sources: StoredCredentialSource[] = [];
+    const templates = new Map<string, ConnectionTemplateVersion>();
+    for (const source of await state.credentialSources.listCredentialSources(namespaceId)) {
+      const ref = { kind: "credential_source" as const, namespaceId, id: source.id };
+      if (
+        source.ownerCapability !== "token_service" ||
+        source.state !== "ready" ||
+        !source.connectionTemplateId ||
+        !(await canRead(principalId, ref))
+      ) {
+        continue;
       }
-      return found;
-    });
-    const driver = dependencies.secretDriver(secret.driverId);
-    if (!driver.withValue) {
-      throw new DependencyUnavailableError(
-        "The selected Secret Driver cannot use credentials for discovery.",
-      );
+      try {
+        const template = await dependencies.qualifyPluginCredentialSource(
+          state,
+          namespaceId,
+          source,
+        );
+        sources.push(source);
+        templates.set(source.id, template);
+      } catch (error) {
+        if (!(
+          error instanceof ResourceStateConflictError || error instanceof DependencyUnavailableError
+        )) {
+          throw error;
+        }
+      }
     }
-    return secretOperation(() => driver.withValue!(secret, (accessToken) => use({ accessToken })));
+    return driver.credentials.choices(sources, templates);
+  }
+
+  async function savedCredentialSlots(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver,
+    agent: Readonly<Agent>,
+  ): Promise<readonly SavedAgentPluginCredentialSlot[]> {
+    const slots = await readableCredentialSlots(state, principalId, namespaceId, driver);
+    if (!driver.credentials) {
+      return slots;
+    }
+    const bound = new Map<string, Readonly<Record<string, Readonly<Record<string, string>>>>>();
+    for (const [pluginId, selection] of Object.entries(agent.plugins ?? {})) {
+      if (!selection.enabled || !slots.some((slot) => slot.pluginId === pluginId)) {
+        continue;
+      }
+      try {
+        const selected = await verifiedSavedPluginBindings(
+          state,
+          namespaceId,
+          driver,
+          agent,
+          pluginId,
+        );
+        if (selected) {
+          bound.set(pluginId, selected);
+        }
+      } catch (error) {
+        if (!(error instanceof DependencyUnavailableError)) {
+          throw error;
+        }
+      }
+    }
+    return slots.map((slot) => {
+      const sourceId = bound.get(slot.pluginId)?.[slot.id]?.default;
+      return sourceId === undefined ? slot : { ...slot, boundSourceId: sourceId };
+    });
+  }
+
+  async function verifiedSavedPluginBindings(
+    state: PlatformReadView,
+    namespaceId: string,
+    driver: PluginDriver,
+    agent: Readonly<Agent>,
+    pluginId: string,
+  ): Promise<Readonly<Record<string, Readonly<Record<string, string>>>> | undefined> {
+    const credentials = driver.credentials;
+    const selection = agent.plugins?.[pluginId];
+    if (!credentials || !selection?.enabled) {
+      return undefined;
+    }
+    try {
+      const selected = credentials.selectedBindings({ pluginId, selection });
+      const sources = new Map<string, StoredCredentialSource>();
+      const templates = new Map<string, ConnectionTemplateVersion>();
+      for (const accounts of Object.values(selected)) {
+        for (const sourceId of Object.values(accounts)) {
+          if (sources.has(sourceId)) {
+            continue;
+          }
+          const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
+          if (
+            !(await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+              .allowed
+          ) {
+            return undefined;
+          }
+          const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
+          if (source?.ownerCapability !== "token_service" || source.state !== "ready") {
+            return undefined;
+          }
+          templates.set(
+            sourceId,
+            await dependencies.qualifyPluginCredentialSource(state, namespaceId, source),
+          );
+          sources.set(sourceId, source);
+        }
+      }
+      const modelBinding = harnessAuthBinding(agent.harnessAuth);
+      await credentials.validate(
+        { [pluginId]: selection },
+        [...sources.values()],
+        modelBinding?.method === "credential_source" ? modelBinding.sourceId : undefined,
+        templates,
+      );
+      return selected;
+    } catch (error) {
+      if (
+        error instanceof ConfigurationHarnessError ||
+        error instanceof ResourceStateConflictError ||
+        error instanceof PluginPolicyValidationError
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   async function getSavedAgentPluginPolicyCapabilities(
@@ -400,32 +536,45 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       principalId,
       namespaceId,
       agentId,
-      async ({ state, agent, driver }) => {
-        const sources: CredentialSource[] = [];
-        if (driver.credentials && agent.executionMode === "dedicated") {
-          for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
-            if (
-              (await canRead(principalId, ref)) &&
-              (await authorizationDecision(principalId, "operate", ref)).decision.allowed &&
-              (await authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-                .allowed
-            ) {
-              const source = await state.credentialSources.findCredentialSource(
-                namespaceId,
-                sourceId,
-              );
-              if (source?.state === "ready") {
-                sources.push(source);
+      async ({ state, agent, driver, harness }) => {
+        let hostedCredential: "codex_account" | "api_key" | undefined;
+        const binding = harnessAuthBinding(agent.harnessAuth);
+        if (harness.id === "codex" && driver.discoveryCredential !== "none") {
+          if (binding?.method === "api_key") {
+            hostedCredential = "api_key";
+          } else if (binding?.method === "credential_source") {
+            const source = await state.credentialSources.findCredentialSource(
+              namespaceId,
+              binding.sourceId,
+            );
+            // Describe the saved binding using Source metadata. Catalog requests
+            // still authorize the caller and the Agent before reading custody.
+            if (source?.ownerCapability === "token_service" && source.state === "ready") {
+              if (hostedAccount(source)) {
+                hostedCredential = "codex_account";
+              } else if (
+                source.type === "static" &&
+                source.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] === "openai"
+              ) {
+                hostedCredential = "api_key";
               }
             }
           }
         }
         return immutableCopy({
+          ...(hostedCredential === undefined ? {} : { hostedCredential }),
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
           ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
+            ? {
+                credentialSlots: await savedCredentialSlots(
+                  state,
+                  principalId,
+                  namespaceId,
+                  driver,
+                  agent,
+                ),
+              }
             : {}),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
@@ -513,7 +662,7 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
       return discoverManagedMcpTools(
         principalId,
         namespaceId,
-        agentId,
+        { agentId },
         input.pluginId,
         input.managedConnection,
         readMcpTools,
@@ -549,13 +698,11 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     principalId: string,
     namespaceId: string,
     agentId: string,
-    use: (target: {
-      state: PlatformReadView;
-      namespace: Readonly<Namespace>;
-      agent: Readonly<Agent>;
-      driver: PluginDriver;
-      harness: PluginHarness;
-    }) => Promise<T>,
+    use: (
+      target: SavedPluginTarget & {
+        recheck: <R>(check: (current: SavedPluginTarget) => Promise<R>) => Promise<R>;
+      },
+    ) => Promise<T>,
   ): Promise<T> {
     const resource = { kind: "agent" as const, id: agentId, namespaceId };
     const authorizeAgent = async () => {
@@ -580,118 +727,226 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
     const { metadata } = await read(readMetadata);
     // A Configuration Driver may read Kubernetes. Release the database connection first.
     const configuration = await dependencies.readConfiguration(metadata);
-    await authorizeAgent();
-    return read(async (state) => {
-      const current = await readMetadata(state);
-      if (
-        current.metadata.id !== metadata.id ||
-        current.metadata.generation !== metadata.generation
-      ) {
-        throw new ResourceStateConflictError("The Agent Configuration changed. Refresh and retry.");
-      }
-      const { agent, namespace } = current;
-      const harness = {
-        id: resolveConfiguredHarnessId(
-          configuration.values,
-          dependencies.modelPolicyAgent(agent.executionMode),
-        ),
-        mode: agent.executionMode,
-      };
-      const driver = dependencies.pluginDriver(harness.id);
-      dependencies.assertPluginOwner(driver, agent);
-      return use({ state, namespace, agent, driver, harness });
-    });
+    const recheck = async <R>(check: (current: SavedPluginTarget) => Promise<R>) => {
+      await authorizeAgent();
+      return read(async (state) => {
+        const current = await readMetadata(state);
+        if (
+          current.metadata.id !== metadata.id ||
+          current.metadata.generation !== metadata.generation
+        ) {
+          throw new ResourceStateConflictError(
+            "The Agent Configuration changed. Refresh and retry.",
+          );
+        }
+        const { agent, namespace } = current;
+        const harness = {
+          id: resolveConfiguredHarnessId(
+            configuration.values,
+            dependencies.modelPolicyAgent(agent.executionMode),
+          ),
+          mode: agent.executionMode,
+        };
+        const driver = dependencies.pluginDriver(harness.id);
+        pluginOwner(driver, agent);
+        return check({ state, namespace, agent, driver, harness });
+      });
+    };
+    return recheck((target) => use({ ...target, recheck }));
   }
 
   async function discoverManagedMcpTools(
     principalId: string,
     namespaceId: string,
-    agentId: string,
+    context: { readonly agentId: string } | { readonly harnessId: string },
     pluginId: string,
     connection: ManagedMcpConnection,
     readTools: ManagedMcpToolReader,
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
-    const currentTarget = async () => {
-      await authorize(principalId, "operate", sourceRef);
-      const target = await withSavedPluginTarget(
-        principalId,
-        namespaceId,
-        agentId,
-        async ({ state, namespace, agent, driver, harness }) => {
-          const source = await state.credentialSources.findCredentialSource(
-            namespace.id,
-            sourceRef.id,
-          );
-          const target =
-            namespace.status === "ready" &&
-            source?.state === "ready" &&
-            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-              : undefined;
-          const secretRef = source?.secrets.token;
-          if (!target || !secretRef) {
-            throw new ResourceStateConflictError(
-              "Choose a ready, compatible credential source from this Agent's saved credentials.",
-            );
-          }
-          return {
-            driver,
-            harness,
-            source,
-            secretRef,
-            servicePrincipalId: agent.servicePrincipalId,
-            ...target,
-          };
-        },
-      );
-      await authorize(principalId, "operate", sourceRef);
-      await authorize(target.servicePrincipalId, "operate", sourceRef);
-      return target;
+    const authorizeSource = async (
+      state: PlatformReadView,
+      driver: PluginDriver,
+      agent?: Readonly<Agent>,
+    ) => {
+      if ((await authorizationDecision(principalId, "operate", sourceRef)).decision.allowed) {
+        return;
+      }
+      const saved =
+        agent &&
+        (await verifiedSavedPluginBindings(state, namespaceId, driver, agent, pluginId))?.[
+          connection.slot
+        ]?.default === sourceRef.id;
+      if (agent && saved) {
+        await authorize(agent.servicePrincipalId, "operate", sourceRef);
+      } else {
+        await authorize(principalId, "operate", sourceRef);
+      }
     };
-
-    const target = await currentTarget();
+    const qualifySource = async (state: PlatformReadView, namespace: Readonly<Namespace>) => {
+      const source = await state.credentialSources.findCredentialSource(namespace.id, sourceRef.id);
+      if (
+        namespace.status !== "ready" ||
+        source?.ownerCapability !== "token_service" ||
+        source.state !== "ready"
+      ) {
+        throw new ResourceStateConflictError(
+          "Choose a ready, compatible credential source for this Plugin slot.",
+        );
+      }
+      const template = await dependencies.qualifyPluginCredentialSource(state, namespaceId, source);
+      return { source, template };
+    };
+    const inspect = async ({
+      state,
+      namespace,
+      driver,
+      harness,
+      agent,
+    }: PluginTarget & {
+      agent?: Readonly<Agent>;
+    }) => {
+      await authorizeSource(state, driver, agent);
+      return { ...(await qualifySource(state, namespace)), driver, harness };
+    };
+    const readNamespaceTarget = async <R>(use: (target: PluginTarget) => Promise<R>) => {
+      if (!("harnessId" in context)) {
+        throw new Error("Namespace plugin discovery requires a Harness.");
+      }
+      await authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+      return read(async (state) =>
+        use({
+          state,
+          namespace: await exactNamespace(state, namespaceId),
+          driver: dependencies.pluginDriver(context.harnessId),
+          harness: { id: context.harnessId, mode: "dedicated" },
+        }),
+      );
+    };
+    const target =
+      "agentId" in context
+        ? await withSavedPluginTarget(
+            principalId,
+            namespaceId,
+            context.agentId,
+            async (current) => ({
+              ...(await inspect(current)),
+              recheck: () => current.recheck(inspect),
+            }),
+          )
+        : { ...(await readNamespaceTarget(inspect)), recheck: () => readNamespaceTarget(inspect) };
+    const discovery = target.driver.credentials?.mcpToolDiscovery?.(
+      pluginId,
+      connection.slot,
+      target.source,
+      target.template,
+    );
+    if (!discovery) {
+      throw new ResourceStateConflictError(
+        "Choose a ready, compatible credential source for this Plugin slot.",
+      );
+    }
+    const endpoint = new URL(discovery.endpoint);
+    const mcpMethods = ["POST", "GET", "DELETE"] as const;
+    const template = target.template;
+    const allowedMethods =
+      template.mode === "static_bearer"
+        ? mcpMethods.filter((method) =>
+            template.destinations.some(
+              (destination) =>
+                destination.method === method &&
+                destination.host === endpoint.hostname &&
+                destination.port === Number(endpoint.port || 443) &&
+                pathCovered(endpoint.pathname, destination.path),
+            ),
+          )
+        : mcpMethods;
     const entry = await target.driver.getCatalogPlugin?.({ pluginId }, signal);
     if (!entry || entry.id !== pluginId) {
       throw new PluginDiscoveryError("invalid_response");
     }
     const selection = { [entry.id]: { enabled: true } };
-    dependencies.validatePluginPlacement(target.driver, selection, target.harness);
-    await authorize(principalId, "operate", sourceRef);
+    const staged = new Set([pluginId]);
+    dependencies.validatePluginPlacement(target.driver, selection, target.harness, staged);
+
+    // Keep the qualified endpoint and methods fixed. Recheck the authorities
+    // that can change before using custody, sending a request, or returning tools.
     const validateCurrent = async () => {
-      const current = await currentTarget();
-      if (current.driver !== target.driver || !isDeepStrictEqual(current, target)) {
+      const current = await target.recheck();
+      if (
+        current.driver !== target.driver ||
+        current.harness.id !== target.harness.id ||
+        current.harness.mode !== target.harness.mode ||
+        current.source.tokenServiceInstanceId !== target.source.tokenServiceInstanceId ||
+        current.template.templateId !== template.templateId ||
+        current.template.version !== template.version
+      ) {
         throw new ResourceStateConflictError(
           "The Agent's plugin credential or catalog changed. Refresh and retry.",
         );
       }
-      dependencies.validatePluginPlacement(current.driver, selection, current.harness);
+      dependencies.validatePluginPlacement(target.driver, selection, target.harness, staged);
     };
-    const result = await invokePluginDiscovery(
-      target.driver,
-      async ({ accessToken }) => {
-        if (!accessToken) {
-          throw new PluginDiscoveryError("credentials_rejected");
-        }
-        const names = await readTools(target.endpoint, accessToken, signal);
-        return {
-          ...entry,
-          tools: [...names].map((name) => ({
-            id: name,
-            name,
-            ownerId: entry.id,
-          })),
-        };
-      },
-      // TODO(#4450): Acquire a usable managed MCP bearer through the Token Service once
-      // it supports these sources (#3811), and cover refresh of expired access tokens.
-      // Preserve the authorization recheck below; this direct Secret read requires a
-      // token that is already usable.
-      (invoke) => withPluginDiscoverySecret(namespaceId, target.secretRef, invoke),
-      validateCurrent,
-      signal,
-    );
+    let result: PluginCatalogEntry;
+    try {
+      await validateCurrent();
+      const source = target.source;
+      const owner = dependencies.ownedTokenServiceDriver(source.tokenServiceInstanceId);
+      const deadline = AbortSignal.timeout(30_000);
+      const operation = signal ? AbortSignal.any([signal, deadline]) : deadline;
+      const resolved = await driverOperation(
+        () =>
+          owner.resolveCredential(
+            { sourceRef, tokenServiceInstanceId: source.tokenServiceInstanceId },
+            operation,
+          ),
+        "TokenService",
+      );
+      operation.throwIfAborted();
+      await validateCurrent();
+      result = await invokePluginDiscovery(
+        target.driver,
+        async ({ accessToken }) => {
+          if (!accessToken) {
+            throw new PluginDiscoveryError("credentials_rejected");
+          }
+          const names = await readTools(discovery.endpoint, accessToken, signal, {
+            allowedMethods,
+            beforeRequest: validateCurrent,
+          });
+          const upstreamNames = [...names];
+          // Never move a peer's echoed bearer across the Plugin Driver boundary.
+          assertDiscoveryResponse(upstreamNames, accessToken);
+          const described = await target.driver.getCatalogPlugin?.(
+            { pluginId, discoveredMcpToolNames: upstreamNames },
+            signal,
+          );
+          if (!described || described.id !== pluginId || !Array.isArray(described.tools)) {
+            throw new PluginDiscoveryError("invalid_response");
+          }
+          const selected = new Set<string>();
+          for (const tool of described.tools) {
+            if (
+              typeof tool?.id !== "string" ||
+              !names.has(tool.id) ||
+              selected.has(tool.id) ||
+              tool.ownerId !== pluginId
+            ) {
+              throw new PluginDiscoveryError("invalid_response");
+            }
+            selected.add(tool.id);
+          }
+          return described;
+        },
+        { accessToken: resolved.credential },
+        signal,
+      );
+    } catch (error) {
+      signal?.throwIfAborted();
+      await validateCurrent();
+      throw error;
+    }
     await validateCurrent();
     return result;
   }
@@ -756,47 +1011,57 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             "Saved plugin discovery requires a dedicated Agent.",
           );
         }
-        if (credentialSource !== undefined || target.driver.discoveryCredential === "none") {
+        if (credentialSource === undefined && target.driver.discoveryCredential === "none") {
           return {
             ...target,
             source: undefined,
-            credential: credentialSource ? { credentialSource } : {},
+            credential: {},
           };
         }
         const binding = harnessAuthBinding(agent.harnessAuth);
-        if (binding?.method === "credential_source") {
-          const reference = {
-            kind: "credential_source" as const,
-            namespaceId,
-            id: binding.sourceId,
-          };
+        if (
+          credentialSource !== undefined &&
+          target.driver.discoveryCredential !== "none" &&
+          (binding?.method !== "credential_source" ||
+            binding.sourceId !== credentialSource.id ||
+            credentialSource.namespaceId !== namespaceId)
+        ) {
+          throw new ResourceStateConflictError(
+            "The selected credential source is not bound to this Agent's Harness.",
+          );
+        }
+        const reference =
+          credentialSource ??
+          (binding?.method === "credential_source"
+            ? { kind: "credential_source" as const, namespaceId, id: binding.sourceId }
+            : undefined);
+        if (reference !== undefined) {
+          if (reference.namespaceId !== namespaceId) {
+            throw new SecretBindingValidationError(
+              "Credential-source references must identify the exact Namespace.",
+            );
+          }
           await authorize(principalId, "operate", reference);
+          if (
+            credentialSource !== undefined &&
+            !(binding?.method === "credential_source" && binding.sourceId === reference.id) &&
+            !agent.credentialSources?.some(({ sourceId }) => sourceId === reference.id)
+          ) {
+            throw new ResourceStateConflictError("Choose a credential source bound to this Agent.");
+          }
           await authorize(agent.servicePrincipalId, "operate", reference);
           const source = await state.credentialSources.findCredentialSource(
             namespaceId,
-            binding.sourceId,
+            reference.id,
           );
           if (source?.state !== "ready") {
             throw new ScopeViolationError("The Agent's plugin credential source is unavailable.");
           }
           return { ...target, source, credential: { credentialSource: reference } };
         }
-        if (binding?.method !== "codex_pat" || !isSecretHarnessAuth(binding)) {
-          throw new NotImplementedError(
-            "agent_plugins.saved_discovery",
-            "Stored plugin discovery requires a dedicated Agent with a Service Accounts Secret.",
-          );
-        }
-        if (binding.source.namespaceId !== namespace.id) {
-          throw new ScopeViolationError("The Agent's plugin credential crosses Namespaces.");
-        }
-        await authorize(principalId, "operate", binding.source);
-        await authorize(agent.servicePrincipalId, "operate", binding.source);
-        const secret = await state.secrets.findSecret(namespace.id, binding.source.id);
-        if (secret === undefined) {
-          throw new ScopeViolationError("The Agent's plugin credential is unavailable.");
-        }
-        return { ...target, source: secret, credential: { secretRef: binding.source } };
+        throw new ResourceStateConflictError(
+          "Select a ready TokenService account Source in the Agent draft. Re-enroll a service account token if it is stored as a Secret.",
+        );
       },
     );
   }

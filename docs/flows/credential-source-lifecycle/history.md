@@ -8,6 +8,15 @@ This record preserves the dated changes to the credential source lifecycle flow.
 
 ## Changelog
 
+- 2026-11-20 10:13: Name the serving protected source owner as the legacy egress Driver. (01a1f7ec-0d9e-7803-96c3-eb88548e3788 - b02e93892)
+- 2026-11-20 09:05: Connect staged Agent callers to the selected native delivery Driver and distinguish readiness qualification. (01a1ec21-b384-7472-887f-945ae0ab16fc)
+- 2026-11-20 08:10: Clarify serving and internal custody, registration checks, dispatch, and deletion retry behavior. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 6c7aeed58)
+- 2026-11-20 07:59: Rewrite the serving lifecycle around source ownership, Agent delivery, and staged native limits. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - e76d323cb)
+
+- 2026-11-20 07:52: Trace managed source permission, standalone admission and live release checks. (authoring-run/6a2ac989-1b9e-4a4a-becf-4de572752f27 - d6853a84e)
+
+- 2026-11-20 04:19: Describe the staged worker and Compute path and its deployment hold. (authoring-run/4c6987ec-ea41-4485-98ca-62d6e617244f - daa612511)
+
 - 2026-11-20: Document native staged Proxy operation and holds. (01a1eae9-8497-74d2-a9c7-9bc93809e94a - 291d3b1de)
 
 - 2026-11-20 04:20: Link the separate internal static custody flow. (authoring-run/1a7c3a53-041d-40fe-bdea-664eca7f6d97 - edd728580)

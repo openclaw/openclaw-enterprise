@@ -39,7 +39,7 @@ import { refusingPort } from "../helpers/available-port.ts";
 import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { readJsonLines } from "../helpers/json-lines.mjs";
+import { readJsonLines } from "../helpers/json-lines-file.ts";
 import {
   assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
   createOpenShellKubernetesFixture as createOpenShellKubernetesFixtureJs,
@@ -55,6 +55,7 @@ import {
   shortTeardownOptions,
 } from "./kubernetes-teardown-cases.ts";
 import { waitUntil } from "../helpers/wait-for.ts";
+import { redactQaError, registerQaSecret } from "../helpers/qa-secrets.ts";
 
 type RetryOptions = {
   sleep: (ms: number) => Promise<unknown>;
@@ -1345,6 +1346,34 @@ test(
   },
 );
 
+test("a bounded teardown sanitizes cleanup logs and the thrown cause", async () => {
+  const secret = "fixture-only-cleanup-secret-123";
+  registerQaSecret(secret);
+  const { testContext, teardown, logs } = recordTeardown({ sanitizeError: redactQaError });
+  teardown.context.after(() => {
+    throw new Error(`cleanup failed with ${secret}`, {
+      cause: new Error(`nested ${secret}`),
+    });
+  });
+  await assert.rejects(runRecordedHook(testContext), (error) => {
+    assert.ok(error instanceof Error);
+    assert.ok(error.cause instanceof Error);
+    assert.match(error.message, /cleanup failed with \[REDACTED\]/);
+    assert.match(error.cause.message, /cleanup failed with \[REDACTED\]/);
+    assert.ok(error.cause.cause instanceof Error);
+    assert.match(error.cause.cause.message, /nested \[REDACTED\]/);
+    assert.equal(String(error.stack).includes(secret), false, "wrapper stack is sanitized");
+    assert.equal(String(error.cause.stack).includes(secret), false, "cause stack is sanitized");
+    return true;
+  });
+  assert.equal(
+    logs.some((line) => line.includes(secret)),
+    false,
+    "cleanup logs are sanitized",
+  );
+  assert.ok(logs.some((line) => line.includes("[REDACTED]")));
+});
+
 registerBoundedTeardownRejectionCases();
 
 test(
@@ -2005,6 +2034,8 @@ test(
       `
   // The live Slack proof checks both bots before it arranges the topology.
   export async function slackApi(method, token, query) {
+    if (method === "conversations.members") return { members: ["xoxb-gateway", "xoxb-sender"] };
+    if (method === "conversations.history") return { messages: [] };
     return method === "auth.test"
       ? { team_id: "T0", user_id: token }
       : {

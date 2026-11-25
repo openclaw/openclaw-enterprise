@@ -28,7 +28,7 @@ and which failures block merge, publication, or deployment.
 
 ## Requirements and credentials
 
-Install Node.js 24.22.1 or newer, the pnpm version in [`package.json`](../../package.json),
+Install the Node.js and pnpm versions specified in [`package.json`](../../package.json),
 the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh

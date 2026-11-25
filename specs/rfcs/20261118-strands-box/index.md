@@ -10,7 +10,7 @@ author: freeqaz-openai
 
 - **ID:** RFC-20261118-strands-box
 - **Created:** 2026-11-18
-- **Last updated:** 2026-11-22
+- **Last updated:** 2026-11-25
 - **RFC PR:** [#6505](https://github.com/openclaw/openclaw-enterprise/pull/6505)
 - **Implementation plan:** [TASK-0053](../../plans/0053-strands-box-convergence.md)
 - **Related:** [RFC-0023: Credential Proxy and credential lifecycle](../0023-egress-proxy-credential-lifecycle/index.md)
@@ -32,11 +32,12 @@ A shell can export a readable key. Even with the key hidden, every process can u
 route because Box cannot identify the caller's executable. Use separate Agents for processes
 with different rights.
 
-| Path                                                                                                                                                         | Who holds the credential?                   | Evidence and limits                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Merged in-Pod Sandbox ([#6370](https://github.com/openclaw/openclaw-enterprise/pull/6370), [listener TLS](https://github.com/openclaw/openclaw/pull/201499)) | Codex can read the key by default.          | Helm model turns, replacement refusal, files and memory on ARM with the [Box #482 container agent](https://github.com/strands-agents/box/pull/482). Stock Box lacks this dependency.               |
-| [Draft preview #6948](https://github.com/openclaw/openclaw-enterprise/pull/6948), off by default                                                             | Separate trusted supervisor container       | Two callers shared a placeholder in component checks (`d3706d84`). Both received HTTP 401 with the masked invented key. Installed inference with a real key, Git and withdrawal remain unverified. |
-| Protected execution proposed here                                                                                                                            | Native Box parent supervising its own child | Not implemented. The separate-host Git demonstration cannot qualify any of these paths.                                                                                                            |
+| Path                                                                         | What an operator can do                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stock Box                                                                    | Run Git in a standalone Linux sandbox. That test does not cover the installed Pod. On one Pod layout, a masked file under `/proc` prevented Box from mounting its private proc filesystem.                                                                                                                                                                                                                                |
+| Strands on `main`                                                            | Validate the configuration and save a draft without a model key. Deployment requires Harness authentication. In ordinary API-key mode, Codex can read the key. The [split Pod](https://github.com/openclaw/openclaw-enterprise/pull/6370) starts the experimental [Box receiver](https://github.com/strands-agents/box/pull/482) independently and uses [listener TLS](https://github.com/openclaw/openclaw/pull/201499). |
+| [API-key preview](https://github.com/openclaw/openclaw-enterprise/pull/6948) | On the preview branch, opt in to mounting the key in the supervisor. A component test with an invented credential reached HTTP 401. Installed inference with a real key, Git, and withdrawal need separate verification.                                                                                                                                                                                                  |
+| Proposed protected execution                                                 | Test whether a trusted native Box parent can start and supervise its child directly. The acceptance criteria below apply to that design.                                                                                                                                                                                                                                                                                  |
 
 ### Interim preview for a dedicated Codex API key
 
@@ -142,8 +143,9 @@ The representation remains open.
 
 ### Driver contracts
 
-Protected execution requires `deployment` in Installation's `drivers.credential_proxy.contract`
-and the verified manifest's `oce.credentialProxyContract`. Omitting both preserves legacy Git authority. Paired
+This proposal adds two declarations. The Installation would select `deployment` in
+`drivers.credential_proxy.contract` and the verified manifest would declare the same value in
+`oce.credentialProxyContract`. Omitting both preserves legacy Git authority. Paired
 Sandbox and CredentialProxy Drivers support [held startup](strands-box-held-launch.md).
 V1 supports HTTP API-key inference and refuses personal access tokens, interactive login and
 WebSocket credential delivery.
@@ -153,10 +155,10 @@ WebSocket credential delivery.
 ## Simplifications
 
 The supervisor preview requires restarts for rotation and supports neither Credential Sources
-nor Git. It cannot meet AC-5. Direct launch removes descriptor transfer and [authentication of a separate
-receiver](strands-box-held-launch.md#delivery-alternatives-and-open-decisions). NetworkPolicy
-covers the whole Pod, so we must prove the child cannot inspect the parent's vault or bypass
-injection inside their shared container. No infrastructure simplifications.
+nor Git. It cannot meet AC-5. The direct-launch experiment avoids a separate receiver handoff;
+the current split Pod still requires [independent endpoint authentication](strands-box-held-launch.md#delivery-alternatives-and-open-decisions).
+Pod NetworkPolicy cannot distinguish the file node from the trusted sender. Qualify that boundary
+as described in the [held startup companion](strands-box-held-launch.md#trust-boundary).
 
 ## Acceptance Criteria
 
@@ -176,8 +178,11 @@ for containment and both Agent grants for authorized requests.
 
 <a id="ac-2"></a>
 
-- **AC-2** ([Startup](#goal-startup)). Leave one copy stale or lose a delivery reply.
-  Require no signed release until readback confirms every version.
+- **AC-2** ([Startup](#goal-startup)). Commit a new Source version, then fail delivery before
+  the proxy learns it. Keep startup held even if all serving copies agree on the old version.
+  Reject an old signed release at use after the commit. Verify both grants for the same execution
+  and recipient against each Source's authoritative version. Also exercise a stale copy and a lost
+  delivery reply.
 
 <a id="ac-3"></a>
 
@@ -194,8 +199,9 @@ for containment and both Agent grants for authorized requests.
 <a id="ac-5"></a>
 
 - **AC-5** ([Journey](#goal-journey)). On clean ARM64 Helm with reviewed images and authorized
-  providers, obtain a real reply, push to the assigned repository and open a draft. Read back
-  both at GitHub. Test confirmed withdrawal and expiry separately with fresh grants. Require
+  providers, use one saved Agent revision admitted for both model and Git. Refuse an unsupported
+  Driver pair before provisioning. Obtain a real reply, push to the assigned repository and open a
+  draft. Read back both at GitHub. Test confirmed withdrawal and expiry separately with fresh grants. Require
   a fresh push of a different commit to fail authorization. Verify an unchanged ref and another
   reply in the same conversation.
 

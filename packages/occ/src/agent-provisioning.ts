@@ -1,16 +1,17 @@
 import type {
+  AgentNetworkProxy,
   HarnessAuthBinding,
   HarnessExecutionMode,
   InitialWorkspaceFiles,
   OpenClawConfigurationDocument,
   PluginDesiredState,
   PluginApprovers,
-  RepositoryBindingRequest,
   RepositoryAccess,
   SecretBindings,
 } from "@openclaw-enterprise/contracts";
 import {
   normalizeHarnessAuthBinding,
+  normalizeAgentNetworkProxy,
   normalizeInitialWorkspaceFiles,
   normalizeSecretBindings,
   normalizeWorkspaceDefaultsId,
@@ -40,9 +41,9 @@ export interface ProvisionAgentInput {
   readonly harnessAuth?: HarnessAuthBinding | null;
   readonly executionMode?: HarnessExecutionMode;
   readonly gatewayManagedMode?: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
 }
 
@@ -310,6 +311,7 @@ export function parseProvisioningPlan(record: Readonly<AgentProvisioningRecord>)
   readonly harnessAuth: HarnessAuthBinding | null;
   readonly executionMode: HarnessExecutionMode;
   readonly gatewayManagedMode: boolean;
+  readonly networkProxy?: AgentNetworkProxy;
 } {
   const plan = asRecord(record.plan);
   let configuration: AgentProvisioningConfigurationInput;
@@ -331,5 +333,8 @@ export function parseProvisioningPlan(record: Readonly<AgentProvisioningRecord>)
     harnessAuth: normalizeProvisioningHarnessAuth(plan?.harnessAuth ?? null),
     executionMode,
     gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
+    ...(plan?.networkProxy === undefined
+      ? {}
+      : { networkProxy: normalizeAgentNetworkProxy(plan.networkProxy) }),
   };
 }

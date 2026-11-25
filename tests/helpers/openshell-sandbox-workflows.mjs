@@ -1,6 +1,7 @@
 import { createReplacementNodeObservation } from "./openshell-workspace-node-observation.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { runOpenShellStage } from "./openshell-stage.ts";
+import { hasOrderedDurableCommands } from "./openshell-durable-command-proof.ts";
 import { observeOpenShellPermissionRefusal } from "./openshell-permission-diagnostic.ts";
 import {
   assertOpenShellModelId,
@@ -46,7 +47,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
-import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selectPolicyProbeCommand } from "./openshell-policy-probe.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -5395,34 +5396,11 @@ async function requestGatewayTurns(context, topology, harnessId, recordCheckpoin
           const rollouts = await readHarnessFiles(topology.placement, topology.harnessPod, roots);
           // Both commands must complete in order in one native thread, not two fresh rollouts.
           return (
-            rollouts.some(({ path, content }) => {
-              if (!path.endsWith(".jsonl")) {
-                return false;
-              }
-              let next = 0;
-              // The writer may still be flushing its last record after the HTTP response.
-              const lines = content.toString("utf8").split("\n").slice(0, -1).filter(Boolean);
-              for (const line of lines) {
-                const { type, payload } = JSON.parse(line);
-                if (type !== "event_msg" || payload.type !== "item_completed") {
-                  continue;
-                }
-                const command = payload.item;
-                const nonce = nonces[next];
-                if (
-                  command.type === "CommandExecution" &&
-                  command.command.join(" ").includes(nonce) &&
-                  command.exit_code === 0 &&
-                  command.aggregated_output?.trim() === nonce
-                ) {
-                  next += 1;
-                  if (next === nonces.length) {
-                    return true;
-                  }
-                }
-              }
-              return false;
-            }) || undefined
+            rollouts.some(
+              ({ path, content }) =>
+                path.endsWith(".jsonl") &&
+                hasOrderedDurableCommands(content.toString("utf8"), nonces),
+            ) || undefined
           );
         },
         30_000,
@@ -9891,7 +9869,9 @@ export function registerProviderLifecycleTest(workflow) {
           await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
         });
         if (pluginInstallOnly) {
-          await assertInstalledCodexPlugin(topology);
+          await runOpenShellStage(testContext, "plugin-check", () =>
+            assertInstalledCodexPlugin(topology),
+          );
           return;
         }
         process.stderr.write(

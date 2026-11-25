@@ -82,7 +82,8 @@ Each alias identifies the last publication to that channel. The two channels can
 
 ## Check publication and source
 
-Open the [Enterprise Containers runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-publish.yml)
+Open the [Release OCE runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/release-oce.yml)
+or the standalone [Enterprise Containers runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-publish.yml)
 and find the successful publication for the printed source commit. Compare
 both resolved image references with its publication summary or receipt. Matching
 labels establish consistency; the publication record establishes which bytes
@@ -97,9 +98,7 @@ printf '%s\n' "${OCE_IMAGE_REVISION:?Select the published images first}"
 ```
 
 If they differ, you can reuse an existing checkout that is clean and available
-for this installation. Before switching, keep the guide open on GitHub at the
-exact PR commit so its relative links continue to open the same version of the
-documentation. From the checkout you intend to reuse, run:
+for this installation. From the checkout you intend to reuse, run:
 
 ```bash
 changes=$(git status --porcelain=v1 --untracked-files=all) &&
@@ -132,7 +131,9 @@ test "$(git rev-parse HEAD)" = "${OCE_IMAGE_REVISION:?}"
 
 Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
-checkout. If you need a feature introduced after the published commit,
+checkout. If you read the installation instructions on GitHub, open them at the
+verified full image source commit in `OCE_IMAGE_REVISION`.
+If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
 instead of combining its configuration with images from a different revision.
 
@@ -146,7 +147,7 @@ to a private mirror. For local setup, export the resolved pair as
 Use Node.js 24.22.1 or newer, Python 3, and Docker with the containerd image
 store and `--platform` support for `docker image inspect` and `docker image save`.
 Download the `container-publication-<run-id>-<attempt>` artifact from the
-successful protected [Enterprise Containers run](#check-publication-and-source).
+successful protected [image publication run](#check-publication-and-source).
 It contains `publication.json`. From the matching release checkout, pull the
 receipt's runtime index by digest for the target platform with
 `docker pull --platform`.

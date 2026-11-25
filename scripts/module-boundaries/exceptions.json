@@ -176,6 +176,18 @@
     },
     {
       "rule": "unresolved-local-import",
+      "from": "apps/controller/src/console/agents/harness-auth.mts",
+      "to": "apps/controller/src/console/openai-endpoint-url.mjs",
+      "specifier": "../openai-endpoint-url.mjs",
+      "kind": "import",
+      "typeOnly": false,
+      "bindings": ["value:normalizeOpenAiBaseUrl"],
+      "owner": "Console asset delivery",
+      "reason": "This browser URL serves the dependency-free model endpoint normalization shared with Compute from an explicit same-origin Console asset map; it is not a file beside the consuming browser module.",
+      "removeWhen": "Remove this exception when browser asset resolution is represented in the analyzer or the import moves to a statically resolved module."
+    },
+    {
+      "rule": "unresolved-local-import",
       "from": "apps/controller/src/console/agents/presets.mts",
       "to": "apps/controller/src/console/preset-variables.mjs",
       "specifier": "../preset-variables.mjs",

@@ -127,6 +127,8 @@ export interface OpenShellSandboxResponse {
   readonly restartCount?: number;
   /** Authenticated 0.1.5 supervisor configuration report, not evidence a request used it. */
   readonly configurationAdmission?: Readonly<Record<string, unknown>>;
+  /** Explicit Gateway activation state; absence is not evidence that a target is idle. */
+  readonly configurationActivated?: boolean;
   readonly mainProcessInstanceId?: string;
   readonly mainProcessStartedAt?: string;
   readonly serviceUrls: Readonly<Record<string, string>>;
@@ -389,6 +391,11 @@ export interface OpenShellSandboxObserver {
     request: OpenShellSandboxDeleteRequest,
     signal: AbortSignal,
   ): Promise<OpenShellSandboxResponse | undefined>;
+  /** Complete paginated Workspace Sandbox inventory. */
+  listSandboxes?(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellSandboxResponse[]>;
 }
 
 /** Narrows a gateway client to its Sandbox record read; the result exposes nothing else. */
@@ -453,6 +460,7 @@ export interface OpenShellGatewayClient
     workspace: string,
     sandboxId: string,
     signal: AbortSignal,
+    provider?: string,
   ): Promise<boolean>;
   getSandboxConfig?(workspace: string, sandbox: string, signal: AbortSignal): Promise<RecordValue>;
   getSandboxPolicyStatus?(
@@ -583,11 +591,16 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
     credentialExpirationTimes?: Readonly<Record<string, string>>,
   ): Promise<void>;
-  /** Static credential rotation, conditional on the previously observed provider version. */
+  /** Prepares authentication before a caller's final credential and route reads. */
+  prepareProviderCredentialUpdate?(
+    signal: AbortSignal,
+  ): Promise<NonNullable<OpenShellGatewayClient["updateProviderCredentialsConditionally"]>>;
+  /** Static credential rotation, conditional on the observed version and optional dispatch guard. */
   updateProviderCredentialsConditionally?(
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
+    canDispatch?: () => boolean,
   ): Promise<OpenShellProviderResponse>;
   /** Merges nonempty configuration into an existing provider with optimistic concurrency. */
   updateProviderConfig(
@@ -786,6 +799,12 @@ function createSandboxValidationCategory(
     return "RESOURCE_METADATA_FORBIDDEN";
   }
   if (grpcStatus === 9) {
+    if (
+      details ===
+      "caller driver config is disabled; a gateway administrator must enable allow_driver_config"
+    ) {
+      return "CALLER_DRIVER_CONFIG_DISABLED";
+    }
     // b2069a2 resource_admission.rs reports the kind and name before a fixed label
     // refusal. Classify the exact shape without retaining names or supplier text.
     if (
@@ -1255,6 +1274,9 @@ function sandboxResponse(
     labels: stringMap(metadata?.labels, "Sandbox labels"),
     annotations: stringMap(metadata?.annotations, "Sandbox annotations"),
     ...(spec === undefined ? {} : { spec: Object.freeze({ ...spec }) }),
+    ...(typeof status?.configuration_activated === "boolean" && {
+      configurationActivated: status.configuration_activated,
+    }),
     ...(status?.configuration_activated === true &&
       asRecord(status.configuration_admission) && {
         configurationAdmission: asRecord(status.configuration_admission)!,
@@ -1413,6 +1435,15 @@ async function loadGrpc(): Promise<{
       }`,
     );
   }
+}
+
+/** The credential update failed or was refused before the RPC was dispatched. */
+export class OpenShellGatewayDispatchRefusedError extends OpenShellGatewayFailure {}
+
+interface OpenShellGrpcRequestContext {
+  readonly grpc: typeof import("@grpc/grpc-js");
+  readonly client: OpenShellGrpcClient;
+  readonly headers: Metadata;
 }
 
 export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
@@ -1714,7 +1745,12 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   /** A snapshot, never a lock against a later operator attachment. */
-  async readExclusivePreviewWorkspace(workspace: string, sandboxId: string, signal: AbortSignal) {
+  async readExclusivePreviewWorkspace(
+    workspace: string,
+    sandboxId: string,
+    signal: AbortSignal,
+    provider?: string,
+  ) {
     const workspace_scope = { workspace: nonempty(workspace, "preview workspace") };
     const members = await this.unary(
       "ListWorkspaceMembers",
@@ -1730,9 +1766,36 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     const { sandboxes, next_page_token } = await this.unary(
       "ListSandboxes",
-      { workspace_scope, page_size: 2 },
+      { workspace_scope, page_size: provider === undefined ? 2 : 100 },
       signal,
     );
+    if (provider !== undefined) {
+      if (!provider || !sandboxId || !Array.isArray(sandboxes) || next_page_token) {
+        return false;
+      }
+      const recipients: string[] = [];
+      for (const sandbox of sandboxes) {
+        const record = asRecord(sandbox);
+        const meta = asRecord(record?.metadata);
+        const spec = asRecord(record?.spec);
+        const attached = spec?.providers ?? [];
+        if (
+          !meta ||
+          meta.workspace !== workspace ||
+          typeof meta.id !== "string" ||
+          !meta.id ||
+          !spec ||
+          !Array.isArray(attached) ||
+          !attached.every((name: unknown) => typeof name === "string" && name.length > 0)
+        ) {
+          return false;
+        }
+        if (attached.includes(provider)) {
+          recipients.push(meta.id);
+        }
+      }
+      return recipients.length === 1 && recipients[0] === sandboxId;
+    }
     const only = Array.isArray(sandboxes) && sandboxes.length === 1 && asRecord(sandboxes[0]);
     const meta = only && asRecord(only.metadata);
     return (
@@ -1979,6 +2042,65 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       }
       throw error;
     }
+  }
+
+  async listSandboxes(
+    workspace: string,
+    signal: AbortSignal,
+  ): Promise<readonly OpenShellSandboxResponse[]> {
+    const selectedWorkspace = nonempty(workspace, "OpenShell Workspace");
+    const sandboxes: OpenShellSandboxResponse[] = [];
+    const ids = new Set<string>();
+    const names = new Set<string>();
+    const tokens = new Set<string>();
+    let pageToken = "";
+    do {
+      signal.throwIfAborted();
+      const response = await this.unary(
+        "ListSandboxes",
+        {
+          workspace_scope: { workspace: selectedWorkspace },
+          page_size: 100,
+          page_token: pageToken,
+        },
+        signal,
+      );
+      const page = response.sandboxes ?? [];
+      const next = response.next_page_token ?? "";
+      if (
+        !Array.isArray(page) ||
+        typeof next !== "string" ||
+        (next !== "" && (next.trim() !== next || tokens.has(next)))
+      ) {
+        throw new OpenShellGatewayFailure("OpenShell ListSandboxes returned an invalid page.");
+      }
+      for (const value of page) {
+        const sandbox = sandboxResponse(
+          { sandbox: value },
+          "ListSandboxes",
+          this.options.endpoint,
+          false,
+        );
+        if (
+          !sandbox.id ||
+          sandbox.workspace !== selectedWorkspace ||
+          ids.has(sandbox.id) ||
+          names.has(sandbox.name)
+        ) {
+          throw new OpenShellGatewayFailure(
+            "OpenShell ListSandboxes returned an invalid Sandbox identity.",
+          );
+        }
+        ids.add(sandbox.id);
+        names.add(sandbox.name);
+        sandboxes.push(sandbox);
+      }
+      if (next) {
+        tokens.add(next);
+      }
+      pageToken = next;
+    } while (pageToken);
+    return sandboxes;
   }
 
   async getService(
@@ -2431,10 +2553,42 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     );
   }
 
-  async updateProviderCredentialsConditionally(
+  async prepareProviderCredentialUpdate(
+    signal: AbortSignal,
+  ): Promise<NonNullable<OpenShellGatewayClient["updateProviderCredentialsConditionally"]>> {
+    const authenticated = await this.authenticate(signal).catch(() => {
+      throw new OpenShellGatewayDispatchRefusedError("OpenShell credential update was not sent.");
+    });
+    return (request, version, write, canDispatch) =>
+      this.updateProviderCredentialsWithVersion(
+        request,
+        version,
+        write,
+        canDispatch,
+        authenticated,
+      );
+  }
+
+  updateProviderCredentialsConditionally(
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
+    canDispatch?: () => boolean,
+  ): Promise<OpenShellProviderResponse> {
+    return this.updateProviderCredentialsWithVersion(
+      request,
+      expectedResourceVersion,
+      signal,
+      canDispatch,
+    );
+  }
+
+  private async updateProviderCredentialsWithVersion(
+    request: OpenShellProviderCreateRequest,
+    expectedResourceVersion: string,
+    signal: AbortSignal,
+    canDispatch: () => boolean = () => true,
+    authenticated?: OpenShellGrpcRequestContext,
   ): Promise<OpenShellProviderResponse> {
     if (
       !/^[1-9]\d*$/u.test(expectedResourceVersion) ||
@@ -2456,6 +2610,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           type: request.type,
           profile_workspace: request.workspace,
           credentials: { ...request.credentials },
+          ...(request.config === undefined ? {} : { config: { ...request.config } }),
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
@@ -2467,12 +2622,15 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         request_id: randomUUID(),
       },
       signal,
+      this.requestTimeoutMs,
+      canDispatch,
+      authenticated,
     );
     return {
       ...providerResponse(response.provider, "UpdateProvider"),
-      ...(Array.isArray(response.target_receipts) &&
+      ...((response.target_receipts === undefined || Array.isArray(response.target_receipts)) &&
         typeof response.mutation_id === "string" && {
-          targetReceipts: response.target_receipts,
+          targetReceipts: response.target_receipts ?? [],
           mutationId: response.mutation_id,
         }),
     };
@@ -2919,17 +3077,38 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       });
   }
 
-  private async unary(
-    method: OpenShellMethod,
-    request: RecordValue,
-    signal: AbortSignal,
-    timeoutMs: number = this.requestTimeoutMs,
-  ): Promise<RecordValue> {
+  private async authenticate(signal: AbortSignal): Promise<OpenShellGrpcRequestContext> {
     signal.throwIfAborted();
     const { grpc, client } = await this.ensureClient();
     signal.throwIfAborted();
     const headers = await openShellGatewayGrpcMetadata(grpc, this.options.auth);
     signal.throwIfAborted();
+    return { grpc, client, headers };
+  }
+
+  private async unary(
+    method: OpenShellMethod,
+    request: RecordValue,
+    signal: AbortSignal,
+    timeoutMs: number = this.requestTimeoutMs,
+    canDispatch?: () => boolean,
+    authenticated?: OpenShellGrpcRequestContext,
+  ): Promise<RecordValue> {
+    const unsent = () =>
+      new OpenShellGatewayDispatchRefusedError("OpenShell credential update was not sent.");
+    let context: OpenShellGrpcRequestContext;
+    try {
+      context = authenticated ?? (await this.authenticate(signal));
+      if (canDispatch?.() === false) {
+        throw unsent();
+      }
+      signal.throwIfAborted();
+    } catch (error) {
+      // The guarded write has not reached gRPC. This includes a bearer read
+      // that fails after the deadline and never reaches the abort check.
+      throw canDispatch === undefined ? error : unsent();
+    }
+    const { grpc, client, headers } = context;
     return new Promise<RecordValue>((resolve, reject) => {
       let call: ClientUnaryCall | undefined;
       const abort = () => {

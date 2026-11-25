@@ -11,7 +11,7 @@ import {
   AgentPluginDetailsResponse,
   InstallationResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
@@ -220,21 +220,23 @@ export async function savesCuratedSelectionsInRevision(t: TestContext) {
 }
 
 export async function requiresHostedCredentialAndCuratedGrant(t: TestContext) {
-  const fixture = await createFixture(t);
+  const hosted = await createFixture(t);
+  hosted.controller.installPluginDrivers([new CodexPluginDriver()]);
   for (const [suffix, body] of [
     ["", {}],
     ["/details", { pluginId: remoteId }],
   ] as const) {
-    const missing = await fixture.request("POST", `${fixture.path}${suffix}`, {
+    const missing = await hosted.request("POST", `${hosted.path}${suffix}`, {
       body: { harnessId: "codex", ...body },
     });
     assertApiError(missing, 400, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
   }
-  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(hosted.calls, []);
 
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  const fixture = await createFixture(t);
+  fixture.controller.installPluginDrivers([
+    new CodexPluginDriver({ catalogSource: "openai-curated" }),
+  ]);
   const reader = await fixture.createAccountWithPolicy("curated-reader", (principal) => {
     grantRole(fixture.policy, principal.id, {
       id: "curated-reader-role",

@@ -6,9 +6,9 @@ last_verified: "2026-11-04"
 
 # Qualify the installed repository response and dispatch custody
 
-## Check useful Git work and conversation continuity
+## Check useful Git work
 
-From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
+From the repository root, use a Node.js version supported by [the workspace](../../package.json), Git, OpenSSL, matching installed
 workspace dependencies, and an owned disposable PostgreSQL fixture. Follow the
 [prepared PostgreSQL setup](./postgresql.md#revision-worker-tests). Inside its
 cleanup-trapped subshell, replace the `run-tests` command with these commands.
@@ -55,26 +55,6 @@ probe requests are accounted for separately; issuer and workload baselines remai
 continuous. This is local
 protocol and persistence proof, not an installed OpenShell or live GitHub
 qualification.
-
-Run the external Driver conversation rehearsal with the same prepared PostgreSQL
-test environment and `OCC_TEST_STANDING_GIT_CODEX` set to the absolute path of
-the Codex executable pinned by the [runtime Dockerfile](../../deploy/runtime/Dockerfile):
-
-```sh
-env -u OCC_TEST_DATABASE_URL -u OPENCLAW_ENTERPRISE_CI_STATE \
-  -u OPENCLAW_ENTERPRISE_CI_PREFIX OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION=1 \
-  node --env-file="$PG_RUN_DIR/test.env" --test \
-  --test-name-pattern="a capable external Driver reduces Git" \
-  tests/integration/postgres-external-protected-git.test.ts
-```
-
-Require the four check receipts `model-before`, `git-fetched`, `git-refused`,
-and `model-after`, a passing selected case, and successful fixture cleanup.
-This runs the shipped Codex process and real Git, with a controlled inference
-origin and the external Driver fixture. It uses synthetic credentials and
-requires no OpenShell installation.
-The OpenShell-specific conversation case still runs with
-`pnpm test:standing-git-conversation` and its corresponding prepared database.
 
 On the deployed build, use disposable repositories and an approved GitHub
 credential source. The Agent must never receive the token. In one Agent
@@ -148,24 +128,15 @@ lane qualifies one deployed release. In gateway discovery, the supplier must lis
 each of these capabilities exactly once in both its required and supported lists, in any order:
 credential access, installation exchange, response custody, execution authority and protected
 no-material support. Installed enforcement evidence must report them in the order shown.
-Configure its fixture bridge and valid TLS trust for both
-ordinary workload clients. Select the fixture HTTPS origin (without `/v1`) in
-`drivers.credential_proxy.configuration.preparedGitHub.apiOrigin` in the Installation.
-Supply `issuerCaPath: /etc/openclaw/prepared-github-issuer/ca.crt` and
-`custodyKeyPath: /etc/openclaw/prepared-github/custody.key`. In the chart select
-`preparedGitHub.custodySecretName`, `issuerCaConfigMapName`, exact `issuerCidrs`
-IPv4 /32 and `issuerPort`. The API and worker need working DNS and verified
-TLS to that origin. The test checks the selected private origin in both Pods
-before enrollment; a credential source cannot redirect it. The test also checks
-the workload's effective authorization cannot retrieve or project the Compute signer.
-
-The test generates an App key, separately consented dedicated Agents and metadata-only
-installation credentials. It contacts neither GitHub nor a model provider.
+Configure the fixture bridge and verified TLS trust for the workload client.
+The test enrolls a dedicated Agent and uses a credential-free metadata Source
+pointing to a controlled HTTPS origin. It checks that the workload cannot
+retrieve or project the Compute signer.
 
 The qualification operator needs the supplier's workspace User role and
 `sandbox:write` access for `ExecSandbox`. The test rechecks the enrolled Sandbox
 name and immutable ID, records a fresh launch request ID, then asks the authenticated
-gateway to start ordinary curl or Node on the supplier's workload launcher. The
+gateway to start curl on the supplier's workload launcher. The
 children inherit its connection mediation and installed TLS trust. Operator credentials
 stay on the gateway control channel. A Kubernetes exec in the same Pod would not
 inherit the launcher's mediation. If the terminal `Exit` is missing or the supplier
@@ -181,27 +152,10 @@ A refusal requires an explicit `no_permit` event. If delivery is incomplete, amb
 late, report custody as unobservable and preserve the other evidence without repeating the
 workload request. The log supplies evidence about that request, never permission to send it.
 
-Before installing the disposable API controller, start the following observer on
-its owner host. Use the same limited disposable database selected for the test.
-The directory must not already exist. Keep the Unix socket on this host. Route
-only that API controller's database connection through the observer's loopback
-data port using the disposable network's supported forwarding. This observer
-needs an explicitly non-TLS local PostgreSQL wire; never turn off an existing
-transport security requirement to run it. Permit the deliberate restart only
-on this API Pod template with the annotation
-`openclaw.dev/egress-custody-qualification-restart: permitted`. Keep the owner
-forward to the API service alive across Pod replacement. Include setup, test,
-fresh API readiness, evidence and cleanup in the actual slot and outer deadline.
-
-```sh
-node tests/fixtures/egress-custody-postgres-observer.ts "$new_observer_dir" "$data_port"
-```
-
 In the qualification shell, set the four connected inputs from the lane manifest,
 then select the actual lane. The state and results paths must belong to this attempt.
 
 ```sh
-export OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET="$new_observer_dir/control.sock"
 CI_RUNNER_DEADLINE_MS=$(node -p 'Date.now() + 95 * 60000') \
 CI_RUNNER_TEST_TIMEOUT_MS=5100000 node scripts/ci/run-tests.ts run egress-custody-installed \
   --state "$attempt/state.json" --results "$attempt/results.json"
@@ -212,26 +166,17 @@ The installed test has a 74-minute execution budget. The 85-minute file timeout 
 also covers owned-resource cleanup. If set, the runner's absolute `CI_RUNNER_DEADLINE_MS`
 must leave at least 90 minutes when the lane starts.
 
-Require both files in the manifest to pass. At the real TLS gRPC authority, a synthetic
-enrolled peer presents the copied opening first on the wrong sink, crosses two signed
-openings and two live dispatch handles, and attempts to splice an actual pending reply.
-The installed test cannot extract a supervisor's possession key to repeat that injection.
-Instead it holds two separately authorized executions' actual replies, makes B finish
-first with only the final forbidden trailer, checks B's exact refusal and A's exact approved
-identity through TLS FIN (curl at A, an independent Node client at B), then checks B's own fresh authorized read. The separate trailer
-control has identical chunk framing and no trailers. For replacement, B remains authorized
-with its own accepted read pending while A's late valid response is released. It must receive
-only its expected refusal through FIN, then its own fresh successful read. The subsequent IAM denial is a withdrawal control.
+Require both files in the manifest to pass. At the real TLS gRPC authority,
+a synthetic enrolled peer presents a copied opening on the wrong sink and
+attempts to cross two signed openings and their pending replies.
 
-The final case selects a protected read that explicitly requires no provider credential.
-It joins the no-material access and send decisions to the acknowledged dispatch, the
-credential-free request at the origin and the repository identity returned to the Agent.
-It then withdraws authority while the recipient is live and verifies final route retirement.
+The installed test joins the no-material access decision and send permit to
+the dispatch, exact request at the controlled HTTPS origin and filtered
+repository identity returned to the Agent. It withdraws IAM authority while
+the Agent is live, observes denial before origin traffic and waits for final
+route withdrawal and Sandbox retirement.
 
-Require the ordinary curl and Node workload reads, observed direct TCP attempt, and
-specific dispatch acknowledgment loss and API restart as well. The diagnostic
-names the private `.build/egress-connected/runtime-<uuid>/` directory. Retain its
-`observations.json` through cleanup and `upstream.json` with the result. The
-post-restart read is a new positive control, never a replay of the uncertain
-dispatch. Stop the owned observer and forwarding, then remove the disposable
-installation. Reconcile any unknown resource from its ledger without replay.
+The diagnostic names the private `.build/egress-connected/runtime-<uuid>/`
+directory. Retain its `observations.json` through cleanup and `upstream.json`
+with the result. Remove the disposable installation and reconcile unknown
+resources from that attempt's ledger.

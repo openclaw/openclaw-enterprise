@@ -30,12 +30,31 @@ const observedHookSelection = `(${admittedAuthorization} = 'request-hook-observe
   AND (r.observed#>>'{observedHook,observationId}') ~ '^[a-f0-9]{64}$'
   AND r.observed->'observedHook' = ${recipient}->'observedHook')`;
 
+const nativeBindings = "p.installation#>'{plan,repositoryGit,bindings}'";
+const networkPolicyGitSelection = `(${admittedAuthorization} = 'network-policy'
+  AND ${recipientAuthorization} = 'network-policy' AND ${peerKey} IS NULL
+  AND ${recipient}->>'deliveryProfile' = 'github_repository'
+  AND NOT (p.installation#>'{plan,repositoryGit}' ? 'standingApprovalId')
+  AND jsonb_array_length(${nativeBindings}) > 0
+  AND NOT EXISTS (
+    SELECT FROM jsonb_array_elements(${nativeBindings}) b
+    WHERE b->>'profile' IS DISTINCT FROM 'github-repository')
+  AND ${recipient}->>'nativeStartupId' = r.observed#>>'{enrollment,nativeStartupId}'
+  AND NOT (r.observed->'enrollment' ? 'hook')
+  AND NOT (${recipient} ? 'observedHook')
+  AND NOT (r.observed ? 'observedHook')
+  AND p.installation#>>'{enforcement,instanceId}' = r.observed->>'sandboxId'
+  AND nullif(r.observed#>>'{enrollment,configurationId}', '') =
+    p.installation#>>'{enforcement,configurationId}')`;
+
 export const protectedRepositoryGitInstallationSql = `
   (p.namespace_id,p.agent_id,p.revision_id)=(r.namespace_id,r.agent_id,r.revision_id)
+  AND (${admittedAuthorization}='network-policy' OR (NOT coalesce(r.observed->'enrollment' ? 'nativeStartupId',false) AND NOT (${recipient} ? 'nativeStartupId')))
   AND r.target->>'transport'='${openShellGitDeliveryTransport}'
-  AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook')) OR ${observedHookSelection})
+  AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook'))
+    OR ${observedHookSelection} OR ${networkPolicyGitSelection})
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
-    THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
+    THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed','network-policy')
     ELSE NOT (${observedInstallationProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
@@ -69,7 +88,8 @@ export const openShellPreviewEnded = `EXISTS (
   SELECT FROM ${openShellRoute} r JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
   WHERE r.blocked IS NOT NULL
     AND ((${admittedAuthorization}='request-hook-observed' AND f.source->>'adoption'='${installationGitAdoption}')
-      OR (${admittedAuthorization}='online-request' AND f.source->>'adoption' IN ('${selectedGitAdoption}','${protectedGitAdoption}')))
+      OR (${admittedAuthorization}='online-request' AND f.source->>'adoption' IN ('${selectedGitAdoption}','${protectedGitAdoption}'))
+      OR (${admittedAuthorization}='network-policy' AND f.source->>'adoption'='${selectedGitAdoption}'))
     AND (r.namespace_id,r.agent_id,r.revision_id,r.binding_id,p.sandbox_id)=
       (f.source#>>'{session,namespaceId}', f.source#>>'{session,agentId}', f.source#>>'{session,revisionId}',
        f.source#>>'{session,credentialProxyExecution,executionId}', f.source#>>'{session,credentialProxyExecution,sandboxId}')
@@ -81,9 +101,9 @@ export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Obj
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
   // Background preparation discovers sessions before the live transport starts.
   // Historical evidence remains valid for verification and detach, but issuance requires
-  // online authorization or the explicit observed-hook installation preview.
+  // the selected online, observed-hook, or network-policy recipient.
   released: `${protectedRepositoryGitInstallationSql}
-    AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
+    AND ${admittedAuthorization} IN ('online-request','request-hook-observed','network-policy')
     AND (${recipient}->>'deliveryProfile' IS DISTINCT FROM 'github_installation'
       OR ${admittedAuthorization}='request-hook-observed')
     AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,

@@ -233,11 +233,7 @@ function createDeploymentRequests(dependencies: DeploymentRequestDependencies) {
     let preparation: FirstDeploymentGuard["preparation"];
     try {
       preparation = {
-        prepared: await dependencies.channels.prepareDeploymentChannels(
-          principalId,
-          target,
-          initial.metadata,
-        ),
+        prepared: await dependencies.channels.prepareDeploymentChannels(initial.metadata),
       };
     } catch (error) {
       // A concurrent matching admission wins over a fresh-only preparation failure.

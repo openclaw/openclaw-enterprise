@@ -46,14 +46,13 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Credentials**, or **Namespaces**. **Credentials** opens the Secrets tab for the selected Namespace. Installation administrators can also open [Connection templates](connection-templates.md). **Refresh** repeats the read.
-Configure models during creation. [Experimental Backends](backends.md) stay
-hidden. Namespace rows open their Agents.
+**Credentials** lists Namespace Sources and Secrets; administrators can open [Connection templates](connection-templates.md). **Refresh** rereads. Configure models during creation. [Experimental Backends](backends.md) stay hidden. Namespaces open Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Agents        | Selected Namespace; Namespace `read`, then exact Agent `read` filtering.                                             |
 | Secrets       | Selected Namespace; Namespace `read`, then exact Secret `read` filtering.                                            |
+| Sources       | Selected Namespace; Namespace `read`, then exact Credential Source `read` filtering.                                 |
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
@@ -61,30 +60,34 @@ hidden. Namespace rows open their Agents.
 [Delete a Namespace](../guides/console/delete-namespace.md) explains the trash
 control, cleanup blockers, and deletion recovery.
 
-The Console uses light appearance and OCC-served fonts. Navigation focuses the
-destination heading; **Open navigation** opens the mobile drawer. The drawer
-scrolls independently and keeps the page behind it in place until it closes.
+The Console uses light appearance and OCC-served fonts. Navigation focuses
+destination headings. **Open navigation** opens a mobile drawer that scrolls
+independently and holds the page until closed.
 
-Click an Agent name or an open area of its row to open its details. Version links
-and Stop or Delete buttons keep their separate actions. In **Search Agents**, Enter opens a single match.
-Down Arrow focuses the first name. Use Up and Down to browse, Enter to open, or
-Escape to return to search. Escape in search clears the query.
-An individual Agent header uses **Agent details** until an authorized read supplies its name.
+Click an Agent name or empty row area for details. Version links and Stop or
+Delete buttons retain their actions. In **Search Agents**, Enter opens a single
+match. Down Arrow focuses the first name. Up and Down browse, Enter opens, and
+Escape returns to search. Escape there clears the query. Agent headers show
+**Agent details** until an authorized read supplies the name.
 
-While a Namespace provisions, the Agents list checks its status every ten seconds.
-If that check no longer lists the Namespace, the Console removes its Agent rows
-and previous row feedback, and disables Create Agent. Open row confirmations close
-and focus Search Agents. The unavailable status replaces empty-list messages.
-Submitted requests report acceptance, refusal or an unknown outcome without Agent
-names or IDs and without replay. Session expiry still requires sign-in.
-Clearing search does not restore the removed rows.
+When you return to **Search Agents**, a 5xx response without `Retry-After`
+hides rows and moves focus from search to **Retry**. Press Enter to retry.
+A successful foreground check restores focus and selection unless you changed
+accounts, pages, the query or focus. Background checks defer focus until then.
 
-Opening an Agent shows its details page immediately. While it loads, **Back to
-Agents** returns to your place. A slow return to a retained page says **Still
-checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
-Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
-**Open navigation**. Views belong to one account, session, route,
-and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
+While a Namespace provisions, the Agents list checks every ten seconds. If the
+Namespace disappears, the Console removes Agent rows and row feedback, disables
+Create Agent, closes row confirmations and focuses Search Agents. The unavailable
+status replaces empty-list messages. Submitted requests report acceptance, refusal
+or unknown outcomes without Agent names, IDs or replay. Session expiry requires
+sign-in. Clearing search cannot restore rows.
+
+Opening an Agent shows details immediately. **Back to Agents** returns to your
+place while loading. On return, **Still checking…** appears after one second.
+Refresh rebuilds. Refocusing an unchanged page preserves
+edits, Slack searches, focus and the Namespace selector. At phone width, focus in
+the open drawer moves to **Open navigation**. Views belong to one account, session,
+route and Namespace. Sign-out, session changes, exit or Backend denial clear them.
 
 A previously shown Configuration denial can leave Agent metadata visible after
 reload and refocus. Refocus still checks current access. If the read before a
@@ -92,13 +95,13 @@ channel Secret save is denied, the Console clears the binding controls and keeps
 the failed attempt's message. No save is sent. After access is restored, use
 **Refresh** to read saved state before retrying.
 
-When you return to an Agent tab, the Console checks access again. Actions such as
-**Delete Agent** and **Save Configuration** need a fresh permission answer, even
-if the Console has to rebuild the page. A temporary detail read error
-can trigger one automatic retry. If the read still fails, the Console hides
-unconfirmed details and shows a warning. **Retry** checks access again when any
-server retry delay ends. A successful check can restore the view and your place
-in it.
+On return to an Agent tab, the Console checks access again. Actions such as
+**Delete Agent** and **Save Configuration** need fresh permission, even if the page
+rebuilds. A failed Agent read that hides unconfirmed details shows **Still
+checking…** immediately during pending checks. A temporary detail read error can
+trigger one automatic retry. If the read still fails, the Console shows a warning.
+**Retry** checks access after any server retry delay. A successful check can restore
+the view and your place.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
@@ -127,16 +130,20 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Manage Namespace Secrets
 
-The **Secrets** page lists metadata, creates Secrets, replaces values, inspects
-consumers, and deletes unreferenced Secrets through the existing Secret API.
+In **Credentials**, view Secret metadata and consumers, create Secrets, replace
+values, or delete unreferenced Secrets.
 Creation needs collection `secret:create`; replacement and deletion need exact
 `secret:update` and `secret:delete`. Read access does not grant mutation or use.
 The API authorizes each operation; a refusal disables the submitted action.
 Names are fixed, values remain unreadable, and entered material is never saved
 in browser storage. Consumer counts retain read-permission and truncation limits.
+On return, the Console can restore the library search for the same session and
+Namespace. **Refresh** clears it.
 
 Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
 replacement delivery, deletion effects, and uncertain-write recovery.
+
+See [Managed static Sources](credential-sources/managed-static.md#console) for creation and reuse.
 
 ## Agent creation and deployment
 
@@ -162,8 +169,8 @@ versions, and the Slack channel editor are described in
 
 ## Stop and resume an Agent
 
-Select **Stop Agent** or the Agent's list-row Stop icon, review its effect, and
-confirm. Stop requires exact Agent `operate`. It requests shutdown while
+Select **Stop Agent** or its row icon to review the effect. Check the Agent name
+and ID before confirming Stop or Delete. Stop requires exact Agent `operate`. It requests shutdown while
 retaining version history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued; the list row shows **Stop

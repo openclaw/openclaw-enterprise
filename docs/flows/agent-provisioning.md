@@ -1,18 +1,14 @@
 ---
 created: "2026-09-23"
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-22
+last_updated_session: authoring-run/826943be-2c00-410c-8d78-b6eff00ea692
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves Slack/model Secrets and submits inline Configuration, credential
-references and retained Preset bindings. OCC queues setup without placeholders.
-The worker creates Configuration and Agent, grants exact credential access,
-and admits initial deployment.
-The handle tracks activation or failure. Later deployments use separate handles.
+Console saves Slack/model Secrets and submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent, grants credential access, and admits deployment. Its handle tracks activation or failure; later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
@@ -27,7 +23,8 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 graph TD
   Console["<b>Console</b><br/>Save entered Secrets"] --> Secrets["<b>Existing Secrets API</b><br/>Return ordinary references"]
   Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
-  API --> Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
+  API -->|Managed credential Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
   Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
   Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
@@ -49,7 +46,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,Gap condition
 ```
 
 ## Execution Trace
@@ -63,16 +60,13 @@ OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent runs its preflight, then saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
+The Slack modal saves Channel tokens through `POST /namespaces/:namespaceId/secrets` and stages the references for the Gateway process. Apply stages references and environment bindings. Cancel retains created Secrets.
 
-A selected Credential Gateway's catalog directs Console to register the model
-Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
-reuses confirmed sources and safely retries uncertain registration.
-Installation discovery preserves catalog metadata.
+When the Installation offers the selected model preset through TokenService, Console enrolls the credential as a Source and saves an Agent draft bound to that Source. Codex PAT enrollment can also happen before hosted Apps discovery. Retries reuse a confirmed Source. If Console cannot confirm enrollment, it asks the caller to check Credential Sources before retrying. For a model that uses direct authentication on the Installation, preflight precedes the Namespace Secret write and subsequent provisioning.
 
 Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
-For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
+For drafts, Console creates the Configuration and Agent, then grants Slack Secret access. Credential-access retry keeps the Agent.
 
 ### 2. OCC admits one job
 
@@ -80,19 +74,17 @@ For a draft, Console creates the Configuration and Agent, then grants access to 
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-For Harness authentication from a credential source, OCC reads the catalog entry
-from the recorded Gateway. Compute validates that same entry and its login mode
-for this admission. A later provisioning request reads the catalog again.
+Source-backed models deploy through the Agent draft path. [Credential Source lifecycle](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision) describes its admission and delivery.
 
-OCC first authorizes Agent `create`, Configuration `create`, and Installation `administer` for the Namespace. Status and retry use the same grants; absence gives `403` regardless of the body. It validates Configuration, references, workspace inputs, execution mode, and current authority, then refuses a taken Agent name with `409`. Reserved Secret destinations, cross-Namespace references, and missing or `runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule; an absent Secret remains `404`. Before Compute planning, Secret bindings get Agent save's Harness authentication check and named `400`.
+OCC requires Agent `create`, Configuration `create`, and Installation `administer` for the Namespace; status and retry require the same grants or return `403`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
 
-A selected Credential Gateway requires a supported, ready model Credential Source the caller can `operate`, and OCC preserves its canonical binding. Unsupported authentication methods fail before a job or external resource is created.
+For supported model presets with selected TokenService and native delivery, OCC requires Source-backed authentication at Agent save and deployment. Guided provisioning refuses a direct model Secret for those presets before creating a job.
 
-After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
+After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 
 OCC applies Configuration rules before Channel credential validation. Its Secret callbacks recheck provisioning grants before storage and after I/O, then confirm current same-Namespace backend and selected-Driver ownership before provider use. Slack accepts whole `${NAME}` environment references and checks token roles and bot authentication. This does not pin Secret versions or revalidate queued work. OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
-OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
+OCC stores the request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. The same actor, Namespace, and request ID return existing work; changed input conflicts. Configuration and Agent creation follow.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
@@ -106,10 +98,6 @@ values and bindings, then creates a stopped Agent, records the auth, provider, p
 workspace selections, and grants its service principal the exact Secret permissions.
 
 The bundled worker uses the Installation's selected repository policy for saved selections and first revision admission. A programmatic controller without this binding uses its registered repository Driver. After fencing the claim and checking that the Namespace is ready, the worker checks the saved selections before creating the Agent. The Configuration Driver may already have written the Configuration. If the check refuses, the worker creates no new Agent or revision and follows the existing Configuration recovery rules.
-
-Source-backed provisioning records the canonical model source and grants only source `operate`.
-Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
-ownership. Queued or running work prevents source deletion.
 
 Compute prepares runtime credentials without loopback HTTP. Kubernetes
 `apps/controller/src/drivers/compute/kubernetes/index.ts:provisionAgentRuntimeCredentials` confirms complete owned Secrets after
@@ -133,7 +121,7 @@ Kubernetes Configuration requests.
 
 `packages/occ/src/agent-provisioning-worker.ts:observeProvisioningDeployment`
 
-At handoff, provisioning saves the first Agent revision ID and stays `running`.
+Handoff records the first revision in its Read Committed admission transaction.
 Provisioning waits without using attempts. On success, PostgreSQL
 marks provisioning `succeeded`.
 If the claim has an audit attempt ID, PostgreSQL saves `openclaw.controller_work.completed`
@@ -219,7 +207,8 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 ## Debugging and Verification
 
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
-- Status does not repeat repository admission, plugin policy, runtime-image support, Compute plan validation or Harness authentication checks. For source-backed Harness authentication, it omits the Gateway catalog lookup but still requires a ready source, its original Gateway owner, a Sandbox, current operator grants and the Agent grant when the Agent exists. If the Agent already exists, retry rechecks its repository selections before the lifecycle checks and can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend.
+- Status skips write-admission checks for repository selections, Plugin policy, runtime-image support, Compute planning and Harness compatibility. For a stored Source-backed job, it checks the caller's exact Source grant, a ready Source in the same Namespace, its TokenService owner and the selected Sandbox. If the Agent exists, status also checks its exact Source grant. Retry rechecks that Agent's repository selections before lifecycle checks and can refuse a readable job.
+- If a failed job's accepted Secret, Credential Source or ServiceAccount was deleted, status and retry return `409`. Changed Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value. Other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes. An unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.ts` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -239,6 +228,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-13 16:01: Clarify provisioning audit. (authoring-run/6f9b8960-1432-46e9-97af-330142c01422 - e3e113d4111af1e467f10db2c6eef8e8d10a5b48)
 

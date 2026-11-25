@@ -17,8 +17,7 @@
         }
       },
       "drivers": {
-        "sandbox": "openshell-sandbox",
-        "credential_gateway": "openshell-credentials"
+        "sandbox": "openshell-sandbox"
       }
     }
   ],
@@ -80,7 +79,7 @@
           },
           "namespace": {
             "quota": {
-              "pods": "10"
+              "pods": "20"
             },
             "containerDefaults": {
               "requests": {
@@ -157,10 +156,10 @@
               "kind": "NetworkPolicy",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox-ssh"
@@ -206,10 +205,10 @@
               "kind": "ServiceAccount",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-sandbox"
@@ -220,10 +219,10 @@
               "kind": "Role",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox"
@@ -330,10 +329,10 @@
               "kind": "RoleBinding",
               "metadata": {
                 "labels": {
-                  "helm.sh/chart": "openshell-workspace-0.1.8",
+                  "helm.sh/chart": "openshell-workspace-0.1.9",
                   "app.kubernetes.io/name": "openshell-workspace",
                   "app.kubernetes.io/instance": "openshell-workspace",
-                  "app.kubernetes.io/version": "0.1.8",
+                  "app.kubernetes.io/version": "0.1.9",
                   "app.kubernetes.io/managed-by": "Helm"
                 },
                 "name": "openshell-workspace-sandbox"
@@ -500,15 +499,9 @@
         "sandboxNamePrefix": "os"
       }
     },
-    "credential_gateway": {
-      "id": "openshell-credentials",
-      "configuration": {
-        "binaries": [
-          "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-          "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
-          "/usr/local/bin/node"
-        ]
-      }
+    "token_service": {
+      "id": "occ",
+      "configuration": {}
     }
   }
 }

@@ -26,7 +26,7 @@ SSH recovery depends on the operator-installed native runtime.
 | -------------------------------------------------------- | --------------------------------------------------------------------------- |
 | Redeployment with retained state and a supported Harness | Eligible work can continue in the same session.                             |
 | Gateway replacement, alone or with the Harness           | Eligible work can continue after reconnection.                              |
-| Replacement of only the Harness (dedicated Codex)        | The turn ends and does not resume; send the request again.                  |
+| Replacement of only the Harness (dedicated Codex)        | The turn ends and does not resume.                                          |
 | OpenShell Gateway service restart (dedicated Codex)      | The turn ends for its caller; its running command can still finish.         |
 | [Stop](deployment.md#stop-and-resume), then deployment   | Stop shuts down the workload; the later startup may continue eligible work. |
 | Harmless configuration change                            | No OCE compatibility filter prevents recovery. Native checks still apply.   |
@@ -42,13 +42,12 @@ drain or failure, an eviction, a Harness container restart, or a repository
 session replacement, the Gateway sees its Codex connection close and ends the
 turn. The reply shows "Couldn't finish this reply", and its details can say the
 work may still be running, but the running command stopped with the Harness. The
-session and its history remain. Check for partial effects, then send the request
-again or select **Try again**. Redeployment, Stop then deployment, and upgrades
+session and its history remain. Check for partial effects. Select **Try again** only
+if you can safely repeat the whole request. Otherwise, ask for only the work
+you can confirm is unfinished. Redeployment, Stop then deployment, and upgrades
 replace the Gateway too and use normal recovery.
 
-Deploying a stopped Agent currently starts it again. Keeping stopped Agents
-stopped on deployment is tracked separately by
-[issue #6500](https://github.com/openclaw/openclaw-enterprise/issues/6500).
+Deploying a stopped Agent currently starts it again.
 Workload Stop is distinct from native turn cancellation. A failed teardown does
 not mean the old workload has stopped; normal ownership and replacement checks
 still apply.
@@ -66,7 +65,7 @@ Gateway replacement or a redeployment. The resume fails when the new Gateway
 starts. The same conversation then answers `500` with `internal error` until
 about one minute after the new Gateway is ready, and then works again. Files
 that the turn wrote with relative paths are no longer in the session's working
-directory; send the task again.
+directory. Check for effects outside the Sandbox before repeating any step.
 
 When the Sandbox is lost, a request in flight gets no answer until the
 [HTTP chat deadline](../agent-http-chat.md#availability-and-failures): `504`, or
@@ -112,10 +111,20 @@ kept when the Gateway ends, in every case in the table. The caller gets an error
 error status that OCC passes on. On Kubernetes a graceful Gateway Pod deletion
 usually gives a non-stream caller `503` with a `text/plain` body from the proxy in
 front of the Gateway: `upstream connect error or disconnect/reset before headers`.
-A streamed response that already started closes without `[DONE]`. Send the
-request again. The caller of the interrupted turn gets the same error. If that
-turn resumes, its reply goes to the conversation: send again with the same `user`
-label to read it.
+A streamed response that already started closes without `[DONE]`. A waiting
+request and a running turn can fail with the same error. If the turn resumes,
+its reply goes to the conversation.
+
+Before you retry or continue after an interruption or timeout, check the
+Agent's state and find out what ran.
+
+1. If you used a `user` label and the conversation is available, use the same
+   label to ask which steps finished and which are still running. This sends a
+   new message. Do not resend the task to retrieve a reply.
+2. Check saved progress in the workspace and verify external actions in the
+   affected systems. A command can finish after the connection closes.
+3. Wait for ongoing work to finish. Request only steps you can confirm are
+   unfinished. Do not repeat an action while its outcome is unknown.
 
 ## Native enforcement and limits
 

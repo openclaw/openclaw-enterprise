@@ -89,11 +89,18 @@ project and expose any Secret in that namespace. Distinct identities and exact
 ownership checks do not eliminate this namespace-level trust; independently
 enforced workload admission is required for stronger isolation.
 
+For an [Agent Gateway channel proxy](../agents/network-proxy.md), the worker
+updates only preallocated, exact-name credential slots in the OCC release
+namespace. Envoy Gateway becomes a trusted reader of that credential; the
+Gateway and Harness do not receive it. The inspection listener excludes
+credential-derived SDS versions. A configured upstream proxy is trusted for
+final destination resolution and address enforcement.
+
 The upstream ChatGPT admin key is read only by the API-side `ChatGPTClient`
 owned by its configured [Backend](../backends.md); it
 never appears in startup YAML, persistence, public account data, workload Pods,
-or the worker. Restrict provider TLS egress to the API Pod and an explicitly
-approved provider/proxy CIDR. The worker receives no provider egress exception.
+or the worker. The chart permits unrestricted egress from both API and worker
+Pods; credential ownership still limits the administrator key to the API.
 Managed account bindings carry exact Backend, Driver, and workspace identity.
 Issuance/deletion, deployment, and worker reconciliation reject conflicting
 ownership; the worker validates binding metadata and confirms issuance. Its Compute Driver
@@ -122,9 +129,10 @@ prove the containment of a provider-owned workload.
 Dedicated native OpenClaw is admitted only when the selected SandboxDriver
 provisions the Harness and declares networking, filesystem, and process
 containment. The bundled OpenShell provider supports dedicated Codex and native
-OpenClaw, and delegates containment outside the inner Harness sandbox. Its paired
-Credential Gateway keeps the model
-API key outside the Harness. It still requires upstream support for the
+OpenClaw, and delegates containment outside the inner Harness sandbox.
+On managed [Credential Proxy paths](../credential-sources.md#implementation-status)
+and pre-cutover Gateway delivery on main, the Harness receives a placeholder for
+the model credential. OpenShell still requires upstream support for the
 app-server token Secret reference and projected identity. Stock gateway incompatibilities fail
 explicitly, and test-only bridges are not production support. Do not infer a
 complete pre-execution policy barrier or command-level sandbox admission from
@@ -141,15 +149,13 @@ Service. Guarded routing does not guarantee a physical process singleton during
 Kubernetes node partitions or manual replacement; the
 [Compute reference](../drivers/kubernetes-compute.md#execution-modes) records that
 limitation. Embedded OpenClaw receives only its operator-owned API
-key in its combined gateway/Harness. Dedicated Codex receives either its
-Secret-backed API key or its bound account's directly projected access
-token only in its separate workload, and uses authenticated WebSocket
-transport. A dedicated
-replacement app-server can start idle before the current workload is retired.
+key in its combined gateway/Harness. Direct delivery gives dedicated Codex
+its Secret-backed API key or projected access token in its separate workload.
+The managed Proxy path gives it a placeholder. Dedicated Codex uses authenticated
+WebSocket transport. A dedicated replacement app-server can start idle before the current workload is retired.
 Existing claim-fenced worker reconciliation allows temporary unavailability but
-fails closed across Agent and Namespace boundaries. Brokered credentials,
-workload-bound transport authentication, and restricted model egress remain
-future work.
+fails closed across Agent and Namespace boundaries. General model credential
+mediation and workload-bound transport authentication remain design requirements.
 
 OpenShell treats the AgentRevision as its containment boundary. It provisions
 one Sandbox for the dedicated Harness, disables nested Codex containment, and

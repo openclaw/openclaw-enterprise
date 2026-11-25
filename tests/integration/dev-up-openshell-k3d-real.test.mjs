@@ -12,7 +12,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { verifyPreloadedAgentSandbox } from "../../scripts/ci/agent-sandbox.ts";
 import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   assertOpenShellOwnerModelSelection,
@@ -36,6 +35,21 @@ const devUp = join(repository, "scripts", "dev-up");
 const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
+
+function assertStockOpenShellImages() {
+  for (const selector of [
+    "GATEWAY_IMAGE",
+    "SANDBOX_IMAGE",
+    "SUPERVISOR_IMAGE",
+    "SOURCE_REVISION",
+  ]) {
+    const name = `OCC_DEVELOPMENT_OPENSHELL_${selector}`;
+    assert.ok(
+      process.env[name] === undefined,
+      `The stock OpenShell fixture requires ${name} to be unset.`,
+    );
+  }
+}
 
 async function startDevelopment(environment, args = []) {
   try {
@@ -248,6 +262,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertStockOpenShellImages();
     assertOpenShellOwnerModelSelection(process.env);
     await access(occ);
     // LocalSetup requires a canonical parent; macOS temporary roots may be symlinks.
@@ -340,7 +355,7 @@ test(
       ],
       { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
     );
-    const stockChartVersion = "0.1.8";
+    const stockChartVersion = "0.1.9";
     const chartMetadataError = `Unexpected chart package or metadata for openshell-gateway. Check for helm-chart-${stockChartVersion}.`;
     let releases;
     try {
@@ -865,9 +880,7 @@ test(
       "the regular OCC workflow must observe the bootstrap Namespace as ready",
     );
 
-    // The generated Installation selects the OpenShell Credential Gateway, so the CLI's
-    // credential-source commands must reach the live gateway through the API. The value is
-    // synthetic: registration stores it in OpenShell without contacting the model provider.
+    // Registration gives OCC TokenService custody. Delivery to OpenShell starts at deployment.
     const cli = async (...args) =>
       JSON.parse(
         (
@@ -879,40 +892,43 @@ test(
         ).stdout,
       );
     const syntheticKey = `sk-oce-dev-up-${randomUUID()}`;
-    const secretFile = join(root, "credential-source-secret.json");
-    await writeFile(secretFile, JSON.stringify({ name: `openai-${suffix}`, value: syntheticKey }), {
-      mode: 0o600,
-    });
-    const secret = await cli("secret", "create", "--file", secretFile);
-    await rm(secretFile);
     const sourceFile = join(root, "credential-source.json");
     await writeFile(
       sourceFile,
       JSON.stringify({
         name: `openai-${suffix}`,
-        type: "openai",
-        secrets: { api_key: secret.ref },
+        type: "static",
+        config: { provider_preset: "openai" },
+        secret: syntheticKey,
       }),
+      { mode: 0o600 },
     );
     const source = await cli("credential-source", "create", "--file", sourceFile);
+    await rm(sourceFile);
     assert.match(source.id, /^cs_/);
+    assert.equal(source.type, "static");
     assert.equal(source.state, "ready");
-    assert.deepEqual(source.status, { state: "ready" });
+    assert.equal(source.config.provider_preset, "openai");
     assert.equal(JSON.stringify(source).includes(syntheticKey), false);
     const observed = await cli("credential-source", "get", source.id);
-    assert.deepEqual(observed.status, { state: "ready" });
+    assert.equal(observed.state, "ready");
+    assert.equal(observed.id, source.id);
+    assert.equal(JSON.stringify(observed).includes(syntheticKey), false);
     assert.deepEqual(
       (await cli("credential-source", "list")).map(({ id }) => id),
       [source.id],
     );
-    // The gateway copy lives in the Namespace's own OpenShell Workspace under an OCC-owned name.
-    const providerName = openShellProviderName(source.id);
-    const provider = await gateway.getProvider(
+    // An unbound Source stays in TokenService. No Provider delivery copy should exist.
+    const providers = await gateway.listProviders(
       createdPhysicalNamespace,
-      providerName,
       AbortSignal.timeout(10_000),
     );
-    assert.equal(provider?.name, providerName);
+    assert.equal(
+      providers.some(
+        (provider) => provider.labels["openclaw.dev/credential-source-id"] === source.id,
+      ),
+      false,
+    );
 
     // Agents need exact operate on a source before deployment, so Namespace IAM must accept
     // credential_source Roles through the same CLI and API path an operator uses.
@@ -928,41 +944,9 @@ test(
     assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "credential_source" }]);
     await cli("iam", "role", "delete", role.id);
 
-    // A referenced Secret cannot be deleted while its source exists; deleting the source
-    // removes the gateway copy, after which the Secret is unreferenced again.
-    await assert.rejects(cli("secret", "delete", secret.id), /409|RESOURCE_CONFLICT/);
-    // Right after registration, DELETE removes the copy but keeps the record: a timed-out
-    // registration could still create a copy, so OCC finalizes only after its fence window.
-    await assert.rejects(
-      cli("credential-source", "delete", source.id),
-      /503|DEPENDENCY_UNAVAILABLE/,
-    );
-    assert.equal(
-      (await cli("credential-source", "get", source.id)).state,
-      "deleting",
-      "an early deletion must keep the cleanup record",
-    );
-    const fenceDeadline = Date.now() + 120_000;
-    for (;;) {
-      try {
-        await cli("credential-source", "delete", source.id);
-        break;
-      } catch (error) {
-        if (Date.now() > fenceDeadline || !/503|DEPENDENCY_UNAVAILABLE/.test(String(error))) {
-          throw error;
-        }
-        await delay(5_000);
-      }
-    }
-    assert.equal(
-      await gateway.getProvider(
-        createdPhysicalNamespace,
-        providerName,
-        AbortSignal.timeout(10_000),
-      ),
-      undefined,
-    );
-    await cli("secret", "delete", secret.id);
+    // The unbound Source can be retired immediately through its owner.
+    await cli("credential-source", "delete", source.id);
+    assert.deepEqual(await cli("credential-source", "list"), []);
     await verifyOpenShellOwnerSession({
       t,
       cluster,
@@ -984,6 +968,7 @@ test(
     timeout: 1_200_000,
   },
   async (t) => {
+    assertStockOpenShellImages();
     await access(occ);
     const root = await mkdtemp(
       join(await realpath(tmpdir()), "oce-dev-up-openshell-compose-real-"),
