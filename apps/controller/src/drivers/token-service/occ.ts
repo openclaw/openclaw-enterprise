@@ -480,7 +480,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     }
     const scope = admitGitHubAppSourceScope(input, githubApp.registry);
     return this.state.transact(async ({ namespaces, credentialClients, credentialSources }) => {
-      const namespace = await namespaces.lockNamespace(ref.namespaceId);
+      const namespace = await namespaces.findNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
       }
@@ -825,7 +825,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     const stored = this.storageRef(ref);
     const committed = await this.state.transact(
       async ({ namespaces, credentialClients, credentialSources }) => {
-        const namespace = await namespaces.lockNamespace(ref.namespaceId);
+        const namespace = await namespaces.findNamespace(ref.namespaceId);
         const current = this.ownedSource(
           await credentialSources.lockCredentialSource(ref.namespaceId, ref.id),
         );

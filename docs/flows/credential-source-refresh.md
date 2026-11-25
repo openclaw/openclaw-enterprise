@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-11-25
-last_updated_session: authoring-run/cae72b5b-c098-4c15-a63c-bf2123a040cc
+last_updated_session: authoring-run/766ab89a-82e8-4ebd-a059-feb8e25bf96b
 ---
 
 # Credential source refresh Flow
@@ -183,12 +183,13 @@ the record `deleting` for retry.
 ### 6. Issue and renew a GitHub installation token
 
 `apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource` reads
-the GitHub App Client from OCC's Credential Client repository without locking the
-Client row. TokenService resolves the Client's private signing key and uses it to
-sign an App JWT. It requests an installation token for the Source's exact repository
-and permission scope, then verifies the returned scope and expiry. The Source
-keeps the short-lived token in private TokenService custody. The App key stays
-with the Client.
+the GitHub App Client from OCC's Credential Client repository. It checks Namespace
+readiness without holding a Namespace or Client lock during the GitHub exchange.
+TokenService resolves the Client's private signing key and signs an App JWT. It
+requests an installation token for the Source's exact repository and permission
+scope, then verifies the returned scope and expiry. The Source repository locks
+and checks the Namespace when saving the Source. TokenService stores the short-lived
+token separately from the Client's signing key.
 
 The API runs Git maintenance every five seconds and considers renewal 45 seconds
 before expiry. After committing a replacement, TokenService pushes its version
@@ -228,7 +229,7 @@ delivery and the separately qualified protected Git transport.
 
 ## Changelog
 
-- 2026-11-25 11:00: Separate Credential Client persistence and read the App Client without an enrollment lock. (authoring-run/cae72b5b-c098-4c15-a63c-bf2123a040cc - 2eca216a8438d494068af7692b37847d529379ad)
+- 2026-11-25 11:06: Separate Credential Client persistence and move Namespace locking after GitHub minting. (authoring-run/766ab89a-82e8-4ebd-a059-feb8e25bf96b - 04600d811b785bbf485ed35a58962fcf0a1b8fb8)
 
 - 2026-11-24 10:41: Keep Gateway refresh behavior and link new Codex login to its TokenService owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
