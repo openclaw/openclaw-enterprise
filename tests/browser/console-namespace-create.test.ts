@@ -229,13 +229,17 @@ test("a failed Namespace access check does not interrupt a press on Done", async
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const name = page.getByLabel("Namespace name");
+  await name.fill("New team");
+  // The initial list has loaded. Only hold the read after creation.
   const url = `${fixture.origin}/namespaces`;
   const read = await holdRequests(t, page, url, {
     method: "GET",
     once: true,
     fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
   });
-  await submitCreate(page, "New team");
+  await name.press("Enter");
   await read.requested;
   const confirmation = page.getByRole("dialog", { name: "Namespace created", exact: true });
   const done = confirmation.getByRole("button", { name: "Done" });
