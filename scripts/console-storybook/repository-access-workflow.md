@@ -70,6 +70,17 @@ the query with `application`. Matching repository choices return and the help
 disappears. Compare with **Repository discovery pending** and **Repository
 discovery denied**, which display their own status instead.
 
+## Repository search keyboard
+
+Open **Pages / Create Agent / Repository Exact Search**
+(`pages-create-agent--repository-exact-search`). With `application` in the search field and
+both exact matches unchecked, press and hold Enter. Only `omega/application`
+should become selected, even while the key repeats. Release Enter and press it
+again to select `zeta/application`. Reset the story, then use Enter to commit
+text with an input method in the search field. Committing text must neither
+select a repository nor submit the form. These checks change only the unsaved
+selection and do not grant access or create an Agent.
+
 ## First-deployment warning
 
 Open **GitHub repository access** under **Pages / Create Agent**
