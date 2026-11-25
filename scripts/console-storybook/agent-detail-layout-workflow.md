@@ -153,26 +153,23 @@ Cleanup updates do not trigger more checks. The story simulates both responses.
    read-only caller**, it asks you to ask someone who can edit the
    Configuration and offers no settings link.
 5. Open **Components / Workspace / Workspace Navigation** (Keep unsaved files).
-   Clear User context.
-   Switch files and check their role descriptions and Unsaved indicators.
-   Check that selection survives switching Agent tabs. Select Instructions,
-   open Namespaces and go Back. The draft survives and warns that AGENTS.md
-   changed. Enter `Previous guidance` and repeat that round trip. The warning
-   stays visible and Save stays enabled. Enter `Updated guidance` to match
-   the simulated file. The warning clears and Save is disabled. Edit and save
-   AGENTS.md, then reload USER.md. Each action affects only its file.
-6. Repeat file selection on a phone using **Workspace file**. Check the editor
-   fits the screen. Check Missing file, Save needs Agent operate, Write outcome
-   unknown, and Reread keeps a focused editor's caret. A deployment poll must
-   preserve the selected file, caret, and unsaved content.
-   Check **Components / Workspace / Reread after a version change**: a confirmed
-   missing file shows **Missing** in the tabs and phone picker. The browser
-   regression also checks that a later missing-file response clears a previous
-   **Needs attention** indicator.
-   Check **Components / Workspace / Gateway unreachable**: one notice above the
-   files names the four files, each file shows the reason under its editor, and
-   no file shows **Needs attention**. Choose **Retry**; the notice goes and the
-   four files load.
+   Clear User context. Switch files and check descriptions and Unsaved indicators.
+   Switching Agent tabs keeps the file selection. Select Instructions, open
+   Namespaces and go Back. Check the draft and the warning that AGENTS.md changed.
+   Enter `Previous guidance` and repeat. The warning stays and Save remains enabled.
+   Enter `Updated guidance`. The warning clears and Save becomes disabled.
+   Edit and save AGENTS.md, then reload USER.md. Each action affects only its file.
+6. On a phone, select files with **Workspace file**. Check that the editor fits.
+   In **Write outcome unknown**, choose **Check save**. Compare both texts,
+   combine the edits and choose **Save**. Only Save sends a write.
+   Check **Missing file**, **Save needs Agent operate** and **Reread keeps a
+   focused editor's caret**. Deployment polls preserve selection, caret and edits.
+   In **Reread after a version change**, IDENTITY.md stays **Missing**
+   in the tabs and phone picker. The browser test also covers recovery
+   from **Needs attention**.
+   In **Gateway unreachable**, one notice names all four files. Each editor shows
+   the reason without a **Needs attention** badge. **Retry** clears the notice
+   and loads all four files.
 7. Open **Pages / Agent detail / New version in progress, then current**. Follow
    its reset steps to check **Refresh deployment** with a stationary pointer
    through completion and the delayed overview reread. Repeat with a click during

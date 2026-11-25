@@ -1,7 +1,7 @@
 ---
 created: 2026-10-25
-updated: 2026-11-23
-last_updated_session: authoring-run/d5788be8-adbb-4923-8e01-9076e9336b0b
+updated: 2026-11-25
+last_updated_session: authoring-run/2670875e-4890-4aa5-8759-7d812beb4d6e
 ---
 
 # Console Agent workspace files
@@ -23,7 +23,7 @@ Agent's workspace. See the [parent flow](../platform-console.md) and
 ```mermaid
 graph TD
   A["Open Workspace tab"] -->|no selected version| U["Files unavailable; no request"]
-  A -->|selected version| R["GET each supported file"]
+  A -->|selected version| R["GET requested workspace files"]
   R -->|contents| E["Editor with baseline"]
   R -->|exact missing-file 404| M["Empty editor; Save creates it"]
   R -->|denied or generic 404| D["Editor and Save disabled; reason under the file"]
@@ -37,8 +37,15 @@ graph TD
   V -->|read fails| F["Needs attention; keep editor"]
   F -->|later confirmed missing| M
   S -->|filename confirmed| E
-  S -->|outcome unknown| L["Save disabled until Reload"]
-  L --> R
+  S -->|outcome unknown| L["Keep edits and disable Save"]
+  L -->|Check save| C["GET current file and keep edits"]
+  C -->|matches edits| E
+  C -->|differs| B["Compare current contents with edits"]
+  B -->|operator chooses Save| S
+  C -->|exact missing-file 404| K["Keep edits ready to create file"]
+  K -->|operator chooses Save| S
+  C -->|read fails| L
+  L -->|Reload and discard edits| R
 ```
 
 ## Execution Trace
@@ -53,8 +60,8 @@ keeps the editors, focus and caret, rereading unedited files in place; gaining o
 The desktop tab list or phone **Workspace file** picker selects one editor and shows
 the file's role. Selection uses the Agent-scoped draft store, so returning to the tab
 restores it. Switching files sends no write and keeps each file's unsaved text.
-Per-file indicators show unsaved, loading, missing, denied, and uncertain-save states;
-Save and Reload apply only to the selected file.
+Per-file indicators show unsaved, loading, missing, denied, and uncertain-save states.
+Save, Check save and Reload apply only to the selected file.
 `workspace.mts:renderWorkspaceFiles` updates both indicators when a reread confirms
 that a file is still missing after a transient failure. **Needs attention** returns
 to **Missing**, while the editor stays empty and ready to create the file.
@@ -90,14 +97,20 @@ that fail together are announced once. If focus was on **Retry**, it returns
 there when a read fails again, or moves to the file tabs or the phone picker when
 the notice goes.
 
-**Retry** does not read a file that has unsaved edits or an unknown save outcome.
-The notice does not name that file. The file is marked **Needs attention** or
-**Check save** until the operator chooses its **Reload**, which replaces the edits.
+**Retry** skips files with unsaved edits or an unknown save outcome.
+The notice lists only the files it will read.
 
-**Save** sends `PUT` with `{ content }` for that file and checks the returned filename. Saving neither patches Configuration nor admits
-a version. If the outcome is unknown, **Save** stays disabled until the operator chooses
-**Reload** and the controller returns the file contents or that same missing-file
-response. The editor never repeats the write automatically.
+**Save** sends the selected file's contents in a `PUT` and checks the returned
+filename. The write leaves Configuration and Agent versions unchanged.
+If the result is unknown, the editor keeps the draft and disables **Save**.
+
+**Check save** reads that file once. If its text matches the draft, there is
+nothing to save. If another writer changed the file, the editor shows their
+text below the draft. A user with permission can combine the edits and save,
+or create the file if the controller confirms it is missing. A failed check
+keeps **Save** disabled. A read shows the file at that moment and cannot
+identify which write produced it. Only the user can send another write.
+**Reload** discards the draft when it loads the file or confirms its absence.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -111,8 +124,9 @@ deployment.
 
 - A missing file is confirmed only by the exact `404` described above; any other
   failure keeps **Save** disabled.
-- After an unknown write outcome, choose **Reload** and compare the returned contents
-  before saving again.
+- After an unknown write outcome, choose **Check save**. The `GET` keeps the edits
+  and compares them with the current file. Choose **Save** again only after reviewing
+  a difference or confirmed absence. **Reload** discards the edits.
 
 ## Related docs
 
@@ -124,6 +138,8 @@ deployment.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 06:47: Document Check save, retained edits, current-content comparison, manual retry and the Reload alternative. Accompanying uncommitted changes. (authoring-run/2670875e-4890-4aa5-8759-7d812beb4d6e - 738d973508be39f8c8f426d7e4688d209d094404)
 
 - 2026-11-23 08:40: Document the reason under each file, the notice that names the files Retry reads again, and the files Retry does not read. Accompanying uncommitted changes. (authoring-run/d5788be8-adbb-4923-8e01-9076e9336b0b - c7b58d62b900589c88f55ec8604a24ef4232738f)
 

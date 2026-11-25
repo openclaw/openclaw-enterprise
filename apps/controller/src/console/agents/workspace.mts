@@ -63,7 +63,6 @@ interface WorkspaceContext {
 
 interface WorkspaceDraft {
   text: string;
-  baseline: string | undefined;
   editBaseline: string | undefined;
   outcomeUnknown: boolean;
 }
@@ -90,6 +89,7 @@ export function workspaceFileProblem(name: string, content: string) {
   return "";
 }
 
+const CHECK_SAVE_HELP = "Use Check save to compare the current file with your edits.";
 const WORKSPACE_GATEWAY_UNAVAILABLE =
   "Workspace files could not be reached: the Agent's gateway did not answer. Check that the Agent is running, then reload this file. If it continues, ask an operator to check the gateway.";
 const WORKSPACE_API_UNREACHABLE =
@@ -119,8 +119,7 @@ function fileError(error: FileFailure, writing: boolean, failure: unknown) {
       "The file was rejected. Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.";
   }
   if (writing && unanswered(error.status)) {
-    text =
-      "Outcome unknown. Your write may have succeeded. Reload this file and review its current contents before saving again.";
+    text = `Outcome unknown. Your write may have succeeded. ${CHECK_SAVE_HELP}`;
   }
   return withRequestId(text, error.requestId);
 }
@@ -350,14 +349,30 @@ export function renderWorkspaceFiles(
       disabled: true,
       "aria-describedby": `workspace-${name}-hint ${description.id}`,
     });
+    const current = element("textarea", {
+      id: `workspace-current-${name}`,
+      rows: "3",
+      readonly: true,
+    });
+    const comparison = element(
+      "div",
+      { className: "form-field", hidden: true },
+      element("label", { for: current.id }, `Current contents of ${name}`),
+      current,
+    );
     const status = element("p", { className: "hint", role: "status" }, `Loading ${name}…`);
     const errorNotice = statusBlock("danger", null, null);
     let pending = false;
     let loaded = false;
     let baseline: string | undefined;
+    // An explicit create can contain zero bytes, even though an untouched missing file looks empty.
+    let keepMissingDraft = false;
+    const hasEdits = () =>
+      editor.value !== (baseline ?? "") || (baseline === undefined && keepMissingDraft);
     // Save compares against the latest read. A dirty draft keeps the version its edits began on.
     let editBaseline = retained?.editBaseline;
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
+    let checkedDraft = false;
     let writing = false;
     let initialized = false;
     // Counts reads and saves, so an in-place reread never overwrites a later answer.
@@ -369,15 +384,20 @@ export function renderWorkspaceFiles(
       if (!loaded && !initialized) {
         return retained;
       }
-      return writing || outcomeUnknown || editor.value !== (baseline ?? "")
-        ? { text: editor.value, baseline, editBaseline, outcomeUnknown: outcomeUnknown || writing }
+      // A reopened editor must check a previous version's comparison again.
+      const needsCheck = outcomeUnknown || writing || checkedDraft;
+      return needsCheck || hasEdits()
+        ? { text: editor.value, editBaseline, outcomeUnknown: needsCheck }
         : undefined;
     });
     // A secondary button: the view's one primary action is the draft's Deploy new version or
     // a deployment recovery, not each file's Save (finding 1968).
     const save = element("button", { type: "submit", disabled: true }, `Save ${name}`);
-    const reload = button(`Reload ${name}`, () => void load(true));
+    const reload = button(`Reload ${name}`, () => void load("reload"));
+    const check = button("Check save", () => void load("check"));
     const changedFile = `${name} changed since you started editing. Save replaces the current file with your edits. Reload discards your edits.`;
+    const matchesDraft = `${name} matches your edits.`;
+    const versionChanged = "The Agent version changed. Check save again to read the current file.";
     const missingCreate = `${name} is missing. Save to create it.`;
     const missingText = () => (operateDenied ? `${name} is missing.` : missingCreate);
     const form = element(
@@ -396,7 +416,8 @@ export function renderWorkspaceFiles(
       ),
       status,
       errorNotice,
-      element("div", { className: "form-actions" }, reload, save),
+      comparison,
+      element("div", { className: "form-actions" }, check, reload, save),
     );
     const panel = element(
       "div",
@@ -415,6 +436,8 @@ export function renderWorkspaceFiles(
       // The file stays readable and selectable, but an edit no Save can keep is not offered.
       editor.readOnly = operateDenied;
       reload.disabled = pending;
+      check.hidden = !outcomeUnknown;
+      check.disabled = pending;
       // aria-disabled, not disabled: Save stays in the Tab order and its description names the
       // grant it needs. The submit handler ignores it.
       save.disabled =
@@ -426,9 +449,16 @@ export function renderWorkspaceFiles(
         save.removeAttribute("aria-disabled");
         save.removeAttribute("aria-describedby");
       }
-      const dirty = loaded && editor.value !== (baseline ?? "");
+      const dirty = loaded && hasEdits();
+      comparison.hidden =
+        !dirty || outcomeUnknown || baseline === undefined || baseline === editBaseline;
+      const compared = comparison.hidden ? "" : (baseline ?? "");
+      if (current.value !== compared) {
+        current.value = compared;
+      }
       if (loaded && !dirty && !outcomeUnknown) {
         editBaseline = baseline;
+        checkedDraft = false;
         if (status.textContent === changedFile) {
           status.textContent = "";
         }
@@ -473,6 +503,9 @@ export function renderWorkspaceFiles(
       updateControls();
     });
     editor.addEventListener("input", () => {
+      if (status.textContent === matchesDraft) {
+        status.textContent = "";
+      }
       editor.setCustomValidity("");
       updateControls();
     });
@@ -484,7 +517,7 @@ export function renderWorkspaceFiles(
         target.focus();
       }
     };
-    async function load(discard = false) {
+    async function load(mode: "open" | "reload" | "check" = "open") {
       if (pending || !context.isCurrent()) {
         return;
       }
@@ -498,33 +531,49 @@ export function renderWorkspaceFiles(
       updateControls();
       errorNotice.textContent = "";
       status.textContent = `Loading ${name}…`;
-      try {
-        const content = await readFile();
-        if (!context.isCurrent()) {
+      function receive(content: string | undefined) {
+        if (mode === "check" && refreshAfterPending) {
+          status.textContent = versionChanged;
           return;
         }
-        editor.value = content;
-        // Compare edits in the textarea's LF representation; reading never rewrites the file.
-        baseline = editor.value;
-        // A file read without an input event drops the last check's error with its validity.
+        const restore = mode === "open" && !initialized && retained !== undefined;
+        const keep = mode === "check" || restore;
+        // The editor uses LF. Keep an absent file distinct from a file with zero bytes.
+        baseline = content?.replace(/\r\n?/g, "\n");
+        keepMissingDraft = keep && baseline === undefined;
+        if (!keep) {
+          editor.value = baseline ?? "";
+        } else if (!initialized && retained) {
+          editor.value = retained.text;
+        }
+        loaded = true;
+        initialized = true;
+        outcomeUnknown = restore && retained.outcomeUnknown;
+        checkedDraft = mode === "check" && hasEdits();
         editor.setCustomValidity("");
         setFieldError(editor, "");
-        loaded = true;
-        outcomeUnknown = false;
-        status.textContent = `${name} loaded.`;
-        if (!discard && retained && !initialized) {
-          editor.value = retained.text;
-          outcomeUnknown = retained.outcomeUnknown;
-          if (outcomeUnknown) {
-            status.textContent = "Outcome unknown. Reload this file before saving again.";
-          } else if (editor.value !== baseline) {
+        if (outcomeUnknown) {
+          status.textContent = `Outcome unknown. ${CHECK_SAVE_HELP}`;
+        } else if (baseline === undefined) {
+          status.textContent = missingText();
+        } else if (keep && hasEdits()) {
+          if (baseline !== editBaseline) {
+            status.textContent = changedFile;
+          } else {
             status.textContent =
-              baseline === editBaseline
-                ? "Unsaved edits restored. Reload replaces them with the current file."
-                : changedFile;
+              mode === "check"
+                ? `${name} still contains the text you started with. Your edits are kept.`
+                : "Unsaved edits restored. Reload replaces them with the current file.";
           }
+        } else {
+          status.textContent = mode === "check" ? matchesDraft : `${name} loaded.`;
         }
-        initialized = true;
+      }
+      try {
+        const content = await readFile();
+        if (context.isCurrent()) {
+          receive(content);
+        }
       } catch (failure) {
         if (!context.isCurrent()) {
           return;
@@ -534,26 +583,22 @@ export function renderWorkspaceFiles(
           context.onExpired();
           return;
         }
-        // Explicit Reload can settle an unknown write only when the API confirms file absence.
-        const canCreate = confirmsMissingFile(cause) && (discard || !outcomeUnknown);
-        if (canCreate) {
-          editor.value = !discard && retained ? retained.text : "";
-          baseline = !discard && retained ? retained.baseline : undefined;
-          initialized = true;
-          editor.setCustomValidity("");
-          setFieldError(editor, "");
-          loaded = true;
-          outcomeUnknown = false;
+        if (confirmsMissingFile(cause)) {
+          receive(undefined);
         } else {
           loaded = false;
-        }
-        status.textContent = canCreate ? missingText() : "";
-        errorNotice.textContent = canCreate ? "" : fileError(cause, false, failure);
-        // Retry never replaces unsaved edits or settles an unknown save. A file that holds
-        // either waits for its own Reload, and Retry reads without Reload's discard, so edits
-        // kept from an earlier visit come back.
-        if (unanswered(cause.status) && !outcomeUnknown && editor.value === (baseline ?? "")) {
-          unreached.set(name, () => load());
+          status.textContent = "";
+          errorNotice.textContent =
+            mode === "check" && unanswered(cause.status)
+              ? withRequestId(
+                  `Could not confirm the current contents of ${name}. Use Check save again.`,
+                  cause.requestId,
+                )
+              : fileError(cause, false, failure);
+          // Section Retry only rereads files without pending edits or an uncertain write.
+          if (unanswered(cause.status) && !outcomeUnknown && !hasEdits()) {
+            unreached.set(name, () => load());
+          }
         }
       } finally {
         reading -= 1;
@@ -562,7 +607,8 @@ export function renderWorkspaceFiles(
           writing = false;
           showUnreached();
           updateControls();
-          returnFocus(held, reload);
+          const checkTarget = outcomeUnknown ? check : editor;
+          returnFocus(held, mode === "check" ? checkTarget : reload);
           // A version change during this request may have been answered by the old version.
           if (refreshAfterPending) {
             refreshAfterPending = false;
@@ -652,16 +698,24 @@ export function renderWorkspaceFiles(
         refreshAfterPending = true;
         return;
       }
+      if (checkedDraft) {
+        // The comparison was against the previous version. Keep the draft until its owner checks again.
+        checkedDraft = false;
+        outcomeUnknown = true;
+        status.textContent = versionChanged;
+        updateControls();
+        return;
+      }
       if (!loaded) {
         // A first read that failed is retried. After an explicit Reload failed, an unknown save
-        // outcome still waits for the reader's next Reload.
-        if (!initialized) {
+        // outcome still waits for an explicit check or Reload.
+        if (!initialized && !outcomeUnknown) {
           await load();
         }
         return;
       }
       const shown = editor.value;
-      if (outcomeUnknown || shown !== (baseline ?? "")) {
+      if (outcomeUnknown || hasEdits()) {
         return;
       }
       // Only a file the API confirms is missing can be edited without a baseline.
