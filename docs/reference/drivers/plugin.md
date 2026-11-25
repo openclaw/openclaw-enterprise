@@ -120,34 +120,26 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Include the target `harnessId` in each request.
-OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
-in Installation capabilities as `required` or `none`. When required, supply
-exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
-use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
-For credential-free discovery, omit all three. For managed MCP details, instead
-provide `managedConnection: {slot, sourceId}`; OCC checks caller Source `operate`
-or, for saved discovery, the verified saved binding and Agent grant before using it.
-For details also provide `pluginId`; for discovery you can provide `q` (up to
-1,024 characters) and `cursor`. The Driver searches the complete catalog; an
-empty query lists it. Keep the same query while paging and omit the cursor when
-changing the query.
-Both routes require Agent `create` in the Namespace. Stored references must
-belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets and the selected Source owner's
-TokenService `resolveCredential` for managed Sources. Legacy Gateway Sources use
-their exact owner's trusted reader or optional `withSourceToken` callback. All
-paths enforce exact owner and Namespace checks.
-OCC checks authorization, source readiness, attachment where required, and the
-selected catalog before retrieval, then rechecks before catalog dispatch.
-Credentials pass to the PluginDriver in server memory; refresh remains with
-its owner. For PAT discovery, the bundled Codex Driver derives the
-account ID from the PAT. Clients do not provide an account ID. A Secret reference
-to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,
-a missing Secret returns `404`. A missing or non-ready explicitly selected
-CredentialSource returns `409 RESOURCE_CONFLICT`. A Secret backend ownership
-mismatch returns `404`, a denied grant returns
-`403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
-`PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
+OCC resolves the catalog before it reads a credential. The selected Driver reports
+`pluginDiscovery.credential` in Installation capabilities as `required` or `none`.
+When required, provide `credentialSource: {kind: "credential_source", namespaceId, id}`
+for a ready Codex account Source in that Namespace. For credential-free discovery,
+omit it. Managed MCP details instead require `managedConnection: {slot, sourceId}`;
+OCC checks caller Source `operate` or, for saved discovery, the verified saved
+binding and Agent grant before using it. The supported slot flow accepts only
+TokenService Sources. An MCP bearer must contain visible ASCII without spaces or control
+characters.
+
+MCP discovery omits names that cannot map to distinct reviewed OpenClaw aliases.
+For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 characters) or
+`cursor` as needed. Keep the same query while paging.
+
+Both pre-Agent routes require Agent `create` in the Namespace. OCC authorizes the
+exact Source, resolves fresh material through its owning TokenService, and rechecks
+access and Source state before dispatch. Credentials and trusted account metadata
+pass to the PluginDriver only in server memory; refresh remains with TokenService.
+A wrong-Namespace reference returns `400 INVALID_REQUEST`; a missing or non-ready
+Source returns `409 RESOURCE_CONFLICT`, and denied Source access returns `403`.
 For details of an ID that a bundled catalog (`occ-plugin` or the curated
 `codex-plugin` catalog) does not offer, the Driver throws the `unknownPlugin`
 refusal that admission uses. OCC returns `400 INVALID_REQUEST` that names the ID
@@ -161,8 +153,7 @@ The controller signals the selected Plugin Driver when the HTTP client
 disconnects during a catalog or detail request for a new or saved Agent.
 Credential values do not appear in catalog responses or audit events; responses
 that echo a credential are rejected. A missing PluginDriver method reports
-unsupported discovery, and a SecretDriver without transient value use cannot
-serve Secret-backed requests. These methods do not require an existing Agent,
+unsupported discovery. These methods do not require an existing Agent,
 plugin installation, or runtime connection.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 

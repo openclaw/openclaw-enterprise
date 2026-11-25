@@ -108,7 +108,7 @@ import {
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
 import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
-import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
+import { discoverManagedMcpToolNames } from "./drivers/plugin/managed-mcp-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import type { ControllerWorkspaceFilesAccess } from "./gateway/contracts.ts";
 import { normalizeNativeAdminDomain } from "./gateway/native-admin.ts";
@@ -224,7 +224,7 @@ export interface ControllerAppOptions {
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
-  readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
+  readonly readManagedMcpToolNames?: typeof discoverManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Private Agent gateway transport credential, shared by native browser and HTTP chat relays. */
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
@@ -1975,7 +1975,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                     }),
               },
               pluginDiscoveryRequestSignal(reply),
-              options.readManagedMcpToolNames ?? listManagedMcpToolNames,
+              options.readManagedMcpToolNames ?? discoverManagedMcpToolNames,
             );
       reply.header("cache-control", "no-store");
       reply.send({ data: result, meta: { requestId: request.id } });
@@ -2019,7 +2019,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         body as DiscoverSavedAgentPluginDetailsBody,
         pluginDiscoveryRequestSignal(reply),
-        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
+        options.readManagedMcpToolNames ?? discoverManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });

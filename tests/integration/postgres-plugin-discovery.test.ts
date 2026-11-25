@@ -7,7 +7,7 @@ import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-ses
 import { installationRoles } from "../helpers/postgres-sign-in-installation.ts";
 import { OAuthAccountTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
-import { listManagedMcpToolNames } from "../../apps/controller/src/connections/mcp-tool-discovery.ts";
+import { discoverManagedMcpToolNames } from "../../apps/controller/src/drivers/plugin/managed-mcp-discovery.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -155,9 +155,9 @@ test(
             endpoint: string,
             accessToken: string,
             signal?: AbortSignal,
-            options?: Parameters<typeof listManagedMcpToolNames>[3],
+            options?: Parameters<typeof discoverManagedMcpToolNames>[3],
           ) {
-            return listManagedMcpToolNames(endpoint, accessToken, signal, {
+            return discoverManagedMcpToolNames(endpoint, accessToken, signal, {
               ...options,
               resolveHost: transport.resolveHost,
               async fetch(target, request) {
@@ -186,7 +186,16 @@ test(
                         capabilities: { tools: {} },
                         serverInfo: { name: "controlled MCP peer", version: "1" },
                       }
-                    : { tools: [{ name: "slack_search_public", inputSchema: { type: "object" } }] };
+                    : {
+                        tools: [
+                          "slack_search_public",
+                          "slack_read_emoji",
+                          "slack.search",
+                          "x".repeat(55),
+                          "case_collision",
+                          "CASE_COLLISION",
+                        ].map((name) => ({ name, inputSchema: { type: "object" } })),
+                      };
                 return Response.json(
                   { jsonrpc: "2.0", id: message.id, result },
                   { headers: { "mcp-session-id": "controlled-session" } },
@@ -543,7 +552,7 @@ test(
     assert.equal(prospectiveDiscovery.statusCode, 200, prospectiveDiscovery.body);
     assert.deepEqual(
       prospectiveDiscovery.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     assert.ok(peerMethods.length > 0, "the controlled MCP peer received authenticated requests");
     const explicit = [{ sourceId: modelId }];
@@ -742,7 +751,7 @@ test(
     assert.equal(prospectiveTools.statusCode, 200, prospectiveTools.body);
     assert.deepEqual(
       prospectiveTools.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     assert.ok(peerMethods.length > 0);
     assert.ok(
@@ -855,7 +864,7 @@ test(
     await setSavedRelease(slack.releaseSha256);
     assert.deepEqual(
       delegatedTools.json().data.tools.map((tool: { name: string }) => tool.name),
-      ["slack_search_public"],
+      ["slack_search_public", "slack_read_emoji"],
     );
     const updated = await memberPatch({ configurationId, pluginApprovers: [] });
     assert.equal(updated.statusCode, 200, updated.body);
@@ -930,6 +939,7 @@ test(
       );
       assert.ok(injection);
       const endpoint: ConnectionEndpoint = selectedId === sourceId ? slack.endpoint : gmail;
+      // Emoji was discovered but left unselected; the exact policy must authorize only search.
       const policies: DeploymentRequestPolicy[] =
         selectedId === sourceId
           ? [
