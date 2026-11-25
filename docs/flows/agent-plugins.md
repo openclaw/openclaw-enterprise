@@ -31,11 +31,10 @@ graph TD
   E0 -->|managed MCP| M0["Check current Source or verified Agent binding"] --> D5
   E0 -->|credentialSource| E1
   D1 -->|stored source or managed connection| D2["Caller Source operate"] --> D6["Select Harness catalog"]
-  D1 -->|token or none| D6
+  D1 -->|no credential| D6
   D6 -->|unsupported| D7["Unsupported"]
-  D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check Source and selected owner; resolve unless canceled"]
+  D6 -->|credentialless catalog| D4["Call PluginDriver"]
+  D6 -->|TokenService Source| D9["Check Source and owner, then resolve"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]

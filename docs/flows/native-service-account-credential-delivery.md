@@ -8,10 +8,12 @@ last_updated_session: authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e
 
 ## Overview
 
-Select an OCC Secret, managed CredentialSource, or ChatGPT account credential through Agent `harnessAuth`.
-Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
-renders the credential only into the model-executing workload, which
-authenticates before guarded activation. SSH `runtime` binds operator credentials and checks gateway readiness without model authentication.
+Select an OCC Secret or TokenService Credential Source through Agent `harnessAuth`.
+Deployment freezes the authorized binding and the Worker rechecks it. Kubernetes
+projects a direct Secret into the model-executing workload. For a managed Source,
+Credential Proxy serves the admitted model requests and the Sandbox receives a
+placeholder. The workload authenticates before activation. SSH `runtime` uses
+operator credentials and checks Gateway readiness without model authentication.
 
 TokenService owns Codex OAuth grants. See the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
 
@@ -21,40 +23,38 @@ TokenService owns Codex OAuth grants. See the [launch limits](../reference/drive
   exact-Agent deployment action.
 - Sources: `packages/occ/src/agent-drafts.ts:createAgent`, `updateAgent`,
   and `packages/occ/src/agent-deployment-admission.ts:admitAgentDeployment`.
-- Assumptions: ready Namespace at deployment, same-Namespace source, existing
-  Secret value or issued account credential, exact actor permissions, a compatible
+- Assumptions: ready Namespace at deployment, same-Namespace Secret or ready
+  Source, exact actor permissions, a compatible
   configured Harness/model, and selected Compute support.
 
 ## Flow
 
 ```mermaid
-graph TD
-  A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
-  DA["TokenService completes device login"] -.-> B
-  G -->|Codex OAuth Source| OA["Sandbox supplies placeholder<br/>and account metadata"]
-  OA --> J
-  R["Operator provisions protected host env"] --> B
-  D -->|runtime| S["SSH starts embedded gateway using host env"]
-  S --> T["Check gateway readiness; model auth remains unverified"]
-  TS["Public TokenService Source enrollment"] --> B
-  B -->|TokenService delivery unavailable| TSX["409 before Agent revision"]
-  B -->|supported binding| C["Authorize and freeze binding in Agent revision"]
-  C --> D["Worker rechecks grants and source ownership"]
-  D -->|denied or changed source| E["Reject candidate before projection"]
-  D -->|valid managed source| F["Kubernetes prepares explicit login mode and projections"]
-  F --> G{"Admitted topology"}
-  G -->|embedded API key| H["Create or replace shared gateway with projected key"]
-  G -->|dedicated key or account| I["Only Codex receives model credential"]
-  I --> J{"Login and primary model turn succeed?"}
-  J -->|first model subprocess timeout| P["Wait one second within startup budget"]
-  P --> Q{"Second model probe succeeds?"}
-  Q -->|yes| L
-  Q -->|no| K["Candidate remains unready"]
-  J -->|login or nonretryable failure| K
-  J -->|yes| L["Runtime readiness and guarded activation"]
-  H --> M{"Native primary model probe succeeds?"}
-  M -->|no| N["Gateway stays unready; replacement may interrupt service"]
-  M -->|yes| O["Gateway becomes ready; complete activation"]
+---
+config:
+  htmlLabels: true
+---
+flowchart TB
+  Secret["<b>Namespace Secret</b><br/>API key or imported PAT"] --> Binding
+  Managed["<b>TokenService Source</b><br/>Managed model credential"] --> Binding
+  Host["<b>Protected SSH host</b><br/>Operator supplies host env"] --> Binding
+  Binding["<b>Agent deployment</b><br/>Authorize and save binding"] --> Worker["<b>Worker</b><br/>Recheck authorization"]
+  Worker -->|Namespace Secret| Project["<b>Kubernetes</b><br/>Project into model workload"]
+  Worker -->|TokenService Source| Deliver["<b>Credential Proxy</b><br/>Prepare placeholder delivery"]
+  Worker -->|SSH runtime| Ready["<b>SSH</b><br/>Check Gateway readiness"]
+  Project --> Probe{"Model probe<br/>passes?"}
+  Deliver --> Probe
+  Probe -->|yes| Activate["<b>Activate</b><br/>Mark revision ready"]
+  Probe -->|no| Fail["<b>Hold unready</b><br/>Report runtime failure"]
+
+  classDef input fill:#F1EDF5,stroke:#A392B1,color:#352847,stroke-width:1px
+  classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  class Secret,Managed,Host input
+  class Binding state
+  class Worker,Project,Deliver,Ready,Activate operation
+  class Probe,Fail condition
 ```
 
 ## Execution Trace
@@ -79,13 +79,15 @@ service-account catalogs remain unfiltered. Discovery does not prove a model cal
 `packages/occ/src/harness-auth.ts:authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
-API keys and imported `codex_pat` tokens use stable OCC Secret references and
-require exact Secret `operate`. Managed PATs use ServiceAccount references and
-require exact account `read`. For TokenService Sources, the caller needs
-exact Source `operate` and the Source must belong to the Agent's Namespace and
-the selected TokenService instance. The model Source appears in both
-`harnessAuth` and `credentialSources` on direct Agent writes. Namespace locks
-serialize reference changes against Source deletion.
+On compatible deployments, API keys and imported `codex_pat` tokens use stable
+OCC Secret references and require exact Secret `operate`. Issuing a PAT for an
+OCC-managed ChatGPT ServiceAccount creates a static `codex-pat` Source. Select
+the issued Source by ID. OCC rejects a direct ServiceAccount binding.
+
+The caller needs exact Source `operate`. The Source must belong to the Agent's
+Namespace and the selected TokenService instance. The model Source appears in
+both `harnessAuth` and `credentialSources` on direct Agent writes. Namespace
+locks serialize reference changes against Source deletion.
 
 When PATCH changes Harness authentication but keeps the source list, OCC checks
 the previous Harness source without taking a source row lock. If that source
@@ -102,15 +104,13 @@ credentials and their private Backend binding.
 `credentialSourceHarnessAuthSnapshot`
 
 Deployment requires a nonnull binding, exact Agent `deploy`, and Configuration
-`read`. For a key or service account token, OCC checks the actor's and Agent principal's exact Secret `operate`,
-resolves the backend through the selected Secret Driver, and freezes the stable
-reference and Driver identity. For a ChatGPT account, it verifies the issued
-access-token reference and private Backend, member Driver, and workspace
-ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
-selected Compute validates the combination: SSH accepts only embedded OpenClaw
-with `runtime`. Kubernetes `validateHarnessAuth` requires dedicated Codex for
-both imported and account-issued `codex_pat` credentials. Codex OAuth Sources
-require dedicated Codex and the selected Sandbox and Credential Proxy.
+`read`. For a Secret-backed key or PAT, OCC checks the actor's and Agent
+principal's exact Secret `operate`, resolves the backend through the selected
+Secret Driver, and freezes the reference and Driver identity. `runtime` needs
+no source grant, lookup, or delivery metadata. SSH accepts only embedded
+OpenClaw with `runtime`. Kubernetes requires dedicated Codex for a Secret-backed
+PAT. Managed Codex PAT and OAuth Sources require dedicated Codex, a compatible
+Sandbox, and Credential Proxy.
 Unsupported combinations fail before OCC queues deployment.
 
 For a managed TokenService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the applicable saved or preset network grant. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only.
@@ -120,9 +120,9 @@ redeployment; see the
 [SSH lifecycle](pr-24-ssh-compute.md).
 
 The Agent revision contains references and safe internal metadata, never credential
-bytes. Public serialization exposes the binding but omits backend locators and
-private account ownership. A later account credential cannot replace
-the admitted reference; draft changes affect only the next explicit deployment.
+bytes. Public serialization exposes the binding and omits backend locators and
+private account ownership. Changing the draft binding affects the next explicit
+deployment.
 
 <span id="3-reauthorize-the-immutable-revision-before-effects" class="anchor-alias"></span>
 
@@ -133,21 +133,20 @@ the admitted reference; draft changes affect only the next explicit deployment.
 `apps/controller/src/worker.ts:ControllerWorker.resolveRevisionBackend`,
 `resolveRevisionSecretContext`
 
-The worker authorizes the original deploying actor and required Agent Secret
-grants for the saved version, checks source ownership, and
-matches managed-account credential and Backend metadata against the frozen
-snapshot. Revocation or a changed source rejects work before provisioning.
+The Worker rechecks the original deploying actor's authorization, the Agent's
+exact Secret grants, and Secret ownership against the saved revision. Revocation
+or a changed owner rejects work before projection. For a managed Source, see
+[Worker checks before delivery](credential-source-lifecycle.md#3-prepare-credential-delivery).
 For `runtime`, only Agent/Configuration authorization runs; the dispatch context
 carries only the method, and SSH neither reads the operator credential file nor
 issues a model probe.
 
-For an API key or directly supplied service account token, the worker resolves
+For a Secret-backed API key or PAT, the Worker resolves
 backend ownership from OCC state and passes an ephemeral `ComputeRevisionContext`
 without reading credential bytes or rewriting the Agent revision. Compute then reads
-the canonical CP source, verifies the admitted Secret UID or managed-account
-ownership, and delivers only selected fields into the DP Secret for that Agent revision.
-Missing or replaced sources fail preparation. Managed ChatGPT accounts retain the exact
-token source; their private Backend binding owns workspace metadata.
+the canonical CP source, verifies the admitted Secret UID, and delivers the
+selected fields into the DP Secret for that Agent revision.
+Missing or replaced Secrets fail preparation.
 Previous versions keep references without retaining their sources
 indefinitely; drafts, selected versions, and pending deployments block source deletion.
 
@@ -184,11 +183,14 @@ and Kubernetes workload identity credentials stay separate.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`,
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
-Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; managed and directly supplied service account tokens both use `codex_pat`
-and `--with-access-token`. Native whoami validates and hydrates identity from the
-token, without a runtime workspace override. Credential environment variables
-are deleted before the probe and app-server start. Missing or conflicting
+Codex consumes an explicit `CODEX_LOGIN_MODE`. API-key login receives the key
+through stdin. A Secret-backed PAT uses `codex_pat` and `--with-access-token`.
+For a managed `codex-pat` Source, the launcher writes the placeholder to the PAT
+auth file and runs `codex login status`. Credential Proxy supplies the real PAT
+for the [admitted native requests](../reference/credential-sources/managed-static.md#codex-pat).
+Native whoami validates and hydrates identity from the token without a runtime
+workspace override. The launcher removes credential environment variables before
+the model probe and app-server start. Missing or conflicting
 inputs, failed login, or a failed primary-model probe
 (under the restricted [probe policy](../reference/harness-execution.md#harness-authentication))
 prevent app-server startup and readiness. API-key and service-account login

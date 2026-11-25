@@ -95,18 +95,18 @@ for rejected or uncertain writes.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
-you can browse and select supported plugins without a discovery token. Their tool
-inventory and account access are unknown. In hosted mode, select **Service Accounts** with
-**Codex** and choose a PAT Secret, or enter a token under **Plugin discovery token
-(optional)**. **Previous page** and **Next page** fetch hosted pages; **Filter this
-page** filters locally. PAT catalog search is unavailable.
+you can browse and select supported plugins without a discovery credential. Their
+tool inventory and account access are unknown. For a hosted catalog, complete
+Codex sign-in or [enroll a service account token](../../guides/deploy/credential-lifecycle.md#enroll-a-codex-pat-source)
+as a TokenService Source. **Previous page** and **Next page** fetch hosted pages.
+**Search plugins** queries the catalog. **Filter configured plugins** filters saved selections locally.
 Select a plugin to load tools, then **Add**. Use toggles and **Tool policy** for
 overrides. **Configured plugins** includes selections from other pages. **Done** closes the modal;
 **Create Agent** saves changes.
 
-[Discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
-permission to use any selected Secret. The server reads its value without returning
-it to the browser. Credential, provider, and Harness changes clear results; **Plugin
+Hosted [discovery](../../flows/agent-plugins.md#credential-scoped-discovery) requires
+`credential_source:operate` on the selected Source. The server resolves the
+credential through TokenService. Credential, provider, and Harness changes clear results. **Plugin
 selections JSON** preserves selections separately from Configuration. Check permissions
 or outbound access on failure, then retry. Editing follows installation capabilities
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.

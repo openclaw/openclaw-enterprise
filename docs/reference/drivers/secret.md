@@ -106,15 +106,9 @@ lookup, and reference checks: create a new Secret through the selected driver an
 bind it instead, or delete the old Secret once the Installation selects its
 Driver again. OCC never calls a Driver that does not own the Secret.
 
-For plugin discovery, OCC checks permissions and reads current Secret metadata,
-then calls `withValue` without holding a platform transaction over backend or
-provider I/O. The callback passes the value to the selected PluginDriver and
-does not persist it. Discovery rechecks the caller's grants inside the callback
-before that PluginDriver call; saved-Agent discovery also rechecks the binding. A Driver without this optional
-capability cannot serve Secret-backed discovery. Each request reads the current
-backend value; a concurrent rotation can take effect after an in-flight request
-has already read the prior value. See
-[plugin discovery](plugin.md#selection-and-catalogs).
+Hosted Codex Plugin discovery uses a ready TokenService account Source.
+Curated catalogs can support discovery without a credential. See
+[Plugin discovery](plugin.md#selection-and-catalogs).
 
 To admit a protected static source, OCC checks the caller's `operate` grant on
 the exact Secret and uses the selected provider to validate the value returned

@@ -1,46 +1,112 @@
 # Credential Proxy architecture
 
-For native OpenShell Git, TokenService maintains the Namespace installation
-token, and the Agent revision retains each admitted Repository grant. Credential
-Proxy configures OpenShell to inject that token only for the Agent's approved
-Git requests. See the [native Git flow](../flows/agent-repository-credentials.md#tokenservice-git)
-and [Credential Sources](../reference/credential-sources.md).
+OCC decides which credentials an Agent revision can use. TokenService maintains
+the credentials. Sandbox enforces network access and Credential Proxy configures
+injection for approved requests. In native OpenShell delivery, the Sandbox
+supervisor applies both policies when the Agent sends a request. Network policy
+can allow a request on its own. Injection also requires a match against the
+credential binding's policy.
 
-The diagrams below show protected egress. In that composition, the Worker and
-trusted sender authorize requests through a separate prepared repository session.
+<a id="how-does-the-token-get-there"></a>
 
-## From the user to GitHub
+## Deploy an Agent with credentials
 
-![An Agent with a selected-repository grant is asked to implement a feature and push a branch. The Agent runs git push. The Credential Proxy asks the OCE control plane whether the Agent may push and forwards the request to GitHub only on allow.](../assets/credential-proxy/platform-roles.png)
+1. The operator selects the Sources the Agent needs for its model and Plugin
+   slots. For native Git, the operator selects approved repositories and a
+   GitHub App Client.
+2. OCC checks the caller's and Agent's authority and saves one binding list with
+   the Agent revision. The network policy limits the requests the Agent can
+   send. Each credential injection policy limits the requests that can carry
+   its credential.
+3. Compute prepares an idle Sandbox. Credential Proxy configures injection. For
+   OCC custody, it resolves the Source through TokenService and attaches a
+   delivery Provider. For native custody, it attaches the Source's Provider.
+   OpenShell loads the policies. The Worker rechecks authorization and releases
+   the Agent after Compute confirms policy and delivery are ready. The Harness
+   receives placeholders.
 
-This example uses the selected-repository profile (`github-repository`). The operator chooses which repositories the Agent can use. The Credential Proxy checks the request against that grant through the control plane. If OCE denies the push, the proxy stops it. If OCE allows it, the proxy adds the credential and GitHub applies its own repository rules.
+See [Credential Sources](../reference/credential-sources.md#implementation-status)
+for the supported model, Git, and Plugin paths.
 
+<a id="from-the-user-to-github"></a>
 <a id="how-does-openshell-authorize-a-git-request"></a>
+<a id="how-does-the-credential-proxy-authorize-a-git-request"></a>
 
-## How does the Credential Proxy authorize a Git request?
+## Authorize a native OpenShell Git request
 
-![The Agent runs git push. The Credential Proxy asks the Git transport adapter about the push. The adapter calls the Repository Git authority to check the grant and returns allow or deny. Only on allow does the proxy add the installed token and send.](../assets/credential-proxy/current-git.png)
+For the selected-repository profile (`github-repository`), the operator chooses
+repositories and read or write access. OCC saves those grants with the Agent
+revision. Agents in the Namespace can share a GitHub installation token while
+keeping their own grants. Credential Proxy turns the saved grants into OpenShell
+Git rules and configures the token binding.
 
-In the OpenShell implementation shown here, the supervisor acts as the Credential Proxy. Its `EvaluateHttpRequest` hook sends the attempted request to the OCE worker. The worker checks who called, which credential version the proxy loaded, and whether the grant covers this operation.
+```mermaid
+---
+config:
+  htmlLabels: true
+  flowchart:
+    nodeSpacing: 20
+    rankSpacing: 24
+    subGraphTitleMargin:
+      top: 8
+      bottom: 10
+---
+flowchart TB
+  subgraph Deployment["At deployment"]
+    OCC["<b>OCC</b><br/>Saves repository grants"] --> Proxy["<b>Credential Proxy</b><br/>Installs rules and binding"]
+    TS["<b>TokenService</b><br/>Supplies installation token"] --> Proxy
+  end
+  subgraph Request["On each Git request"]
+    Agent["<b>Agent</b><br/>Sends a Git request"] --> Match{"<b>OpenShell</b><br/>Git rule matches?"}
+    Match -->|Yes| Inject["<b>Inject token</b>"] --> GitHub["<b>GitHub</b><br/>Applies repository rules"]
+    Match -->|No| Deny["<b>Deny request</b>"]
+  end
+  Proxy -->|Installed policy| Match
 
-For selected repositories, the grant names repositories on one GitHub App installation. GitHub enforces the token's permissions and branch rules. An exact-ref write grant also checks the pushed ref. The opt-in installation-wide preview can accept a registration without the required binding fields. In that case, the startup probe shows that the hook ran once. It cannot establish that every later request must use it. The hook's allow reply authorizes the observed request. To find out whether a push succeeded, read back the ref from GitHub. See [OpenShell repository access](../reference/repository-credentials/protected-openshell-git.md).
+  classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef external fill:#F1EDF5,stroke:#A392B1,color:#352847,stroke-width:1px
+  classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  class OCC state
+  class TS,Proxy,Agent,Inject operation
+  class GitHub external
+  class Match,Deny condition
+```
 
-## How does the token get there?
+OpenShell decides locally from the installed policy. It matches the executable,
+destination, HTTP method, repository path, and Git service query where
+applicable. A push needs the write rules for
+`git-receive-pack`. OpenShell injects the installation token only on a match.
+GitHub then applies the token's permissions and its own branch rules. See the
+[native Git flow](../flows/agent-repository-credentials.md#tokenservice-git).
 
-![The worker signs an App JWT, exchanges it at GitHub for an installation token, and commits the validated token. The adapter installs the token and verifies the loaded generation.](../assets/credential-proxy/current-git-setup.png)
+## Renew or withdraw delivery
 
-One OpenShell Backend supplies both `SandboxDriver` and `LegacyEgressProxyDriver`. The worker binds its `ProtectedRepositoryGitAuthority` through `bindRepositoryGit`. See the [Driver contract](../reference/drivers/credential-proxy.md).
+TokenService commits a credential update and notifies Credential Proxy to update
+its delivery copy. After a delivery failure, retry with the committed value. Git
+renewal keeps the Agent's saved repository grants. OCC records withdrawal after
+it confirms policy reduction and detachment, or confirms the Sandbox is gone.
+When OpenShell reduces policy in place, independent, non-overlapping grants remain.
+See [renewal](../reference/credential-sources.md#request-renewal) and
+[withdrawal](../reference/credential-sources/withdrawal.md).
 
-The worker signs an App JWT and sends it to GitHub in a `POST /app/installations/{installation_id}/access_tokens` request. GitHub returns an installation token. The worker validates its scope and expiry before committing it to the store. The transport adapter reads that committed token through the Repository Git authority. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [protected OpenShell configuration](../reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release) and [prepared session recovery](../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
+<a id="who-controls-a-generic-api-request-and-its-reply"></a>
 
-## Who controls a generic API request and its reply?
+## Separate prepared and protected delivery
 
-![The sender captures the request, calls the OCC exchange through the Driver listener, sends an authorized request and holds the reply for filtering.](../assets/credential-proxy/generic-exchange.png)
-
-For a credential-free repository metadata read, OCC matches the request and checks the Agent's current grant. The qualified sender asks OCC to authorize the exact send, then holds the full origin response while OCC checks the returned identity. [Walk through a GitHub metadata request](credential-proxy.md#read-one-repositorys-identity) or see [metadata Source registration](../reference/credential-sources/protected-repository-metadata.md#register-a-source).
+The [prepared Git sender](../reference/repository-credentials/prepared-native-git.md)
+runs without a Sandbox Driver. Its broker uses a Worker-owned repository session
+and asks the Worker to authorize each send.
+The separately qualified [protected OpenShell route](../reference/repository-credentials/protected-openshell-git.md)
+uses a request-phase callback. For a [protected metadata read](credential-proxy.md#read-one-repositorys-identity),
+OCC authorizes the send and checks the complete response before the sender
+returns selected fields. The [earlier protected OpenShell and metadata diagrams](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/design/credential-proxy-architecture.md)
+record those separate flows.
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>
 <a id="what-changes-for-git"></a>
 
-The [Git credential pull discussion](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/git-credential-pull.md) explores request-time delivery. [Credential Design 1.0](../../specs/rfcs/20261124-credential-design-1-0/index.md#10-scope-and-tradeoffs) describes the shared-token push design.
+See [Credential Design 1.0](../../specs/rfcs/20261124-credential-design-1-0/index.md)
+for the design decisions, including the deferred
+[request-time credential pull](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/git-credential-pull.md).

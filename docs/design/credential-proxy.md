@@ -16,7 +16,8 @@ A trusted sender controls the connection to GitHub. The OpenClaw Control Plane
 decides which fields the Agent receives. The credential-free metadata grant
 below works for repository identities GitHub serves without authentication.
 
-The [architecture diagrams](credential-proxy-architecture.md) show where the worker prepares Git credentials, where OpenShell asks for authorization, and how the generic exchange handles replies.
+The [Credential Proxy architecture](credential-proxy-architecture.md) explains
+native OpenShell Git enforcement and points to the separate protected sender paths.
 
 ## Read one repository's identity
 
