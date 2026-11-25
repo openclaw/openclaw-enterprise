@@ -493,9 +493,9 @@ function nativeCodexConfiguration(gatewayAuth) {
   if (gatewayAuth !== undefined) {
     configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
   }
-  // Native Codex tools are one capability; a narrow allowlist disables that surface.
-  // OpenShell supplies the filesystem and network boundaries verified below.
-  configuration.tools = { profile: "full" };
+  // OpenShell enforces filesystem and network access. Ask for per-command
+  // approval so Codex can honor the managed account's untrusted policy.
+  configuration.tools = { profile: "full", exec: { security: "full", ask: "always" } };
   return configuration;
 }
 
@@ -9070,8 +9070,28 @@ export function registerGatewayToolPolicyTest() {
         delivery: { mode: "none" },
       };
       const createMarker = `CREATE-${randomUUID()}`;
-      const createCall = toolCallSpec("automations", { action: "add", job: jobDefinition });
+      // The automation tool binds an add to the name planned on the same turn.
+      const planArgs = { action: "plan", names: [name] };
+      const addArgs = { action: "add", job: jobDefinition };
+      const createCall =
+        selectedHarness === "openclaw"
+          ? codeModeCallSpec(
+              `await automations(${JSON.stringify(planArgs)}); return await automations(${JSON.stringify(addArgs)});`,
+            )
+          : {
+              prompt: `Call automations twice in this turn. First call it with ${JSON.stringify(planArgs)}. After that succeeds, call it with ${JSON.stringify(addArgs)}.`,
+              evidence: { toolName: "automations", expectedArguments: addArgs },
+            };
       await turn(createCall.prompt, createMarker);
+      if (selectedHarness === "codex") {
+        await native.assertSessionToolCallEvidence(topology.agent, {
+          sessionKey,
+          turnMarker: createMarker,
+          toolName: "automations",
+          expectedArguments: planArgs,
+          resultPattern: "automation_creation_plan",
+        });
+      }
       await native.assertSessionToolCallEvidence(topology.agent, {
         sessionKey,
         turnMarker: createMarker,

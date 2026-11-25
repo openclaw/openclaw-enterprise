@@ -1172,6 +1172,8 @@ test(
       workerStopped = false;
     };
     context.after(restoreWorker);
+    // The original Pod's log stream ends at scale-down. Containment reads the replacement Pod's logs.
+    await topology.stopWorkerObservation();
     workerStopped = true;
     await kubectl(
       "scale",
