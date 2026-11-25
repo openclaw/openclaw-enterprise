@@ -155,6 +155,11 @@ session. Changed reads, newly readable Namespaces and Refresh rebuild. Cancelled
 returns preserve views. Cancelled Refresh discards them. Discovery, passwords,
 mutations and pending or failed reads prevent reuse. Read-only POSTs permit it.
 
+When Back or Forward reopens an unchanged Agent draft, the **Configuration**
+tab, **Edit Configuration** button or **Configuration JSON** editor can regain
+focus unless the user moved it elsewhere. When the editor regains focus, it
+also restores its scroll position. The **Open Configuration draft** link still focuses the tab.
+
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
 reads. Focus and visibility share checks. Navigation cancels it. Detail errors
 hide protected content. A 5xx permits one retry unless refusal, 429 or delay
@@ -398,12 +403,5 @@ gateway startup and file availability.
 
 - 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)
 - 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
-- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
-
-- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
-
-- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

@@ -3220,6 +3220,52 @@ for (const c of [
       await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
       await page.waitForFunction(versionDetailInView);
       assert.equal(await focusedTab(page), "Configuration");
+
+      if (c.entry === "active" && c.update !== false) {
+        // Forward should resume the scrolled editor where Back left it. An offscreen
+        // page heading would send the next keystroke back to the top of the page.
+        const view = page.locator(settledView);
+        await view.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+        const editor = view.getByLabel("Configuration JSON", { exact: true });
+        const original = required(await editor.elementHandle());
+        const draft = `${await editor.inputValue()} `;
+        await page.keyboard.press("Control+End");
+        await page.keyboard.insertText(" ");
+        await page.keyboard.press("Shift+ArrowLeft");
+        await nextFrames(page);
+        const place = () =>
+          original.evaluate((node) => {
+            if (!(node instanceof HTMLTextAreaElement)) {
+              throw new Error("Expected the Configuration textarea");
+            }
+            const { top, bottom, left, right } = node.getBoundingClientRect();
+            return {
+              focused: node.matches(":focus-visible"),
+              inView:
+                top < globalThis.innerHeight &&
+                bottom > 0 &&
+                left < globalThis.innerWidth &&
+                right > 0,
+              selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+              scrollTop: node.scrollTop,
+            };
+          });
+        const before = await place();
+        assert.ok(before.focused && before.inView && before.scrollTop > 0);
+        assert.deepEqual(before.selection, [draft.length - 1, draft.length, "backward"]);
+        assert.equal(await editor.inputValue(), draft);
+
+        await page.goBack();
+        await view.getByRole("heading", { name: "Configuration snapshot" }).waitFor();
+        await nextFrames(page);
+        assert.deepEqual(await page.locator("h1:focus").allTextContents(), ["Recovery Agent"]);
+
+        await page.goForward();
+        await editor.waitFor();
+        await nextFrames(page);
+        assert.deepEqual(await place(), before);
+        assert.equal(await editor.inputValue(), draft);
+      }
     });
   }
 }
