@@ -171,13 +171,15 @@ the checks below. Do not copy a host's general network allowlist.
 
 On your selected runtime, verify all of these through a fresh gateway session:
 
-1. Read effective app-server thread configuration: the named permission profile
-   contains only the listed build hosts, the approval policy is `on-request`, and search is cached.
+1. Check the effective app-server thread configuration. The named permission
+   profile should allow exactly the hostnames you reviewed for this Configuration,
+   with no wildcards or broader grants. For an unchanged Preset, these are the
+   listed build hosts. Confirm that approval is `on-request` and search is cached.
    Inspect the rendered runtime configuration as well as the saved draft. On
    Kubernetes, that is the gateway's `/etc/openclaw/openclaw.json`.
-2. Execute a tool request to a listed package host, then to a known reachable,
-   operator-controlled hostname outside the allowlist. Confirm success for the
-   listed host and native proxy denial for the unlisted host. The Harness log
+2. Confirm a tool request succeeds for an approved host. Test each hostname
+   you added. Then check that the native proxy denies a request to a reachable,
+   operator-controlled hostname outside the allowlist. The Harness log
    records `CONNECT allowed`, `CONNECT blocked … reason=not_allowed`, or
    `MITM blocked by method policy`. Attempt direct-IP/proxy-bypass access from
    the same sandbox. A timeout alone does not establish policy enforcement.
