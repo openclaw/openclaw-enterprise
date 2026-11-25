@@ -23,7 +23,7 @@ import {
   SecretListResponse,
   IAMAccessBindingListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -264,6 +264,38 @@ test("the Agent Network proxy editor never sends URL credentials to OCC", async 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const input = page.getByLabel("Network proxy URL");
   await input.waitFor();
+
+  // A narrow window and enlarged text must leave the full format example readable.
+  const viewport = page.viewportSize();
+  assert.ok(viewport);
+  await page.setViewportSize({ width: 360, height: 844 });
+  const example = await page
+    .getByText(/^For Basic authentication, select a Secret/)
+    .evaluate((hint) => {
+      const fontSize = hint.style.fontSize;
+      hint.style.fontSize = "24px";
+      const selection = hint.ownerDocument.getSelection();
+      selection?.selectAllChildren(hint);
+      const root = hint.ownerDocument.documentElement;
+      const result = {
+        selected: selection?.toString(),
+        hintWidth: hint.clientWidth,
+        textWidth: hint.scrollWidth,
+        pageWidth: root.scrollWidth,
+        viewportWidth: root.clientWidth,
+      };
+      selection?.removeAllRanges();
+      hint.style.fontSize = fontSize;
+      return result;
+    });
+  await page.setViewportSize(viewport);
+  assert.ok(example.selected?.includes("Basic <base64(username:password)>"));
+  assert.ok(
+    example.hintWidth > 0 && example.textWidth <= example.hintWidth,
+    JSON.stringify(example),
+  );
+  assert.ok(example.pageWidth <= example.viewportWidth, JSON.stringify(example));
+
   const password = randomUUID();
   const unsafe = syntheticCredentialUrl({
     protocol: "https",

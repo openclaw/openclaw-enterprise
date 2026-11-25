@@ -235,7 +235,7 @@ networkPolicies:
         tls: skip
 ```
 
-1. Follow the [OCC CLI deployment procedure](../../docs/guides/deploy/openshell-credential-sources.md)
+1. Follow the [OCC CLI deployment procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/deploy/openshell-credential-sources.md)
    with authorized credentials: dedicated Codex, native execution enabled, exact
    Credential Source granted, runtime credentials provisioned, revision active.
 2. Enable [native Control UI](../../docs/guides/deploy/native-admin.md#configure-each-agent)

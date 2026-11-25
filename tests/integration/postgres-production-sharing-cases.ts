@@ -8,7 +8,7 @@ import type { ProductionConfig } from "../../apps/controller/src/composition/pro
 import type { Permission } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.ts";

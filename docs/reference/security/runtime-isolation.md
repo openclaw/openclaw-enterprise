@@ -129,9 +129,10 @@ prove the containment of a provider-owned workload.
 Dedicated native OpenClaw is admitted only when the selected SandboxDriver
 provisions the Harness and declares networking, filesystem, and process
 containment. The bundled OpenShell provider supports dedicated Codex and native
-OpenClaw, and delegates containment outside the inner Harness sandbox. Its paired
-Credential Gateway keeps the model
-API key outside the Harness. It still requires upstream support for the
+OpenClaw, and delegates containment outside the inner Harness sandbox.
+On managed [Credential Proxy paths](../credential-sources.md#implementation-status)
+and pre-cutover Gateway delivery on main, the Harness receives a placeholder for
+the model credential. OpenShell still requires upstream support for the
 app-server token Secret reference and projected identity. Stock gateway incompatibilities fail
 explicitly, and test-only bridges are not production support. Do not infer a
 complete pre-execution policy barrier or command-level sandbox admission from
@@ -148,15 +149,13 @@ Service. Guarded routing does not guarantee a physical process singleton during
 Kubernetes node partitions or manual replacement; the
 [Compute reference](../drivers/kubernetes-compute.md#execution-modes) records that
 limitation. Embedded OpenClaw receives only its operator-owned API
-key in its combined gateway/Harness. Dedicated Codex receives either its
-Secret-backed API key or its bound account's directly projected access
-token only in its separate workload, and uses authenticated WebSocket
-transport. A dedicated
-replacement app-server can start idle before the current workload is retired.
+key in its combined gateway/Harness. Direct delivery gives dedicated Codex
+its Secret-backed API key or projected access token in its separate workload.
+The managed Proxy path gives it a placeholder. Dedicated Codex uses authenticated
+WebSocket transport. A dedicated replacement app-server can start idle before the current workload is retired.
 Existing claim-fenced worker reconciliation allows temporary unavailability but
-fails closed across Agent and Namespace boundaries. Brokered credentials,
-workload-bound transport authentication, and restricted model egress remain
-future work.
+fails closed across Agent and Namespace boundaries. General model credential
+mediation and workload-bound transport authentication remain design requirements.
 
 OpenShell treats the AgentRevision as its containment boundary. It provisions
 one Sandbox for the dedicated Harness, disables nested Codex containment, and

@@ -1,15 +1,13 @@
 ---
-status: Proposed
-implementation_status: Not implemented
-author: stevenlee-oai
+rfc: index.md
 ---
 
-# Credential Design 1.0
+# TokenService cutover contract
 
-- **ID:** RFC-20261124-credential-design-1-0
-- **Created:** 2026-11-24
-- **Last updated:** 2026-11-24
-- **RFC PR:** [#7223](https://github.com/openclaw/openclaw-enterprise/pull/7223)
+[PR #7224](https://github.com/openclaw/openclaw-enterprise/pull/7224) revised the
+[original client registration and custody proposal](client-registration-and-custody.md).
+This page records the revised contract as merged on 2026-11-25 at
+[`105ffee9`](https://github.com/openclaw/openclaw-enterprise/commit/105ffee9962176cf42fc7cfe013b8b94831435db).
 
 Use one Credential Client catalog and one Source lifecycle for OAuth and GitHub App installation tokens. The cutover keeps credential custody with the selected TokenService.
 
@@ -17,7 +15,7 @@ Use one Credential Client catalog and one Source lifecycle for OAuth and GitHub 
 
 Installation administrators use the Console catalog and `/credential-clients`. Create and rotate requests explicitly select `oauth2` or `github-app`. OAuth client registration is independent of Connection Templates and supplies its own scope, issuer, approved endpoints, and authentication method. GitHub App Clients have an immutable App ID. An administrator can register either Client kind for the Installation or for one Namespace. The stored Client kind remains canonical. The TokenService's client purpose type comes from the same typed Client union.
 
-Keep [OAuth client selection and consent](0023-egress-proxy-credential-lifecycle/oauth-client-associations.md). The caller needs `credential_source:create` in the destination Namespace and explicitly selects an eligible OAuth client from that Namespace or the Installation. PostgreSQL enforces the client kind on saved references and blocks deletion while a Source or pending consent references the client. Built-in Codex OAuth Sources carry no registration reference.
+Keep [OAuth client selection and consent](oauth-client-associations.md). The caller needs `credential_source:create` in the destination Namespace and explicitly selects an eligible OAuth client from that Namespace or the Installation. PostgreSQL enforces the client kind on saved references and blocks deletion while a Source or pending consent references the client. Built-in Codex OAuth Sources carry no registration reference.
 
 ## Private material and rotation
 
@@ -35,7 +33,7 @@ Private custody references can change. Verify that tenant-namespace administrato
 
 ## GitHub App Sources
 
-A Namespace Source pins one App Client and records its GitHub installation and finite repository scope. The Source can use an Installation Client or a Client registered in that same Namespace. OCC checks this when saving Agent repository access and admitting Sources. PostgreSQL enforces it when creating a Source. TokenService checks the stored Client's scope before opening its signing key during enrollment or renewal. Client administration continues to require Installation administer access. At enrollment, renewal, and delivery, the App and installation must match the current Namespace registry and the scope must fit its approved ceiling. TokenService caches one installation token, expiry, and credential version per Source. Key rotation leaves that token in service. Renewal updates only the Source token and pushes its version through Credential Proxy. The previous token expires at GitHub. Source enrollment, Agent grants, and delivery follow the [GitHub App installation Source proposal](0023-egress-proxy-credential-lifecycle/github-app-template-policy.md). The OCC API process schedules Git token maintenance in its selected TokenService and uses its existing private custody permissions. If Proxy delivery fails after renewal, TokenService retries delivery of the committed version.
+A Namespace Source pins one App Client and records its GitHub installation and finite repository scope. The Source can use an Installation Client or a Client registered in that same Namespace. OCC checks this when saving Agent repository access and admitting Sources. PostgreSQL enforces it when creating a Source. TokenService checks the stored Client's scope before opening its signing key during enrollment or renewal. Client administration continues to require Installation administer access. At enrollment, renewal, and delivery, the App and installation must match the current Namespace registry and the scope must fit its approved ceiling. TokenService caches one installation token, expiry, and credential version per Source. Key rotation leaves that token in service. Renewal updates only the Source token and pushes its version through Credential Proxy. The previous token expires at GitHub. Source enrollment, Agent grants, and delivery follow the [GitHub App installation Source proposal](github-app-template-policy.md). The OCC API process schedules Git token maintenance in its selected TokenService and uses its existing private custody permissions. If Proxy delivery fails after renewal, TokenService retries delivery of the committed version.
 
 ## Source lifecycle
 
@@ -43,7 +41,7 @@ Static Source enrollment and update take a single write-only credential string. 
 
 A caller with `credential_source:update` on the exact Namespace Source can request renewal with `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`. A ready OAuth or GitHub App installation Source renews through its selected TokenService's `forceRefresh` operation. The existing committed-update path delivers the replacement through Credential Proxy. If delivery fails after the commit, the delivery retry uses the committed version. Static credentials use the existing update operation.
 
-The temporary native PAT transport exception covers manually enrolled and ServiceAccount-issued Codex PATs on the selected executable, two approved hosts and [seven fixed requests](../../docs/reference/credential-sources/managed-static.md#codex-pat). A matching plaintext request on port 443 can receive the PAT. Retire the exception when native substitution enforces HTTPS and rejects the matching plaintext request.
+The temporary native PAT transport exception covers manually enrolled and ServiceAccount-issued Codex PATs on the selected executable, two approved hosts and [seven fixed requests](../../../docs/reference/credential-sources/managed-static.md#codex-pat). A matching plaintext request on port 443 can receive the PAT. Retire the exception when native substitution enforces HTTPS and rejects the matching plaintext request.
 
 ## Proposed change to protected GitHub metadata
 

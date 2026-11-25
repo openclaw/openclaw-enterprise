@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { gatewayLogsThroughReady } from "../helpers/runtime-image-gateway-observations.ts";
 import { runGatewaySmoke, runtimeImageModel } from "../helpers/runtime-image-startup.ts";

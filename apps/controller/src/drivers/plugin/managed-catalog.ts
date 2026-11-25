@@ -282,6 +282,28 @@ export const managedInstalls = Object.freeze(
 export const managedCliInstalls = managedInstalls.filter((install) => install.kind === "cli");
 export const managedMcpInstalls = managedInstalls.filter((install) => install.kind === "mcp");
 
+function managedMcpToolNameFits(install: ManagedMcpInstall, name: unknown): name is string {
+  return (
+    typeof name === "string" &&
+    /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+    `oce_mcp_${install.server}_${name}`.length <= 64
+  );
+}
+
+/** Discovery must offer only tool names that the reviewed Plugin can actually deploy. */
+export function deployableManagedMcpToolNames(
+  install: ManagedMcpInstall,
+  names: readonly string[],
+) {
+  const candidates = [...new Set(names)].filter((name) => managedMcpToolNameFits(install, name));
+  const counts = new Map<string, number>();
+  for (const name of candidates) {
+    const folded = name.toLowerCase();
+    counts.set(folded, (counts.get(folded) ?? 0) + 1);
+  }
+  return new Set(candidates.filter((name) => counts.get(name.toLowerCase()) === 1));
+}
+
 // CLI request semantics belong to each reviewed connector; the catalog owns iteration.
 const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
 const cliCredentialPolicy = (install: ManagedCliInstall) =>
@@ -378,12 +400,7 @@ export function managedMcpCredentialBinding(
   // Literal names keep the OpenClaw alias stable and the OpenShell glob exact.
   if (
     !Array.isArray(selected) ||
-    !selected.every(
-      (name) =>
-        typeof name === "string" &&
-        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
-        `oce_mcp_${install.server}_${name}`.length <= 64,
-    ) ||
+    !selected.every((name) => managedMcpToolNameFits(install, name)) ||
     new Set(selected.map((name) => name.toLowerCase())).size !== selected.length
   ) {
     throw new ConfigurationHarnessError(

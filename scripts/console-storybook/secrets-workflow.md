@@ -1,6 +1,6 @@
 # Console Secrets walkthrough
 
-Rebuild Storybook from current source. Open **Pages/Secrets → Populated**.
+Rebuild Storybook from current source. Open **Pages/Credentials/Secrets → Populated**.
 These fixtures demonstrate UI behavior; they do not prove backend persistence,
 Kubernetes storage, credential delivery, or runtime consumption.
 

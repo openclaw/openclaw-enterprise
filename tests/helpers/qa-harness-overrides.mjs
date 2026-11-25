@@ -3,11 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
-import {
-  createQaInstallation,
-  deployQaAgentAndWait,
-  prepareQaPluginCatalogs,
-} from "./qa-installation.mjs";
+import { createQaInstallation, prepareQaPluginCatalogs } from "./qa-installation.mjs";
+import { deployQaAgentAndWait } from "./qa-agent-deployment.ts";
 import { protectedText } from "./qa-secrets.ts";
 import { assertGatewayModelTurn } from "./kubernetes-real.ts";
 import { waitFor } from "./qa-wait.ts";
