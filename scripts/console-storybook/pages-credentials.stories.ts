@@ -3,6 +3,11 @@ import { story } from "./story.ts";
 export default { title: "Pages/Credentials" };
 
 export const CredentialSources = story("credentialsSourceInventory");
+export const CredentialSourcesMobile = story("credentialsSourceInventory", {
+  name: "Credential Sources on mobile",
+  frameWidth: "390px",
+  frameHeight: "844px",
+});
 export const CredentialSourcesEmpty = story("credentialsSourceEmpty");
 export const CredentialSourcesDenied = story("credentialsSourceReadDenied");
 export const CreateCredentialSource = story("credentialsSourceCreate");

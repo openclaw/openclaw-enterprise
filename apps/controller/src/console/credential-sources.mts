@@ -23,8 +23,23 @@ type Context = NamespacePageContext & {
 };
 
 type StaticTemplate = { id: string; displayName: string };
+const sourceTypeLabel: Record<CredentialSourceSummary["type"], string> = {
+  static: "Static",
+  "oauth2-refresh-token": "OAuth refresh token",
+  "github-app-installation": "GitHub App installation",
+};
 const CREATE_DENIED =
   "Creating a Credential Source needs Credential Source create in this Namespace. Ask an Installation administrator for access.";
+
+function sourcePurpose(source: CredentialSourceSummary) {
+  if (source.modelPreset) {
+    return `Model preset: ${source.modelPreset}`;
+  }
+  if (source.connectionTemplateId) {
+    return `Template: ${source.connectionTemplateId}`;
+  }
+  return "—";
+}
 
 function sourceList(value: unknown, namespaceId: string) {
   if (!Array.isArray(value)) {
@@ -164,33 +179,52 @@ export function renderCredentialSources(context: Context) {
       list.replaceChildren(
         element(
           "section",
-          { className: "resource-list" },
+          { className: "resource-list oauth-catalog" },
           element(
             "h2",
-            { className: "resource-list-header" },
+            { className: "resource-list-header secret-list-heading" },
             "Source library ",
             element("span", { className: "badge" }, String(rows.length)),
           ),
           element(
-            "ul",
-            { className: "collection", "aria-label": "Credential Sources" },
-            ...rows.map((source) =>
+            "table",
+            { className: "oauth-catalog-table", "aria-label": "Credential Sources" },
+            element(
+              "thead",
+              {},
               element(
-                "li",
-                { className: "resource-linked secret-row" },
-                element("p", { className: "resource-name" }, source.name),
-                element("span", { className: "resource-id" }, source.id),
-                element("span", {}, source.type),
-                element(
-                  "span",
-                  {},
-                  source.modelPreset
-                    ? `Model preset: ${source.modelPreset}`
-                    : source.connectionTemplateId
-                      ? `Template: ${source.connectionTemplateId}`
-                      : "",
+                "tr",
+                {},
+                ...["Name", "Source ID", "Type", "Purpose", "State"].map((label) =>
+                  element("th", { scope: "col" }, label),
                 ),
-                element("span", { className: "badge" }, source.state),
+              ),
+            ),
+            element(
+              "tbody",
+              {},
+              ...rows.map((source) =>
+                element(
+                  "tr",
+                  {},
+                  element("th", { scope: "row" }, source.name),
+                  element(
+                    "td",
+                    { "data-label": "Source ID" },
+                    element("code", { className: "resource-id" }, source.id),
+                  ),
+                  element("td", { "data-label": "Type" }, sourceTypeLabel[source.type]),
+                  element("td", { "data-label": "Purpose" }, sourcePurpose(source)),
+                  element(
+                    "td",
+                    {},
+                    element(
+                      "span",
+                      { className: "badge" },
+                      source.state === "ready" ? "Ready" : "Deleting",
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
