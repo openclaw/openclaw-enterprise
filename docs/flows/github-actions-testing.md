@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-24 22:18"
-last_updated_session: "authoring-run/6f832bfe-362b-4a10-a2c9-6d2e71f33bd5"
+updated: "2026-11-24 23:19"
+last_updated_session: "authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76"
 ---
 
 # GitHub Actions testing flow
@@ -37,7 +37,7 @@ graph TD
   K --> G
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
-  L --> R["Full CI coverage result"]
+  L --> R["CI coverage for selected lanes"]
   C["Scheduled tick or approved manual dispatch"] --> P["Source and environment preflight"]
   P -->|scheduled tick skips admission| D["Finish without suite jobs"]
   P -->|eligible| V["Acquire execution lock and revalidate"]
@@ -288,6 +288,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 23:19: Label the CI result by the lanes selected. (authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76 - 59e36d118540fd64ed43d8feddbcd9599604afd7)
 
 - 2026-11-24 22:18: Check sign-in compatibility before pulls. (authoring-run/6f832bfe-362b-4a10-a2c9-6d2e71f33bd5 - e74f86b18a839cd2b7b6d82a1c43b960f50b5f01)
 
