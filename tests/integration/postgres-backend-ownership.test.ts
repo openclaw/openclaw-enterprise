@@ -37,7 +37,7 @@ import {
   startBackendlessDevelopmentServer,
 } from "../helpers/postgres-backend-state.mjs";
 import { reservePort } from "../helpers/available-port.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 
 type BackendFixture = Awaited<ReturnType<typeof createBackendFixture>>;
 type AuthSession = Awaited<ReturnType<typeof signInWithEmailPassword>>;

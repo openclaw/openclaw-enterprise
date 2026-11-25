@@ -13,7 +13,7 @@ import {
   spawnDocsPreview,
   waitForDocsPreview,
 } from "../helpers/docs-site.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 
 test("Native GitHub preview keeps Namespace limits independent of example Agent access", async (t) => {
   const preview: {

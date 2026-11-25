@@ -13,7 +13,7 @@ import {
   spawnDocsPreview,
   waitForDocsPreview,
 } from "../helpers/docs-site.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("preview serves static docs on loopback and confines reads to site output", async (t) => {

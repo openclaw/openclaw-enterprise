@@ -23,7 +23,7 @@ import { firstAgentComposeImages } from "../helpers/local-first-agent-stack.mjs"
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.ts";
 import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",

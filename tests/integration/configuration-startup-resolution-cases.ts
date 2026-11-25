@@ -32,7 +32,7 @@ import type {
   createCredentialProxyInstallationConfiguration,
   createInstallationDriverConfiguration,
 } from "../helpers/installation-driver-configuration.ts";
-import { settled as waitForSiblings } from "../helpers/child-processes.mjs";
+import { settled as waitForSiblings } from "../helpers/child-processes.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type StartupFixture = (

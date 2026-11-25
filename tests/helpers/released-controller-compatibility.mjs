@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
-import { settled } from "./child-processes.mjs";
+import { settled } from "./child-processes.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.ts";
 import { releasedControllerHistoryStatus } from "./released-controller-history.ts";
 

@@ -42,7 +42,7 @@ import {
   type KubernetesFixtureAgent,
 } from "../helpers/postgres-platform-state.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { servedAs } from "../helpers/agent-identity.ts";
 
 type WorkerEvent = Parameters<NonNullable<ControllerWorkerOptions["emit"]>>[0];

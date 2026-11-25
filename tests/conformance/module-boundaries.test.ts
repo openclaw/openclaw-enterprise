@@ -19,7 +19,7 @@ import {
 } from "../../scripts/module-boundaries/exceptions.ts";
 import { validatePolicy, type Policy } from "../../scripts/module-boundaries/evaluate-policy.ts";
 import { parseJSON } from "../../scripts/module-boundaries/workspace.ts";
-import { settled as settle } from "../helpers/child-processes.mjs";
+import { settled as settle } from "../helpers/child-processes.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));

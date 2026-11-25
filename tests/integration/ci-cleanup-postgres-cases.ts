@@ -9,7 +9,7 @@ import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/po
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres, type FakePostgresQuery } from "../helpers/fake-postgres-server.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { cleanupPath, fixture, repositoryRoot, writeState } from "./ci-cleanup-fixture.ts";
 
