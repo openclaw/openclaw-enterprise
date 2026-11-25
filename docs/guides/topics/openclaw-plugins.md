@@ -16,7 +16,7 @@ Add a reviewed Plugin to a dedicated OpenClaw Agent, select its account and tool
 
 ## Select a Plugin and account
 
-1. Open the Agent in Console and choose **Create new version** → **Plugins** → **Configure plugins**. The same picker is available when creating an Agent.
+1. Open the Agent in Console and choose **Open draft** → **Plugins** → **Configure plugins**. The same picker is available when creating an Agent.
 2. Add **Google Workspace** for the worker's pinned `gog` CLI, or **Slack** for a hosted MCP server.
 3. Select a compatible account in the Plugin's credential slot. For OAuth, choose **Connect account**, select the Connection Template and OAuth client, and complete provider consent. Console returns the created Source to the Plugin editor. For a static bearer, select an existing compatible Source.
 4. Save the Plugin selection. Selecting the Source in the slot contributes it to deployment admission; do not create a separate Agent credential attachment for the Plugin.
