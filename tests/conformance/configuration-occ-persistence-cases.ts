@@ -19,7 +19,7 @@ import {
   type OpenClawController,
   type UpdateConfigurationInput,
 } from "../../packages/occ/src/index.ts";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.ts";
 import { servedAs } from "../helpers/agent-identity.ts";
 import type { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 

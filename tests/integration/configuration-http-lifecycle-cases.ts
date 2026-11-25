@@ -38,7 +38,7 @@ import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers
 import {
   admittedConfiguration,
   withGatewaySecurityDefaults,
-} from "../helpers/admitted-configuration.mjs";
+} from "../helpers/admitted-configuration.ts";
 import { servedAs } from "../helpers/agent-identity.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { FlakyConfigurationCoreV1Api } from "../helpers/kubernetes-configuration-core.ts";

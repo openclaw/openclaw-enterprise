@@ -45,7 +45,7 @@ import {
 } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { servedAs } from "../helpers/agent-identity.ts";
-import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.mjs";
+import { withGatewaySecurityDefaults } from "../helpers/admitted-configuration.ts";
 
 const administrator = "principal-secret-administrator";
 const deployer = "principal-secret-deployer";

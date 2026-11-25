@@ -95,7 +95,7 @@ import { availablePort } from "../helpers/available-port.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { servedAs } from "../helpers/agent-identity.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { prepareFixture, slackFirstDeploymentFixture } from "./occ-api-first-deployment-fixture.ts";
 

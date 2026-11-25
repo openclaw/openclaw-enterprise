@@ -47,7 +47,7 @@ import { bindRole, permissionsFor } from "../helpers/iam-grants.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 import { servedAs } from "../helpers/agent-identity.ts";
-import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { admittedConfiguration } from "../helpers/admitted-configuration.ts";
 
 const installation = {
   id: "installation-a",
