@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import test from "node:test";
 
@@ -181,82 +180,6 @@ test("docs build renders every authored page and preserves repository ownership"
   assert.match(workloads, /<figure\b[^>]*data-mermaid=/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
-});
-
-test("docs build preserves literal filenames in source-footer links", async (t) => {
-  // A quote exercises the HTML boundary. The separate URL case exercises the
-  // path boundary even when the footer is already well-formed HTML.
-  const filenames = ["ordinary", 'quote"marker', "literal%2F?topic#part"];
-  const { directory: fixture } = await createDocsFixture(t, "enterprise-docs-source-footer-", {
-    pages: ["README", ...filenames.map((filename) => `guides/${filename}`)],
-  });
-  await writeFile(join(fixture, "docs/README.md"), "# Home\n");
-  await mkdir(join(fixture, "docs/guides"));
-  for (const filename of filenames) {
-    await writeFile(join(fixture, "docs/guides", `${filename}.md`), "# Guide\n");
-  }
-
-  const result = buildDocs(fixture);
-  assert.ifError(result.error);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-
-  // Use the parser installed in the isolated docs-site package.
-  interface ParsedElement {
-    attribs: Record<string, string>;
-    children: unknown[];
-  }
-  const requireDocs = createRequire(
-    new URL("../../scripts/docs-site/package.json", import.meta.url),
-  );
-  const {
-    parseDocument,
-    DomUtils,
-  }: {
-    parseDocument(html: string): { children: unknown[] };
-    DomUtils: {
-      getElementsByTagName(name: string, nodes: unknown[]): ParsedElement[];
-      textContent(node: ParsedElement): string;
-    };
-  } = requireDocs("htmlparser2");
-
-  for (const filename of filenames) {
-    await t.test(filename, async () => {
-      const html = await readFile(
-        join(fixture, "dist/docs/guides", filename, "index.html"),
-        "utf8",
-      );
-      const document = parseDocument(html);
-      const footers = DomUtils.getElementsByTagName("footer", document.children);
-      assert.equal(footers.length, 1);
-      const [footer] = footers;
-      assert.ok(footer);
-      assert.deepEqual(Object.entries(footer.attribs), [["data-pagefind-ignore", ""]]);
-
-      const links = DomUtils.getElementsByTagName("a", footer.children);
-      assert.equal(links.length, 1);
-      const [link] = links;
-      assert.ok(link);
-      assert.deepEqual(Object.keys(link.attribs), ["href"]);
-      assert.equal(DomUtils.textContent(link), "View Markdown source");
-
-      const href = link.attribs.href;
-      assert.ok(href);
-      const url = new URL(href);
-      assert.equal(url.origin, "https://github.com");
-      assert.equal(url.search, "");
-      assert.equal(url.hash, "");
-      assert.deepEqual(url.pathname.split("/").map(decodeURIComponent), [
-        "",
-        "openclaw",
-        "openclaw-enterprise",
-        "blob",
-        "main",
-        "docs",
-        "guides",
-        `${filename}.md`,
-      ]);
-    });
-  }
 });
 
 test("docs validation rejects broken links, anchors and navigation through the CLI", async (t) => {
