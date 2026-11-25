@@ -160,8 +160,13 @@ intended calling Pods in the policy's namespace. The check observes destination
 grants in the named policy. It does not check for obsolete or additional grants.
 The report records the observed resource UIDs and resource versions.
 
-Use the DNS name from the intended client's reviewed TLS configuration for
-`serverName`. Ask the certificate owner to repair a mismatch for that name.
+The chart grants API and worker Pods unrestricted egress. That policy fails
+this check even when the Service is reachable.
+
+Ask the Service owner which Secret in the Service namespace supplies the
+serving certificate. Set `tls.secretName` to that name and `serverName` to the
+DNS name the client verifies. Ask the certificate owner to correct a mismatch.
+The check cannot tell which certificate the Service presents.
 
 Omit `tls` for a policy check alone. Kubernetes `get` on the named Secret
 authorizes reading the entire object, including `tls.key`. Use an identity
@@ -188,30 +193,29 @@ to the plan:
 }
 ```
 
-For the OpenShell administrator connection, use `auth.certificatePath` from
-the configured [OpenShell Backend](../../reference/backends.md#openshell-gateway).
-The path must be an absolute POSIX file path, at most 1,024 bytes, without
-redundant separators or dot segments. Run a separate check for each Deployment
-or StatefulSet and container.
+For [OpenShell Backend](../../reference/backends.md#openshell-gateway) mTLS,
+use `auth.certificatePath`. After Helm creates both Deployments, select the
+release namespace. Check the API as shown, then check `worker` in
+`openclaw-enterprise-worker`. Compare each reported Secret name with
+`backend.openshell.clientSecretName`. The certificate and key can grant OpenShell
+administrator access.
 
-Select a regular container or a restartable init container with a direct
-Secret volume mount. The selected file must have one mapping to `tls.crt` in the Secret.
-An item mapping can give the file a different name. A required Secret volume
-needs every mapped key. An optional volume can omit other mapped keys.
-For each present key, Kubernetes limits the relative item path to 4,096 UTF-8
-bytes and each component to 255 bytes before it normalizes the path.
-Two mapped keys with values in the Secret cannot use the same path as both a
-file and a directory. Overlapping mounts at the selected file, StatefulSet
-claims that replace the volume, subpath mounts, and projected volumes fail
-the check.
+Select one Deployment or StatefulSet and a regular or restartable init container.
+Use an absolute POSIX path of at most 1,024 bytes without redundant separators
+or dot segments. One direct Secret mount must map `tls.crt` to this file.
+Renamed files are supported. Overlapping mounts at this file, StatefulSet
+claims that replace the volume, subpaths and projected volumes fail.
 
-Use an identity already authorized to `get` the workload and mounted Secret.
-The Kubernetes API returns whole objects. The subprocess uses the public leaf,
-checks whether required keys exist and returns the result with resource UIDs
-and resource versions. The check compares the workload UID and resource version
-before and after the Secret read. A changed workload or denied read yields
-`unknown`. A confirmed missing workload on the first read, or missing Secret
-with a matching workload, fails the check.
+Required volumes need every mapped key. Optional volumes may omit other keys.
+For present keys, item paths cannot exceed 4,096 UTF-8 bytes or 255 bytes per
+component before normalization. A path cannot serve as both file and directory.
+
+The live template selects the Secret. Use an identity already authorized to read the
+workload with Secret `get` limited to the expected name. The subprocess receives
+whole objects, checks the public leaf and required keys, and reports resource
+UIDs and versions. A denied read or a change in workload UID or resource version
+across the Secret read yields `unknown`. A missing workload on the first read
+or a missing Secret with an unchanged workload fails.
 
 A passing check establishes that the observed public leaf is current and its
 extended key usage permits client authentication. An absent or unreadable
