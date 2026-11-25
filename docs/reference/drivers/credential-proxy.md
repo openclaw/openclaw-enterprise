@@ -19,8 +19,9 @@ in the Agent revision. `SandboxDriver` enforces network policy and routing;
 it does not delegate network authorization to the Proxy.
 
 The separate `LegacyEgressProxyDriver` credential-egress interface is deprecated
-and pending removal. It remains present while qualified credential-free metadata
-and protected repository exchanges depend on it. Credential Gateway and
+and pending removal. Credential Design 1.0 retires its special protected
+metadata and repository exchanges instead of migrating them. The interface
+remains in current code until removal. Credential Gateway and
 Credential Refresh selections are retired and unsupported; their exported
 legacy contracts are deprecated pending removal.
 
@@ -56,7 +57,8 @@ Provider per projection. See [current support and limits](../credential-sources.
 ### Deprecated legacy protected egress
 
 `LegacyEgressProxyDriver` uses the `credential_proxy` capability. Do not select
-it for new managed Agent credentials. It is distinct from both native
+it for new workflows. Its protected exchange features are retired from 1.0. It
+is distinct from both native
 `CredentialProxyDriver` delivery and ordinary network egress.
 
 | Member               | Requirement | Retained behavior                                                                                            |

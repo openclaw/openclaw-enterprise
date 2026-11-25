@@ -1,9 +1,9 @@
 # Legacy credential-egress Driver
 
-`LegacyEgressProxyDriver` is deprecated and pending removal. Qualified protected
-metadata and repository exchanges still depend on it; remove it only after those
-uses have another owner or are retired. Do not implement new credential delivery
-on this interface. New integrations use the
+`LegacyEgressProxyDriver` is deprecated and pending removal. Credential 1.0
+retires its protected metadata and repository exchanges, rather than moving their
+response filtering or operation checks to a new interface. Do not extend this
+Driver or use it for new credential delivery. New integrations use the
 [CredentialProxyDriver contract](../reference/drivers/credential-proxy.md#interface)
 with TokenService and Sandbox.
 

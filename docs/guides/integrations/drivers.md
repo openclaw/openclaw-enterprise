@@ -36,9 +36,8 @@ for a dedicated Codex Agent.
 Remove the retired `credential_gateway` and `credential_refresh` selectors when
 [upgrading an older installation](../deploy/production-upgrade.md). The separate
 `credential_proxy` selection belongs to `LegacyEgressProxyDriver`, which is
-deprecated and pending removal. Existing qualified protected repository exchanges and
-credential-free metadata still require it; do not use it for new credentialed
-workflows. See [legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
+deprecated and pending removal. Credential Design 1.0 retires its special
+protected metadata and repository exchanges; do not select it for new workflows. See [legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
 
 ## Available implementations
 

@@ -41,9 +41,9 @@ flowchart TB
   OCC["<b>OCC</b><br/>Admits bindings<br/>and policies"] -->|network policy| S["<b>Sandbox</b><br/>Enforces requests"]
   OCC -->|injection policy| P["<b>Credential Proxy</b><br/>Prepares delivery"]
   T["<b>TokenService</b><br/>Keeps credential"] -->|credential or Provider| P
-  P -->|credential binding| S
-  A["<b>Agent</b><br/>Uses placeholder"] -->|request| S
-  S -->|permitted credentialed request| U["<b>Upstream service</b>"]
+  P -->|binding if required| S
+  A["<b>Agent</b><br/>Sends request"] -->|request| S
+  S -->|permitted request| U["<b>Upstream service</b>"]
   classDef record fill:#EDF3F8,stroke:#8EA5BA,color:#23394D,stroke-width:1px
   classDef operation fill:#EAF4F1,stroke:#83A8A0,color:#21413B,stroke-width:1px
   classDef external fill:#F1EDF5,stroke:#A392B1,color:#352847,stroke-width:1px
@@ -56,8 +56,10 @@ flowchart TB
 
 For native OpenShell delivery, the supervisor checks both installed policies
 locally and substitutes the credential on a matching request. Native Git makes
-no request-time call to OCC. The upstream service still enforces the credential's
-permissions. See the [request architecture](credential-proxy-architecture.md).
+no request-time call to OCC. Git grants repository Read or Read/write access;
+GitHub enforces branch rules. Pull requests are outside this Git-only path.
+The upstream service enforces the credential's permissions. See the
+[request architecture](credential-proxy-architecture.md).
 
 TokenService commits replacements before delivery is updated. Withdrawal removes
 one Agent's authority and detaches its binding; Stop removes the deployment but
@@ -68,21 +70,21 @@ and [withdrawal](../reference/credential-sources/withdrawal.md).
 
 ## Which path checks the request?
 
-The native path checks requests locally. The deprecated legacy credential-egress
-implementation remains for qualified protected exchanges until those uses have
-another owner or are retired. The separate
-[protected OpenShell Git route](../reference/repository-credentials/protected-openshell-git.md)
-calls the Worker on each request. The
-[installation-wide GitHub preview](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
-has separate scope and verification requirements.
+Native OpenShell checks the deployed policies locally. Credential 1.0 retires the
+legacy protected metadata and repository exchanges instead of migrating their
+extra checks. Their deprecated `LegacyEgressProxyDriver` implementation remains
+pending removal.
 
 ## Read one repository's identity
 
-A qualified sender using the deprecated legacy Driver can authorize
-`GET /repos/acme/widgets` with OCC and return only the approved repository ID
-and name. Stock OpenShell does not provide that exact-send and filtered-reply
-exchange. Credential-free metadata remains a distinct capability. See the [metadata Source](../reference/credential-sources/protected-repository-metadata.md)
-and [request and reply flow](../flows/credential-source-egress.md#follow-the-metadata-get).
+For public repository metadata, admit network access to `api.github.com:443` for
+the requesting executable. A request such as
+`GET https://api.github.com/repos/acme/widgets` returns GitHub's full response
+without a CredentialSource, token, or OCC callback. Current editable
+[Sandbox additions](../reference/sandbox-policies.md#authority-and-admission)
+grant executable, host, and port access; they do not restrict HTTP method or
+path. A Git Repository grant does not authorize REST access. Private repository
+metadata requires a separately authorized credentialed API path.
 
 <a id="read-further"></a>
 

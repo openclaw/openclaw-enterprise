@@ -5,8 +5,9 @@
 
 `LegacyEgressProxyDriver` is deprecated and pending removal. Use
 [TokenService and native Credential Proxy](../credential-proxy.md) for new
-credentialed workflows. Existing qualified protected repository exchanges and
-credential-free metadata still depend on the legacy Driver.
+credentialed workflows. Credential Design 1.0 retires the legacy protected
+repository and metadata exchanges rather than migrating them. The code remains
+until removal; this page applies only to an existing legacy installation.
 
 ## Upgrade an existing development installation
 

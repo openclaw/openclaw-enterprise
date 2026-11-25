@@ -90,7 +90,9 @@ a separately saved repository network policy before Source enrollment. OCC
 derives the revision's grants from the saved GitHub App and repository access,
 the registry and ceiling, and the Source's verified GitHub identities.
 `openshell-repository-policy.ts` compiles those frozen grants into exact Git
-service requests. [Native Git access levels](../reference/repository-credentials/access-levels.md#native-git-delivery)
+service requests. These Git-only grants do not admit GitHub REST calls. A
+credential-free metadata GET requires its own admitted network rule and returns
+the upstream response without injection or filtering. [Native Git access levels](../reference/repository-credentials/access-levels.md#native-git-delivery)
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.

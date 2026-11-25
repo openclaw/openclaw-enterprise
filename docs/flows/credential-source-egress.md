@@ -8,11 +8,12 @@ last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 
 ## Overview
 
-This flow covers the deprecated legacy credential-egress Driver, which remains
-load-bearing for qualified credential-free metadata exchanges until those uses
-have another owner or are retired. OpenClaw Control Plane (OCC) authorizes the
-supervisor to release GitHub identity replies. Native Credential Proxy delivery
-does not use this request-time flow. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+This flow records the deprecated legacy credential-egress Driver. Its protected
+metadata and repository exchanges remain in the code but are retired from the
+Credential 1.0 design and pending removal. An ordinary credential-free metadata
+GET uses an admitted Sandbox network rule and returns the upstream response. It
+does not use a Source, response filter, or request-time OpenClaw Control Plane
+(OCC) exchange. Native Credential Proxy delivery also does not use this flow. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points

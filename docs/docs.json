@@ -307,16 +307,8 @@
                     "label": "Credential Proxy Architecture"
                   },
                   {
-                    "page": "reference/security/credential-proxy",
-                    "label": "Protected Sender Threat Model"
-                  },
-                  {
                     "page": "reference/credential-sources/managed-static",
                     "label": "Managed Static Sources"
-                  },
-                  {
-                    "page": "reference/credential-sources/protected-repository-metadata",
-                    "label": "Protected Repository Metadata"
                   },
                   {
                     "page": "guides/credential-proxy",
@@ -379,6 +371,8 @@
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
               "reference/credential-sources/protected-inference",
+              "reference/credential-sources/protected-repository-metadata",
+              "reference/security/credential-proxy",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -569,12 +563,8 @@
                         "label": "Access Levels"
                       },
                       {
-                        "page": "reference/repository-credentials/push-ref-guardrail",
-                        "label": "Push Guardrail"
-                      },
-                      {
                         "page": "reference/repository-credentials/prepared-native-git",
-                        "label": "Native Git with a Prepared Credential"
+                        "label": "Prepared Git (Separate)"
                       },
                       {
                         "page": "reference/public-github-reads",
@@ -610,6 +600,7 @@
             "hidden": [
               "guides/repository-credentials/team-runbook",
               "reference/repository-credentials/protected-openshell-git",
+              "reference/repository-credentials/push-ref-guardrail",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",

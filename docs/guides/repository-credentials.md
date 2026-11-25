@@ -5,9 +5,9 @@ TokenService owns the Source. Sandbox installs each Agent's approved Repository
 network rules, and Credential Proxy prepares the token Provider. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-The prepared repository sender is a separate path without a Sandbox. Its worker
-owns GitHub App credentials. That path supports ordinary `git` and the
-`oce-github` draft helper.
+The prepared repository sender is a separate no-Sandbox path outside Credential
+Design 1.0. Its exact-ref and draft-PR features do not belong to Source-backed Git
+and do not require the legacy egress proxy.
 
 <a id="select-a-github-source-for-an-openshell-agent"></a>
 

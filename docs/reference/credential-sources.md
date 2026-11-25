@@ -3,9 +3,11 @@
 A CredentialSource is a Namespace resource. The selected TokenService maintains
 Sources for static credentials, OAuth grants, and finite GitHub installation
 tokens. A Source can reference a Connection Template. The Source API exposes
-metadata and controls access to the Source. [Protected repository metadata](credential-sources/protected-repository-metadata.md)
-is a separate noncredential Source served by a qualified sender through the
-deprecated legacy credential-egress Driver. [Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+metadata and controls access to the Source. Ordinary credential-free metadata
+reads use separate Sandbox network access and return the upstream response; they
+do not need a Source. The older [protected metadata Source](credential-sources/protected-repository-metadata.md)
+is deprecated and retired from Credential Design 1.0, pending code removal.
+[Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 covers Channel and Gateway Secret delivery.
 
 <a id="intended-credential-flow"></a>
@@ -69,13 +71,11 @@ For example, register an OpenAI API key as a managed static Source with `POST /n
 
 The caller needs `credential_source:create` on a ready Namespace. The response contains the Source ID and metadata, never the credential. See [managed static sources](credential-sources/managed-static.md) for the complete API and first-deployment example. To create a Template-backed OAuth Source, start the separate [browser consent workflow](connection-templates.md#connect-an-account). TokenService creates that Source only after the provider returns a grant.
 
-For protected metadata Sources, the selected Credential Proxy offers a separate [registration shape](credential-sources/protected-repository-metadata.md#register-a-source).
-
 ## Read and list sources
 
 Exact GET requires `credential_source:read` and returns all nonsecret metadata for that Source, even when TokenService cannot report refresh status. List requires Namespace `read` and includes only Sources the caller may read. A Source's saved `ready` state does not establish whether a particular deployment can use it.
 
-OCC uses the recorded TokenService instance for Source status, replacement, refresh, and deletion. See [protected metadata Source status](credential-sources/protected-repository-metadata.md#read-and-list-sources) for the separate Proxy-owned path.
+OCC uses the recorded TokenService instance for Source status, replacement, refresh, and deletion.
 
 An associated Source reports `connectionTemplateId`. For Template-based OAuth, `OAuthCredentialSource.consent` records the original Template version, OAuth client, principal and scopes. A successful Codex device login creates a `builtin_codex` Source with trusted account metadata and the fixed issuer/client preset. It needs no Template. Both kinds expose only nonsecret metadata.
 
@@ -130,7 +130,7 @@ Withdrawal removes an Agent's access without deleting the Source. See [withdrawa
 
 Use `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId` to retire a Source. With OCC custody, Proxy retires delivery copies before TokenService removes the credential. A Proxy failure returns `503` and retains the Source and credential for retry. With OpenShell custody, TokenService deletes the authoritative Provider and profile.
 
-Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The Worker can retry pending OAuth retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source), [OAuth consent](connection-templates.md#connect-an-account), and [protected Proxy deletion](credential-sources/protected-repository-metadata.md#delete-a-source).
+Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The Worker can retry pending OAuth retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source) and [OAuth consent](connection-templates.md#connect-an-account).
 
 ## Errors
 

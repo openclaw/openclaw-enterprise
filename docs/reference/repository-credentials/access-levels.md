@@ -1,7 +1,9 @@
 # GitHub access levels
 
-Choose the least access the Agent needs. Each binding selects one level for one
-repository; Namespace policy determines which levels are available.
+For Credential Design 1.0, choose repository **Read** or **Read/write**. These
+Source-backed grants admit Git operations only; GitHub enforces branch rules.
+They do not authorize GitHub REST or pull request creation. The separate prepared
+broker and deprecated protected profiles documented below are outside 1.0.
 
 ## Registry profiles
 
@@ -18,11 +20,10 @@ whose profile is not allowed by the Namespace policy.
 | `git-full`          | Requests the predefined contribution profile with issue management.           |
 
 For `github-repository`, `profiles` must contain only that value and the Namespace
-policy must include `permissions`. For example, `contents: write` and
-`metadata: read` permit content writes and metadata reads within the supported
-[protected repository route](protected-openshell-git.md#use-the-admitted-repository).
-GitHub App permissions and repository rules still apply. This profile does not
-accept an OCE branch allowlist; GitHub governs branch restrictions.
+policy must include the GitHub App token `permissions`, such as `contents: write`
+and `metadata: read`. These issuer permissions do not admit API routes; Source-backed
+Git remains Git-only. The profile has no OCE branch allowlist. GitHub applies its
+repository and branch rules.
 
 For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
@@ -120,17 +121,8 @@ does not change the Agent's grants.
 
 Earlier OpenShell REST routes, API limits, and issue and pull request behavior
 are documented in the [historical REST reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery).
-For current alternatives, see [prepared native Git](prepared-native-git.md) and
-the [development token authority](development-token.md).
-
-<details>
-<summary>Historical REST limits preview (retired)</summary>
-
-This preview describes retired Gateway-backed delivery. TokenService Git does
-not support these REST limits or operations.
-
-<div data-repository-limits></div>
-</details>
+The separate [prepared native Git broker](prepared-native-git.md) is outside 1.0;
+its draft-PR feature is not equivalent to a Source-backed Git grant.
 
 ## Console access levels
 

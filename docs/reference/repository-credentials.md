@@ -3,7 +3,7 @@
 The OpenClaw Control Plane (OCC) saves repository grants with the Agent
 revision. Each binding grants HTTPS access to a named repository under an
 approved profile. See the [operator guide](../guides/repository-credentials.md)
-for setup. See [Credential Proxy architecture](../design/credential-proxy-architecture.md) for the delivery boundaries.
+for setup and [Credential Proxy architecture](../design/credential-proxy-architecture.md) for delivery boundaries.
 
 ## Native OpenShell Git with TokenService
 
@@ -16,28 +16,27 @@ and [access levels](repository-credentials/access-levels.md).
 
 ## Prepared Git through the repository sender
 
+This separate no-Sandbox broker is outside Credential Design 1.0. It does not
+depend on `LegacyEgressProxyDriver`. Its exact-ref and draft-PR features are
+not part of Source-backed 1.0 Git.
+
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT
 service account) and Kubernetes Compute without a Sandbox Driver. Git presents
 the Agent's repository session bearer to the broker. The broker presents a
 repository-scoped installation token to GitHub.
 
-The Worker verifies and stores the signed App exchange's installation token.
-For each authorized send, the broker gets a token and deadline over a private
-socket, verifies TLS, then checks cancellation and the deadline. See the
-[prepared session flow](../flows/agent-repository-credentials.md#prepared-repository-sessions).
+Only the Worker holds the App signing key and verifies the installation token.
+The broker gets the token and deadline over a private socket, verifies TLS, and
+checks cancellation, the deadline, and each pushed ref. Reads cover the repository. See the
+[prepared session flow](../flows/agent-repository-credentials.md#prepared-repository-sessions)
+and [withdrawal and draft creation](repository-credentials/prepared-native-git.md).
 
-Only the worker holds the App signing key. Git requests require an eligible
-prepared token. Reads cover the repository. The broker checks every pushed
-ref against the approved branch. Protect important branches at GitHub.
-See [withdrawal and draft PR creation](repository-credentials/prepared-native-git.md).
-
-[Credential-free metadata](credential-sources/protected-repository-metadata.md) and
-[protected OpenShell Git](repository-credentials/protected-openshell-git.md) retain
-the deprecated legacy credential-egress Driver.
+The special [protected metadata](credential-sources/protected-repository-metadata.md)
+and [protected OpenShell Git](repository-credentials/protected-openshell-git.md) exchanges
+are retired from 1.0. Their deprecated legacy egress code remains pending removal.
 Helm uses `Recreate` to prevent overlapping worker or credential service owners.
 
-Model credentials stay with their consumer and dedicated Slack tokens with the
-gateway. The repository-bound Codex proxy allows the exact broker hostname.
+The repository-bound Codex proxy allows the exact broker hostname.
 `allow_local_binding = true` disables the private-address guard. `mode = "full"`
 allows all HTTP methods at allowed destinations. Explicit denies, Kubernetes
 NetworkPolicy, TLS and broker authorization still apply. See
@@ -278,12 +277,12 @@ until callbacks and disposal finish.
 
 ## GitHub response data
 
-A [protected metadata read](../flows/repository-credentials.md#5-deliver-an-outcome-and-release-ownership)
+The deprecated [protected metadata exchange](credential-sources/protected-repository-metadata.md)
 releases only `{ id, full_name }` after checking repository identity and reaching
 stream end without actual trailers. Joined OpenShell enforcement still needs
 deployment proof.
 
-For profiles that allow broader API access, bounded REST JSON responses omit
+For legacy profiles with broader API access, bounded REST JSON responses omit
 `temp_clone_token` from the repository, its `parent` and `source`, and a pull
 request's `head.repo` and `base.repo`. GraphQL requests selecting `tempCloneToken`
 receive HTTP 400. The broker rewrites pagination and followed links only after

@@ -1,14 +1,15 @@
 # Protected metadata sender threat model
 
-This page covers the qualified protected metadata exchange implemented by the
-deprecated legacy credential-egress Driver. It does not describe native
-TokenService and Credential Proxy injection.
+Credential Design 1.0 retires the protected metadata exchange described here.
+This threat model applies only to the deprecated legacy credential-egress code
+until its removal. Ordinary network-only metadata reads return the upstream
+response; they do not provide this exchange's field filtering or live OCC checks.
 
 Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,
 the grant covers the whole Agent execution. The trusted sender controls which
 requests reach GitHub and which responses return to that execution. See the
-[protected metadata read](../../design/credential-proxy.md#read-one-repositorys-identity).
+[deprecated protected metadata exchange](../credential-sources/protected-repository-metadata.md).
 
 ## What can a process inside the execution do?
 

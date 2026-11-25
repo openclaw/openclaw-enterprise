@@ -34,8 +34,7 @@ for the supported model, Git, and Plugin paths.
 
 ## Authorize a native OpenShell Git request
 
-For the selected-repository profile (`github-repository`), the operator chooses
-repositories and read or write access. OCC saves those grants with the Agent
+For Source-backed Git, the operator chooses repositories and Read or Read/write access. OCC saves those grants with the Agent
 revision. Agents in the Namespace can share a GitHub installation token while
 keeping their own grants. Sandbox compiles the saved grants into OpenShell Git
 network rules. Credential Proxy prepares the token's delivery Provider, which
@@ -96,19 +95,23 @@ See [renewal](../reference/credential-sources.md#request-renewal) and
 
 <a id="who-controls-a-generic-api-request-and-its-reply"></a>
 
-## Separate prepared and protected delivery
+## Credential-free requests and retired exchanges
 
-The [prepared Git sender](../reference/repository-credentials/prepared-native-git.md)
-runs without a Sandbox Driver. Its broker uses a Worker-owned repository session
-and asks the Worker to authorize each send.
-The deprecated legacy credential-egress Driver serves the separately qualified
-[protected OpenShell route](../reference/repository-credentials/protected-openshell-git.md),
-which uses a request-phase callback. For a [protected metadata read](credential-proxy.md#read-one-repositorys-identity),
-OCC authorizes the send and checks the complete response before the sender
-returns selected fields. The [earlier protected OpenShell and metadata diagrams](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/design/credential-proxy-architecture.md)
-record those separate flows. The legacy implementation remains pending removal
-until its protected exchanges are reowned or retired; native Credential Proxy
-delivery does not supply the filtered-response metadata exchange.
+A credential-free request needs only admitted Sandbox network access. For
+example, grant the requesting executable access to `api.github.com:443`;
+`GET /repos/acme/widgets` then returns GitHub's full response. Current editable
+[network additions](../reference/sandbox-policies.md#authority-and-admission)
+cannot restrict the method or path. The Git-only Repository grant does not allow
+that REST endpoint. No Source, credential injection, or request-time OCC check
+participates.
+
+Credential 1.0 retires the protected metadata and repository exchanges,
+including response filtering, per-send OCC authorization, OCE branch allowlists,
+exact-ref checks, and bounded pull request operations. `LegacyEgressProxyDriver`
+remains in the current implementation pending removal.
+GitHub still enforces its own branch rules. The independent
+[prepared Git broker](../reference/repository-credentials/prepared-native-git.md)
+is a separate execution path outside this 1.0 model.
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>

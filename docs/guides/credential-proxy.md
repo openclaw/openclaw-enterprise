@@ -14,11 +14,11 @@ contract.
 - For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
   TokenService renews the GitHub installation token, and Credential Proxy
   injects it only on requests admitted for the Agent.
-- Credential-free repository metadata uses a qualified protected sender
-  and Sandbox registration. The sender restricts the request and its response
-  without injecting a credential. This capability still depends on the deprecated
-  legacy egress Driver.
-  [Credential-free Source procedure](../reference/credential-sources/protected-repository-metadata.md#register-a-source)
+- For public GitHub metadata, admit ordinary network access to the endpoint.
+  GitHub returns its full response; no CredentialSource or credential injection is
+  involved. The Git grant does not authorize GitHub REST. Configure only the
+  restrictions supported by the selected Sandbox; current per-Agent policy
+  additions use executable, host, and port grants. [Sandbox network policy](../reference/sandbox-policies.md)
 - For the separate Kubernetes prepared Git path without a Sandbox or
   Credential Proxy, use the [prepared native Git reference](../reference/repository-credentials/prepared-native-git.md).
 
@@ -58,10 +58,9 @@ unauthenticated request checks the Agent's entry point. To check Proxy enforceme
 use an approved request and a request outside the saved policy. Verify the allowed
 request at the upstream and confirm the denied request never reached it.
 
-For credential-free metadata, verify the approved repository read with no
-credential injected. Check that the selected sender refuses another repository
-or method. Record the selected revision and the enforcement and origin evidence.
-[Credential-free Source policy](../reference/credential-sources/protected-repository-metadata.md#bind-a-source-to-an-agent)
+For public metadata, verify the separately admitted network access and confirm
+that the request needs no credential. This path returns GitHub's response
+without the legacy sender's field filtering.
 
 For an active managed model Source, [request withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent)
 and verify that the affected Agent can no longer use it. Wait for confirmed
@@ -85,10 +84,10 @@ Prepared Git uses a separate standing or finite session procedure.
 ## Existing legacy protected exchanges
 
 `LegacyEgressProxyDriver` and its `drivers.credential_proxy` selection are
-deprecated and pending removal. They remain required for qualified protected
-repository exchanges and credential-free metadata until those capabilities move
-to another owner or are retired. Do not select this Driver for new credentialed
-model, Git, or Plugin workflows; use TokenService and native Credential Proxy.
+deprecated and pending removal. Credential Design 1.0 retires their special
+protected metadata and repository exchanges instead of migrating them. Do not
+select this Driver for new model, Git, Plugin, or metadata workflows. Use
+TokenService and native Credential Proxy for credentials.
 Sandbox network policy and ordinary Channel egress are separate capabilities.
 
 For an existing qualified exchange, retain its matching release, authority,
@@ -106,6 +105,3 @@ New local protected static-inference launches are [retired](deploy/local-openshe
   [withdrawal recovery](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent).
   Retain custody and operation evidence until the selected owner verifies the
   outcome.
-- If a protected sender is unqualified, follow the
-  [qualified sender prerequisites](../reference/drivers/selection.md#select-a-protected-sender).
-  Keep the admitted scope in place.

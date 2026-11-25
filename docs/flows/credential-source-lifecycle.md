@@ -61,7 +61,7 @@ OCC checks `credential_source:create` and validates any static Template. TokenSe
 
 The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
 
-The selected protected Proxy can also register a credential-free metadata grant. OCC authorizes the exact Agent named in the request. See [protected metadata registration](../reference/credential-sources/protected-repository-metadata.md#register-a-source).
+The deprecated legacy Proxy still exposes a separate [protected metadata Source](../reference/credential-sources/protected-repository-metadata.md). Credential 1.0 retires it; ordinary metadata reads have only a Sandbox network rule.
 
 After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 
@@ -130,8 +130,6 @@ With OCC custody, Proxy attempts to retire copies and profiles after detachment.
 `packages/occ/src/managed-credential-sources.ts:updateManagedCredentialSource`, `packages/occ/src/managed-credential-sources.ts:deleteCredentialSource`
 
 OCC checks permission on the exact Source and dispatches static credential replacement to its TokenService owner. An active Agent revision can keep using the Source during replacement. Changing or removing the provider preset requires an unbound Source and a separate request.
-
-The recorded protected Proxy handles [credential-free metadata](../reference/credential-sources/protected-repository-metadata.md).
 
 #### Deliver Source updates
 

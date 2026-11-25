@@ -200,7 +200,7 @@ The [Credential Design 1.0 RFC](../specs/rfcs/20261124-credential-design-1-0/ind
 records the detailed decisions.
 Credential Gateway and Credential Refresh selections are retired and unsupported.
 The separate [legacy credential-egress Driver](reference/drivers/credential-proxy.md#legacy-protected-egress)
-is deprecated and remains pending removal while qualified protected exchanges depend on it.
+is deprecated and pending removal. Its special protected metadata and repository exchanges are retired from the 1.0 design.
 
 The OpenShell integration supports dedicated Harness delivery within the documented
 identity, storage, admission, and gateway-authentication limits. See

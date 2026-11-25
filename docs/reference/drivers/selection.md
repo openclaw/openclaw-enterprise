@@ -56,7 +56,7 @@ in either mode.
 | `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
 | `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with TokenService and an advertising Sandbox registration. No separate YAML setting.                                                                                                          |
 | `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
-| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Deprecated and pending removal. Retained for qualified credential-free metadata and protected repository exchanges; do not select it for new managed Agent credentials.                                |
+| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Deprecated and pending removal. Its special protected metadata and repository exchanges are retired from 1.0; do not select it for new workflows.                                                      |
 | `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
 | `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
 | `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; use Source-backed native Git for managed Agent credentials.                                                                                                    |
@@ -85,21 +85,14 @@ contract still requires the Secret selection.
 ## Legacy protected sender selection
 
 The `credential_proxy` selection belongs to the deprecated legacy
-credential-egress Driver and is pending removal. It remains available only
-while qualified credential-free metadata and protected repository exchanges
-depend on it. Use TokenService and native `credential_proxy_delivery` for new
-managed workflows. The [prepared Git sender](../repository-credentials/prepared-native-git.md)
+credential-egress Driver and is pending removal. Its protected metadata and
+repository exchanges are retired from Credential Design 1.0. Use TokenService
+and native `credential_proxy_delivery` for new managed workflows. The [prepared Git sender](../repository-credentials/prepared-native-git.md)
 is a separate no-Sandbox path.
 
-For a qualified installed sender, select the trusted package under
-`drivers.sandbox.package` and configure it under
-`drivers.sandbox.configuration`. Set `drivers.credential_proxy.id` to the
-same registration ID and its `configuration` to `{}`. The API and Worker
-check that paired registration against the admitted revision. A bundled
-OpenShell protected exchange also requires the same legacy Proxy ID in its
-OpenShell Backend. Confirm the sender and Sandbox provide the protected exchange
-guarantees required by the selected metadata or repository profile; a declared
-capability alone does not qualify the transport.
+For an existing qualified deployment, consult the
+[release-specific sender configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/drivers/selection.md#select-a-protected-sender).
+Do not configure a new installation on this path.
 
 <a id="supply-protected-git-credentials-with-helm"></a>
 

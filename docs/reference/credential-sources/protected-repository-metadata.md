@@ -1,14 +1,16 @@
-# Protected repository metadata
+# Deprecated protected repository metadata
 
-Credential-free repository metadata remains available through a qualified
-protected sender. Its current `LegacyEgressProxyDriver` implementation is
-deprecated and pending removal after the protected exchange has another owner
-or is retired. Native TokenService and Credential Proxy delivery do not provide
-this exact-send and filtered-response exchange.
+Credential Design 1.0 retires this special metadata Source and its exact-send
+authorization and filtered-response exchange. Ordinary credential-free metadata
+uses separately admitted Sandbox network access, returns GitHub's full response,
+and needs no Source or credential. The Git grant itself does not authorize REST.
+
+The current code still exposes this deprecated `LegacyEgressProxyDriver` path
+until removal. The details below apply only to existing legacy deployments.
 
 Use [TokenService enrollment](../credential-sources.md#register-a-source) for
 model credentials, OAuth and GitHub installation Sources. A qualified selected
-Credential Proxy can offer **credential-free repository metadata** for one
+legacy egress Driver can offer **credential-free repository metadata** for one
 approved repository identity read. The sender applies request and response
 controls without injecting a credential.
 
@@ -26,7 +28,7 @@ OpenShell is a development integration. See the
 
 The selected Proxy must list the type in its catalog. The example requires a
 qualified sender and Sandbox that enforce the protected exchange. See
-[protected-exchange requirements](../../design/credential-proxy.md#read-one-repositorys-identity).
+[legacy protected-exchange flow](../../flows/credential-source-egress.md#follow-the-metadata-get).
 
 Replace the sample IDs. Execution authority admits every process in that execution.
 
@@ -71,7 +73,7 @@ bindings. Omit it to keep them or send `[]` to remove them all.
 
 [Grant the Agent service principal access to the source](../authorization.md#manage-namespace-policy)
 with a Namespace IAM Role and AccessBinding. Each requested Source must be ready with its recorded owner selected.
-The Credential Proxy owns these metadata Sources.
+The deprecated legacy egress Driver owns these metadata Sources.
 
 Deployment with credential sources requires a selected Sandbox Driver. Staged model or Plugin delivery cannot share an execution with a Proxy-owned metadata Source. For these delivery modes, the revision records each Source's ID, type, and owning Driver ID. For the `widgets-metadata` example, the protected
 plan allows `GET /repos/acme/widgets` for that execution and source generation. Follow the
