@@ -52,7 +52,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
-  let restoring: { position: number | null; onReturn?: () => void } | null = null;
+  let restoring: { position: number | null; onReturn: (() => void) | undefined } | null = null;
   replaceUrl(canonicalUrl(location.href));
 
   function route() {
