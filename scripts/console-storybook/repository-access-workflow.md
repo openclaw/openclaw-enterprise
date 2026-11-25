@@ -72,9 +72,8 @@ discovery denied**, which display their own status instead.
 
 ## Repository search keyboard
 
-Open **Exact repository names before prefix matches** under **Pages / Create
-Agent** (`pages-create-agent--repository-exact-search`, scenario
-`createRepositoriesExactSearch`). With `application` in the search field and
+Open **Pages / Create Agent / Repository Exact Search**
+(`pages-create-agent--repository-exact-search`). With `application` in the search field and
 both exact matches unchecked, press and hold Enter. Only `omega/application`
 should become selected, even while the key repeats. Release Enter and press it
 again to select `zeta/application`. Reset the story, then use Enter to commit

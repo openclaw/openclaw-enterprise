@@ -809,18 +809,16 @@ export function createRepositoryFields(
     return event.isComposing || event.keyCode === 229;
   }
   search.addEventListener("keydown", (event) => {
-    if (isComposing(event)) {
-      return;
-    }
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" && !isComposing(event)) {
       event.preventDefault();
       searchState.dismissed = false;
       renderResults();
       results.querySelector<HTMLInputElement>('input[type="checkbox"]:not(:disabled)')?.focus();
     }
     if (event.key === "Enter") {
+      // Enter in search must never submit the surrounding form.
       event.preventDefault();
-      if (event.repeat) {
+      if (event.repeat || isComposing(event)) {
         return;
       }
       if (searchState.dismissed) {
