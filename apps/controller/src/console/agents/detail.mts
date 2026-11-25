@@ -7102,6 +7102,7 @@ export async function renderAgentDetail(
       safety.node,
     );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    const reviewReminder = "Review the merged draft. Saving may replace other changes.";
     let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
@@ -7138,11 +7139,11 @@ export async function renderAgentDetail(
       const draft = value as ConfigurationDraft | undefined;
       return !!draft && (draft.text !== draft.initialText || !!draft.outcomeUnknown);
     });
-    const carriedMessage = [savedNotice, carriedNote].filter(Boolean).join(" ");
+    const shownSavedNotice = savedNotice;
     const feedback = element(
       "p",
       { className: "hint", role: "status", id: "configuration-editor-feedback" },
-      retained ? "" : carriedMessage,
+      retained ? "" : [shownSavedNotice, carriedNote].filter(Boolean).join(" "),
     );
     let feedbackLocked = false;
     // Entering the editor replaces the pressed button; focus moves to the editor (finding 1620).
@@ -7342,11 +7343,14 @@ export async function renderAgentDetail(
           callerPermissions !== unconfirmedPermissions &&
           isAgentPermissionSummary(callerPermissions);
         if (confirmed && (!callerPermissions?.configurationRead || configurationReadOnly())) {
-          clearReview();
-        } else if (pending || !feedbackLocked) {
-          reviewMessage = confirmed && !pending ? carriedMessage : "";
-          setDescription(save, feedback.id, Boolean(reviewMessage));
+          reviewNote = reviewReminder;
         }
+        if (!save.disabled && !feedbackLocked) {
+          reviewMessage = [shownSavedNotice, confirmed ? reviewNote : reviewReminder]
+            .filter(Boolean)
+            .join(" ");
+        }
+        setDescription(save, feedback.id, Boolean(reviewMessage));
       }
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
@@ -7432,12 +7436,11 @@ export async function renderAgentDetail(
           return;
         }
         assertReadableConfiguration(freshAgent);
-        // A failed preflight read leaves the merge intact. A conflict or write supersedes it.
-        reviewNote = "";
         if (
           freshAgent.configurationId !== baseline.id ||
           freshConfig.generation !== baseline.generation
         ) {
+          clearReview();
           // An alert before its text is written (finding 2010).
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
@@ -7448,6 +7451,7 @@ export async function renderAgentDetail(
         mutationStarted = true;
         await saveConfigurationEdit(freshConfig, nextValues);
         configurationSaved = true;
+        clearReview();
         if (context.isCurrent()) {
           context.drafts.forget("configuration");
           await refreshDraftInPlace({
@@ -7459,11 +7463,21 @@ export async function renderAgentDetail(
         if (!context.isCurrent()) {
           return;
         }
-        if (requestFailure(error).status === 401) {
+        const { status } = requestFailure(error);
+        // Validation and rate limits leave the merge intact. After an access refusal,
+        // keep only a reminder for the reader if they can save this draft again.
+        if (mutationStarted && reviewNote) {
+          if (status === 403 || status === 404) {
+            reviewNote = reviewReminder;
+          } else if (status !== 400 && status !== 429) {
+            clearReview();
+          }
+        }
+        if (status === 401) {
           context.onExpired();
           return;
         }
-        if (!mutationStarted && requestFailure(error).status === 403) {
+        if (!mutationStarted && status === 403) {
           retireSaveRead(
             error,
             rejectionMessage(refusedSave(error, "configuration", false), false),
@@ -7502,8 +7516,7 @@ export async function renderAgentDetail(
             rejectionMessage(error, mutationStarted);
         }
         feedbackLocked = true;
-        outcomeUnknown =
-          mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status);
+        outcomeUnknown = mutationStarted && !refusedWriteStatuses.includes(status);
       } finally {
         if (context.isCurrent()) {
           pending = false;

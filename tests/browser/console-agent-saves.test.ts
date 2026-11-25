@@ -1974,30 +1974,56 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
   const editor = page.getByLabel("Configuration JSON");
   const mergedText = await editor.inputValue();
   const save = page.getByRole("button", { name: "Save Configuration" });
-  async function refreshAndCheckReview() {
+  async function refreshAndCheckReview(expected = review) {
     const original = await editor.elementHandle();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction((node) => !node.isConnected, original);
     await original.dispose();
     assert.equal(await editor.inputValue(), mergedText);
-    await page.getByRole("status").filter({ hasText: review }).waitFor();
+    await page.getByRole("status").filter({ hasText: expected }).waitFor();
     await save.focus();
-    assert.equal(await focusedDescription(page), review);
+    assert.equal(await focusedDescription(page), expected);
   }
+  // An unavailable permission summary must hide saved values without leaving Save unwarned.
+  const permissions = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  await page.route(
+    permissions,
+    (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }),
+    { times: 1 },
+  );
+  const summary = page.waitForResponse(permissions);
+  await refreshAndCheckReview("Review the merged draft. Saving may replace other changes.");
+  assert.equal((await summary).status(), 503);
+  assert.equal(await save.isEnabled(), true);
   await refreshAndCheckReview();
 
   // A failed preflight takes priority, but the same unsaved merge still needs review.
-  await page.route(
-    `**${configurationPath(context)}`,
-    (route, request) => {
-      assert.equal(request.method(), "GET");
-      return route.fulfill({ status: 503, json: { error: "unavailable" } });
-    },
-    { times: 1 },
-  );
+  const url = fixture.origin + configurationPath(context);
+  await page.route(url, (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }), {
+    times: 1,
+  });
+  const read = page.waitForResponse(url);
   await save.click();
+  const failedRead = await read;
+  assert.equal(failedRead.request().method(), "GET");
+  assert.equal(failedRead.status(), 503);
   await page.getByRole("alert").filter({ hasText: "The read could not be completed" }).waitFor();
   await refreshAndCheckReview();
+
+  // Let both reads through. A refused write also leaves the conflicting saved value intact.
+  await page.route(url, (route, request) =>
+    request.method() === "PATCH"
+      ? route.fulfill({ status: 429, json: { error: "too_many_requests" } })
+      : route.fallback(),
+  );
+  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
+  await save.click();
+  assert.equal((await patched).status(), 429);
+  await page.unroute(url);
+  await page.getByRole("alert").filter({ hasText: "Too many requests" }).waitFor();
+  assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
+  await refreshAndCheckReview();
+
   await save.click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
