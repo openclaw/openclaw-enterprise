@@ -5,7 +5,14 @@ import type { Page, WebSocket } from "playwright";
 type CapturedFrame = { readonly payload: string | Buffer };
 type SocketFrame = CapturedFrame & { readonly socket: WebSocket };
 type Poll = <Result>(description: string, observe: () => Result | undefined) => Promise<Result>;
-type StockUi = { snapshot(): { booted: boolean } };
+type StockUi = {
+  snapshot(): {
+    booted: boolean;
+    gatewayPhase: string | null;
+    routeReady: boolean;
+    sessionKey: string | null;
+  };
+};
 
 export function textFromFrame(frame?: { readonly payload?: unknown } | null): string {
   const payload = frame?.payload;
@@ -145,6 +152,46 @@ export async function waitForStockUi(page: Page) {
     { timeout: 60_000 },
   );
   await page.locator("body").waitFor({ state: "visible", timeout: 60_000 });
+}
+
+/** A cached bubble and a new Gateway connection alone do not prove access to this conversation. */
+export async function assertStockChatReconnected(
+  page: Page,
+  terminal: SocketFrame,
+  frames: readonly SocketFrame[],
+  reconnectStart: number,
+  waitFor: Poll,
+) {
+  const sessionKey = record(frameRecord(parseFrame(terminal))?.payload)?.sessionKey;
+  assert.ok(typeof sessionKey === "string" && sessionKey.length > 0, "missing chat session key");
+  const subscription = await waitFor("a new socket subscribed to the original chat", () =>
+    frames.slice(reconnectStart).find((frame) => {
+      if (frame.socket === terminal.socket || frame.socket.isClosed()) {
+        return false;
+      }
+      const response = frameRecord(parseFrame(frame));
+      const payload = record(response?.payload);
+      return (
+        response?.type === "res" &&
+        response.ok === true &&
+        payload?.subscribed === true &&
+        payload.key === sessionKey &&
+        (payload.initialHistory === undefined || record(payload.initialHistory)?.ok === true)
+      );
+    }),
+  );
+  assert.ok(terminal.socket.isClosed(), "the original chat connection must have closed");
+  await page.waitForFunction(
+    (key) => {
+      const state = (
+        globalThis as typeof globalThis & { openclawControlUi?: StockUi }
+      ).openclawControlUi?.snapshot();
+      return state?.gatewayPhase === "connected" && state.routeReady && state.sessionKey === key;
+    },
+    sessionKey,
+    { timeout: 60_000 },
+  );
+  assert.ok(!subscription.socket.isClosed(), "the new chat connection must still be open");
 }
 
 /** Exercise live streaming, Stop, and persisted-session recovery through the stock UI. */

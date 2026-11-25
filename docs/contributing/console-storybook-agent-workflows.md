@@ -206,14 +206,14 @@ queries the catalog; **Filter tools** filters locally. Credential changes clear
 the catalog and keep selections.
 
 **Preload plugins after entering a service account token** starts with the picker
-closed; opening it reuses the background request. **Plugin search loading** holds
+closed. Save the token as a Source, then open the picker to reuse the background request. **Plugin search loading** holds
 the response: loading starts while typing, keeps focus, and replaces empty-result
 feedback. **Plugin tools loading** holds Calendar's details: check loading status
 and disabled **Add Calendar**. Reset to replay pending states before timeout.
 
-In **Discover plugins with a selected PAT Secret**, choose Calendar, then change
-the Secret: discovery clears. **Selected PAT Secret discovery denied** previews
-permission failure. Preset PAT Secrets enable discovery; API keys do not.
+**Hosted Apps needs a TokenService Source** shows how saving a service account
+token enables hosted discovery. **PAT Source enrollment denied** simulates a
+refused Source create and keeps discovery unavailable.
 
 **Components/Plugins → Unavailable reason popover** covers keyboard access,
 dismissal, compact rows, help links, detail guidance, and disabled **Add**.

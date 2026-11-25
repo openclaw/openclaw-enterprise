@@ -6,12 +6,13 @@ last_verified: "2026-11-02"
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster.
+Install OpenClaw Enterprise (OCE) in a private k3d cluster. The OpenShell profile
+selects OCC TokenService and native Credential Proxy delivery for dedicated Codex.
 
 ## Before you start
 
 - [Prepare your Linux host](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
-- Use an operator account with permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
+- Use an operator account with permission to create CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent. Channel setup separately requires Namespace Secret permissions.
 
 The local launcher prepares [managed channel egress](channel-egress.md), including
 the Envoy dependencies and matching network exclusions. After deploying a
@@ -37,7 +38,7 @@ RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
 ```
 
-Choose one image path before starting the cluster.
+Use a checkout that includes managed credential delivery and choose a matching image pair.
 
 **Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 
@@ -45,7 +46,7 @@ Choose one image path before starting the cluster.
 unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```
 
-**Use published images.** Follow [published image selection](published-images.md) to verify the publication receipt and switch to its source commit. In the same shell, select the verified images:
+**Use published images.** Follow [published image selection](published-images.md) to verify the controller and runtime receipts and use the matching source commit. Select the verified images in the same shell:
 
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
@@ -87,16 +88,22 @@ go build -trimpath -o bin/occ ./cmd/occ
 
 [pnpm reports a read-only store?](../operate/local-setup-troubleshooting.md#pnpm-reports-a-read-only-store)
 
-The launcher enables Gateway TLS, mTLS and authentication before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
+The launcher enables TLS, mutual TLS and authentication for the OpenShell Gateway before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
 
-## 3. Configure Credential Gateway
+<a id="3-configure-credential-gateway"></a>
 
-Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
+## 3. Prepare model credential delivery
 
-The [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) checks that the generated rule matches the expected settings before changing it.
+The launcher selects OCC TokenService and the OpenShell Sandbox that supplies
+native Credential Proxy delivery. See [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
+before changing the generated configuration.
+
+Run the configuration script from the matching checkout. It removes the
+generated rule that lets Git reach `github.com:443` without inspection and
+selects the curated Codex plugin catalog. Git access requires an explicit
+[repository grant](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 
 ```bash
-# Edit the fresh installation.yaml once, before provisioning Agents.
 node "$RUN_DIR/configure-installation.mts"
 ```
 

@@ -61,6 +61,8 @@ const CONSOLE_ASSETS = new Map([
       "namespace-deletion.mts",
       "resource-actions.mts",
       "secrets.mts",
+      "credential-sources.mts",
+      "credential-source-metadata.mts",
       "runtime-images.mts",
       "agents/list.mts",
       "agents/access-reasons.mts",
@@ -134,6 +136,14 @@ const CONSOLE_ASSETS = new Map([
     "/console/environment-references.mjs",
     {
       path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // Source eligibility and Compute admission use the same model endpoint normalization.
+  [
+    "/console/openai-endpoint-url.mjs",
+    {
+      path: new URL("./drivers/openai-endpoint-url.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],

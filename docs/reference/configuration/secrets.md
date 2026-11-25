@@ -114,11 +114,12 @@ OpenClaw owns SecretRef syntax, provider configuration, and validation. OCC,
 ConfigurationDriver, and Kubernetes Compute preserve native `env`, `file`, and
 `exec` SecretRefs as unresolved JSON. The selected SecretDriver only stores OCC
 Secret values and resolves approved env delivery metadata for the owning
-gateway. With the OpenShell Credential Gateway, an Agent's model key can instead
-be a [credential source](../credential-sources.md) that the Sandbox proxy
-substitutes, for dedicated Codex only. That path does not apply to Configuration
-bindings. A general Secret Broker, value history, and automatic rotation remain
-unimplemented.
+gateway. Dedicated OpenClaw or Codex can use a supported
+[managed model Source](../credential-sources.md#implementation-status) in
+`harnessAuth`. TokenService holds the credential and Credential Proxy delivers
+it for authorized model requests. Configuration `secretBindings`, including
+Channel Secrets, use their own delivery path. A general Secret Broker, Secret
+value history, and automatic Namespace Secret rotation remain unimplemented.
 
 ### Native channel configuration
 

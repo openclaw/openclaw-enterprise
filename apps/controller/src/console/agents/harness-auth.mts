@@ -6,10 +6,20 @@ import type {
   SecretReference,
   ServiceAccount,
 } from "@openclaw-enterprise/contracts";
-import { INSTALLATION_ADMINISTRATION, requestFailure, responseFields } from "../api-client.mjs";
-import { element, setUnavailable } from "../dom.mjs";
-import { message, namespaceListNeed, namespacePath } from "./list.mjs";
+import {
+  INSTALLATION_ADMINISTRATION,
+  namedDenial,
+  requestFailure,
+  responseFields,
+} from "../api-client.mjs";
+import { button, element, replaceChildrenIfChanged, setUnavailable } from "../dom.mjs";
+import { normalizeOpenAiBaseUrl } from "../openai-endpoint-url.mjs";
+import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
+import {
+  readCredentialSourceMetadata,
+  type CredentialSourceSummary,
+} from "../credential-source-metadata.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { createDeviceLogin, deviceLoginOffered, type DeviceLogin } from "./device-login.mjs";
 
@@ -68,6 +78,294 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 }
 
 type AuthBinding = HarnessAuthBinding | null | undefined;
+type ModelSourcePurpose = "openai" | "codex-pat" | "builtin_codex";
+
+export const CODEX_SOURCE_DESTINATION_HINT =
+  "An OpenAI Source requires the OpenAI Responses destination. The Console cannot check Codex's effective destination before saving; deployment checks it. If the Installation default differs, set Harness destination to an override with Provider base URL https://api.openai.com/v1 and Provider protocol Responses.";
+
+/** Return the configured model provider only when managed model Sources can apply. */
+export function modelSourceProvider(
+  configuration: unknown,
+  harnessId: string | undefined,
+  executionMode: string | undefined,
+): "openai" | "codex" | undefined {
+  if (executionMode !== "dedicated") {
+    return undefined;
+  }
+  const selection = responseFields(
+    responseFields(responseFields(configuration).agents).defaults,
+  ).model;
+  const primary = typeof selection === "string" ? selection : responseFields(selection).primary;
+  const providerId = typeof primary === "string" ? primary.split("/", 1)[0] : undefined;
+  if (harnessId === "codex" && (providerId === "codex" || providerId === "openai")) {
+    return providerId;
+  }
+  const provider = responseFields(
+    responseFields(responseFields(configuration).models).providers,
+  ).openai;
+  const nativeOpenAI = responseFields(provider);
+  return harnessId === "openclaw" &&
+    providerId === "openai" &&
+    nativeOpenAI.api === "openai-responses" &&
+    typeof nativeOpenAI.baseUrl === "string" &&
+    normalizeOpenAiBaseUrl(nativeOpenAI.baseUrl) === "https://api.openai.com/v1"
+    ? "openai"
+    : undefined;
+}
+
+export function credentialSourceOperateDenial(cause: unknown, id: string, current = false) {
+  const denial = namedDenial(cause);
+  const target = `CredentialSource ${id}`;
+  const qualification = current
+    ? ", the Agent's current Harness authentication: every update checks it, even one that replaces it"
+    : "";
+  return denial ===
+    `Not authorized: this needs CredentialSource operate on ${target}${qualification}. Ask an Installation administrator to grant it.`
+    ? denial
+    : undefined;
+}
+
+/** A readable Source is a candidate; Agent save confirms operate permission. */
+export function createModelCredentialSourceField(
+  context: Pick<HarnessAuthContext, "namespaceId" | "request" | "isCurrent" | "onExpired">,
+  options: {
+    id: string;
+    label?: string;
+    initial?: CredentialSourceReference | null;
+    currentId?: string;
+    purpose?: ModelSourcePurpose;
+    addNew?: { label: string; initial?: boolean };
+    onChange(source: CredentialSourceReference | null): void;
+  },
+) {
+  const addNewValue = "new";
+  let selected = options.initial ?? null;
+  let creating = Boolean(options.addNew?.initial && !selected);
+  let addNewLabel = options.addNew?.label;
+  let addNewDisabled = false;
+  let purpose = options.purpose;
+  let sources: CredentialSourceSummary[] = [];
+  let loaded = false;
+  let loading = false;
+  let attempted = false;
+  let active = false;
+  let disabled = false;
+  const select = element("select", { id: options.id });
+  const hint = element("p", { className: "hint", role: "status" });
+  const retry = button("Retry Source list", () => void load(true), { tone: "ghost", size: "sm" });
+  retry.hidden = true;
+  const field = element(
+    "div",
+    { className: "form-field", hidden: true },
+    element("label", { for: select.id }, options.label ?? "Existing Credential Source"),
+    select,
+    hint,
+    retry,
+  );
+  function eligibleSource(source: CredentialSourceSummary) {
+    if (source.state !== "ready" || source.connectionTemplateId !== undefined) {
+      return false;
+    }
+    if (source.type === "oauth2-refresh-token") {
+      return (
+        (purpose === undefined || purpose === "builtin_codex") &&
+        source.oauthConsentKind === "builtin_codex"
+      );
+    }
+    return (
+      source.type === "static" &&
+      source.modelPreset !== undefined &&
+      (purpose === undefined || source.modelPreset === purpose)
+    );
+  }
+  function acceptedSelection() {
+    return selected &&
+      (selected.id === options.currentId ||
+        (loaded && sources.some((source) => source.id === selected!.id && eligibleSource(source))))
+      ? selected
+      : null;
+  }
+  function showListStatus() {
+    if (sources.some(eligibleSource)) {
+      hint.textContent =
+        "Listing confirms read access. Saving the Agent checks Credential Source operate permission.";
+    } else if (purpose === "builtin_codex") {
+      hint.textContent =
+        "No matching ready ChatGPT OAuth Credential Sources are readable in this Namespace.";
+    } else if (purpose === undefined) {
+      hint.textContent =
+        "No matching ready model Credential Sources are readable in this Namespace.";
+    } else {
+      hint.textContent =
+        "No matching ready static model Credential Sources are readable in this Namespace.";
+    }
+  }
+  function renderOptions() {
+    const eligible = sources.filter(eligibleSource);
+    const choices = [
+      element(
+        "option",
+        { value: "" },
+        options.addNew ? "Choose a saved credential" : "Choose a Credential Source",
+      ),
+      ...eligible.map((source) =>
+        element("option", { value: source.id }, `${source.name} · ${source.id}`),
+      ),
+    ];
+    if (
+      selected &&
+      selected.id === options.currentId &&
+      !eligible.some((source) => source.id === selected!.id)
+    ) {
+      choices.push(
+        element("option", { value: selected.id }, `Current Credential Source · ${selected.id}`),
+      );
+    }
+    if (addNewLabel !== undefined) {
+      const add = element("option", { value: addNewValue }, addNewLabel);
+      add.disabled = addNewDisabled;
+      choices.push(add);
+    }
+    replaceChildrenIfChanged(select, choices);
+    select.value = creating ? addNewValue : (selected?.id ?? "");
+    select.disabled = disabled || (!loaded && !selected && addNewLabel === undefined);
+    select.required = active && !creating;
+  }
+  async function load(force = false) {
+    if (loading || (!force && (loaded || attempted))) {
+      return;
+    }
+    attempted = true;
+    loading = true;
+    const wasLoaded = loaded;
+    if (force) {
+      retry.textContent = "Refreshing Source list…";
+      retry.setAttribute("aria-busy", "true");
+    }
+    hint.textContent = "Loading readable Credential Sources…";
+    renderOptions();
+    try {
+      const result = await context.request(
+        `${namespacePath(context.namespaceId)}/credential-sources`,
+      );
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (!Array.isArray(result)) {
+        throw new Error("The API did not return a Credential Source list.");
+      }
+      sources = result.flatMap((value) => {
+        const source = readCredentialSourceMetadata(value, context.namespaceId);
+        return source ? [source] : [];
+      });
+      loaded = true;
+      if (selected && selected.id !== options.currentId) {
+        const accepted = acceptedSelection();
+        if (!wasLoaded || accepted?.id !== selected.id) {
+          selected = accepted;
+          options.onChange(selected);
+        }
+      }
+      showListStatus();
+      retry.textContent = "Refresh Source list";
+      retry.hidden = false;
+    } catch (error) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      const status = requestFailure(error).status;
+      if (status === 401) {
+        context.onExpired();
+        return;
+      }
+      if (status === 400 || status === 403 || status === 404) {
+        sources = [];
+        loaded = false;
+        if (selected && selected.id !== options.currentId) {
+          selected = null;
+          options.onChange(null);
+        }
+      }
+      retry.textContent = "Retry Source list";
+      retry.hidden = false;
+      hint.textContent = describeFailure(error, {
+        need: {
+          task: "listing Credential Sources",
+          grant: "Namespace read and Credential Source read",
+        },
+      });
+    } finally {
+      loading = false;
+      retry.removeAttribute("aria-busy");
+      if (context.isCurrent()) {
+        renderOptions();
+      }
+    }
+  }
+  select.addEventListener("change", () => {
+    creating = addNewLabel !== undefined && select.value === addNewValue;
+    selected = creating
+      ? null
+      : (sources.find((source) => source.id === select.value && eligibleSource(source))?.ref ??
+        (selected?.id === select.value ? selected : null));
+    select.required = active && !creating;
+    options.onChange(selected);
+  });
+  renderOptions();
+  return {
+    field,
+    control: select,
+    setActive(value: boolean, nextPurpose = purpose) {
+      active = value;
+      field.hidden = !value;
+      if (nextPurpose !== purpose) {
+        purpose = nextPurpose;
+        if (
+          selected &&
+          sources.some((source) => source.id === selected!.id && !eligibleSource(source))
+        ) {
+          selected = null;
+          options.onChange(null);
+        }
+        if (loaded && !loading) {
+          showListStatus();
+        }
+      }
+      renderOptions();
+      if (value) {
+        void load();
+      }
+    },
+    setDisabled(value: boolean) {
+      disabled = value;
+      retry.disabled = value;
+      renderOptions();
+    },
+    reset() {
+      selected = null;
+      creating = false;
+      renderOptions();
+    },
+    setAddNewLabel(label: string) {
+      if (options.addNew && label !== addNewLabel) {
+        addNewLabel = label;
+        renderOptions();
+      }
+    },
+    setAddNewDisabled(value: boolean) {
+      if (addNewDisabled !== value) {
+        addNewDisabled = value;
+        renderOptions();
+      }
+    },
+    get creating() {
+      return creating;
+    },
+    get source() {
+      return acceptedSelection();
+    },
+  };
+}
 type HarnessAuthContext = AgentAccessContext & {
   agentId?: string | undefined;
   installationAdmin?: boolean | null;
@@ -138,16 +436,20 @@ export function createHarnessAuthFields(
   options: {
     draft?: HarnessAuthDraft | undefined;
     agentName?: string;
+    executionMode?: string;
+    configuration?: unknown;
     onChange?(): void;
     onStartSettled?(): void;
   } = {},
 ) {
+  const providerId = modelSourceProvider(options.configuration, harnessId, options.executionMode);
+  const sourceCompatible = providerId !== undefined;
   const method = element(
     "select",
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
-    binding?.method === "credential_source"
+    sourceCompatible || binding?.method === "credential_source"
       ? element("option", { value: "credential_source" }, "Credential Source")
       : null,
     harnessId === "codex"
@@ -165,7 +467,11 @@ export function createHarnessAuthFields(
   const originalSecretSource = source?.kind === "secret" ? source : null;
   let selectedSecretSource = originalSecretSource;
   let changedSecret: SecretMetadata | null = null;
-  let selectedCredentialSource: CredentialSourceReference | null = null;
+  let selectedCredentialSource: CredentialSourceReference | null =
+    (options.draft?.method === "credential_source" ? options.draft.credentialSource : null) ??
+    (binding?.method === "credential_source"
+      ? { kind: "credential_source", namespaceId: context.namespaceId, id: binding.sourceId }
+      : null);
   let clearingReplacement = false;
   const issuedSources = new Map<string, string>();
   const account = element(
@@ -221,6 +527,16 @@ export function createHarnessAuthFields(
   });
   const secretField = secretPicker.field;
   const secretLabel = secretField.querySelector("label")!;
+  const sourcePicker = createModelCredentialSourceField(context, {
+    id: "harness-auth-existing-source",
+    initial: selectedCredentialSource,
+    ...(binding?.method === "credential_source" ? { currentId: binding.sourceId } : {}),
+    ...(harnessId !== "codex" || providerId !== "codex" ? { purpose: "openai" as const } : {}),
+    onChange(source) {
+      selectedCredentialSource = source;
+      options.onChange?.();
+    },
+  });
   const oauthLogin = createDeviceLogin({
     context,
     agentId: context.agentId,
@@ -271,10 +587,20 @@ export function createHarnessAuthFields(
       },
     );
   }
-  const currentOAuth = element(
+  let currentSourceText =
+    "If this Agent has an active revision, complete Stop before deploying this managed Source.";
+  if (binding?.method === "credential_source") {
+    currentSourceText = sourceCompatible
+      ? "The Agent's current credential source is preserved until you select and save another authentication source. If this Agent has an active revision, complete Stop before deploying the replacement."
+      : "The Agent's current credential source is preserved. Source replacement is unavailable for the configured model provider or destination.";
+  }
+  const currentSourceHint = element("p", { className: "hint" }, currentSourceText);
+  const codexSourceHint = element(
     "p",
     { className: "hint" },
-    "The Agent's current credential source is preserved until you select and save another authentication source.",
+    providerId === "codex"
+      ? `${CODEX_SOURCE_DESTINATION_HINT} Codex PAT and built-in ChatGPT OAuth Sources have fixed destinations. When the Console can read the Source, it selects Use Installation default and disables model provider overrides. Deployment checks compatibility.`
+      : CODEX_SOURCE_DESTINATION_HINT,
   );
   const accountField = element(
     "div",
@@ -304,7 +630,9 @@ export function createHarnessAuthFields(
       method,
     ),
     secretField,
-    currentOAuth,
+    sourcePicker.field,
+    currentSourceHint,
+    codexSourceHint,
     oauthLogin.section,
     accountField,
     runtimeHint,
@@ -321,8 +649,10 @@ export function createHarnessAuthFields(
     if (usesOAuth) {
       readOffer();
     }
-    currentOAuth.hidden =
-      method.value !== "credential_source" || binding?.method !== "credential_source";
+    currentSourceHint.hidden = method.value !== "credential_source";
+    codexSourceHint.hidden = method.value !== "credential_source" || harnessId !== "codex";
+    sourcePicker.setActive(method.value === "credential_source" && sourceCompatible);
+    sourcePicker.setDisabled(disabled);
     secretField.hidden = !directSecret;
     secretLabel.textContent = "API key Secret";
     accountField.hidden = method.value !== "service_account";
@@ -337,6 +667,8 @@ export function createHarnessAuthFields(
     }
     if (usesOAuth) {
       selectedCredentialSource = oauthLogin.source;
+    } else if (method.value === "credential_source") {
+      selectedCredentialSource = sourcePicker.source;
     } else {
       selectedCredentialSource = null;
     }
@@ -406,6 +738,7 @@ export function createHarnessAuthFields(
       disabledReason = reason;
       setUnavailable(method, value, reason);
       secretPicker.setDisabled(value || method.value !== "api_key");
+      sourcePicker.setDisabled(value || method.value !== "credential_source");
       updateAccount();
       oauthLogin.setDisabled(value);
     },
@@ -424,10 +757,10 @@ export function createHarnessAuthFields(
         return { method: "credential_source", sourceId };
       }
       if (method.value === "credential_source") {
-        if (binding?.method !== "credential_source") {
-          throw new Error("Select an authentication source.");
+        if (!selectedCredentialSource) {
+          throw new Error("Choose an existing Credential Source.");
         }
-        return binding;
+        return { method: "credential_source", sourceId: selectedCredentialSource.id };
       }
       if (method.value === "device_login") {
         const sourceId = selectedCredentialSource?.id;

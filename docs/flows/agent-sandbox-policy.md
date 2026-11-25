@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-11-23"
+updated: "2026-11-25"
 last_updated_session: "01a1cb1a-b03e-7380-9b34-1a7470a05f64"
 ---
 
@@ -99,21 +99,20 @@ unauthorized requests retain resource errors.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 escaped details,
 omitting records with Unicode control characters.
 
-`packages/occ/src/agent-deployment-admission.ts:admitCredentialPolicy` reads the
-persisted ceiling inside deployment admission, while the shared ceiling lock is
-held. Model admission uses saved grants or exact preset requests for one approved
-executable. Additions, automatic model routes and Plugin requests must fit that
-ceiling. Generated repository requests keep their separate repository ceiling and
-Namespace authority checks; the complete policy still requires Driver qualification.
-Revisions store separate network and injection policies. See [Source status](../reference/credential-sources.md#implementation-status).
+`packages/occ/src/agent-deployment-admission.ts` reads the persisted ceiling
+inside deployment admission, while the shared ceiling lock is held.
+`admitCredentialPolicy` checks additions, automatic model routes and Plugin
+requests against those rules. Model admission uses saved grants or exact preset
+requests for one approved executable. Generated repository requests keep their
+separate repository ceiling and Namespace authority checks; the complete policy
+still requires Driver qualification. Revisions store separate network and injection
+policies. See [Source status](../reference/credential-sources.md#implementation-status).
 
 `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update`, holds the shared ceiling lock, then locks Namespace and Agent and reads the saved ceiling.
 Legacy protected execution rejects nonempty additions at save, deploy, and
 live apply (`409 SANDBOX_POLICY_PROTECTED_EXECUTION`).
-A repository-only Proxy permits a model exception with no repositories and one ready
-Gateway static Harness Source. Managed revisions block nonempty
-edits and live apply. Protected dedicated Codex admits the Sandbox-approved
+Managed credential revisions block live policy application. Protected dedicated Codex admits the Sandbox-approved
 [artifact subset](../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 `checkedProtectedCodexArtifactPolicy` verifies its purpose, keys, Driver,
 version and empty additions before credential provisioning. That snapshot
@@ -122,15 +121,18 @@ cannot be applied live. Unreadable scoped revisions report `protectedExecution: 
 Both protected Codex compilers validate revision artifacts. `openshell-codex-artifacts.ts`
 excludes ambient defaults. Sandbox checks Agent-owned workspace enrollment and returns
 immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule and loaded
-policy. [GitHub API access](../reference/repository-credentials/access-levels.md#native-git-delivery)
-uses selected Namespace permissions and saved grants. Admission passes saved or deployed
-`repositoryCredentials`. Binding, deploy and provisioning refuse additions or defaults targeting
-`github.com`, subdomains or IPs. Deploy and binding-preserving updates require SandboxPolicy
-`read` before naming saved additions.
+policy. Binding, deploy and provisioning reject general network grants targeting
+`github.com`, its subdomains or IP addresses when protected Git owns the route.
 
-[`compileOpenShellBoundGitRule`](../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts)
-applies Namespace and frozen Agent `apiLimits` to REST routes. Limits require native enforcement
-at issuance and renewal. [Bodies remain unchecked](../reference/repository-credentials/access-levels.md#known-limits).
+For Source-backed Git,
+`packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` refuses
+a separately saved repository network policy before Source enrollment. OCC
+derives the revision's grants from the saved GitHub App and repository access,
+the registry and ceiling, and the Source's verified GitHub identities.
+`openshell-repository-policy.ts` compiles those frozen grants into exact Git
+service requests. These Git-only grants do not admit GitHub REST calls. A
+credential-free metadata GET requires its own admitted network rule and returns
+the upstream response without injection or filtering. [Native Git access levels](../reference/repository-credentials/access-levels.md#native-git-delivery)
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -144,27 +146,19 @@ of pending applications. The Worker records the expected provider version
 and settles the application as `applied` or `failed`. Deleting the Agent
 removes its policy and exact IAM access.
 
-The [editor](../reference/sandbox-policies.md#repository-network-policy)
-compares saved and deployed versions. Initial `[]` denies all. Omission preserves
-grants without returning them. Withdrawal after Driver loss requires both lists
-empty. For `[]`, OCC checks SandboxPolicy read before lookup.
+For the separate Sandbox policy list, omission preserves saved grants and an
+explicit `[]` denies all. OCC checks SandboxPolicy `read` before looking up the
+list for an empty PUT. PUT uses Read Committed to observe revocations during
+IAM lock waits. Live application refuses explicit repository lists.
 
-PUT uses Read Committed to observe revocations during IAM lock waits.
-
-`apps/controller/src/console/agents/sandbox-policy.mts:repositoryApiEditor`
-previews role, Namespace and Agent limits. Refresh and rejected saves retain
-drafts while saved grants match. PUT validates the list. The editor confirms the
-Agent, Namespace, version and grants. First deployment shows API limits by role.
-Deny-all requires confirmation. TokenService Git withdrawal keeps model network
-rules. Dedicated Agents can save Git grants after standalone model-only
-deployments. Stop before deploying those grants. OCC and the Worker reject
-unscoped history through `supportsScopedRepositoryHistory`.
-Git presents OpenShell's placeholder through a repository-scoped HTTPS credential helper.
-
-Deployment rechecks Repo scope, proxy and Driver identities before credential
-access and revision insertion. PostgreSQL binds version, grants and identity,
-including API limits. Workers recheck before dispatch. Older Workers refuse the
-reader marker. Explicit lists block live application.
+On the Source-backed path, an authorized operator edits Git access in the Agent
+draft. Removing the selections requests withdrawal from the active revision
+and leaves independently admitted model access in place. OCC and the Worker
+reject earlier unscoped Git history through `supportsScopedRepositoryHistory`.
+A supported standalone model-only history can add Git after Stop.
+Deployment rechecks the scope and enforcing Driver identities before saving
+the revision. Git uses a repository-scoped HTTPS credential helper with
+OpenShell's placeholder.
 
 ### 2. Freeze deployment or enqueue live application
 

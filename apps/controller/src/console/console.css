@@ -1070,6 +1070,7 @@ p {
   min-width: 0;
   height: 100%;
   min-height: 0;
+  scroll-margin-block: var(--space-2);
   padding: 0 var(--space-8) 0 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -1119,6 +1120,10 @@ p {
 }
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
+}
+.credential-inventories {
+  display: grid;
+  gap: var(--space-8);
 }
 .agent-list-toolbar {
   container-type: inline-size;
@@ -3105,9 +3110,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-bottom: var(--space-5);
 }
 .credential-tabs a {
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
   color: var(--color-text);
   text-decoration: none;
+  white-space: nowrap;
 }
 .credential-tabs a:hover {
   text-decoration: underline;
@@ -3519,6 +3526,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .oauth-catalog-table thead th:last-child {
   width: 6rem;
+}
+.credential-source-catalog .oauth-catalog-table thead th:last-child {
+  width: 8rem;
 }
 .connection-template-catalog .oauth-catalog-table thead th:nth-last-child(2) {
   width: 6rem;
