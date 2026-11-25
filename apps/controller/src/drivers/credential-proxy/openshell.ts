@@ -969,6 +969,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           throw error;
         }
       };
+      if (!exactWithdrawal && this.sandbox.workspaceStorage === "provider") {
+        const sandbox = (await refused(readSandbox)) ?? (await absent());
+        if (sandbox) {
+          assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
+          await refused(() =>
+            this.removeStoppedCredentialRoutes(
+              context,
+              expected,
+              { ...scope, sandbox },
+              new Set(bindings.map((binding) => this.providerName(binding))),
+            ),
+          );
+        }
+      }
       for (const binding of bindings) {
         const providerName = this.providerName(binding);
         const sandbox = (await refused(readSandbox)) ?? (await absent());
@@ -1185,6 +1199,58 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     }
     await this.readSandboxTarget(context, expected);
     return policies;
+  }
+
+  private async removeStoppedCredentialRoutes(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+    target: Awaited<ReturnType<OpenShellCredentialProxyDriver["readSandboxTarget"]>>,
+    providers: ReadonlySet<string>,
+  ): Promise<void> {
+    const { client, workspace, name, sandbox } = target;
+    const stopped = (value: OpenShellSandboxResponse) =>
+      value.phase === "SANDBOX_PHASE_STOPPED" || value.phase === 7;
+    if (!stopped(sandbox) || !client.getPolicyStatus || !client.updatePolicy) {
+      throw new DependencyUnavailableError("The stopped Sandbox policy cannot be reduced.");
+    }
+    const request = { workspace, sandbox: name };
+    const { policy } = await client.getPolicyStatus(request, context.signal);
+    const networks = asRecord(policy.network_policies) ?? {};
+    const remaining = { ...networks };
+    for (const [name, value] of Object.entries(networks)) {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        continue;
+      }
+      const endpoints = rule.endpoints.filter((value) => {
+        const provider = asRecord(asRecord(value)?.credential_binding)?.provider;
+        return typeof provider !== "string" || !providers.has(provider);
+      });
+      if (endpoints.length === 0 && rule.endpoints.length > 0) {
+        delete remaining[name];
+      } else if (endpoints.length !== rule.endpoints.length) {
+        remaining[name] = { ...rule, endpoints };
+      }
+    }
+    const reduced = { ...policy, network_policies: remaining };
+    if (sameOpenShellPolicy(policy, reduced)) {
+      return;
+    }
+    // OpenShell validates detach against the stored policy, even with no supervisor running.
+    await client.updatePolicy(
+      {
+        ...request,
+        policy: reduced,
+        expectedResourceVersion: sandbox.resourceVersion,
+        requestId: randomUUID(),
+      },
+      context.signal,
+    );
+    const observed = await client.getPolicyStatus(request, context.signal);
+    const { sandbox: after } = await this.readSandboxTarget(context, expected);
+    if (!stopped(after) || !sameOpenShellPolicy(observed.policy, reduced)) {
+      throw new DependencyUnavailableError("The stopped Sandbox policy reduction is unconfirmed.");
+    }
   }
 
   private async withdrawRepositoryDeploymentRoute(
