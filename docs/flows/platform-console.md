@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-25
-last_updated_session: authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12
+last_updated_session: authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747
 ---
 
 # Platform console request flow
@@ -286,20 +286,20 @@ Late names preserve state/focus; metadata failures keep IDs; unknown grants stay
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
 
-**Open vN Logs** opens the failed version from any draft or version. Recovery omits
-it when both log and runtime status reads are denied. Logs reserves space so Stop
-and Delete stay put. Direct navigation focuses and scrolls to output. Selecting the
-tab preserves visible output. Recovery links focus and scroll to the tab, smoothly
-unless the page rebuilds or motion is reduced.
+`deployment-recovery.mts:show` offers **Open vN Logs** for the failed version
+when `readLogs` is granted or omitted. With `operate` and `readLogs: false`,
+**View vN runtime status in Logs** stays available on return. When logs can
+help, recovery still says whom to ask. Denial of both permissions, an
+unreadable version or a server log refusal hides either link. Status denial
+hides only that version’s status link. Showing these links adds no reads.
+Recovery focuses and scrolls to Logs, smoothly unless rebuilding or motion is reduced.
+Direct navigation focuses and scrolls to output. Tab selection preserves it. Stop and Delete stay put.
 
-[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
-permission answer skips the audited log read. Status `403` hides Pod details, not
-separately authorized logs. Denials last until logout; newly granted `operate` permits another
-status read. Refused reads or downloads clear the rows; late successes cannot restore them or
-download. Refusing allowed log text rereads status at once, superseding stale reads. Back
-rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
-replaced; rate-limit notices update at the retry time without rereading. New streams or
-rejected cursors clear rows.
+[Runtime logs](agent-runtime-logs.md) explains access and row handling.
+`readLogs: false` skips the audited text read until Refresh or sign-out.
+Status `403` hides Pods but preserves authorized logs. Newly granted `operate` permits one retry.
+Revoking readable text triggers a fresh status check. Back rebuilds refused
+views. Rate notices update without rereading.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -386,6 +386,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-25 08:48: Trace runtime status on return to Logs. (authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747 - 1238aef6d77aa4544bfabfd80215ef1ea7414f2d)
 - 2026-11-25 02:20: Trace failed replacement refresh. (authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12 - cdd3ab41242cce4734163c6edc4abe115fd90f83)
 
 - 2026-11-24 10:55: Trace Secret consumer return. (authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)

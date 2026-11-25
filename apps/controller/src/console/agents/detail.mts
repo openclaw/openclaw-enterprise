@@ -5671,8 +5671,8 @@ export async function renderAgentDetail(
           }
           return result && requestFailure(result.error).status === 403 ? false : undefined;
         }),
-        // The failed-version recovery stops offering Logs as soon as they are denied.
-        onLogsDenied: () => {
+        // Keep the failed version’s recovery action in sync with the reads available in Logs.
+        onRuntimeAvailabilityChanged: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
