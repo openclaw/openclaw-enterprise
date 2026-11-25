@@ -158,7 +158,15 @@ type Phase =
   | "stop-agents"
   | "start-agents"
   | "chat-after-start"
-  | "controlled-channel-proxy";
+  | "controlled-channel-proxy"
+  | "channel-proxy-helm-wait"
+  | "channel-proxy-envoy-trust-rollout"
+  | "channel-proxy-api-rollout"
+  | "channel-proxy-host-route-readiness"
+  | "channel-proxy-initial-deploy"
+  | "channel-proxy-move-deploy"
+  | "channel-proxy-clear-deploy"
+  | "channel-proxy-tls-control-deploy";
 
 interface TimingRow {
   name: string | undefined;
@@ -170,6 +178,21 @@ interface TimingRow {
 }
 
 export type Step = <T>(name: string, operation: Operation<T>) => Promise<T>;
+export type SmokeStep = <T>(phase: Phase, operation: Operation<T>) => Promise<T>;
+
+export async function waitForChannelProxyReadiness(
+  envoyTrust: Promise<unknown>,
+  apiReady: Promise<void>,
+): Promise<void> {
+  // Cleanup must wait for both branches. Preserve Envoy failure as the primary diagnostic.
+  const [envoy, api] = await Promise.allSettled([envoyTrust, apiReady]);
+  if (envoy.status === "rejected") {
+    throw envoy.reason;
+  }
+  if (api.status === "rejected") {
+    throw api.reason;
+  }
+}
 
 export function createStepRecorder(now = () => performance.now()) {
   const origin = now();
@@ -190,6 +213,27 @@ export function createStepRecorder(now = () => performance.now()) {
     ["start-agents", "start both Agents"],
     ["chat-after-start", "chat turns after start"],
     ["controlled-channel-proxy", "controlled two-Agent channel proxy workflow"],
+    ["channel-proxy-helm-wait", "channel proxy Helm upgrade wait"],
+    ["channel-proxy-envoy-trust-rollout", "channel proxy Envoy CA-mount rollout"],
+    ["channel-proxy-api-rollout", "channel proxy API Deployment rollout"],
+    ["channel-proxy-host-route-readiness", "channel proxy API host-route readiness"],
+    ["channel-proxy-initial-deploy", "channel proxy initial Agent deployments"],
+    ["channel-proxy-move-deploy", "channel proxy move deployment"],
+    ["channel-proxy-clear-deploy", "channel proxy clear deployment"],
+    ["channel-proxy-tls-control-deploy", "channel proxy TLS control deployment"],
+  ]);
+  const parents = new Map<Phase, Phase>([
+    ["admit-embedded", "initial-admissions"],
+    ["admit-codex", "initial-admissions"],
+    ["admit-reader-control", "initial-admissions"],
+    ["channel-proxy-helm-wait", "controlled-channel-proxy"],
+    ["channel-proxy-envoy-trust-rollout", "controlled-channel-proxy"],
+    ["channel-proxy-api-rollout", "controlled-channel-proxy"],
+    ["channel-proxy-host-route-readiness", "controlled-channel-proxy"],
+    ["channel-proxy-initial-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-move-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-clear-deploy", "controlled-channel-proxy"],
+    ["channel-proxy-tls-control-deploy", "controlled-channel-proxy"],
   ]);
 
   async function step<T>(
@@ -224,9 +268,7 @@ export function createStepRecorder(now = () => performance.now()) {
     }
   }
 
-  function smokeStep<T>(phase: Phase, operation: Operation<T>): Promise<T> {
-    return step(phases.get(phase), operation, phase);
-  }
+  const smokeStep: SmokeStep = (phase, operation) => step(phases.get(phase), operation, phase);
 
   function initialAdmissions<Embedded, Codex, Control>({
     embedded,
@@ -249,13 +291,16 @@ export function createStepRecorder(now = () => performance.now()) {
   async function writeTimingReport(runnerTemp: string) {
     // A phase without a completed row is unknown. In particular, a rejected
     // Promise.all can finish before some of its branches do.
-    const rows = timings
-      .filter(({ phase }) => phase !== undefined && phases.has(phase))
-      .map(({ phase, startMs, endMs, status }) => ({ phase, startMs, endMs, status }));
-    const file = join(runnerTemp, "first-agent-smoke-timing.json");
+    const rows = timings.flatMap(({ phase, startMs, endMs, status }) => {
+      if (phase === undefined || !phases.has(phase)) {
+        return [];
+      }
+      return [{ phase, parent: parents.get(phase) ?? null, startMs, endMs, status }];
+    });
+    const file = join(runnerTemp, "first-agent-smoke-timing-v2.json");
     const temporary = `${file}.tmp`;
     try {
-      await writeFile(temporary, JSON.stringify({ version: 1, rows }) + "\n", {
+      await writeFile(temporary, JSON.stringify({ version: 2, rows }) + "\n", {
         flag: "wx",
         mode: 0o600,
       });

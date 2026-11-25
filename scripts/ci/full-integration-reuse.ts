@@ -10,7 +10,7 @@ import { optionalRecord as record } from "./records.ts";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const repository = "openclaw/openclaw-enterprise";
 const freshOnly = new Set(["k3d-observability-demo", "repository-credentials-container"]);
-export const waitMilliseconds = 12 * 60 * 1000;
+export const waitMilliseconds = 14 * 60 * 1000;
 export const pollMilliseconds = 30 * 1000;
 
 type LaneRow = { lane: string; title: string; profile: string; timeout: number };

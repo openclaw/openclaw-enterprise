@@ -165,7 +165,7 @@
     {
       "path": "tests/integration/container-registry-real.test.ts",
       "expectedTests": [
-        "publication updates aliases using real Skopeo and a multi-platform registry"
+        "registry publication recovers interrupted image, chart and alias transfers from the original bytes"
       ]
     },
     {

@@ -638,10 +638,31 @@ exec "$0.fixture" "$@"
       phase: "Succeeded",
       log: '{"event":"migration.checked","history":"providerCompleted"}\n',
     };
+    const unsupported =
+      '{"event":"migration.failed","code":"MIGRATION_HISTORY_UNSUPPORTED","message":"private detail"}\n';
     for (const [scenario, guarded, refusal] of [
       [
         "unsupported option",
         { phase: "Failed", log: '{"event":"migration.failed","code":"MIGRATION_FAILED"}\n' },
+        /failed the guarded database migration check/,
+      ],
+      [
+        "unsupported history",
+        { phase: "Failed", log: "diagnostic\n" + unsupported },
+        /does not support the installed database history \(MIGRATION_HISTORY_UNSUPPORTED\).*Preserve the database and select an image verified against this history/,
+      ],
+      [
+        "conflicting guarded receipt",
+        {
+          phase: "Failed",
+          log:
+            '{"event":"migration.checked-for-installation","history":"completed"}\n' + unsupported,
+        },
+        /failed the guarded database migration check/,
+      ],
+      [
+        "conflicting ordinary receipt",
+        { phase: "Failed", log: ordinary.log + unsupported },
         /failed the guarded database migration check/,
       ],
       [
@@ -671,7 +692,13 @@ exec "$0.fixture" "$@"
           );
           assert.match(stdout, /Migration check passed/);
         }
-        await assert.rejects(f.run(), { code: 1, stderr: refusal });
+        await assert.rejects(f.run(), (error: unknown) => {
+          assert.ok(error instanceof Error && "code" in error && "stderr" in error);
+          assert.equal(error.code, 1);
+          assert.match(String(error.stderr), refusal);
+          assert.doesNotMatch(String(error.stderr), /private detail/);
+          return true;
+        });
         await assertStoppedBeforeWriters(f, [], originalSecrets);
         const observed = await f.state();
         assert.equal(observed.helmSubmissions ?? 0, 0);
@@ -2575,7 +2602,7 @@ exec "$0.fixture" "$@"
     });
   }
 
-  for (const [scenario, name] of [
+  for (const [scenario, name, denyAdmission] of [
     [
       "worker-only",
       "an oversized draft still lets a conflicting policy refuse the channel one-off before Stop",
@@ -2636,6 +2663,20 @@ exec "$0.fixture" "$@"
     [
       "collision",
       "the channel one-off preserves an Installation key matching the channel input filename",
+    ],
+    [
+      "worker-patch-denied",
+      "the channel one-off refuses a named Worker patch denial before Agent Stop",
+    ],
+    [
+      "worker-admission-denied",
+      "the channel one-off refuses a Worker admission denial before Agent Stop",
+      "worker",
+    ],
+    [
+      "api-admission-denied",
+      "the channel one-off refuses an API admission denial before Agent Stop",
+      "api",
     ],
   ] as const) {
     const conservative = scenario === "conservative";
@@ -3001,6 +3042,17 @@ exec "$0.fixture" "$@"
             await installationFile.close();
           }
         }
+        if (scenario === "worker-patch-denied") {
+          const state = await f.state();
+          state.denyWorkerPatch = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
+        if (denyAdmission) {
+          // Patch access is allowed, but admission refuses changing this writer to zero replicas.
+          const state = await f.state();
+          state[denyAdmission === "worker" ? "denyWorkerAdmission" : "denyApiAdmission"] = true;
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        }
         const failure = await runForFailure(
           f.run,
           "--candidate-values",
@@ -3019,7 +3071,37 @@ exec "$0.fixture" "$@"
             [],
           );
         }
-        if (foreignExecution) {
+        if (scenario === "worker-patch-denied") {
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.match(
+            failure.stderr,
+            /Kubernetes denied patch on worker Deployment system\/openclaw-enterprise-worker\. Obtain patch access before resuming\./u,
+          );
+          assert.equal(existsSync(join(f.evidence, "quiescence-worker-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "quiescence-api-preview.err")), false);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+          await assertStoppedBeforeWriters(f);
+        } else if (denyAdmission) {
+          const writer = denyAdmission === "worker" ? "Worker" : "API";
+          assert.deepEqual(f.stopRequests, []);
+          assert.equal(failure.code, 1);
+          assert.ok(
+            failure.stderr.includes(
+              `Server-side dry-run of the ${writer} stop failed for system/openclaw-enterprise-${denyAdmission}.`,
+            ),
+            failure.stderr,
+          );
+          const previewError = await f.readEvidence(`quiescence-${denyAdmission}-preview.err`);
+          assert.ok(
+            previewError.includes(
+              `admission webhook "writer-policy.test" denied the ${writer} stop`,
+            ),
+            previewError,
+          );
+          await assertStoppedBeforeWriters(f);
+          assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+        } else if (foreignExecution) {
           assert.deepEqual(f.stopRequests, []);
           assert.match(
             failure.stderr,
