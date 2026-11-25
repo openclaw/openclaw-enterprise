@@ -11,6 +11,7 @@ Add a reviewed Plugin to a dedicated OpenClaw Agent, select its account and tool
 
 - Use dedicated OpenClaw with Kubernetes Compute and the `occ-plugin` Plugin Driver. See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 - Have Agent `read`, `update`, and `deploy` permission. To select an account, you also need `credential_source:operate` on its Source. Source `read` controls which accounts appear in the picker.
+- To connect a new OAuth account, have Namespace `credential_source:create`. To create an Agent, have Namespace `agent:create`.
 - Configure the selected Credential Proxy and Sandbox for native HTTP or MCP delivery. The OCE API must also reach the MCP server for tool discovery.
 - Prepare a compatible approved Connection Template and OAuth client, or a ready static Source associated with that Template. See [credential sources](../../reference/credential-sources.md) and [register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
