@@ -493,9 +493,9 @@ function nativeCodexConfiguration(gatewayAuth) {
   if (gatewayAuth !== undefined) {
     configuration.gateway = nativeGatewayConfiguration(configuration.gateway, gatewayAuth);
   }
-  // OpenShell enforces filesystem and network access. Ask for per-command
-  // approval so Codex can honor the managed account's untrusted policy.
-  configuration.tools = { profile: "full", exec: { security: "full", ask: "always" } };
+  // Native Codex tools are one capability; a narrow allowlist disables that surface.
+  // OpenShell supplies the filesystem and network boundaries verified below.
+  configuration.tools = { profile: "full" };
   return configuration;
 }
 
