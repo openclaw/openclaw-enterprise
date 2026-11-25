@@ -4,25 +4,32 @@ import { posix } from "node:path";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   managedMcpInstalls,
+  managedMcpRequests,
   type ManagedCliInstall,
   type ManagedMcpInstall,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import {
   normalizeSecretBindings,
   type AgentRevision,
-  type CredentialGatewayDriver,
+  type ComputeRevisionContext,
+  type CredentialProxyDriver,
+  type CredentialSource,
+  type DeploymentCredentialBinding,
+  type DeploymentRequestMatch,
   type HarnessWorkloadRequirements,
   type PluginDesiredSelection,
   type PluginDesiredState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
+import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   runOpenClawRuntimeHelper,
   workspaceNodeBinding,
   WORKSPACE_NODE_BINDING_PATH,
 } from "../helpers/plugin-runtime.mjs";
+import { tenant } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   nativeHarnessResource,
   nativeSandboxIdentity,
@@ -36,17 +43,26 @@ import {
 } from "./kubernetes-workspace-node-delivery-cases.ts";
 
 type ManagedInstall = ManagedCliInstall | ManagedMcpInstall;
+type StagedRevisionFields = Pick<
+  AgentRevision,
+  | "executionAdmission"
+  | "harnessAuth"
+  | "credentialDeployment"
+  | "credentialSources"
+  | "sandboxPolicy"
+>;
 type CreateFixture = (options: {
   revision: Pick<AgentRevision, "sandboxDriverId" | "configuration" | "plugins"> & {
     // The fixture resolves Harness settings through Compute admission.
     harness: RevisionHarnessDescriptor;
-  };
-  credentialGatewayDriver: Pick<CredentialGatewayDriver, "id" | "capability" | "implementation">;
-  sandboxDriver: ReturnType<typeof nativeSandboxIdentity> &
-    Pick<SandboxDriver, "provisionHarness" | "workspaceNodePeerLabels">;
+  } & Partial<StagedRevisionFields>;
+  context?: ComputeRevisionContext;
+  credentialDeliveryRegistration?: InstalledDriver;
+  sandboxDriver: SandboxDriver;
 }) => DedicatedDeployFixture;
 
 const [search, send] = ["slack_search_public", "slack_send_message"] as const;
+const pluginSourceId = "cs_00000000-0000-4000-8000-000000000011";
 
 function releaseSettings(install: ManagedInstall) {
   const { kind, packageName } = install;
@@ -68,7 +84,7 @@ export async function checkManagedReleaseDelivery(createFixture: CreateFixture) 
     const tools = [search, send];
     const binding = {
       releaseSha256: install.releaseSha256,
-      credentials: { [install.slotId]: "cs_test_account" },
+      credentials: { [install.slotId]: pluginSourceId },
     };
     for (const toolNames of [tools, [], undefined]) {
       const driverPolicy = toolNames === undefined ? binding : { ...binding, toolNames };
@@ -87,6 +103,161 @@ export async function checkManagedReleaseDelivery(createFixture: CreateFixture) 
   }
 }
 
+function stagedManagedRelease(
+  sandbox: SandboxDriver,
+  install: ManagedMcpInstall,
+  toolNames: readonly string[],
+): {
+  context: ComputeRevisionContext;
+  credentialDeliveryRegistration: InstalledDriver;
+  revision: StagedRevisionFields;
+} {
+  // Compute consumes policy and bindings already admitted by OCC. This fixture observes only
+  // the launch requirements and Gateway manifest, with controlled Sandbox and Proxy Drivers.
+  const proxy: CredentialProxyDriver = {
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      return {};
+    },
+    async configureDeployment() {
+      assert.fail("Only Worker configures admitted credential bindings");
+    },
+    async getDeploymentStatus() {
+      return { state: "ready" };
+    },
+    async removeDeployment() {},
+  };
+  const registration = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: {} },
+    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
+  );
+  const modelSourceId = "cs_00000000-0000-4000-8000-000000000012";
+  const pluginTemplate = { id: "ctp_00000000-0000-4000-8000-000000000013", version: 1 };
+  const harnessAuth = {
+    method: "credential_source",
+    sourceId: modelSourceId,
+    sourceType: "static",
+    tokenServiceInstanceId: "00000000-0000-4000-8000-000000000014",
+  } as const;
+  const sourceRef = (id: string) =>
+    ({ kind: "credential_source", id, namespaceId: tenant.id }) as const;
+  const model: DeploymentCredentialBinding = {
+    bindingRef: "model",
+    sourceRef: sourceRef(modelSourceId),
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  const plugin: DeploymentCredentialBinding = {
+    bindingRef: "plugin",
+    sourceRef: sourceRef(pluginSourceId),
+    consumer: {
+      kind: "plugin",
+      pluginId: install.id,
+      requirement: install.slotId,
+      connection: "default",
+    },
+    projection: { environment: install.credentialEnvironment, presentation: "bearer" },
+  };
+  const modelRoute: DeploymentRequestMatch = {
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+  };
+  const { host, port, path } = install.endpoint;
+  const pluginRoutes: DeploymentRequestMatch[] = managedMcpRequests(toolNames).map((request) => ({
+    binary: install.binaryPath,
+    host,
+    ports: [{ from: port, to: port }],
+    requestPolicy: { type: "mcp", path, ...request },
+  }));
+  const bindings = [model, plugin];
+  const custody = {
+    namespaceId: tenant.id,
+    ownerCapability: "token_service" as const,
+    tokenServiceInstanceId: harnessAuth.tokenServiceInstanceId,
+    state: "ready" as const,
+    createdAt: tenant.createdAt,
+  };
+  const sources: CredentialSource[] = [
+    {
+      ...custody,
+      id: modelSourceId,
+      name: "OpenAI API key",
+      type: harnessAuth.sourceType,
+      config: { provider_preset: "openai" },
+    },
+    {
+      ...custody,
+      id: pluginSourceId,
+      name: "Slack account",
+      type: "oauth2-refresh-token",
+      connectionTemplateId: pluginTemplate.id,
+      consent: {
+        kind: "connection_template",
+        version: pluginTemplate.version,
+        oauthClientId: "ccr_00000000-0000-4000-8000-000000000015",
+        ownerPrincipalId: "fixture-principal",
+        requestedScopes: [],
+        grantedScopes: [],
+      },
+    },
+  ];
+  return {
+    credentialDeliveryRegistration: registration,
+    revision: {
+      executionAdmission: { version: 8, mode: "standalone" },
+      harnessAuth,
+      credentialSources: sources.map(({ id, type, tokenServiceInstanceId }) => ({
+        sourceId: id,
+        sourceType: type,
+        tokenServiceInstanceId,
+        ...(id === pluginSourceId && { connectionTemplate: pluginTemplate }),
+      })),
+      sandboxPolicy: {
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        version: 1,
+        defaults: {},
+        additions: [
+          {
+            id: "model",
+            binary: modelRoute.binary,
+            host: modelRoute.host,
+            ports: modelRoute.ports,
+          },
+        ],
+      },
+      credentialDeployment: {
+        driver: registration.ref,
+        proxyDriverId: proxy.id,
+        networkAccessPolicy: { allowed: [modelRoute, ...pluginRoutes] },
+        bindings,
+        injectionPolicies: [
+          { bindingRef: model.bindingRef, allowedRequests: [modelRoute] },
+          { bindingRef: plugin.bindingRef, allowedRequests: pluginRoutes },
+        ],
+      },
+    },
+    context: {
+      harnessAuth,
+      credentialSources: sources,
+      secretEnvironment: [],
+      async configureCredentialDeployment() {
+        return {
+          credentialProjections: bindings.map(({ bindingRef, projection }) => ({
+            bindingRef,
+            environment: projection.environment,
+            placeholder: { kind: "proxy", value: "controlled-" + bindingRef },
+          })),
+        };
+      },
+    },
+  };
+}
+
 async function checkSelection(
   createFixture: CreateFixture,
   install: ManagedInstall,
@@ -99,25 +270,59 @@ async function checkSelection(
     [install.id]: selection,
   };
   let worker: HarnessWorkloadRequirements | undefined;
-  const identity = nativeSandboxIdentity();
+  const sandbox: SandboxDriver = {
+    ...nativeSandboxIdentity(),
+    networkPolicy: { wildcards: false, portRanges: false, live: false },
+    admitNetworkPolicy() {
+      assert.fail("Preparation consumes the already-admitted policy");
+    },
+    async cleanup() {},
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      worker = context.requirements;
+      return nativeHarnessResource(context);
+    },
+    async provisionStagedHarness({ revision }) {
+      return {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        sandboxId: "managed-mcp",
+      };
+    },
+    async prepareStagedHarness(context) {
+      worker = context.requirements;
+    },
+    async activateStagedHarness() {
+      assert.fail("Preparation must not start the Harness");
+    },
+    async observeNetworkPolicy(_context, snapshot) {
+      return {
+        state: "applied",
+        matches: true,
+        resourceVersion: "1",
+        policyVersion: String(snapshot.version),
+      };
+    },
+    async harnessStatus() {
+      return { state: "starting" };
+    },
+  };
+  const staged =
+    install.kind === "mcp" && selection.driverPolicy !== undefined
+      ? stagedManagedRelease(sandbox, install, toolNames ?? [])
+      : undefined;
   const fixture = createFixture({
-    sandboxDriver: {
-      ...identity,
-      async workspaceNodePeerLabels() {
-        return undefined;
-      },
-      async provisionHarness(context) {
-        worker = context.requirements;
-        return nativeHarnessResource(context);
-      },
-    },
-    credentialGatewayDriver: {
-      id: "openshell-credentials",
-      implementation: "openshell",
-      capability: "credential_gateway",
-    },
+    sandboxDriver: sandbox,
+    ...(staged !== undefined && {
+      context: staged.context,
+      credentialDeliveryRegistration: staged.credentialDeliveryRegistration,
+    }),
     revision: {
-      ...nativeSandboxRevision(identity.id),
+      ...nativeSandboxRevision(sandbox.id),
+      ...staged?.revision,
       plugins: {
         driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
         plugins: selections,

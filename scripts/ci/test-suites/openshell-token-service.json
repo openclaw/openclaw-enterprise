@@ -1,0 +1,20 @@
+{
+  "env": { "OCC_TEST_OPENSHELL_TOKEN_SERVICE_REAL": "1" },
+  "requiredEnv": [
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_GATEWAY_ENDPOINT",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_CA_FILE",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_MANAGEMENT_CERT_FILE",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_MANAGEMENT_KEY_FILE",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_OPERATOR_CERT_FILE",
+    "OCC_TEST_OPENSHELL_TOKEN_SERVICE_OPERATOR_KEY_FILE"
+  ],
+  "prepare": { "postgres": true, "requiresPreparedStateForFile": true },
+  "files": [
+    {
+      "path": "tests/integration/postgres-openshell-token-service-lifecycle.test.ts",
+      "expectedTests": [
+        "OpenShell TokenService keeps managed Source material in the native Gateway through update and deletion"
+      ]
+    }
+  ]
+}

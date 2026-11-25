@@ -16,7 +16,15 @@ import {
   type CodexAdmission,
   type GatewayPod,
 } from "./agents.ts";
-import { log, minute, modelAddress, run, waitFor } from "./process.ts";
+import {
+  log,
+  minute,
+  modelAddress,
+  run,
+  waitFor,
+  waitForChannelProxyReadiness,
+  type SmokeStep,
+} from "./process.ts";
 import { kubectl, modelEvents, wireField, type SmokeStack } from "./setup.ts";
 
 interface Observation {
@@ -172,7 +180,12 @@ async function kubectlPatch(stack: SmokeStack, args: string[], patch: unknown) {
   }
 }
 
-async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy[], ca: string) {
+async function configureInstallation(
+  stack: SmokeStack,
+  proxies: ControlledProxy[],
+  ca: string,
+  smokeStep: SmokeStep,
+) {
   const valuesPath = join(stack.directory, "helm-values.json");
   const installationPath = join(stack.directory, "installation.yaml");
   const values = JSON.parse(await readFile(valuesPath, "utf8")) as Values;
@@ -220,25 +233,27 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
     installationChecksum: createHash("sha256").update(data).digest("hex"),
   };
   await writeFile(valuesPath, JSON.stringify(values), { mode: 0o600 });
-  await run(
-    "helm",
-    [
-      "upgrade",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      stack.state.platformNamespace,
-      "--kubeconfig",
-      stack.kubeconfig,
-      "--kube-context",
-      stack.context,
-      "-f",
-      valuesPath,
-      "--wait",
-      "--timeout",
-      "5m",
-    ],
-    { timeout: 6 * minute },
+  await smokeStep("channel-proxy-helm-wait", () =>
+    run(
+      "helm",
+      [
+        "upgrade",
+        "openclaw-enterprise",
+        "deploy/helm/openclaw-enterprise",
+        "--namespace",
+        stack.state.platformNamespace,
+        "--kubeconfig",
+        stack.kubeconfig,
+        "--kube-context",
+        stack.context,
+        "-f",
+        valuesPath,
+        "--wait",
+        "--timeout",
+        "5m",
+      ],
+      { timeout: 6 * minute },
+    ),
   );
 
   // Envoy Gateway reconciles its data-plane Deployment after Helm returns. Wait for
@@ -271,67 +286,73 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
         ),
     );
   };
-  await waitFor(
-    "channel Envoy data-plane trust rollout",
-    async () => {
-      const result = JSON.parse(
-        (
-          await kubectl(stack, [
-            "-n",
-            envoyNamespace,
-            "get",
-            "deployments,pods",
-            "-l",
-            selector,
-            "-o",
-            "json",
-          ])
-        ).stdout,
-      ) as {
-        items: {
-          kind: string;
-          metadata: { generation?: number; deletionTimestamp?: string };
-          spec: Record<string, unknown>;
-          status?: Record<string, unknown>;
-        }[];
-      };
-      const deployments = result.items.filter((item) => item.kind === "Deployment");
-      const pods = result.items.filter((item) => item.kind === "Pod");
-      const desired = deployments.reduce(
-        (total, item) => total + Number(item.spec.replicas ?? 1),
-        0,
-      );
-      const deploymentsReady =
-        deployments.length > 0 &&
-        deployments.every((item) => {
-          const status = item.status ?? {};
-          const count = Number(item.spec.replicas ?? 1);
-          return (
-            Number(status.observedGeneration ?? 0) >= Number(item.metadata.generation ?? 1) &&
-            Number(status.updatedReplicas ?? 0) === count &&
-            Number(status.readyReplicas ?? 0) === count &&
-            Number(status.replicas ?? 0) === count &&
-            hasTrust(asRecord(asRecord(item.spec.template)?.spec) ?? {})
-          );
-        });
-      const podsReady =
-        pods.length === desired &&
-        pods.every(
-          (item) =>
-            !item.metadata.deletionTimestamp &&
-            hasTrust(item.spec) &&
-            (Array.isArray(item.status?.conditions) ? item.status.conditions : [])
-              .map(asRecord)
-              .some((condition) => condition?.type === "Ready" && condition.status === "True"),
+  const envoyTrust = smokeStep("channel-proxy-envoy-trust-rollout", () =>
+    waitFor(
+      "channel Envoy data-plane trust rollout",
+      async () => {
+        const result = JSON.parse(
+          (
+            await kubectl(stack, [
+              "-n",
+              envoyNamespace,
+              "get",
+              "deployments,pods",
+              "-l",
+              selector,
+              "-o",
+              "json",
+            ])
+          ).stdout,
+        ) as {
+          items: {
+            kind: string;
+            metadata: { generation?: number; deletionTimestamp?: string };
+            spec: Record<string, unknown>;
+            status?: Record<string, unknown>;
+          }[];
+        };
+        const deployments = result.items.filter((item) => item.kind === "Deployment");
+        const pods = result.items.filter((item) => item.kind === "Pod");
+        const desired = deployments.reduce(
+          (total, item) => total + Number(item.spec.replicas ?? 1),
+          0,
         );
-      return {
-        done: deploymentsReady && podsReady,
-        state: { deployments: deployments.length, desired, pods: pods.length },
-      };
-    },
-    4 * minute,
+        const deploymentsReady =
+          deployments.length > 0 &&
+          deployments.every((item) => {
+            const status = item.status ?? {};
+            const count = Number(item.spec.replicas ?? 1);
+            return (
+              Number(status.observedGeneration ?? 0) >= Number(item.metadata.generation ?? 1) &&
+              Number(status.updatedReplicas ?? 0) === count &&
+              Number(status.readyReplicas ?? 0) === count &&
+              Number(status.replicas ?? 0) === count &&
+              hasTrust(asRecord(asRecord(item.spec.template)?.spec) ?? {})
+            );
+          });
+        const podsReady =
+          pods.length === desired &&
+          pods.every(
+            (item) =>
+              !item.metadata.deletionTimestamp &&
+              hasTrust(item.spec) &&
+              (Array.isArray(item.status?.conditions) ? item.status.conditions : [])
+                .map(asRecord)
+                .some((condition) => condition?.type === "Ready" && condition.status === "True"),
+          );
+        return {
+          done: deploymentsReady && podsReady,
+          state: { deployments: deployments.length, desired, pods: pods.length },
+        };
+      },
+      4 * minute,
+    ),
   );
 
+  await waitForChannelProxyReadiness(envoyTrust, configureApiTrust(stack, ca, smokeStep));
+}
+
+async function configureApiTrust(stack: SmokeStack, ca: string, smokeStep: SmokeStep) {
   // The API keeps its ordinary Gateway CA and adds only the smoke provider's public CA.
   const current = (
     await kubectl(stack, [
@@ -391,39 +412,43 @@ async function configureInstallation(stack: SmokeStack, proxies: ControlledProxy
     ],
     patch,
   );
-  await kubectl(
-    stack,
-    [
-      "-n",
-      stack.state.platformNamespace,
-      "rollout",
-      "status",
-      "deployment/openclaw-enterprise-api",
-      "--timeout=180s",
-    ],
-    { timeout: 4 * minute },
+  await smokeStep("channel-proxy-api-rollout", () =>
+    kubectl(
+      stack,
+      [
+        "-n",
+        stack.state.platformNamespace,
+        "rollout",
+        "status",
+        "deployment/openclaw-enterprise-api",
+        "--timeout=180s",
+      ],
+      { timeout: 4 * minute },
+    ),
   );
   // Deployment readiness does not mean the Local Setup NodePort has switched
   // from the retired Pod. Verify the same host path the smoke API client uses.
   let consecutive = 0;
-  await waitFor(
-    "Local Setup API host route after rollout",
-    async () => {
-      try {
-        const response = await fetch(new URL("/readyz", stack.origin), {
-          redirect: "error",
-          headers: { connection: "close" },
-          signal: AbortSignal.timeout(2_000),
-        });
-        await response.body?.cancel();
-        consecutive = response.ok ? consecutive + 1 : 0;
-        return { done: consecutive >= 2, state: { status: response.status, consecutive } };
-      } catch (error) {
-        consecutive = 0;
-        return { done: false, state: { error: (error as Error).name } };
-      }
-    },
-    2 * minute,
+  await smokeStep("channel-proxy-host-route-readiness", () =>
+    waitFor(
+      "Local Setup API host route after rollout",
+      async () => {
+        try {
+          const response = await fetch(new URL("/readyz", stack.origin), {
+            redirect: "error",
+            headers: { connection: "close" },
+            signal: AbortSignal.timeout(2_000),
+          });
+          await response.body?.cancel();
+          consecutive = response.ok ? consecutive + 1 : 0;
+          return { done: consecutive >= 2, state: { status: response.status, consecutive } };
+        } catch (error) {
+          consecutive = 0;
+          return { done: false, state: { error: (error as Error).name } };
+        }
+      },
+      2 * minute,
+    ),
   );
 }
 
@@ -730,6 +755,7 @@ export async function proveControlledChannelProxy(
   stack: SmokeStack,
   admissions: [CodexAdmission, CodexAdmission],
   modelDirectory: string,
+  smokeStep: SmokeStep,
 ) {
   const address = await bridgeAddress(stack);
   const ca = await readFile(join(modelDirectory, "ca.pem"), "utf8");
@@ -759,16 +785,15 @@ export async function proveControlledChannelProxy(
   let scenarioError: unknown;
   let scenarioFailed = false;
   try {
-    await configureInstallation(stack, proxies, ca);
+    await configureInstallation(stack, proxies, ca, smokeStep);
     const [a, b] = admissions;
     const [aSetup, bSetup] = await Promise.all([
       enableSlack(stack, a, "a", http),
       enableSlack(stack, b, "b", https),
     ]);
-    const [aRevision, bRevision] = await Promise.all([
-      deployAgent(stack, a.agent),
-      deployAgent(stack, b.agent),
-    ]);
+    const [aRevision, bRevision] = await smokeStep("channel-proxy-initial-deploy", () =>
+      Promise.all([deployAgent(stack, a.agent), deployAgent(stack, b.agent)]),
+    );
     await Promise.all([waitSocket("A"), waitSocket("B")]);
     const admissionEvents = await modelEvents();
     for (const caller of ["A", "B"]) {
@@ -902,7 +927,9 @@ export async function proveControlledChannelProxy(
       aGateway,
       "editing the Agent replaced its running Gateway before redeploy",
     );
-    const movedRevision = await deployAgent(stack, a.agent);
+    const movedRevision = await smokeStep("channel-proxy-move-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     assert.notEqual(movedRevision, aRevision, "proxy edit did not create a new revision");
     await waitFor(
       "old HTTP proxy tunnels to retire",
@@ -915,7 +942,9 @@ export async function proveControlledChannelProxy(
     await stack.api("PATCH", base, { networkProxy: null });
     const aSocketsBeforeClear = await socketCount("A");
     const proxiesBeforeClear = proxyCounts(proxies);
-    const directRevision = await deployAgent(stack, a.agent);
+    const directRevision = await smokeStep("channel-proxy-clear-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     await waitSocket("A", aSocketsBeforeClear);
     assert.deepEqual(
       proxyCounts(proxies),
@@ -939,7 +968,9 @@ export async function proveControlledChannelProxy(
     await stack.api("PATCH", base, {
       networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
     });
-    const badRevision = await deployAgent(stack, a.agent);
+    const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
+      deployAgent(stack, a.agent),
+    );
     const badGateway = await readyGateway(stack, a.agent.id, badRevision);
     assert.equal(
       await rawConnect(stack, badGateway, "slack.com:443"),

@@ -19,6 +19,7 @@ export function productionUpgradeBrowser(options: {
   const { certificate, origin, namespaceId, credentials, revisions, record } = options;
   const url = `${origin}/console/agents?namespace=${encodeURIComponent(namespaceId)}`;
   const entryUrl = `${origin}/console/console.mjs`;
+  const detailUrl = `${origin}/console/agents/detail.mjs`;
   const loginUrl = `${origin}/api/auth/sign-in/email`;
   const agents: { id: string; name: string }[] = [];
   let root: string | undefined;
@@ -26,7 +27,7 @@ export function productionUpgradeBrowser(options: {
   let session: BrowserContext;
   let warm: Page;
   let warmStart: number;
-  let held: { page: Page; release: () => void } | undefined;
+  const held = new Map<string, { page: Page; release: () => void }>();
   let loginPosts = 0;
   let nextCheckpoint = 0;
   let phase = "checkpoint sequence";
@@ -97,46 +98,58 @@ export function productionUpgradeBrowser(options: {
     warmStart = await warm.evaluate(() => performance.timeOrigin);
   }
 
-  async function holdEntry(revision: string) {
+  async function holdModule(revision: string, target: string) {
     const page = await session.newPage();
     const intercepted = Promise.withResolvers<void>();
     const gate = Promise.withResolvers<void>();
-    held = { page, release: gate.resolve };
-    let entryResponded = false;
+    held.set(target, { page, release: gate.resolve });
+    // In the second tab let the entry arrive, but keep its imports off the network.
+    // Routing also disables the HTTP cache. Never substitute module responses.
+    const imports = target === detailUrl;
+    const match = (asset: URL) =>
+      imports
+        ? asset.origin === origin && asset.pathname.endsWith(".mjs") && asset.href !== entryUrl
+        : asset.href === entryUrl;
+    let responded = false;
     page.on("response", (response) => {
-      if (response.url() === entryUrl && response.request().method() === "GET") {
-        entryResponded = true;
+      if (match(new URL(response.url()))) {
+        responded = true;
       }
     });
-    // Keep the selected HTML document while delaying its entry module before network.
-    await page.route(entryUrl, async (route) => {
-      intercepted.resolve();
+    await page.route(match, async (route) => {
+      if (route.request().url() === target) {
+        intercepted.resolve();
+      }
       await gate.promise;
       await route.continue().catch(() => {});
     });
-    await openDocument(page, revision);
-    await within(intercepted.promise, "Console entry request", timeoutMs);
-    assert.ok(!entryResponded);
+    await Promise.all([
+      imports ? moduleBytes(page, entryUrl) : undefined,
+      openDocument(page, revision),
+      within(intercepted.promise, "Console module request", timeoutMs),
+    ]);
+    assert.ok(!responded);
   }
 
-  async function entryBytes(page: Page) {
+  async function moduleBytes(page: Page, target: string) {
     const response = await page.waitForResponse(
-      (item) => item.url() === entryUrl && item.request().method() === "GET",
+      (item) => item.url() === target && item.request().method() === "GET",
     );
     assert.equal(response.status(), 200);
     return response.body();
   }
 
-  async function bootHeld(revision: string, expected: Buffer) {
-    assert.ok(held);
-    const { page, release } = held;
-    const loaded = entryBytes(page);
+  async function bootHeld(revision: string, target: string, expected: Buffer) {
+    const pending = held.get(target);
+    assert.ok(pending);
+    const { page, release } = pending;
+    const loaded = moduleBytes(page, target);
     release();
     assert.ok((await loaded).equals(expected));
     await expectAgents(page);
     await expectRevision(page, revision);
     await page.close();
-    held = undefined;
+    held.delete(target);
   }
 
   async function openFresh(revision: string) {
@@ -145,9 +158,13 @@ export function productionUpgradeBrowser(options: {
       const cdp = await session.newCDPSession(page);
       await cdp.send("Network.enable");
       await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
-      const [entry] = await Promise.all([entryBytes(page), openDocument(page, revision)]);
+      const [entry, detail] = await Promise.all([
+        moduleBytes(page, entryUrl),
+        moduleBytes(page, detailUrl),
+        openDocument(page, revision),
+      ]);
       await expectAgents(page);
-      return entry;
+      return { entry, detail };
     } finally {
       await page.close();
     }
@@ -191,29 +208,45 @@ export function productionUpgradeBrowser(options: {
             rememberAgent(details.baseline);
             await step("sandboxed Chromium and TLS trust", launch);
             await step("incumbent sign-in and Agents", signIn);
-            await step("incumbent HTML with delayed entry", () => holdEntry(revisions.previous));
+            await step("incumbent HTML with delayed entry", () =>
+              holdModule(revisions.previous, entryUrl),
+            );
+            await step("incumbent entry with delayed imports", () =>
+              holdModule(revisions.previous, detailUrl),
+            );
             break;
           case "candidatePods": {
             rememberAgent(details.accepted);
-            const entry = await step("candidate fresh tab and Agents", () =>
+            const modules = await step("candidate fresh tab and Agents", () =>
               openFresh(revisions.candidate),
             );
             await step("incumbent HTML boots after upgrade", () =>
-              bootHeld(revisions.previous, entry),
+              bootHeld(revisions.previous, entryUrl, modules.entry),
+            );
+            await step("incumbent entry boots after upgrade", () =>
+              bootHeld(revisions.previous, detailUrl, modules.detail),
             );
             await step("warm tab reads candidate Agents", reenterAgents);
-            await step("candidate HTML with delayed entry", () => holdEntry(revisions.candidate));
+            await step("candidate HTML with delayed entry", () =>
+              holdModule(revisions.candidate, entryUrl),
+            );
+            await step("candidate entry with delayed imports", () =>
+              holdModule(revisions.candidate, detailUrl),
+            );
             break;
           }
           case "written":
             rememberAgent(details.written);
             break;
           case "returnedPods": {
-            const entry = await step("recovery fresh tab and Agents", () =>
+            const modules = await step("recovery fresh tab and Agents", () =>
               openFresh(revisions.recovery),
             );
             await step("candidate HTML boots after return", () =>
-              bootHeld(revisions.candidate, entry),
+              bootHeld(revisions.candidate, entryUrl, modules.entry),
+            );
+            await step("candidate entry boots after return", () =>
+              bootHeld(revisions.candidate, detailUrl, modules.detail),
             );
             await step("warm tab reads returned Agents", reenterAgents);
             break;
@@ -226,7 +259,9 @@ export function productionUpgradeBrowser(options: {
       }
     },
     async close() {
-      held?.release();
+      for (const pending of held.values()) {
+        pending.release();
+      }
       try {
         await browser?.close();
       } catch {

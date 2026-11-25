@@ -1,13 +1,13 @@
 import {
   assertExecutionReleaseAllowed,
   credentialSourceMatchesSnapshot,
+  isNativeStagedRepositoryRevision,
   isSecretHarnessAuth,
   normalizeSecretBindings,
   type AgentRevision,
   type ComputeDriver,
   type ComputeRevisionContext,
-  type CredentialGatewayDriver,
-  type CredentialSource,
+  type StoredCredentialSource as CredentialSource,
   type CredentialSourceSnapshot,
   type LegacyEgressProxyDriver,
   type ResolvedHarnessAuth,
@@ -71,6 +71,15 @@ export async function validateRepositoryNetworkPolicy(
   revision: AgentRevision,
 ): Promise<void> {
   if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+    if (revision.executionAdmission.mode === "standalone") {
+      if (!isNativeStagedRepositoryRevision(revision) || !compute.validateRepositoryCredentials) {
+        throw new DependencyUnavailableError(
+          "The staged revision has no supported native Repository binding.",
+        );
+      }
+      compute.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
+      return;
+    }
     if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
       throw new DependencyUnavailableError(
         "The selected Compute cannot enforce this repository network policy.",
@@ -122,7 +131,6 @@ interface RevisionCredentialDependencies {
   readonly state: Pick<PostgresPlatformState, "read" | "transactWithQueue">;
   readonly compute: ComputeDriver;
   readonly secretDriverId: string | undefined;
-  readonly credentialGateway: CredentialGatewayDriver | undefined;
   readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   readonly credentialDeliveryRef:
     NonNullable<AgentRevision["credentialDeployment"]>["driver"] | undefined;
@@ -135,16 +143,10 @@ export async function resolveRevisionHarnessAuth(
   {
     state,
     secretDriverId,
-    credentialGateway,
-    proxyDriver,
     currentTokenServiceInstanceId,
   }: Pick<
     RevisionCredentialDependencies,
-    | "state"
-    | "secretDriverId"
-    | "credentialGateway"
-    | "proxyDriver"
-    | "currentTokenServiceInstanceId"
+    "state" | "secretDriverId" | "currentTokenServiceInstanceId"
   >,
   view?: PlatformReadView,
 ): Promise<
@@ -175,66 +177,30 @@ export async function resolveRevisionHarnessAuth(
     harnessAuth = { ...auth, backendRef: secret.backendRef };
   } else if (revision.harnessAuth.method === "credential_source") {
     const auth = revision.harnessAuth;
-    if (auth.tokenServiceInstanceId !== undefined) {
-      if (
-        !revision.credentialDeployment ||
-        currentTokenServiceInstanceId() !== auth.tokenServiceInstanceId
-      ) {
-        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
-      }
-      const { source, withdrawal } = await resolveRevisionCredentialSource(
-        state,
-        revision,
-        auth,
-        view,
-      );
-      if (withdrawal !== undefined) {
-        return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
-      }
-      if (
-        source === undefined ||
-        source.ownerCapability !== "token_service" ||
-        source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
-      ) {
-        return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
-      }
-      harnessAuth = auth;
-    } else {
-      if (credentialGateway === undefined || auth.credentialGatewayId !== credentialGateway.id) {
-        return refuseRevisionInputs("CREDENTIAL_GATEWAY_MISMATCH");
-      }
-      const { source, withdrawal } = await resolveRevisionCredentialSource(
-        state,
-        revision,
-        auth,
-        view,
-      );
-      // A withdrawn source never re-attaches to its revision, for example after Pod loss.
-      if (withdrawal !== undefined) {
-        return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
-      }
-      // A deleting source can no longer be attached, even to an admitted revision.
-      if (source === undefined) {
-        return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
-      }
-      if (source.egress !== undefined) {
-        const control = proxyDriver?.sourceControl;
-        const provider = control?.providers.find((entry) =>
-          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
-        );
-        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
-          return refuseRevisionInputs("EGRESS_PROVIDER_UNAVAILABLE");
-        }
-        // Provider defaults must reach the normal Harness too. In particular, a
-        // source with an omitted optional endpoint cannot escape its protected profile.
-        harnessAuth = {
-          ...auth,
-          source: { ...source, config: provider.normalizeConfig(source.config) },
-        };
-      } else {
-        harnessAuth = { ...auth, source };
-      }
+    if (
+      auth.tokenServiceInstanceId === undefined ||
+      !revision.credentialDeployment ||
+      currentTokenServiceInstanceId() !== auth.tokenServiceInstanceId
+    ) {
+      return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
     }
+    const { source, withdrawal } = await resolveRevisionCredentialSource(
+      state,
+      revision,
+      auth,
+      view,
+    );
+    if (withdrawal !== undefined) {
+      return refuseRevisionInputs("CREDENTIAL_WITHDRAWN");
+    }
+    if (
+      source === undefined ||
+      source.ownerCapability !== "token_service" ||
+      source.tokenServiceInstanceId !== auth.tokenServiceInstanceId
+    ) {
+      return refuseRevisionInputs("HARNESS_AUTH_SOURCE_UNAVAILABLE");
+    }
+    harnessAuth = auth;
   } else {
     harnessAuth = revision.harnessAuth;
   }
@@ -246,7 +212,6 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     state,
     compute,
     secretDriverId,
-    credentialGateway,
     proxyDriver,
     credentialDeliveryRef,
     currentTokenServiceInstanceId,
@@ -257,7 +222,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     operation: "reconcile" | "withdraw",
   ): Promise<
     | { readonly context: ComputeRevisionContext }
-    | { readonly result: ReturnType<typeof refuseRevisionInputs>["result"] }
+    | { readonly result: { readonly outcome: "pending" | "permanent"; readonly code: string } }
   > {
     try {
       validateExecutionAdmission(compute, revision, credentialDeliveryRef);
@@ -353,13 +318,29 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         ) {
           return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
         }
+        const bindings = revision.credentialDeployment.bindings.filter(
+          ({ sourceRef }) => sourceRef.id === snapshot.sourceId,
+        );
+        if (
+          bindings.length === 0 ||
+          bindings.some(
+            ({ consumer }) => consumer.kind !== "plugin" && consumer.kind !== "repository",
+          )
+        ) {
+          return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
+        }
         const { source, withdrawal } = await resolveRevisionCredentialSource(
           state,
           revision,
           snapshot,
         );
+        if (withdrawal?.state === "pending") {
+          return { result: { outcome: "pending", code: "CREDENTIAL_WITHDRAWAL_PENDING" } };
+        }
+        if (withdrawal?.state === "revoked") {
+          continue;
+        }
         if (
-          withdrawal !== undefined ||
           source === undefined ||
           source.ownerCapability !== "token_service" ||
           source.tokenServiceInstanceId !== snapshot.tokenServiceInstanceId
@@ -368,12 +349,11 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         }
         continue;
       }
-      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
       if (
-        sourceOwner !==
-        (snapshot.credentialProxyId === undefined ? credentialGateway?.id : proxyDriver?.id)
+        snapshot.credentialProxyId === undefined ||
+        snapshot.credentialProxyId !== proxyDriver?.id
       ) {
-        return refuseRevisionInputs("CREDENTIAL_GATEWAY_MISMATCH");
+        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
       }
       const { source, withdrawal } = await resolveRevisionCredentialSource(
         state,

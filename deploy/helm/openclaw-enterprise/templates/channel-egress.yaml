@@ -205,32 +205,6 @@ spec:
         - protocol: TCP
           port: 1
           endPort: 65535
-{{- range $component, $port := dict "api" $egress.occListenerPort "worker" $egress.inspectionPort }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ $egress.gatewayName }}-{{ $component }}
-  namespace: {{ $root.Release.Namespace | quote }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ $root.Release.Name | quote }}
-      app.kubernetes.io/component: {{ $component }}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ $egress.envoyNamespace | quote }}
-          podSelector:
-            matchLabels:
-              {{- toYaml $fleet | nindent 14 }}
-      ports:
-        - protocol: TCP
-          port: {{ $port }}
-{{- end }}
 {{- if $egress.upstreamProxies }}
 {{- range $port := untilStep (int $egress.listenerPortStart) (int (add1 $egress.listenerPortEnd)) 1 }}
 {{- $slot := include "openclaw.channelEgress.slotName" (dict "gatewayName" $egress.gatewayName "port" $port) }}

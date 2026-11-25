@@ -18,36 +18,18 @@ import {
   pluginDetails,
   remoteId,
 } from "./plugin-discovery-api-fixture.ts";
+import { honorsDisconnectsDuringIam } from "./plugin-discovery-api-disconnect-cases.ts";
 import {
-  honorsDisconnectsDuringIam,
-  rechecksCredentialSourceGrants,
-} from "./plugin-discovery-api-disconnect-cases.ts";
-import {
-  usesCurrentAgentSecret,
-  requiresExactAgentAndSecretGrants,
-  rechecksAgentSecretGrant,
-  refusesReplacedCredential,
-  withholdsCredentialAfterHarnessChange,
-  discardsResultAfterHarnessChange,
-  rechecksCallerSecretGrant,
   authorizesBeforeDriverSupport,
-  refusesUnsupportedAuthenticationAndMode,
   usesCuratedCatalogForApiKeyAgent,
   readsHostedCapabilitiesWithoutSecret,
 } from "./plugin-discovery-api-saved-agent-cases.ts";
-import {
-  authorizesSelectedSecretBeforeDriverSupport,
-  rechecksSelectedSecretGrant,
-  usesSameNamespaceSecret,
-  usesCurrentHostedCredential,
-  requiresExactSecretGrantAndOwnership,
-  suppressesSecretBackendErrors,
-} from "./plugin-discovery-api-selected-secret-cases.ts";
 import {
   usesEachHarnessCatalog,
   savesCuratedSelectionsInRevision,
   requiresHostedCredentialAndCuratedGrant,
 } from "./plugin-discovery-api-catalog-cases.ts";
+import { discoversTokenServiceAccountApps } from "./plugin-discovery-api-token-service-cases.ts";
 
 test(
   "Plugin discovery uses the selected Driver through authenticated HTTP without creating resources",
@@ -75,44 +57,8 @@ test(
   reportsUnsupportedDriver,
 );
 test(
-  "Saved Agent plugin discovery uses its current Secret for catalog and tools without exposing the token",
-  usesCurrentAgentSecret,
-);
-test(
-  "Saved Agent plugin discovery requires exact Agent and Secret grants before credential use",
-  requiresExactAgentAndSecretGrants,
-);
-test(
-  "Saved Agent source discovery denies missing grants and rechecks revocation after retrieval",
-  rechecksCredentialSourceGrants,
-);
-test(
-  "Saved Agent plugin discovery rechecks Secret authority after the backend read",
-  rechecksAgentSecretGrant,
-);
-test(
-  "Saved Agent plugin discovery refuses a credential replaced during the backend read",
-  refusesReplacedCredential,
-);
-test(
-  "Changing a saved Agent's configured Harness during discovery withholds the old catalog credential",
-  withholdsCredentialAfterHarnessChange,
-);
-test(
-  "Saved Agent discovery discards a hosted result after the Agent changes Harness",
-  discardsResultAfterHarnessChange,
-);
-test(
-  "Saved Agent plugin discovery rechecks the caller's Secret authority after the backend read",
-  rechecksCallerSecretGrant,
-);
-test(
   "Saved Agent plugin discovery denies unauthorized callers before reporting Driver support",
   authorizesBeforeDriverSupport,
-);
-test(
-  "Saved Agent plugin discovery rejects unsupported Harness authentication or execution mode without reading credentials",
-  refusesUnsupportedAuthenticationAndMode,
 );
 test(
   "Saved Agent uses a credential-free curated catalog for an API-key Codex Agent",
@@ -121,30 +67,6 @@ test(
 test(
   "Saved Agent hosted capabilities need Agent edit grants but no Secret access",
   readsHostedCapabilitiesWithoutSecret,
-);
-test(
-  "Unsupported discovery still authorizes the exact selected Secret before capability errors",
-  authorizesSelectedSecretBeforeDriverSupport,
-);
-test(
-  "Selected Secret discovery rechecks Secret authority after the backend read",
-  rechecksSelectedSecretGrant,
-);
-test(
-  "Plugin discovery uses an authorized same-Namespace Secret for catalog and details",
-  usesSameNamespaceSecret,
-);
-test(
-  "Selected Secret discovery reaches the hosted provider with the current credential",
-  usesCurrentHostedCredential,
-);
-test(
-  "Selected Secret discovery requires exact Secret operate permission and same-Namespace ownership",
-  requiresExactSecretGrantAndOwnership,
-);
-test(
-  "Selected Secret backend failures suppress sensitive error details",
-  suppressesSecretBackendErrors,
 );
 test(
   "Mixed Installation targets each Harness catalog before reading a discovery Secret",
@@ -158,11 +80,15 @@ test(
   "Hosted discovery requires a credential, and curated discovery still requires Agent-create authorization",
   requiresHostedCredentialAndCuratedGrant,
 );
+test(
+  "Hosted Codex Apps discovery uses the authorized TokenService account Source",
+  discoversTokenServiceAccountApps,
+);
 
 async function usesSelectedDriver(t: TestContext) {
   const fixture = await createFixture(t);
   const catalog = await fixture.request("POST", fixture.path, {
-    body: { harnessId: "codex", accessToken, q: "knowledge" },
+    body: { harnessId: "codex", q: "knowledge" },
   });
   const firstPage = fixture.fixtureResponse(
     catalog,
@@ -173,7 +99,7 @@ async function usesSelectedDriver(t: TestContext) {
   assert.equal(catalog.headers.get("cache-control"), "no-store");
   assert.deepEqual(firstPage, { plugins: [catalogEntry], nextCursor: "second-page" });
   const next = await fixture.request("POST", fixture.path, {
-    body: { harnessId: "codex", accessToken, q: "knowledge", cursor: firstPage.nextCursor },
+    body: { harnessId: "codex", q: "knowledge", cursor: firstPage.nextCursor },
   });
   assert.equal(next.status, 200);
   assert.deepEqual(fixture.fixtureResponse(next, 200, AgentPluginCatalogResponse, "next").data, {
@@ -181,7 +107,7 @@ async function usesSelectedDriver(t: TestContext) {
     nextCursor: null,
   });
   const details = await fixture.request("POST", `${fixture.path}/details`, {
-    body: { harnessId: "codex", accessToken, pluginId: remoteId },
+    body: { harnessId: "codex", pluginId: remoteId },
   });
   assert.equal(details.status, 200);
   assert.equal(details.headers.get("cache-control"), "no-store");
@@ -190,9 +116,9 @@ async function usesSelectedDriver(t: TestContext) {
     pluginDetails,
   );
   assert.deepEqual(fixture.calls, [
-    { operation: "list", input: { accessToken, q: "knowledge" } },
-    { operation: "list", input: { accessToken, q: "knowledge", cursor: "second-page" } },
-    { operation: "details", input: { accessToken, pluginId: remoteId } },
+    { operation: "list", input: { q: "knowledge" } },
+    { operation: "list", input: { q: "knowledge", cursor: "second-page" } },
+    { operation: "details", input: { pluginId: remoteId } },
   ]);
   assert.deepEqual(
     await fixture.controller.transact(async (unit) => ({
@@ -222,8 +148,8 @@ async function requiresExactAgentCreate(t: TestContext) {
   });
   const session = await fixture.signIn(reader.credentials);
   for (const [suffix, body] of [
-    ["", { accessToken }],
-    ["/details", { accessToken, pluginId: remoteId }],
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
   ] as const) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
       session,
@@ -247,12 +173,12 @@ async function requiresExactAgentCreate(t: TestContext) {
   readerRole.permissions.push({ action: "create", resourceKind: "agent" });
   const granted = await fixture.request("POST", fixture.path, {
     session,
-    body: { harnessId: "codex", accessToken },
+    body: { harnessId: "codex" },
   });
   assert.equal(granted.status, 200);
   fixture.calls.length = 0;
   const absent = await fixture.request("POST", `/namespaces/ns_${randomUUID()}/agents/plugins`, {
-    body: { harnessId: "codex", accessToken },
+    body: { harnessId: "codex" },
   });
   assert.equal(absent.status, 404);
   assert.deepEqual(fixture.calls, []);
@@ -262,27 +188,27 @@ async function validatesCredentialAndIdentity(t: TestContext) {
   const { logger, logs } = createDiscoveryLogger();
   const fixture = await createFixture(t, { logger });
   const wrongKind = {
-    kind: "secrets",
+    kind: "secret",
     namespaceId: fixture.namespace.id,
-    id: `sec_${randomUUID()}`,
+    id: `cs_${randomUUID()}`,
   };
   // The body is a union of credential shapes without a shared literal field. Only the shape
   // whose fields the body uses is reported: the other shapes' required fields and the fields
   // they do not accept are not, and a wrong literal nested inside the field stays that
   // field's own problem.
   for (const [suffix, body, details] of [
-    ["", { accessToken: "" }, [{ path: "/accessToken", code: "INVALID_VALUE" }]],
-    ["", { accessToken: "x".repeat(16385) }, [{ path: "/accessToken", code: "TOO_LONG" }]],
-    ["", { accessToken, cursor: "x".repeat(8193) }, [{ path: "/cursor", code: "TOO_LONG" }]],
-    ["", { accessToken, q: "x".repeat(1025) }, [{ path: "/q", code: "TOO_LONG" }]],
-    ["", { accessToken, accountId: "caller-supplied-authority" }, undefined],
-    ["", { secretRef: wrongKind }, [{ path: "/secretRef/kind", code: "INVALID_VALUE" }]],
-    ["/details", { accessToken, pluginId: "" }, [{ path: "/pluginId", code: "INVALID_VALUE" }]],
+    ["", { accessToken }, undefined],
+    ["", { cursor: "x".repeat(8193) }, [{ path: "/cursor", code: "TOO_LONG" }]],
+    ["", { q: "x".repeat(1025) }, [{ path: "/q", code: "TOO_LONG" }]],
+    ["", { accountId: "caller-supplied-authority" }, undefined],
+    ["", { secretRef: wrongKind }, undefined],
     [
-      "/details",
-      { accessToken, pluginId: "x".repeat(257) },
-      [{ path: "/pluginId", code: "TOO_LONG" }],
+      "",
+      { credentialSource: wrongKind },
+      [{ path: "/credentialSource/kind", code: "INVALID_VALUE" }],
     ],
+    ["/details", { pluginId: "" }, [{ path: "/pluginId", code: "INVALID_VALUE" }]],
+    ["/details", { pluginId: "x".repeat(257) }, [{ path: "/pluginId", code: "TOO_LONG" }]],
   ] as const) {
     const invalid = await fixture.request("POST", `${fixture.path}${suffix}`, {
       body: { harnessId: "codex", ...body },
@@ -318,8 +244,8 @@ async function preservesSafeFailures(t: TestContext) {
   ] as const) {
     fixture.failWith(error);
     for (const [suffix, body] of [
-      ["", { accessToken }],
-      ["/details", { accessToken, pluginId: remoteId }],
+      ["", {}],
+      ["/details", { pluginId: remoteId }],
     ] as const) {
       const failed = await fixture.request("POST", `${fixture.path}${suffix}`, {
         body: { harnessId: "codex", ...body },
@@ -337,8 +263,8 @@ async function preservesSafeFailures(t: TestContext) {
 async function reportsUnsupportedDriver(t: TestContext) {
   const fixture = await createFixture(t, { supported: false });
   for (const [suffix, body] of [
-    ["", { accessToken }],
-    ["/details", { accessToken, pluginId: remoteId }],
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
   ] as const) {
     const unsupported = await fixture.request("POST", `${fixture.path}${suffix}`, {
       body: { harnessId: "codex", ...body },
