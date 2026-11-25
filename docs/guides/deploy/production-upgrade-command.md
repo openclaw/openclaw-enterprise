@@ -18,7 +18,7 @@ Relative paths for the kubeconfig, rendered Installation, and CLI resolve from
 the profile directory. Relative expert paths resolve from the release checkout.
 
 For a published release, open the approved, successful
-[Enterprise Containers run](published-images.md#check-publication-and-source)
+[image publication run](published-images.md#check-publication-and-source)
 for the checkout commit on `main`. In the run's artifacts, select
 `container-publication-<run-id>-<attempt>` for the approved attempt. Extract it
 into a fresh directory. Confirm that `runId`, `attempt`, and `sourceSha` in
@@ -110,12 +110,16 @@ Plan, apply, and preflight refuse changes to protected
 settings that they can detect in local files. Current cluster state and
 migration history remain unknown until the upgrade checks the cluster.
 
-With `--controller-compatibility-results FILE`, `plan` and a new `apply` check
-the PostgreSQL report and the selected controller digest before approval.
-If the check fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
-for the installed and selected images. Retry with the passing report.
-Live preflight must still match the report to the installed controller.
-Qualify [recovery](production-upgrade-recovery.md) separately.
+With `--controller-compatibility-results FILE`, `plan` and a new `apply` check the
+PostgreSQL report against the selected controller image before approval. If
+validation fails, rerun [controller qualification](../../testing/postgresql.md#released-controller-compatibility)
+for the installed and selected images. Retry with the passing report. Live
+preflight still checks the installed image against the report.
+
+Even a passing report can show that the released controller rejected the
+upgraded migration history. The preview warns you if any check reports that
+result. [Test recovery](production-upgrade-recovery.md) before maintenance,
+even if the preview shows no warning.
 
 Before the first `apply` or `preflight`,
 [bind the Installation Secret](production-upgrade.md#bind-the-installation-once).

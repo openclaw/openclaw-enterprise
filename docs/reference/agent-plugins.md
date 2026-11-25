@@ -36,10 +36,9 @@ The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
 
-**Experimental** OAuth discovery uses the saved credential source after
+Codex app discovery resolves a TokenService Source after
 [device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
-The Credential Gateway supplies a usable access token; closing the login session
-does not remove plugin-editing access.
+Closing the session preserves Plugin-editing access.
 
 ## Lifecycle
 
@@ -89,6 +88,8 @@ default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
 ## HTTP operations
+
+See [Plugin Source selection and delivery limits](credential-sources.md#bind-a-source-to-an-agent).
 
 Plugin selections and default approvers use Agent create/update. There are no
 separate plugin resources or install, delete, policy-mutation or tool-invocation

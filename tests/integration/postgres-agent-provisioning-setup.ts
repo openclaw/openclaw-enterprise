@@ -21,7 +21,7 @@ import type {
   WorkClaim,
 } from "../../packages/occ/src/index.ts";
 
-import { signInToControllerApp as signInAccount } from "../helpers/auth-session.mjs";
+import { signInToControllerApp as signInAccount } from "../helpers/auth-session.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,

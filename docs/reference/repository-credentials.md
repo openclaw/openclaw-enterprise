@@ -133,15 +133,14 @@ repository and one writable ref on one App installation.
 }
 ```
 
-Use platform Namespace IDs. Supply App, installation and repository IDs as
-positive decimal safe integer strings. Repository references, IDs and lowercased
-names must each be unique. Registry limits are 1,000 repositories, 128 Namespace
-policies per repository and 4,096 policies total.
+Use platform Namespace IDs and positive decimal App and installation IDs.
+TokenService mode accepts short names for `github-repository` with
+`nativeGit: "v1"`. Other modes require `owner/repo` and numeric repository IDs.
+References, names, and supplied IDs must be unique. Limits are 1,000 repositories,
+128 Namespace policies per repository, and 4,096 policies total.
 
-Before admission, the service independently checks the grant fingerprint.
-It covers provider, App, installation, repository, maximum duration, Namespace,
-allowed and selected profiles, push-ref policy and permissions. Reusing a
-reference after its policy changes cannot retain the old grant.
+The service checks a grant fingerprint over provider, App, installation, repository,
+duration, Namespace, profiles, push-ref rules, and permissions.
 The [push-ref guardrail](repository-credentials/push-ref-guardrail.md)
 covers the client hook and the prepared broker's separate ref check.
 
@@ -168,7 +167,7 @@ for creation and deployment rules.
 
 ### Profiles
 
-Native Git requires `git-write` and one writable branch. `git-only` permits
+Prepared native Git requires `git-write` and one writable branch. `git-only` permits
 fetch and push. `git-and-draft-pr` also permits draft creation against an
 approved base. Both exclude general REST, GraphQL, issues and arbitrary PR
 operations. The [OpenShell installation profile](repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
@@ -201,7 +200,14 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The Token Service signs an App JWT, validates the issued token’s scope and expiry, and stores it encrypted in PostgreSQL. An authorized Credential Proxy metadata GET resolves a `github_app_installation` reference. Its provider generation and registered grant determine which installation token can serve the request. Git sessions use background preparation until the session expires. See [issuance, renewal and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+For native Git with a managed Source, the selected TokenService signs an App
+JWT with the registered Client key, verifies the installation token's exact
+scope and expiry, and updates the Source's private token custody. The API
+schedules renewal and the selected Credential Proxy delivers replacement
+versions. See [issuance and renewal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
+
+The separately qualified prepared Git transport uses a finite repository session
+and its own worker custody.
 
 `PREPARED_GITHUB_RECOVERY_REQUIRED` stops minting. [Recover the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key)
 with its original attempt and custody. Wait until 72 minutes after intent or

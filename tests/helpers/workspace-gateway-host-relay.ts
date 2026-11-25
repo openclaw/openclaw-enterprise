@@ -201,6 +201,7 @@ export async function startWorkspaceGatewayHostRelay(
   const relayLabels = Object.entries(apiPodLabels)
     .map(([name, value]) => `${name}=${value}`)
     .join(",");
+  const relayPort = 8443;
   const inClusterRelayProgram = [
     'const net = require("node:net");',
     "const server = net.createServer((client) => {",
@@ -209,7 +210,7 @@ export async function startWorkspaceGatewayHostRelay(
     '  client.on("error", () => upstream.destroy());',
     '  upstream.on("error", () => client.destroy());',
     "});",
-    'server.listen(8443, "0.0.0.0");',
+    `server.listen(${relayPort}, "0.0.0.0");`,
   ].join("\n");
   await kubectl(
     "run",
@@ -220,6 +221,16 @@ export async function startWorkspaceGatewayHostRelay(
     "--image-pull-policy=IfNotPresent",
     "--restart=Never",
     `--labels=${relayLabels}`,
+    // The first forwarded connection must reach a listener, or kubectl can exit.
+    "--override-type=json",
+    "--overrides",
+    JSON.stringify([
+      {
+        op: "add",
+        path: "/spec/containers/0/readinessProbe",
+        value: { tcpSocket: { port: relayPort }, periodSeconds: 1 },
+      },
+    ]),
     "--command",
     "--",
     "node",
@@ -234,7 +245,11 @@ export async function startWorkspaceGatewayHostRelay(
     `pod/${relayPod}`,
     "--timeout=180s",
   );
-  const forwarding = await startPortForwardTarget(gatewayNamespace, `pod/${relayPod}`, "0:8443");
+  const forwarding = await startPortForwardTarget(
+    gatewayNamespace,
+    `pod/${relayPod}`,
+    `0:${relayPort}`,
+  );
   // Reuse kubectl's bound socket on Linux; a second listener would race other tests.
   context.after(() => forwarding.stop());
   const forwardedPort = Number(new URL(forwarding.url).port);

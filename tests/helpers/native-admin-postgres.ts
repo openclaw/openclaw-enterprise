@@ -33,7 +33,7 @@ import {
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
-import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "./auth-session.ts";
 import { injectJson as inject } from "./inject-json.ts";
 import {
   ensureDevelopmentBootstrap,

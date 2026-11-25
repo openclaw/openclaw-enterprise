@@ -61,6 +61,76 @@ type WorkerField = string | number | boolean;
 const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
+// Both the trusted controller and the artifact writer apply this projection.
+// Gateway error details can include provider messages and must not cross either boundary.
+export function nativeTurnErrorFields(fields: Record<string, unknown>) {
+  const categories = {
+    turnChatErrorKind: [
+      "refusal",
+      "timeout",
+      "rate_limit",
+      "context_length",
+      "state_contention",
+      "unknown",
+    ],
+    turnFailoverReason: [
+      "auth",
+      "auth_permanent",
+      "format",
+      "rate_limit",
+      "overloaded",
+      "billing",
+      "server_error",
+      "route_unavailable",
+      "timeout",
+      "tls_certificate",
+      "context_overflow",
+      "model_not_found",
+      "session_expired",
+      "empty_response",
+      "no_error_details",
+      "unclassified",
+      "unknown",
+    ],
+    turnProviderFailureKind: [
+      "gateway_storage",
+      "auth_scope",
+      "auth_invalid_token",
+      "auth_html",
+      "upstream_html",
+      "auth_refresh",
+      "refresh_contention",
+      "refresh_timeout",
+      "callback_timeout",
+      "callback_validation",
+      "dns",
+      "proxy",
+      "timeout",
+      "tls_certificate",
+      "rate_limit",
+      "model_not_found",
+      "schema",
+      "sandbox_blocked",
+      "replay_invalid",
+      "empty_response",
+      "no_error_details",
+      "unclassified",
+    ],
+  };
+  const safe: Record<string, string | number> = {};
+  for (const [field, allowed] of Object.entries(categories)) {
+    const value = fields[field];
+    if (typeof value === "string" && allowed.includes(value)) {
+      safe[field] = value;
+    }
+  }
+  const status = fields.turnProviderHttpStatus;
+  if (typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599) {
+    safe.turnProviderHttpStatus = status;
+  }
+  return safe;
+}
+
 // The proof runs in a separate controller process. Both its test and the CI
 // reporter use this closed vocabulary; neither publishes arbitrary stage text.
 export function nativeFirstAgentProofDiagnostic(
@@ -256,6 +326,7 @@ export function nativeFirstAgentProofDiagnostic(
   };
   const safe: Record<string, WorkerField> = {};
   if (failureStage === "model-outcome") {
+    Object.assign(safe, nativeTurnErrorFields(worker));
     const audit = worker.credentialProxyAudit;
     const rule = worker.credentialProxyRule;
     if (

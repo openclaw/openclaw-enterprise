@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { getCACertificates } from "node:tls";
 import { asRecord } from "../../packages/utils/src/objects.ts";
 
@@ -101,12 +102,10 @@ export async function probeChannelConnect(
   child.stdin.end(ca);
   const timer = setTimeout(() => child.kill("SIGKILL"), 20_000);
   try {
-    await new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("exit", (code) =>
-        code === 0 ? resolve() : reject(new Error("The selected Gateway CONNECT probe failed.")),
-      );
-    });
+    const [code, signal]: unknown[] = await once(child, "close");
+    // Throw at the awaited call site so the stack identifies which real request failed.
+    // kubectl stderr and the arguments can contain credential-bearing headers.
+    assert.equal(code, 0, `Gateway CONNECT probe in ${pod} failed (${signal ?? `exit ${code}`}).`);
     const result = asRecord(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     assert.ok(result);
     return result;

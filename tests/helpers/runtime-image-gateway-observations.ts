@@ -1,8 +1,8 @@
 import { availableParallelism, loadavg } from "node:os";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
-import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { jsonLines } from "./json-lines.mjs";
+import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
+import { jsonLines } from "./json-lines.ts";
 import { commandOutput, failureTail, runDocker, waitForDockerLog } from "./runtime-image-docker.ts";
 
 type DockerFailure = Error & { stdout?: string | Buffer; stderr?: string | Buffer };

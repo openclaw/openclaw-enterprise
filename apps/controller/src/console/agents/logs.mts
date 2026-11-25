@@ -55,7 +55,7 @@ interface AgentLogsOptions {
   }): Promise<{ operate: boolean; readLogs?: boolean } | null>;
   // Whether the caller may read this version (AgentRevision read); undefined when unknown.
   versionRead?: Promise<boolean | undefined>;
-  onLogsDenied?(): void;
+  onRuntimeAvailabilityChanged?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
   // Rereads the Agent while this version has no running Pod. Answers another version selected
@@ -85,18 +85,26 @@ const FIRST_VIEW_WAIT_MS = 2_000;
 // answer allows operate where it did not, the view asks once more. A log text denial lasts until
 // the console Refresh or sign-out; a view whose answer denies read_logs is not sent the read.
 const deniedLogViews = new Set<string>();
-const deniedStatusViews = new Map<string, boolean | null>();
-// Denials that came after this page session read the same output: the caller's access changed,
-// which the view says instead of restating the rule (finding 2550).
-const revokedLogViews = new Set<string>();
+// After a new operate grant the read can retry, but only a successful read restores the shortcut.
+const deniedStatusViews = new Map<string, boolean | null | "retrying">();
+// Only the server can refuse a text read. A refusal after showing output means access changed
+// (finding 2550). Skipping the read locally leaves the operator’s status shortcut available.
+const logRefusals = new Map<string, "refused" | "revoked">();
 const revokedStatusViews = new Set<string>();
 // Denials are per signed-in operator: another user signing in on this tab asks again.
 const logViewKey = (context: LogViewIdentity, agentId: string) =>
   JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
 
-/** Whether this page session already saw the Agent's log text read denied. */
-export function logTextDenied(context: LogViewIdentity, agentId: string) {
-  return deniedLogViews.has(logViewKey(context, agentId));
+const statusViewKey = (context: LogViewIdentity, agentId: string, revisionId: string) =>
+  JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId, revisionId]);
+
+export function runtimeReadDenials(context: LogViewIdentity, agentId: string, revisionId: string) {
+  const key = logViewKey(context, agentId);
+  return {
+    text: deniedLogViews.has(key),
+    textRefused: logRefusals.has(key),
+    status: deniedStatusViews.has(statusViewKey(context, agentId, revisionId)),
+  };
 }
 
 /**
@@ -104,7 +112,7 @@ export function logTextDenied(context: LogViewIdentity, agentId: string) {
  * Logs view reads again and an access change can be checked (finding 2566).
  */
 export function forgetRuntimeDenials(namespaceId: string, agentId: string) {
-  for (const views of [deniedLogViews, deniedStatusViews, revokedLogViews, revokedStatusViews]) {
+  for (const views of [deniedLogViews, deniedStatusViews, logRefusals, revokedStatusViews]) {
     for (const key of views.keys()) {
       const [, keyNamespace, keyAgent] = JSON.parse(key) as unknown[];
       if (keyNamespace === namespaceId && keyAgent === agentId) {
@@ -118,7 +126,7 @@ export function forgetRuntimeDenials(namespaceId: string, agentId: string) {
 export function clearRuntimeDenials() {
   deniedLogViews.clear();
   deniedStatusViews.clear();
-  revokedLogViews.clear();
+  logRefusals.clear();
   revokedStatusViews.clear();
 }
 
@@ -316,19 +324,18 @@ export function renderAgentLogs(
     // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
     permissions = () => Promise.resolve(null),
     versionRead = Promise.resolve(undefined),
-    onLogsDenied = () => {},
+    onRuntimeAvailabilityChanged = () => {},
     onAccessChanged = () => {},
     runningVersion = () => Promise.resolve(null),
   }: AgentLogsOptions,
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
   const deniedKey = logViewKey(context, agent.id);
-  const statusKey = JSON.stringify([
-    context.operatorId ?? null,
-    context.namespaceId,
-    agent.id,
-    revisionId,
-  ]);
+  const statusKey = statusViewKey(context, agent.id, revisionId);
+  function statusReadBlocked() {
+    const denial = deniedStatusViews.get(statusKey);
+    return denial !== undefined && denial !== "retrying";
+  }
   // The status strip fills from the first status read and can be taller than a phone screen.
   // Until that read and the first log page settle (at most FIRST_VIEW_WAIT_MS), the strip and
   // log viewer stay back, so the view appears in one step instead of the strip pushing the
@@ -686,14 +693,23 @@ export function renderAgentLogs(
     { manualRead }: { manualRead: boolean },
   ) {
     if (logsDenied) {
+      // A download already in flight can be refused after the view skipped a text read.
+      if (error.status === 403 && !logRefusals.has(deniedKey)) {
+        logRefusals.set(deniedKey, "refused");
+        onRuntimeAvailabilityChanged();
+      }
       return;
     }
-    if (error.status === 403 && (logsAllowed || rows > 0)) {
-      revokedLogViews.add(deniedKey);
-      onAccessChanged();
+    if (error.status === 403) {
+      if (logsAllowed || rows > 0) {
+        logRefusals.set(deniedKey, "revoked");
+        onAccessChanged();
+      } else if (!logRefusals.has(deniedKey)) {
+        logRefusals.set(deniedKey, "refused");
+      }
     }
     showLogError(
-      error.status === 403 && revokedLogViews.has(deniedKey)
+      error.status === 403 && logRefusals.get(deniedKey) === "revoked"
         ? LOGS_ACCESS_CHANGED
         : withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error.requestId),
     );
@@ -707,6 +723,17 @@ export function renderAgentLogs(
     if (error.status !== 403) {
       return;
     }
+    disableLogText();
+    // One revoke often removes operate too: ask for status once now, so the Pod cards it showed
+    // do not stay under the log refusal until the next status poll (finding 1597). This read
+    // supersedes one in flight, which may have been authorized before the revoke. A first
+    // read refused revokes nothing.
+    if (logsAllowed && !statusDenied && description !== null) {
+      void loadStatus();
+    }
+  }
+
+  function disableLogText() {
     // A refusal from either read clears the displayed output. A page or download already
     // authorized before that refusal can still arrive; neither may put its output back.
     logsDenied = true;
@@ -721,14 +748,7 @@ export function renderAgentLogs(
     applyFilters();
     setFollow(false);
     renderPickers();
-    onLogsDenied();
-    // One revoke often removes operate too: ask for status once now, so the Pod cards it showed
-    // do not stay under the log refusal until the next status poll (finding 1597). This read
-    // supersedes one in flight, which may have been authorized before the revoke. A first
-    // read refused revokes nothing.
-    if (logsAllowed && !statusDenied && description !== null) {
-      void loadStatus();
-    }
+    onRuntimeAvailabilityChanged();
   }
 
   function renderStrip() {
@@ -895,16 +915,17 @@ export function renderAgentLogs(
     // predate an operate grant, so the remembered denial below compares it with a fresh answer
     // once, which is not audited; an answer still in flight is that fresh answer. An unknown
     // answer still asks for status.
-    if (!deniedStatusViews.has(statusKey) && !permissionsAsked) {
+    if (!statusReadBlocked() && !permissionsAsked) {
       const operate = (await permissions())?.operate;
       if (!current() || superseded()) {
         return;
       }
-      if (operate === false && !deniedStatusViews.has(statusKey)) {
+      if (operate === false && !statusReadBlocked()) {
         deniedStatusViews.set(statusKey, false);
+        onRuntimeAvailabilityChanged();
       }
     }
-    if (deniedStatusViews.has(statusKey)) {
+    if (statusReadBlocked()) {
       // A rebuilt view compares the denial with a fresh answer, so an operate grant since
       // shows on the next visit to Logs (finding 1579). Back's check already compared a
       // retained view's answer; its resumed loads take the newest one.
@@ -914,12 +935,12 @@ export function renderAgentLogs(
       const operate = answer === true;
       const denial = await statusDenial(answer);
       // Another status load may have taken the denial while this one waited.
-      if (!current() || !deniedStatusViews.has(statusKey)) {
+      if (!current() || !statusReadBlocked()) {
         return;
       }
       if (operate && deniedStatusViews.get(statusKey) === false) {
         // Operate is granted again since the denial: ask once more, never on a timer.
-        deniedStatusViews.delete(statusKey);
+        deniedStatusViews.set(statusKey, "retrying");
       } else {
         deniedStatusViews.set(statusKey, operate);
         showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
@@ -961,6 +982,10 @@ export function renderAgentLogs(
         // Anchor only a control the keyboard reader still has in view when the reply arrives.
         const focused = section.querySelector(".log-controls :focus-visible");
         const before = focused?.getBoundingClientRect();
+        if (deniedStatusViews.get(statusKey) === "retrying" && !superseded()) {
+          deniedStatusViews.delete(statusKey);
+          onRuntimeAvailabilityChanged();
+        }
         description = answer;
         statusDenied = false;
         renderStrip();
@@ -1000,6 +1025,11 @@ export function renderAgentLogs(
         }
       } catch (cause) {
         const error = requestFailure(cause);
+        if (error.status === 403 && current() && !superseded()) {
+          // Withdraw the shortcut before waiting for the explanation of a first refusal.
+          deniedStatusViews.set(statusKey, null);
+          onRuntimeAvailabilityChanged();
+        }
         // A first refusal names the missing grants; a refusal of shown status is a revocation,
         // which says so instead (below), so it waits for no answer.
         const denial =
@@ -1038,7 +1068,6 @@ export function renderAgentLogs(
         // Authorization and support failures do not change on their own.
         if (error.status === 403 || error.status === 404 || error.status === 501) {
           if (error.status === 403) {
-            deniedStatusViews.set(statusKey, null);
             // An answer that allows operate may predate a revocation: once per view, compare
             // the refusal with a fresh one, so a later grant is not taken as unchanged.
             const fresh = !permissionsAsked;
@@ -1283,7 +1312,11 @@ export function renderAgentLogs(
       // a read was allowed, a later refusal is the API's own, which says access changed. An
       // unknown answer still reads.
       if (!logsAllowed && (await permissions())?.readLogs === false) {
-        throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
+        if (current() && !logsDenied) {
+          showLogError(LOG_TEXT_DENIED);
+          disableLogText();
+        }
+        return;
       }
       const response: unknown = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
@@ -1455,7 +1488,7 @@ export function renderAgentLogs(
   );
   if (logsDenied) {
     showLogError(
-      revokedLogViews.has(deniedKey)
+      logRefusals.get(deniedKey) === "revoked"
         ? LOGS_ACCESS_CHANGED
         : runtimeErrorText({ status: 403 }, "logs"),
     );
@@ -1498,7 +1531,7 @@ export function renderAgentLogs(
               revokedStatusViews.add(statusKey);
             } else {
               deniedLogViews.add(deniedKey);
-              revokedLogViews.add(deniedKey);
+              logRefusals.set(deniedKey, "revoked");
             }
           }
           throw error;

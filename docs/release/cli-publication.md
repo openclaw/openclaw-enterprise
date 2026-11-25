@@ -1,6 +1,8 @@
 # Publish the OCC CLI
 
-The [Release OCC CLI workflow](../../.github/workflows/cli-release.yml) publishes four
+To release the CLI with matching images and a Helm chart, use [Release OCE](README.md).
+
+The standalone [Release OCC CLI workflow](../../.github/workflows/cli-release.yml) publishes four
 standalone `occ` binaries and `SHA256SUMS` as a GitHub Release. It does not
 install OpenClaw Enterprise or make `occ dev up` usable outside a source checkout.
 
@@ -8,8 +10,7 @@ Advance the SemVer version in root `package.json` and keep the Helm chart's
 `version` and `appVersion` equal to it. Merge the version and release code to
 `main`, then wait for that exact main-push CI run to pass, including
 `CI Required`. Configure the main-only `container-publish` environment from
-[operator setup](containers.md#operator-setup) before dispatch. Use the same source commit for the chart and image publication
-when releasing the complete OCE version. This workflow checks version equality
+[operator setup](containers.md#operator-setup) before dispatch. This workflow checks version equality
 but does not prove that GHCR publication succeeded.
 
 Dispatch **Release OCC CLI** on `main` with the full `source_sha` of the selected
