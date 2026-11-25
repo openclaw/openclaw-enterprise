@@ -1481,16 +1481,15 @@ export async function renderAgentDetail(
   // external sign-in), so point only at paths that work in every sign-in mode.
   const readAccessHint = `${NEW_VERSIONS_READ} If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.`;
   // A current version the caller cannot read is named in the Agents list's words, not by its raw
-  // ID (finding D791): newer than every listed version beside the newest one's succeeded
-  // deployment. Null when it is listed or not known to be hidden: until every page of versions is
-  // loaded, it may be on an older one. revisionHidden is false until the version list loads, so
-  // the deployment status below is never read before its declaration.
+  // ID (finding D791). Only a selection confirmed after the newest visible deployment
+  // succeeded can be called newer. Until every page is loaded, the selection may
+  // still be listed on an older page.
   function unreadableCurrentLabel() {
     if (!currentRevisionId || !revisionHidden(currentRevisionId)) {
       return null;
     }
     return unreadableCurrentVersion(
-      visibleRevisions.length > 0 && latestDeploymentStatus === "succeeded",
+      selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded",
     );
   }
   // The current version as the page names it: its number, those words, else its short ID.
@@ -2257,9 +2256,11 @@ export async function renderAgentDetail(
   let latestDeploymentRecord: AgentDeploymentStatusWire | null = null;
   // Whether the newest version's panel last failed to refresh the Agent or its versions.
   let latestOverviewUnavailable = false;
-  // The newest version's status from its last record read; a failed read keeps it, so one
-  // failure does not relabel a deploying version Historical (finding 2085).
-  let latestRecordedStatus: DeploymentOutcome | null = null;
+  // A transient failure keeps the last known notice (finding 2085). A successful
+  // deployment alone cannot tell us whether the version is now selected for service.
+  let latestNoticeStatus: DeploymentOutcome | null = null;
+  // A later failed refresh cannot undo a confirmed ordering for the same two versions.
+  let selectionConfirmedAfterSuccess = false;
   // Set when the Agent reread after a completed deployment failed, until an Agent read lands.
   let agentRereadFailed = false;
   let versionRecord: ReturnType<typeof createVersionDeploymentEvidence> | null = null;
@@ -2277,35 +2278,51 @@ export async function renderAgentDetail(
   let latestRevisionDetailReading: string | null = null;
 
   function versionNotice() {
-    return selected === "draft"
-      ? selectedTab === "plugins"
-        ? // Plugin selections are Agent settings: a caller who may not save them reads them.
-          agentReadOnly()
+    if (selected === "draft") {
+      if (selectedTab === "plugins") {
+        // Plugin selections are Agent settings: a caller who may not save them reads them.
+        return agentReadOnly()
           ? READ_ONLY_DRAFT_NOTICE
-          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
-        : draftReadOnly() && !channelsAccessUnconfirmed()
-          ? READ_ONLY_DRAFT_NOTICE
-          : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
-      : selected === currentRevisionId
-        ? "Current version · read-only admitted snapshot."
-        : deployingRevision()?.id === selected
-          ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
-          : deployedRevision()?.id === selected
-            ? "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."
-            : // A failed version that is not current is not history: after a failed first
-              // deployment it was the only version and was called "Historical" (finding 2403).
-              failedVersions.has(failedVersionKey(path, selected))
-              ? "Failed version · read-only admitted snapshot. Its deployment did not complete."
-              : neutralVersions.has(failedVersionKey(path, selected))
-                ? NEUTRAL_VERSION_NOTICES[neutralVersions.get(failedVersionKey(path, selected))!]
-                : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged.";
+      }
+      return draftReadOnly() && !channelsAccessUnconfirmed()
+        ? READ_ONLY_DRAFT_NOTICE
+        : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged.";
+    }
+    if (selected === currentRevisionId) {
+      return "Current version · read-only admitted snapshot.";
+    }
+    if (deployingRevision()?.id === selected) {
+      return "Deploying version · read-only admitted snapshot.";
+    }
+    if (deployedRevision()?.id === selected) {
+      return "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed.";
+    }
+    const key = failedVersionKey(path, selected);
+    if (failedVersions.has(key)) {
+      return "Failed version · read-only admitted snapshot. Its deployment did not complete.";
+    }
+    const outcome = neutralVersions.get(key);
+    if (outcome) {
+      return NEUTRAL_VERSION_NOTICES[outcome];
+    }
+    const latest = visibleRevisions[0];
+    const older =
+      viewedSnapshot &&
+      "revision" in viewedSnapshot &&
+      ((latest && viewedSnapshot.revision < latest.revision) ||
+        acceptedHiddenVersion(viewedSnapshot.revision) !== undefined);
+    const completed = activityRevisionId === selected && latestNoticeStatus === "succeeded";
+    return older || formerCurrent.has(selected) || completed
+      ? "Historical version · read-only admitted snapshot. Browsing it does not change the current version."
+      : "Read-only admitted snapshot.";
   }
 
   // The newest version whose deployment is queued or running, including while it is selected
   // for service and activation is still in progress.
   function deployingRevision() {
     const latest = visibleRevisions[0];
-    return latest && activityRevisionId === latest.id && deploymentPending(latestRecordedStatus)
+    return latest && activityRevisionId === latest.id && deploymentPending(latestNoticeStatus)
       ? latest
       : null;
   }
@@ -2322,7 +2339,7 @@ export async function renderAgentDetail(
     ) {
       return null;
     }
-    const state = latestRecordedStatus === "queued" ? "queued" : "in progress";
+    const state = latestNoticeStatus === "queued" ? "queued" : "in progress";
     return `v${pending.revision} was ${state} at the last check.`;
   }
 
@@ -2336,9 +2353,9 @@ export async function renderAgentDetail(
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
-      latestRecordedStatus === "succeeded" &&
+      latestNoticeStatus === "succeeded" &&
       agentRereadFailed &&
-      !revisionHidden(currentRevisionId)
+      !(selectionConfirmedAfterSuccess && revisionHidden(currentRevisionId))
       ? latest
       : null;
   }
@@ -2619,6 +2636,7 @@ export async function renderAgentDetail(
     next: unknown,
     revisionResult: RevisionResult | null,
     snapshot: Snapshot | null,
+    afterSuccess = false,
   ) {
     const freshAgent = agentForPage(next);
     // A read answered after deletion was shown has nothing left to update.
@@ -2636,6 +2654,9 @@ export async function renderAgentDetail(
       formerCurrent.add(currentRevisionId);
     }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
+    if (revisionChanged || afterSuccess) {
+      selectionConfirmedAfterSuccess = afterSuccess;
+    }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
     const servingChanged =
@@ -2748,6 +2769,8 @@ export async function renderAgentDetail(
       fresh,
       page ? { status: "fulfilled", value: page } : latestRevisionResult,
       viewedSnapshot,
+      // The guards above discard a read that predates an accepted Agent update.
+      selectionConfirmedAfterSuccess,
     );
   }
   // A refocus recheck read the Agent to check that the page is still readable, and the page
@@ -2831,7 +2854,7 @@ export async function renderAgentDetail(
 
   function renderLatestDeployment() {
     markVersionOutcomes();
-    // An unreadable current version is newer beside a succeeded deployment (finding D791).
+    // A post-completion overview can change the label of an unreadable selection.
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     const versionContextLine = selector.querySelector(".agent-version-context");
@@ -2940,8 +2963,8 @@ export async function renderAgentDetail(
     // The current version is not on the pages loaded so far, yet not known to be hidden either:
     // it may be on an older page or one the caller cannot read (finding 1477).
     const currentUnknown = Boolean(currentRevisionId) && !current && !currentHidden;
-    // A succeeded deployment becomes current, so a different current version is newer.
-    const newerHidden = latestDeploymentStatus === "succeeded" && currentHidden;
+    const newerHidden =
+      selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded" && currentHidden;
     // A failed deployment never becomes current, so a hidden current version may be newer or
     // older: the page cannot say whether that failure still matters (finding 1458).
     const failureBehindHidden = latestDeploymentStatus === "failed" && currentHidden;
@@ -3200,6 +3223,11 @@ export async function renderAgentDetail(
     const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
+    const mostRecent = revisions[0];
+    const activityChanged = activityRevisionId !== (mostRecent?.id ?? null);
+    if (activityChanged) {
+      selectionConfirmedAfterSuccess = false;
+    }
     stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
     const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
     // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
@@ -3210,13 +3238,12 @@ export async function renderAgentDetail(
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     renderVersions(revisions, snapshot, revisionResult);
-    const mostRecent = revisions[0];
-    if (activityRevisionId !== (mostRecent?.id ?? null)) {
+    if (activityChanged) {
       activityRevisionId = mostRecent?.id ?? null;
       // The version's record panel no longer gets this panel's reads.
       versionRecord?.release();
       latestDeploymentStatus = null;
-      latestRecordedStatus = null;
+      latestNoticeStatus = null;
       agentRereadFailed = false;
       latestDeploymentRecord = null;
       latestOverviewUnavailable = false;
@@ -3261,11 +3288,12 @@ export async function renderAgentDetail(
             },
             path,
             mostRecent,
-            (freshAgent, freshRevisions) =>
+            (freshAgent, freshRevisions, afterSuccess) =>
               updateCurrentAgent(
                 freshAgent,
                 { status: "fulfilled", value: revisionsForPage(freshRevisions) },
                 snapshot,
+                afterSuccess,
               ),
             ({
               outcome: status,
@@ -3273,6 +3301,7 @@ export async function renderAgentDetail(
               readError,
               record,
               overviewUnavailable,
+              overviewSettled,
               transientFailure,
             }) => {
               if (
@@ -3294,7 +3323,10 @@ export async function renderAgentDetail(
               }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
-                latestRecordedStatus = status;
+                latestNoticeStatus = status === "succeeded" && !overviewSettled ? null : status;
+                if (status !== "succeeded") {
+                  selectionConfirmedAfterSuccess = false;
+                }
               }
               if (overviewUnavailable) {
                 agentRereadFailed = true;
@@ -3319,12 +3351,7 @@ export async function renderAgentDetail(
                 }
               }
               renderLatestDeployment();
-              // A success is shown once the Agent reread makes the version current; until then
-              // the notice keeps "Deploying" rather than flash "Historical". A reread that failed
-              // leaves the version labelled from its record (finding 2085).
-              if (status !== "succeeded" || overviewUnavailable) {
-                renderVersionNotice();
-              }
+              renderVersionNotice();
               refreshDeployControls();
             },
             // A newer version found later is one the reader is following: its first record

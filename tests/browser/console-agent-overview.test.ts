@@ -1779,11 +1779,11 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
 
-// Open Configuration leads to the Configuration editor. A Configuration save needs Configuration
+// Recovery opens the Configuration draft. Saving it needs Configuration
 // update and Secret operate on each Secret the Configuration binds, not an Agent update or the
 // Harness authentication Secret it checks, so recovery follows the Configuration's own answer
 // (finding 2450). Its label says "Open draft" only when that editor is read-only.
-test("Recovery's Open Configuration follows whether the caller may edit the Configuration", async (t) => {
+test("Recovery offers Open Configuration draft when the caller may edit the Configuration", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Configuration recovery", runtimeLogs());
   const bound = await fixture.createSecret(namespace.id, "Configuration token", "bound-value");
   const agent = await fixture.createAgent(
@@ -1855,7 +1855,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.configurationSecretsOperate, true);
   assert.equal(answer.agentSourcesOperate, false);
   assert.equal(answer.deploy, false);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery
     .getByText("Ask someone with deploy access to redeploy this Agent.", { exact: false })
     .waitFor();
@@ -1863,7 +1863,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   role.permissions.push({ action: "deploy", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, true);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery.getByText("then redeploy this Agent.", { exact: false }).waitFor();
 
   // Without operate on the bound Secret every Configuration save is refused, so the editor is
@@ -2161,7 +2161,10 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  const configuration = recovery.getByRole("link", { name: "Open Configuration" });
+  const configuration = recovery.getByRole("link", {
+    name: "Open Configuration draft",
+    exact: true,
+  });
   assert.equal(await configuration.getAttribute("class"), "button button--primary");
 
   // A later visit in this page session starts without the Logs link too.
@@ -2169,7 +2172,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("link", { name: "Denied logs" }).click();
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await configuration.waitFor();
 });
 
 // When a failed newer version replaced the running one, the replacement sentence overrode the
@@ -2261,7 +2264,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
     "button button--primary",
   );
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).waitFor();
 });
 
 test("Recovery offers no draft link when the caller's permission answer fails", async (t) => {
@@ -3135,10 +3138,11 @@ const focusedTab = (page: Page) =>
 // window stayed at the top, under the banner, while the draft sat 1110-3168 px below the fold, so
 // the link looked dead (finding 1586). Every way the link opens its tab now brings it into view and
 // focuses it: the draft already open below, another tab of the draft, and another version.
+const editorLabel = "Open Configuration draft";
 for (const c of [
-  { name: "the open draft", entry: "draft", tab: "configuration", label: "Open Configuration" },
-  { name: "another draft tab", entry: "draft", tab: "plugins", label: "Open Configuration" },
-  { name: "another version", entry: "active", tab: "configuration", label: "Open Configuration" },
+  { name: "the open draft", entry: "draft", tab: "configuration", label: editorLabel },
+  { name: "another draft tab", entry: "draft", tab: "plugins", label: editorLabel },
+  { name: "another version", entry: "active", tab: "configuration", label: editorLabel },
   {
     name: "another version without update",
     entry: "active",
@@ -3184,7 +3188,7 @@ for (const c of [
             : detailUrl(fixture, namespace.id, agent.id, "draft", c.tab);
       await login(page, fixture, url);
       const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-      const open = recovery.getByRole("link", { name: c.label });
+      const open = recovery.getByRole("link", { name: c.label, exact: true });
       await open.waitFor();
       await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
@@ -3233,7 +3237,7 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   // A modified or middle click (open in a new tab or window) is left to the browser.
@@ -4093,7 +4097,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await settled.waitFor();
   const agentRead = await holdRequests(
@@ -4163,7 +4167,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   await page.evaluate(() => globalThis.scrollTo(0, 0));
   await page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" })
+    .getByRole("link", { name: "Open Configuration draft", exact: true })
     .click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
