@@ -446,16 +446,37 @@ test("an administrator registers independent OAuth clients with exact availabili
   const fixture = await clientConsoleFixture(t, { publicOrigin: true });
   const namespace = await fixture.createNamespace("OAuth client owners", { ready: true });
   const other = await fixture.createNamespace("Other client owners", { ready: true });
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { permissions: ["clipboard-read", "clipboard-write"] },
+  });
   await login(page, fixture, secretsUrl(namespace));
   const sections = page.getByRole("navigation", { name: "Credential sections" });
   await sections.getByRole("link", { name: "Credential clients", exact: true }).click();
   await page.getByRole("button", { name: "Register client" }).click();
   const form = dialog(page, "Register credential client");
   assert.equal(await form.getByLabel("Connection template").count(), 0);
-  assert.equal(
-    await form.getByLabel("Redirect URI").inputValue(),
-    fixture.origin + "/oauth/callback",
+  const redirect = form.getByLabel("Redirect URI", { exact: true });
+  const callback = fixture.origin + "/oauth/callback";
+  assert.equal(await redirect.inputValue(), callback);
+  assert.equal(await redirect.isEditable(), false);
+  const copy = form.getByRole("button", { name: "Copy redirect URI" });
+  await copy.click();
+  await form.getByRole("status").filter({ hasText: "Redirect URI copied." }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), callback);
+  await page.evaluate(() =>
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: () => Promise.reject(new Error("Clipboard unavailable")),
+    }),
+  );
+  await copy.click();
+  await form.getByRole("status").filter({ hasText: "Use your copy shortcut" }).waitFor();
+  assert.deepEqual(
+    await redirect.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+    ]),
+    [0, callback.length],
   );
   await form.getByLabel("Availability").selectOption(namespace.id);
   await form.getByLabel("Client name").fill("Engineering directory");

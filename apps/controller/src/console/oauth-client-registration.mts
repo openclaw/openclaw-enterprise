@@ -90,7 +90,7 @@ export async function readPrivateKey(control: HTMLInputElement) {
   return value;
 }
 
-/** A Template can prefill OAuth settings; each registration owns its own scope and endpoints. */
+/** A Template can prefill the issuer; each client registration owns its own scope. */
 export function openCredentialClientRegistration(
   context: Context,
   options: {
@@ -160,21 +160,58 @@ export function openCredentialClientRegistration(
     autocomplete: "new-password",
   });
   const secretField = field({ label: "Client secret", control: secret });
+  const redirectUri = element("input", {
+    readOnly: true,
+    value: options.redirectUri ?? "",
+    placeholder: "Public origin not configured",
+  });
+  const copyFeedback = element("p", { className: "hint", role: "status", hidden: true });
+  const copyRedirect = button(
+    "Copy",
+    async () => {
+      let copied = false;
+      try {
+        if (typeof navigator.clipboard?.writeText === "function") {
+          await navigator.clipboard.writeText(redirectUri.value);
+          copied = true;
+        }
+      } catch {
+        // Browsers can refuse clipboard access; leave the value selected for manual copying.
+      }
+      if (!dialog.open) {
+        return;
+      }
+      if (!copied) {
+        redirectUri.focus();
+        redirectUri.select();
+      }
+      copyFeedback.textContent = copied
+        ? "Redirect URI copied."
+        : "Redirect URI selected. Use your copy shortcut to copy it.";
+      copyFeedback.hidden = false;
+    },
+    {
+      tone: "secondary",
+      size: "sm",
+      disabled: !options.redirectUri,
+      "aria-label": "Copy redirect URI",
+    },
+  );
+  const redirectField = field({
+    label: "Redirect URI",
+    control: redirectUri,
+    className: "credential-client-redirect",
+    help: options.redirectUri
+      ? "Register this URI with the provider before using its client."
+      : "Configure the Installation's public origin to obtain the callback URI.",
+  });
+  redirectUri.after(copyRedirect);
+  redirectField.append(copyFeedback);
   const oauthFields = element(
     "fieldset",
     { className: "connection-template-fields" },
     field({ label: "Issuer URL", control: issuer }),
-    field({
-      label: "Redirect URI",
-      control: element("input", {
-        readOnly: true,
-        value: options.redirectUri ?? "",
-        placeholder: "Public origin not configured",
-      }),
-      help: options.redirectUri
-        ? "Register this URI with the provider before using its client."
-        : "Configure the Installation's public origin to obtain the callback URI.",
-    }),
+    redirectField,
     field({ label: "Client ID", control: clientId }),
     field({ label: "Token endpoint authentication method", control: method }),
     secretField,
