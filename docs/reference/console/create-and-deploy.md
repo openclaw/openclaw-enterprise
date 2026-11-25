@@ -167,7 +167,7 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-If Source creation has an unknown outcome, check Credential Sources before starting again.
+If Source creation is uncertain, open **Credentials** and refresh Credential Sources. If absent, ask the owner to inspect custody before retrying.
 The Console clears the entered key and does not repeat the write automatically. If a later
 Agent save fails after Source creation succeeds, retry in the same form to reuse that Source.
 See the [provisioning flow](../../flows/agent-provisioning.md) for Secret-backed provisioning.

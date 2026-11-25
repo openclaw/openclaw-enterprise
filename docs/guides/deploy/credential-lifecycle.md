@@ -146,9 +146,10 @@ Select the model and enable browser chat if needed, then create the Agent. Sourc
 authentication saves a draft; it does not deploy it. Follow steps 3–5 of the
 [Console deployment procedure](deploy-first-agent.md#use-a-personally-owned-codex-login):
 run `deployment_preflight`, deploy the draft, and use `wait_deployment` to apply
-Kubernetes peer policies and check the result. Verify a model response. If Source creation has an unknown outcome, check **Credential Sources**
-before trying again; the Console clears the entered credential and does not
-repeat the write automatically.
+Kubernetes peer policies and check the result. Verify a model response. If Source creation has an unknown outcome, open **Credentials** and refresh the
+Credential Sources inventory. If the Source is absent, ask the owner to inspect
+custody before retrying. The Console clears the credential and never repeats
+the write automatically.
 
 ## Enroll a Codex PAT Source
 

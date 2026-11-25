@@ -61,7 +61,7 @@ saved Source does not change its owner.
    choose dedicated Codex and **ChatGPT OAuth (Experimental)**, and select
    **Enable browser chat**. The checkbox is initially unchecked and requires
    [native browser setup](native-admin.md). Under **Model credential**, select a
-   compatible saved Codex OAuth Source or choose **Sign in with OAuth** and
+   compatible saved Codex OAuth Source you own or choose **Sign in with OAuth** and
    complete sign-in. Choose a [Codex model available to the account](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
 2. Select **Create Agent**. The saved draft opens. The deployer needs exact
    Source `operate` access. Native IAM grants missing Agent access at
