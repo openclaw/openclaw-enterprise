@@ -1,57 +1,71 @@
 ---
 created: 2026-09-27
-updated: 2026-11-20
-last_updated_session: authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac
+updated: 2026-11-22
+last_updated_session: authoring-run/b0acf937-8ae2-40fe-91c3-ec5df79f6a79
 ---
 
 # Agent deployment diagnostics flow
 
 ## Overview
 
-An admin requests fresh runtime checks for one saved version through a
-bodyless API call. OpenClaw Control Plane (OCC) authorizes the exact target,
-asks the selected Compute Driver for runtime checks with time and size limits, and returns that
-observation. The call ends at the API response; it does not change deployment
-work or select a live version.
+A bodyless POST asks OpenClaw Control Plane (OCC) for fresh checks on one saved
+Agent revision. OCC returns validated Compute checks and an optional Sandbox
+check without changing the deployment or selecting a live version.
 
 ## Entry Points
 
-- Trigger: `POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`.
-- Source: `apps/controller/src/index.ts:createFastifyApp`,
-  `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`, and
-  `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`.
-- Assumptions: `deploymentId` is the Agent revision ID of a saved version. The caller needs
-  exact Agent `read` and `operate` and Agent revision `read` permissions.
+- Send `POST /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics` without a body.
+- `deploymentId` identifies a saved Agent revision. The caller needs Agent `read`
+  and `operate` permissions and Agent revision `read` permission.
+- The entry points are `apps/controller/src/index.ts:createFastifyApp`,
+  `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`,
+  and `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.diagnoseAgentDeployment`.
 
 ## Flow
 
+Kubernetes Compute supplies Pod checks. Unsupported diagnostics return `503` before either read.
+
 ```mermaid
 graph TD
-  A["POST diagnostics for this version"] --> B["OCC resolves and authorizes version and Agent"]
-  B -->|denied or missing| C["Return 403 or 404"]
-  B -->|authorized| D["Select matching Compute Driver"]
-  D -->|unsupported| E["Return 503"]
-  D -->|supported| F["Kubernetes resolves owned Namespace and version Pods"]
-  F -->|Pod absent| G["Return unknown check for that container"]
-  F -->|one Pod| H["Read private runtime diagnostics and status through Pod proxy"]
-  H --> I["Recheck Pod UID and container identity"]
-  I -->|changed| G
-  I -->|same| J["Validate checks for the requested version"]
-  J -->|invalid| E
-  J -->|valid| K["Return current observation"]
-  G --> K
+  %%{init: {"theme":"base","htmlLabels":true,"themeVariables":{"fontSize":"14px","primaryTextColor":"#344054","lineColor":"#8B949E","edgeLabelBackground":"#FFFFFF","clusterBkg":"#FAFBFC","clusterBorder":"#D8DEE6"},"flowchart":{"curve":"linear","nodeSpacing":28,"rankSpacing":32,"padding":14,"diagramPadding":12,"subGraphTitleMargin":{"top":10,"bottom":14}}}}%%
+  A["<b>POST diagnostics</b><br/>Authorize Agent<br/>and revision"] -->|denied or missing| C["<b>Return 403 or 404</b>"]
+  A -->|authorized| D["<b>Match Compute Driver</b><br/>Check support"]
+  D -->|unavailable| U["<b>Return 503</b>"]
+  D -->|supported| B["<b>Start parallel reads</b>"]
+  B --> F
+  B -->|Compute collection failure| X["<b>Return 503</b>"]
+  B -->|dedicated and supported| S["<b>Sandbox Driver</b><br/>Observe Harness"]
+  subgraph Pods["Kubernetes Compute"]
+    F["<b>Verify Namespace</b><br/>Check each role"] -->|proxyable Pod| H["<b>Pod proxy</b><br/>Diagnostics and status<br/>Recheck identity"]
+    F -->|no Pod or Sandbox Harness| G["<b>Unknown checks</b>"]
+    H -->|endpoint 404/503<br/>or identity changed| G
+  end
+  H -->|checks| J["<b>OCC validation</b><br/>Compute report"]
+  G --> J
+  J -->|invalid| E["<b>Return 503</b>"]
+  J -->|valid| K["<b>Return checks</b><br/>Await Sandbox result<br/>Prepend it if available"]
+  S ----->|after validation| K
+  classDef draft fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  class A,K draft
+  class B,D,F,H,J,S operation
+  class C,U,E,G,X blocked
+  style Pods fill:#FAFBFC,stroke:#D8DEE6,stroke-width:1px
+  linkStyle default stroke:#8B949E,stroke-width:1px
 ```
 
 ## Execution Trace
 
 ### 1. Authorize the exact deployment
 
-`packages/contracts/src/api/routes.ts:occApiRoutes` declares a bodyless POST.
-`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` documents exact Agent
-`operate` and `read` plus Agent revision `read`.
+See `packages/contracts/src/api/routes.ts:occApiRoutes` for the route and
+`apps/controller/src/http/permission-metadata.ts:routePermissionMetadata` for its permissions.
 `packages/occ/src/agent-runtime-observations.ts:AgentRuntimeObservations.diagnoseAgentDeployment`
-resolves the version under the supplied Namespace and Agent, authorizes the
-same resources, and selects the Compute Driver recorded in that version.
+resolves and authorizes the revision under the supplied Namespace and Agent,
+then authorizes the Agent. The configured Compute Driver must support diagnostics
+and match the revision's Driver ID and implementation. Otherwise OCC returns
+`503 DEPENDENCY_UNAVAILABLE`.
 
 ### 2. Read the current runtime
 
@@ -63,13 +77,12 @@ two-cluster installation, dedicated Gateways use their managed Gateway namespace
 and dedicated Harnesses use the tenant namespace.
 
 `apps/controller/src/drivers/compute/kubernetes/private-status-proxy.ts:readPrivateStatusProxy`
-reads and decodes the private endpoint with a 64 KiB limit. A 404 or 503 means the
-endpoint is unavailable for this observation. A redirect fails the read and the
-Driver requests body cancellation without retrying. The Driver checks the Pod
-name, UID, and container ID again before using the decoded evidence. Missing or
-replaced Pods produce `unknown` checks. Invalid diagnostics data fails the
-request. When concurrent reads reach the shared deadline, the Driver can still
-classify a rejected Gateway diagnostics request before reporting a generic timeout.
+decodes up to 64 KiB from the private endpoint. On 404 or 503, the endpoint is
+unavailable. On redirect, the Driver requests body cancellation without retrying.
+It rechecks the Pod name, UID, and container ID before using the evidence. Missing
+or replaced Pods produce `unknown` checks. Invalid diagnostics fail the request.
+At the shared deadline, a rejected Gateway diagnostics read can still report
+its transport error before the Driver reports a generic timeout.
 
 Before it generates the runtime programs, the Kubernetes renderer loads the
 shared failure vocabulary. `runtime-entrypoints.ts:isStringArray` requires a
@@ -92,44 +105,47 @@ redeployed. Transport failures return `UNAVAILABLE`; other RPC failures return
 substituted for the live response. The Agent container
 currently returns no channel checks.
 
-`KubernetesComputeDriver.heldRuntimeFailureCheck` also reads each Pod's private
-runtime status. A runtime that held startup, such as a Gateway with an unusable
-peer configuration record or an Agent whose model check failed, reports its
-failure there. The Driver lists it first as a `failed` check named after the
-startup step, with the failure code; diagnostics do not rerun that step. The
-private boundary accepts only real UTC timestamps, normalizing a valid whole-second
-value to the public millisecond form. A failed, impossible-date, or otherwise
-invalid status read adds nothing.
+`KubernetesComputeDriver.heldRuntimeFailureCheck` reads each Pod's startup status.
+For a held failure, such as an unusable Gateway peer record or an Agent model
+check failure, Compute leads with a `failed` check for that step and its code.
+Diagnostics does not rerun the step. The private endpoint reader accepts real
+UTC timestamps and normalizes whole seconds to milliseconds. A failed read
+or invalid status contributes no startup check.
 
-The Driver skips Harness Pod proxy reads when the revision's selected Sandbox
-Driver provisions the Harness. An [OpenShell](../reference/drivers/openshell-sandbox.md)
-Harness listens inside its own Sandbox network namespace. Its `agent` `runtime-status` check is `unknown` with code
-`UNAVAILABLE`. The Gateway can still report a held failure.
+For an embedded Harness, Compute checks only the Gateway. When the selected
+Sandbox Driver provisions a dedicated Harness, Compute skips its Pod proxy.
+Its `agent` `runtime-status` is `unknown` (`UNAVAILABLE`). Gateway checks still run.
 
-Alongside Compute's checks, `AgentRuntimeObservations.diagnoseAgentDeployment`
-asks the selected Sandbox Driver about a dedicated Harness using a ten-second
-timeout signal. When supported, this observation adds the first `agent`
-`sandbox` check. A running Sandbox reports `succeeded`. A terminal Sandbox
-or a Harness restart reports `failed` with its code, such as `SANDBOX_FAILED`
-or `HARNESS_RESTARTING`. A first start (`STARTING`) or unreadable record
-(`UNAVAILABLE`) reports `unknown`. A missing or deleting Sandbox reports
-failure only for the running Agent's active revision.
+Alongside Compute, `AgentRuntimeObservations.observedHarness` asks the matching
+Sandbox Driver about a dedicated Harness when supported. It passes a ten-second
+timeout signal. Running maps to `succeeded`, loss or restart to `failed`, and first
+start (`STARTING`) or an unreadable record (`UNAVAILABLE`) to `unknown`. A missing
+or deleting Sandbox counts as lost only for the active version when the Agent's
+desired runtime state is `running`.
 
 ### 3. Return validated evidence
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
 the requested Agent revision ID, valid timestamps, and at most 32 checks with component, check, and code values of 1 to 64 allowed characters. A
 component, check or code outside `packages/contracts/src/runtime-failure.ts`
-reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
-without messages. A rejected private Gateway diagnostics Pod-proxy request instead
-retains the fixed `RuntimeDiagnosticsTransportError` class and message in the
-request-ID-correlated `http.dependency_unavailable` operator log. OCC reconstructs
-this error without supplier text or causes. The public response remains generic
-`503 DEPENDENCY_UNAVAILABLE`. This category identifies collection transport; it
-does not establish a channel failure or its network cause. Pod discovery, invalid
-endpoint data, redirects, and normal not-serving responses keep their existing
-handling. Stored deployment status, startup evidence, plugin warnings
-and Agent state stay unchanged.
+reads `UNRECOGNIZED`.
+
+If Compute collection or validation fails, OCC signals cancellation of the
+Sandbox observation. Otherwise, OCC awaits it.
+`packages/occ/src/deployment-diagnostics.ts:withHarnessDiagnostic` prepends any
+`agent` `sandbox` check and keeps at most 32 checks.
+
+Compute diagnostics failures return a generic `503 DEPENDENCY_UNAVAILABLE`.
+Rejected Sandbox observations return an `unknown` check with code `UNAVAILABLE`.
+For a rejected
+Gateway diagnostics Pod-proxy request, OCC reconstructs the fixed
+`RuntimeDiagnosticsTransportError` without supplier text or causes. The
+`http.dependency_unavailable` operator log records its class and message with
+the request ID. This identifies a failure to collect diagnostics. Channel
+checks supply separate evidence about channel health. The category applies to
+the proxy transport, excluding Pod discovery, invalid endpoint data, redirects,
+and normal not-serving responses. Diagnostics leaves stored deployment status,
+startup evidence, plugin warnings, and Agent state unchanged.
 
 ## Guarded first admission
 
@@ -222,19 +238,18 @@ state after admission.
   the same way, so a permanent mistake such as a wrong endpoint host or port
   or a blocked egress route is also retried once before it is held. If Codex
   reconnects and the model answers in the same attempt, the check passes.
-- On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
-  its health; the `agent` `sandbox` check does. A failed one means the Sandbox
-  is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
-  A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
-  exiting while OpenShell restarts it; its Sandbox logs show why.
-  A failed deployment's status names the held failure's code and cause, such as
-  `RUNTIME_MODEL_PROBE_FAILED`. While it holds a failure, the Harness answers
-  the Agent Gateway's connection with `503` naming the held code, but the
-  Gateway logs only `Unexpected server response: 503`; Compute's authenticated
-  status read carries the code. The
-  [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
-  decisions; an operator can read the
-  [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
+- For an [OpenShell](../reference/drivers/openshell-sandbox.md) Harness, the
+  `agent` `runtime-status` is `unknown`. If the `agent` `sandbox` check fails, read
+  its code. `HARNESS_RESTARTING` means OpenShell is restarting the Harness.
+  If exits continue, ask an operator to read the
+  [Harness and supervisor logs](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
+  The [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
+  decisions and excludes Harness output. If `occ agent runtime AGENT_ID` reports
+  `lost`, [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
+  While startup holds, the Harness answers the Gateway with `503` and the
+  held code. The Gateway logs only `Unexpected server response: 503`.
+  Compute reads the code during deployment. OCC reports the error code. For
+  `RUNTIME_MODEL_PROBE_FAILED`, it includes a cause when classified.
 - The focused API test covers exact permissions and sanitized Driver failures.
   The Kubernetes conformance test covers Pod proxy placement, version and Pod
   identity, and missing-Pod behavior. These tests do not prove a live Slack
@@ -251,6 +266,8 @@ state after admission.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 13:43: Trace parallel Harness observation and distinguish OpenShell restarts from Sandbox loss. (authoring-run/b0acf937-8ae2-40fe-91c3-ec5df79f6a79 - 8ffd1d56a4bbf10c3e2ff8f2e3637d31237ae585)
 
 - 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
 
