@@ -37,8 +37,9 @@ for the supported model, Git, and Plugin paths.
 For the selected-repository profile (`github-repository`), the operator chooses
 repositories and read or write access. OCC saves those grants with the Agent
 revision. Agents in the Namespace can share a GitHub installation token while
-keeping their own grants. Credential Proxy turns the saved grants into OpenShell
-Git rules and configures the token binding.
+keeping their own grants. Sandbox compiles the saved grants into OpenShell Git
+network rules. Credential Proxy prepares the token's delivery Provider, which
+Sandbox binds to the matching rules.
 
 ```mermaid
 ---
@@ -53,22 +54,23 @@ config:
 ---
 flowchart TB
   subgraph Deployment["At deployment"]
-    OCC["<b>OCC</b><br/>Saves repository grants"] --> Proxy["<b>Credential Proxy</b><br/>Installs rules and binding"]
+    OCC["<b>OCC</b><br/>Saves repository grants"] --> Sandbox["<b>Sandbox</b><br/>Installs Git network rules"]
     TS["<b>TokenService</b><br/>Supplies installation token"] --> Proxy
+    Proxy["<b>Credential Proxy</b><br/>Prepares token Provider"] -->|Provider| Sandbox
   end
   subgraph Request["On each Git request"]
     Agent["<b>Agent</b><br/>Sends a Git request"] --> Match{"<b>OpenShell</b><br/>Git rule matches?"}
     Match -->|Yes| Inject["<b>Inject token</b>"] --> GitHub["<b>GitHub</b><br/>Applies repository rules"]
     Match -->|No| Deny["<b>Deny request</b>"]
   end
-  Proxy -->|Installed policy| Match
+  Sandbox -->|Installed policy| Match
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef external fill:#F1EDF5,stroke:#A392B1,color:#352847,stroke-width:1px
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class OCC state
-  class TS,Proxy,Agent,Inject operation
+  class TS,Proxy,Sandbox,Agent,Inject operation
   class GitHub external
   class Match,Deny condition
 ```

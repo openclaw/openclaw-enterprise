@@ -134,16 +134,24 @@ can skip revocation. Retire the old Source after removing its Agent references.
 
 ## Enroll a Codex PAT Source
 
-With OCC TokenService selected, choose dedicated Codex, **Service Accounts**,
-then **Credential Source** in **Create Agent**. Choose **Save service account
-token** to enroll the PAT. Use the resulting Source for
-[Agent API deployment](deploy-first-agent.md#2-create-the-configuration-and-agent).
+Complete [Installation setup](deploy-first-agent.md#prepare-the-installation)
+and [prepare the Agent name](deploy-first-agent.md#1-select-or-register-the-model-credential)
+in the operator shell. In the Console, select that shell's Namespace and open
+**Create Agent**. Enter the Agent name, choose dedicated Codex, **Service Accounts**,
+then **Credential Source**. Enter the PAT and choose
+**Save service account token**. Copy the saved Source ID into the operator shell:
+
+```bash
+modelSource='<saved Source ID>'
+```
+
+Continue with [Agent API creation and deployment](deploy-first-agent.md#2-create-the-configuration-and-agent).
 
 For an existing Agent with a PAT Secret, [register a new static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 Set `config.provider_preset` to `codex-pat` and pass the PAT as a write-only
 `secret` string. Select the new Source in the draft and grant Agent access.
-Stop a running Agent before deploying the managed Source. The original Secret
-remains available to its other bindings.
+Stop a running Agent and wait until it has no active revision before deploying
+the managed Source. The original Secret remains available to its other bindings.
 
 ## Use a personal Codex login
 

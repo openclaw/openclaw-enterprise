@@ -194,9 +194,10 @@ Compute releases the corresponding infrastructure.
 TokenService owns custody for managed Credential Sources. On the managed
 delivery path, OCC admits Source access and separate network and credential
 injection policies. Credential Proxy and Sandbox prepare and enforce delivery
-before activation. See [credential design status](reference/credential-sources.md#implementation-status)
-for the available paths and [Credential Design 1.0](../specs/rfcs/20261124-credential-design-1-0/index.md)
-for the design.
+before activation. Start with [how Agent credentials work](design/credential-proxy.md)
+and check [current support](reference/credential-sources.md#implementation-status).
+The [Credential Design 1.0 RFC](../specs/rfcs/20261124-credential-design-1-0/index.md)
+records the detailed decisions.
 
 The OpenShell integration supports dedicated Harness delivery within the documented
 identity, storage, admission, and gateway-authentication limits. See
@@ -282,7 +283,7 @@ supported capabilities:
 - [Agent gateways and deployment](design/workloads.md)
 - [Drivers and Backends](design/drivers.md)
 - [Platform safeguards](design/safeguards.md)
-- [Credential Proxy](design/credential-proxy.md)
+- [Credential design](design/credential-proxy.md)
 
 ## Related Documentation
 

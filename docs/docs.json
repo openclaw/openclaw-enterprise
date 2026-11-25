@@ -292,7 +292,15 @@
                   },
                   {
                     "page": "design/credential-proxy",
-                    "label": "Credential Proxy"
+                    "label": "Credential Design"
+                  },
+                  {
+                    "page": "reference/credential-sources",
+                    "label": "Credential Sources"
+                  },
+                  {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
                   },
                   {
                     "page": "design/credential-proxy-architecture",
@@ -301,14 +309,6 @@
                   {
                     "page": "reference/security/credential-proxy",
                     "label": "Credential Proxy Threat Model"
-                  },
-                  {
-                    "page": "reference/connection-templates",
-                    "label": "Connection Templates"
-                  },
-                  {
-                    "page": "reference/credential-sources",
-                    "label": "Credential Sources"
                   },
                   {
                     "page": "reference/credential-sources/managed-static",

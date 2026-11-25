@@ -35,7 +35,9 @@ The operator selects Sources for the model or named Plugin connections. PluginDr
 
 Each new Agent revision freezes the current compatible Template version for a Template-backed Plugin Source. A running Agent keeps its saved policy until redeployment. To end access sooner, withdraw the binding or stop the Agent. This supersedes [RFC-0027’s live Template reconciliation](../0027-agent-oauth-connections/index.md#versions-and-consent). The Source retains the Template ID and, for OAuth, its consent version, client, and granted scopes.
 
-Dashed arrows show proposed handoffs.
+The diagram shows the 1.0 ownership and deployment model. Check the
+[implementation status](../../../docs/reference/credential-sources.md#implementation-status)
+for the available consumer paths.
 
 ```mermaid
 ---
@@ -52,16 +54,16 @@ config:
       bottom: 12
 ---
 flowchart TB
-  T["<b>Template and client</b><br/>Connection settings<br/>and registration"] -.->|apply when required| S["<b>CredentialSource</b><br/>Namespace resource"]
-  A["<b>Agent and Plugin</b><br/>Credential selections"] -.->|OCC admits| B["<b>Agent revision</b><br/>One binding list"]
-  S -.->|registered with| TS["<b>TokenService</b><br/>Custody and issuance"]
-  S -.->|Source reference| B
-  B -.->|injection policy| CP["<b>Credential Proxy</b><br/>Delivery and injection"]
-  B -.->|network policy| SB["<b>Sandbox</b><br/>Network and containment"]
-  CP -.->|resolve for delivery| TS
-  B -.->|prepare revision| W["<b>Worker and Compute</b><br/>Check readiness<br/>and authorize startup"]
-  SB -.->|start with placeholder| H["<b>Harness</b><br/>Credentialed requests"]
-  W -.->|activate| H
+  T["<b>Template and client</b><br/>Connection settings<br/>and registration"] -->|apply when required| S["<b>CredentialSource</b><br/>Namespace resource"]
+  A["<b>Agent and Plugin</b><br/>Credential selections"] -->|OCC admits| B["<b>Agent revision</b><br/>One binding list"]
+  S -->|registered with| TS["<b>TokenService</b><br/>Custody and issuance"]
+  S -->|Source reference| B
+  B -->|injection policy| CP["<b>Credential Proxy</b><br/>Delivery and injection"]
+  B -->|network policy| SB["<b>Sandbox</b><br/>Network and containment"]
+  CP -->|resolve for delivery| TS
+  B -->|prepare revision| W["<b>Worker and Compute</b><br/>Check readiness<br/>and authorize startup"]
+  SB -->|start with placeholder| H["<b>Harness</b><br/>Credentialed requests"]
+  W -->|activate| H
   classDef record fill:#EDF3F8,stroke:#8EA5BA,color:#23394D,stroke-width:1px
   classDef capability fill:#EAF4F1,stroke:#83A8A0,color:#21413B,stroke-width:1px
   class T,S,A,B record
@@ -85,11 +87,11 @@ sequenceDiagram
     participant S as Sandbox
     participant P as Credential Proxy
     participant U as Upstream service
-    H-->>S: Request with binding placeholder
+    H->>S: Request with binding placeholder
     alt Network policy permits the request
-        S-->>P: Send through required route
+        S->>P: Send through required route
         alt Injection policy matches the binding and operation
-            P-->>U: Send with usable credential
+            P->>U: Send with usable credential
             U-->>H: Return result through the protected route
         else No matching injection rule
             Note over S,P: No credential is injected

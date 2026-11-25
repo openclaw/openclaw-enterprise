@@ -20,7 +20,7 @@ OpenShell is a development integration. See the
 
 The selected Proxy must list the type in its catalog. The example requires a
 qualified sender and Sandbox that enforce the protected exchange. See
-[protected-exchange requirements](../../design/credential-proxy.md#which-checks-does-openshell-provide).
+[protected-exchange requirements](../../design/credential-proxy.md#read-one-repositorys-identity).
 
 Replace the sample IDs. Execution authority admits every process in that execution.
 

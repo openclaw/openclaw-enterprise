@@ -4,7 +4,7 @@ Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,
 the grant covers the whole Agent execution. The trusted sender controls which
 requests reach GitHub and which responses return to that execution. See the
-[worked repository read](../../design/credential-proxy.md#read-one-repositorys-identity).
+[protected metadata read](../../design/credential-proxy.md#read-one-repositorys-identity).
 
 ## What can a process inside the execution do?
 

@@ -72,7 +72,7 @@ Live Agent rotation and withdrawal with OpenShell custody remain unverified.
 
 ## Deploy an Agent with the source
 
-Use a development Installation with the same TokenService that enrolled the Source. For OpenShell custody, keep the [preview selections](#preview-openshell-custody) above. For OCC custody, use OCC TokenService and an OpenShell Sandbox registration that exposes `credential_proxy_delivery`. Omit the legacy `drivers.credential_proxy` selection, which causes the policy PUT below to return `409`. This path admits exactly one Source and no repository credentials. See [supported Driver selections](../drivers/selection.md#supported-selections).
+Use a development Installation with the same TokenService that enrolled the Source. For OpenShell custody, keep the [preview selections](#preview-openshell-custody) above. For OCC custody, use OCC TokenService and an OpenShell Sandbox registration that exposes `credential_proxy_delivery`. Omit the legacy `drivers.credential_proxy` selection, which causes the policy PUT below to return `409`. This example uses one model Source and no Repository credentials. That is a restriction of the OpenShell custody preview; OCC custody also supports eligible Git and Plugin bindings. See [current support](../credential-sources.md#implementation-status) and [supported Driver selections](../drivers/selection.md#supported-selections).
 
 This example covers dedicated OpenClaw. Codex requires a separate Configuration; see [implementation status](../credential-sources.md#implementation-status) for coverage.
 
