@@ -1,7 +1,4 @@
-import type { createCredentialSourceDrivers } from "./credential-source-drivers.ts";
 import {
-  type ConfigurationDriver,
-  type ResourceRef,
   type RepositoryNetworkPolicyCeiling,
   isInstallationRepositoryProfile,
   repositoryAccessSelections,
@@ -24,19 +21,13 @@ import {
   type SourceBackedRepositoryRevisionState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
-  type SandboxNetworkGrant,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import { type HarnessResolver, validateRepositoryTopology } from "./agent-harness-topology.ts";
-import type { PlatformReadView } from "./ports/platform-read-view.ts";
-import { exactConfiguration } from "./configuration-operations.ts";
-import { driverOperation } from "./driver-operation.ts";
+import { validateRepositoryTopology } from "./agent-harness-topology.ts";
 import {
-  readRepositoryEditTopology,
-  repositoryPolicySaveValidator,
   type RepositoryPolicyResolution,
   delegatedRepositoryCeiling,
   repositoryGrantAuthority,
@@ -117,11 +108,6 @@ export type PrepareStagedRepositorySource = (input: {
 
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
-  readonly configurationDriver: () => ConfigurationDriver;
-  readonly credentialSourceOwner: ReturnType<
-    typeof createCredentialSourceDrivers
-  >["credentialSourceOwner"];
-  readonly selectedProxyOwner: () => InstalledDriver;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
   readonly supportsStagedRepositoryRecipient: SupportsStagedRepositoryRecipient | undefined;
   readonly repositoryCredentialAdmission:
@@ -739,7 +725,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     try {
       const sandbox = dependencies.sandboxDriver();
       const owner = dependencies.selectedCredentialDeliveryOwner();
-      const proxy = owner.require("credential_proxy_delivery");
+      const proxy = owner.require("credential_proxy");
       return (
         sandbox !== undefined &&
         owner.require("sandbox") === sandbox &&
@@ -854,6 +840,13 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     if (resolved === undefined) {
       return undefined;
     }
+    if (
+      resolved.resolution.bindings.some(({ profile }) => isInstallationRepositoryProfile(profile))
+    ) {
+      throw new ResourceStateConflictError(
+        "Installation-wide repository access (profile github-installation) is unavailable. Select the approved repositories individually.",
+      );
+    }
     let requests: readonly DeploymentRequestMatch[] | undefined;
     const stagedPolicy =
       staged && stagedRepositoryAuthority(agent.namespaceId, staged.source, resolved);
@@ -897,8 +890,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
     return {
       credentials: immutableCopy(snapshot),
-      resolution: resolved.resolution,
-      nativeGit: resolved.resolution.nativeGit,
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
       requests,
       stagedPolicy,
@@ -1138,97 +1129,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     }
   }
 
-  async function qualifyRepositoryEdit(
-    state: PlatformReadView | PlatformUnitOfWork,
-    agent: Readonly<Agent>,
-    version: number,
-    canRead: (target: ResourceRef) => Promise<boolean>,
-    resolveHarness: HarnessResolver | undefined,
-    additions: readonly SandboxNetworkGrant[] = [],
-  ) {
-    const { namespaceId } = agent;
-    const bindings = repositoryAccessSelections(agent.repositoryAccess);
-    const admission = installationRepositoryAdmission;
-    if (
-      !admission ||
-      !resolveHarness ||
-      !bindings?.length ||
-      agent.repositoryAccess?.githubAppClientId ||
-      additions.length > 0
-    ) {
-      return undefined;
-    }
-    try {
-      const compute = dependencies.selectedCompute();
-      const owner = dependencies.selectedProxyOwner();
-      const validate = repositoryPolicySaveValidator(compute, owner);
-      if (!validate) {
-        return undefined;
-      }
-      const authority = readGrantAuthority(namespaceId, admission);
-      if (authority === undefined) {
-        return undefined;
-      }
-      const configuration = dependencies.configurationDriver();
-      const { resolveBindings } = admission.policy;
-      const topology = await readRepositoryEditTopology(agent, resolveHarness, canRead, {
-        configurationOwnership: (id) =>
-          "audit" in state
-            ? state.configurations.lockConfiguration(namespaceId, id)
-            : state.configurations.findConfiguration(namespaceId, id),
-        configuration: async (metadata) =>
-          exactConfiguration(
-            await driverOperation(() =>
-              configuration.read({ id: metadata.id, namespaceId: metadata.namespaceId }),
-            ),
-            metadata,
-          ),
-        credentialSource: (id) =>
-          "audit" in state
-            ? state.credentialSources.lockCredentialSource(namespaceId, id)
-            : state.credentialSources.findCredentialSource(namespaceId, id),
-      });
-      if (!topology) {
-        return undefined;
-      }
-      const { harness, source } = topology;
-      const sourceDriver = dependencies.credentialSourceOwner(source);
-      const resolve = () => resolveRepositoryBindings(namespaceId, bindings, "saved", admission);
-      const repository = resolve();
-      if (!repository) {
-        return undefined;
-      }
-      const ownerSelected = () =>
-        repository.unchanged() && admission.policy.resolveBindings === resolveBindings;
-      const ownersCurrent = () =>
-        ownerSelected() &&
-        isDeepStrictEqual(resolve()?.resolution, repository.resolution) &&
-        ownerSelected() &&
-        dependencies.selectedCompute() === compute &&
-        dependencies.selectedProxyOwner() === owner &&
-        dependencies.configurationDriver() === configuration &&
-        dependencies.credentialSourceOwner(source) === sourceDriver;
-      return validate(
-        topology.placement,
-        harness,
-        source,
-        repository.resolution,
-        dependencies.repositoryNetworkPolicyCeiling,
-        authority,
-        version,
-        ownersCurrent,
-      );
-    } catch {
-      // Driver refusals can contain protected configuration and binding details.
-      return undefined;
-    }
-  }
-
   return {
     prepareRepositorySource,
     validateRepositoryClientSelection,
     namespaceRepositoryNetworkPolicyCeiling,
-    qualifyRepositoryEdit,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
     repositoryGrantAuthority: readGrantAuthority,
     bindInstallation,

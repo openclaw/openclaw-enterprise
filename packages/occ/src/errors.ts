@@ -810,34 +810,6 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/** The configured Git transport does not support protected credential-source admission. */
-export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
-  static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
-
-  constructor() {
-    super(CredentialProxyRepositoryOnlyError.description);
-    this.name = "CredentialProxyRepositoryOnlyError";
-  }
-}
-
-/**
- * Finding 2360: a protected revision admits only credential sources the Proxy admitted
- * (created or adopted while it is selected), and beside repository Git only the Agent's ready
- * Gateway Harness source. Deploy refused any other
- * binding, such as a Gateway source registered before the Proxy was selected, as a bare 404;
- * the caller already holds deploy on the Agent, whose bindings it can read.
- */
-export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
-  static readonly description =
-    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
-
-  constructor() {
-    super(CredentialSourceUnprotectedError.description);
-    this.name = "CredentialSourceUnprotectedError";
-  }
-}
-
 const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
   several:
     "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryAccess.repositories`.",
@@ -1556,16 +1528,6 @@ export class IAMRoleInUseError extends ResourceConflictError {
   }
 }
 
-/** The Installation selects no Credential Gateway, so credential sources are unavailable. */
-export class CredentialGatewayNotConfiguredError extends Error {
-  constructor() {
-    super(
-      "This Installation has no Credential Gateway, so credential sources are unavailable. An Installation administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
-    );
-    this.name = "CredentialGatewayNotConfiguredError";
-  }
-}
-
 /**
  * A Driver rejected nonsecret source configuration before registration, or OCC rejected a
  * `config` or `secrets` field the type's catalog does not list or a required one that is
@@ -1628,27 +1590,9 @@ export class StoredCredentialSourceConfigError extends ResourceStateConflictErro
 }
 
 /**
- * The selected credential owner does not offer the source type. This Installation property
- * is reported only after the caller's grant and source lookup, so it reveals nothing a 403
- * or 404 hides. The message identifies the configuration to check.
- */
-export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
-  constructor(owner: "gateway" | "proxy" = "gateway") {
-    super(
-      owner === "proxy"
-        ? "The Credential Proxy does not offer this credential source type. An Installation administrator must check the selected Credential Proxy's provider configuration and any required token issuer."
-        : "The Credential Gateway does not offer this credential source type. An Installation administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
-    );
-    this.name = "CredentialSourceTypeNotOfferedError";
-  }
-}
-
-/**
  * Finding 2362: the Installation selects no repository credential Driver (it has no
  * `repository` settings), so an Agent cannot bind repositories. Save answered a generic 503
- * for this permanent configuration state; it now names the setting, as
- * CredentialSourceTypeNotOfferedError does for sources. An Installation property, raised only
- * after the caller's Agent grant.
+ * for this permanent configuration state. This names the setting after the caller's Agent grant.
  */
 export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
   static readonly description =
@@ -1691,77 +1635,25 @@ export class SavedRepositorySelectionError extends ResourceStateConflictError {
   }
 }
 
-const CREDENTIAL_PROXY_ADMISSION_MESSAGES = Object.freeze({
-  installationAccess:
-    "Installation-wide repository access (profile github-installation) needs a Credential Proxy, and this Installation selects none. Choose another repository profile, or ask an Installation administrator to select drivers.credential_proxy.",
-  sourcesWithoutProxy:
-    "This Agent binds credential sources admitted under a Credential Proxy, and this Installation no longer selects one. Bind Credential Gateway sources instead, or ask an Installation administrator to select drivers.credential_proxy again.",
-  oneSource:
-    "The selected Credential Proxy cannot verify a reduced policy, so a protected revision can use only one credential source. Remove the others, or ask an Installation administrator to select a Proxy release with policy reduction.",
-  dedicatedSandbox:
-    "With a Credential Proxy, an Agent deploys only as a dedicated Agent under a Sandbox, and this Installation selects no Sandbox Driver. Ask an Installation administrator to select one, or to drop drivers.credential_proxy.",
-  gitAlone:
-    "The selected Credential Proxy cannot add other credential sources beside this Agent's repository Git. Remove those sources or the repository binding, or ask an Installation administrator to select a Proxy with policy reduction.",
-  installationPreview:
-    "Installation-wide repository access (profile github-installation) needs the OpenShell Credential Proxy's observed-hook preview, which this Installation does not enable. Choose another profile, or ask an Installation administrator to enable the preview.",
-});
-
-/**
- * Protected deploy admission (OCC `admitProxyPlan`) refuses an Agent the selected, or missing,
- * Credential Proxy can never start (finding 2536). Each is an Installation property or the
- * Agent's own saved bindings, raised after the caller's deploy grant and the authorization of
- * every bound credential source; the fixed texts name no source, repository or ID. A retry
- * never helps, so HTTP answers 409 and provisioning fails the job at once. The bundled OpenShell
- * Proxy raises `installationPreview` from its availability check, which admission calls last.
- */
-export class CredentialProxyAdmissionError extends ResourceStateConflictError {
-  static readonly messages = CREDENTIAL_PROXY_ADMISSION_MESSAGES;
-  readonly reason: keyof typeof CREDENTIAL_PROXY_ADMISSION_MESSAGES;
-
-  constructor(reason: keyof typeof CREDENTIAL_PROXY_ADMISSION_MESSAGES) {
-    super(CREDENTIAL_PROXY_ADMISSION_MESSAGES[reason]);
-    this.name = "CredentialProxyAdmissionError";
-    this.reason = reason;
-  }
-}
-
 const RETRY_LATER_MESSAGES = Object.freeze({
-  registrationFence: (seconds: number) =>
-    `This credential source was registered moments ago, and its registration may still be completing. Retry the deletion in ${seconds === 1 ? "1 second" : `${seconds} seconds`}; nothing else needs to change.`,
-  deviceLoginFailed: () =>
+  deviceLoginFailed:
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
-  proxyRegistration: () =>
-    "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.",
-  githubRepositoryEnrollment: () =>
+  githubRepositoryEnrollment:
     "GitHub access could not be prepared. Verify that the registered GitHub App is installed for the selected repositories, then retry.",
 });
 
 /**
- * A 503 whose fixed text tells the caller when to retry or what to start again (finding 2536).
- * Each is raised only after the caller's grant and lookup, and names no resource, so HTTP
- * returns the text instead of the generic one. It stays a DependencyUnavailableError, so
- * workers still retry it. A failed device login keeps the Refresh Driver's error as `cause`, so
- * the API's 503 log record, which the text points the caller to, names that error's class and
- * code (never its message). The bundled OpenShell Credential Proxy raises the gateway states an
- * operator can fix (`proxyRegistration`) from its availability check.
+ * Returns a fixed retry or restart message after the caller's grant and resource lookup. A device
+ * login failure retains its cause so the API can log the upstream error class and code.
  */
 export class RetryLaterError extends DependencyUnavailableError {
-  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
-  constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: "proxyRegistration" | "githubRepositoryEnrollment");
-  constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
-    super(
-      RETRY_LATER_MESSAGES[reason](
-        Math.max(1, Math.ceil(reason === "registrationFence" ? Number(detail) : 0)),
-      ),
-    );
+  constructor(reason: "githubRepositoryEnrollment");
+  constructor(reason: keyof typeof RETRY_LATER_MESSAGES, cause?: unknown) {
+    super(RETRY_LATER_MESSAGES[reason]);
     this.name = "RetryLaterError";
-    if (reason === "registrationFence") {
-      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
-    }
     if (reason === "deviceLoginFailed") {
-      this.cause = detail;
+      this.cause = cause;
     }
   }
 }

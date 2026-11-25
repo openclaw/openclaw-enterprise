@@ -78,7 +78,7 @@ OpenShell decides locally from the installed policy. It matches the executable,
 destination, HTTP method, repository path, and Git service query where
 applicable. A push needs the write rules for
 `git-receive-pack`. OpenShell injects the installation token only on a match.
-GitHub then applies the token's permissions and its own branch rules. See the
+GitHub applies the token's permissions. See the
 [native Git flow](../flows/agent-repository-credentials.md#tokenservice-git).
 
 ## Renew or withdraw delivery
@@ -107,9 +107,8 @@ participates.
 
 Credential 1.0 retires the protected metadata and repository exchanges,
 including response filtering, per-send OCC authorization, OCE branch allowlists,
-exact-ref checks, and bounded pull request operations. `LegacyEgressProxyDriver`
-remains in the current implementation pending removal.
-GitHub still enforces its own branch rules. The independent
+exact-ref checks, and bounded pull request operations. The legacy Driver has been removed.
+Branch protection is outside Credential Design 1.0. The independent
 [prepared Git broker](../reference/repository-credentials/prepared-native-git.md)
 is a separate execution path outside this 1.0 model.
 

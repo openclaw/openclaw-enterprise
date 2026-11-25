@@ -8,7 +8,7 @@ import genericExchange from "./examples/generic-exchange.ts";
 import credentialPullProposal from "./examples/credential-pull-proposal.ts";
 
 export type DiagramClassification =
-  "contract" | "source-preview" | "conditional-composition" | "proposal";
+  "contract" | "source-preview" | "conditional-composition" | "historical" | "proposal";
 export type EvidencePointer =
   | { kind: "node"; id: string; title: string; group?: string; groupTitle?: string }
   | { kind: "edge"; from: string; to: string; label: string; edgeKind?: "setup" | "conditional" };
@@ -34,165 +34,35 @@ export const staticAnalysisLimits = [
   "Unmapped elements and conditional edges are not automatically verified; proposals remain proposals.",
 ] as const;
 
-const production = "apps/controller/src/composition/production.ts";
-const installation = "apps/controller/src/composition/egress-authority.ts";
-const controller = "packages/occ/src/controller.ts";
-const proxy = "packages/occ/src/credential-proxy.ts";
-const exchange = "packages/contracts/src/credential-proxy-exchange.ts";
-const listener = "apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
-const installed = "packages/occ/src/installed-driver.ts";
-const driver = "packages/contracts/src/drivers/credential-proxy/index.ts";
-const git = "apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-const gitContract = "packages/contracts/src/protected-repository-git.ts";
-const methods = ["resolve", "authorizeSend", "beginResponse", "renewResponse", "protectResponse"];
-const coupling = (from: string, kind: CouplingEdge["kind"], to: string): RequiredCoupling => ({
-  from,
-  kind,
-  to,
-});
-const gitBinding = coupling(
-  `${installed}#InstalledDriver.requireRepositoryGitTransport`,
-  "binds",
-  `${driver}#LegacyEgressProxyDriver.bindRepositoryGit`,
-);
-
 /** Explicit claims cover only these source relationships, never whole diagrams. */
 export const evidenceCatalog: readonly EvidenceDiagram[] = [
   {
     id: "platform-roles",
     source: "scripts/interface-sketches/examples/platform-roles.ts",
-    classification: "contract",
+    classification: "historical",
     diagram: platformRoles,
-    claims: [
-      {
-        description:
-          "On the Git path the proxy adapter calls the worker authority to authorize the operation.",
-        pointer: { kind: "edge", from: "proxy", to: "authority", label: "May this Agent push?" },
-        required: [
-          coupling(
-            `${git}#protectedOpenShellGitOwner`,
-            "calls",
-            `${gitContract}#RepositoryGitAuthority.authorize`,
-          ),
-        ],
-      },
-    ],
+    claims: [],
   },
   {
     id: "current-git",
     source: "scripts/interface-sketches/examples/current-git.ts",
-    classification: "source-preview",
+    classification: "historical",
     diagram: currentGit,
-    claims: [
-      {
-        description:
-          "The Git adapter has named calls to the explicit Git and installation authorities. The selected-repository authority uses an inline type outside the extractor’s scope.",
-        pointer: { kind: "edge", from: "adapter", to: "owner", label: "Check the grant" },
-        required: [
-          coupling(
-            `${git}#protectedOpenShellGitOwner`,
-            "calls",
-            `${gitContract}#GitHubInstallationAuthority.authorize`,
-          ),
-          coupling(
-            `${git}#protectedOpenShellGitOwner`,
-            "calls",
-            `${gitContract}#RepositoryGitAuthority.authorize`,
-          ),
-        ],
-      },
-    ],
+    claims: [],
   },
   {
     id: "current-git-setup",
     source: "scripts/interface-sketches/examples/current-git-setup.ts",
-    classification: "source-preview",
+    classification: "historical",
     diagram: currentGitSetup,
-    claims: [
-      {
-        description:
-          "The repository Git binding exists separately from bindExchange; this does not prove provisioning or installation readback.",
-        pointer: {
-          kind: "edge",
-          from: "proxy-driver",
-          to: "adapter",
-          label: "Binds transport",
-          edgeKind: "setup",
-        },
-        required: [
-          gitBinding,
-          coupling(
-            "apps/controller/src/composition/repository-credentials/transport.ts#bindRepositoryGitTransport",
-            "calls",
-            `${installed}#InstalledDriver.requireRepositoryGitTransport`,
-          ),
-        ],
-      },
-    ],
+    claims: [],
   },
   {
     id: "generic-exchange",
     source: "scripts/interface-sketches/examples/generic-exchange.ts",
-    classification: "conditional-composition",
+    classification: "historical",
     diagram: genericExchange,
-    claims: [
-      {
-        description:
-          "Production composition calls exchange installation, whose controller factory constructs the concrete CredentialProxy implementing CredentialProxyExchange.",
-        pointer: {
-          kind: "node",
-          id: "exchange",
-          title: "OCC exchange authority",
-          group: "api",
-          groupTitle: "Controller API process",
-        },
-        required: [
-          coupling(
-            `${production}#composeProduction`,
-            "calls",
-            `${installation}#installEgressAuthority`,
-          ),
-          coupling(
-            `${installation}#installEgressAuthority`,
-            "calls",
-            `${driver}#LegacyEgressProxyDriver.bindExchange`,
-          ),
-          coupling(
-            `${installation}#installEgressAuthority`,
-            "calls",
-            `${controller}#OpenClawController.createCredentialProxy`,
-          ),
-          coupling(
-            `${controller}#OpenClawController.createCredentialProxy`,
-            "constructs",
-            `${proxy}#CredentialProxy`,
-          ),
-          coupling(`${proxy}#CredentialProxy`, "implements", `${exchange}#CredentialProxyExchange`),
-        ],
-      },
-      {
-        description:
-          "Installation binds five concrete methods and the listener contains five typed contract calls; this is lexical coupling, not execution or authenticated transport proof.",
-        pointer: {
-          kind: "edge",
-          from: "listener",
-          to: "exchange",
-          label: "Calls five exchange methods",
-        },
-        required: methods.flatMap((method) => [
-          coupling(
-            `${installation}#installEgressAuthority`,
-            "binds",
-            `${proxy}#CredentialProxy.${method}`,
-          ),
-          coupling(
-            `${listener}#createOpenShellEgressAuthority`,
-            "calls",
-            `${exchange}#CredentialProxyExchange.${method}`,
-          ),
-        ]),
-      },
-    ],
+    claims: [],
   },
   {
     id: "credential-pull-proposal",

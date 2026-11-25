@@ -5,8 +5,7 @@ authorization and filtered-response exchange. Ordinary credential-free metadata
 uses separately admitted Sandbox network access, returns GitHub's full response,
 and needs no Source or credential. The Git grant itself does not authorize REST.
 
-The current code still exposes this deprecated `LegacyEgressProxyDriver` path
-until removal. The details below apply only to existing legacy deployments.
+This page records the legacy Driver behavior in earlier releases.
 
 Use [TokenService enrollment](../credential-sources.md#register-a-source) for
 model credentials, OAuth and GitHub installation Sources. A qualified selected

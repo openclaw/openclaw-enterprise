@@ -96,7 +96,8 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   }
   if (Object.hasOwn(drivers, "conduit")) {
     throw new ScopeViolationError(
-      path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
+      path(id, "drivers.conduit") +
+        " is retired. Configure TokenService with the bundled OpenShell Sandbox for credential delivery.",
     );
   }
   if (candidate.type === "openshell") {
@@ -399,7 +400,7 @@ function validateOpenShellBackend(
     );
   }
   for (const key of Object.keys(drivers)) {
-    if (key !== "sandbox" && key !== "credential_proxy" && key !== "token_service") {
+    if (key !== "sandbox" && key !== "token_service") {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
@@ -424,9 +425,6 @@ function validateOpenShellBackend(
     },
     drivers: {
       sandbox: drivers.sandbox,
-      ...(drivers.credential_proxy === undefined
-        ? {}
-        : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
       ...(drivers.token_service === undefined
         ? {}
         : { token_service: backendId(drivers.token_service, "TokenService Driver ID") }),
@@ -443,9 +441,6 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
-    ...(backend.drivers.credential_proxy === undefined
-      ? []
-      : [`credential_proxy:${backend.drivers.credential_proxy}`]),
     ...(backend.drivers.token_service === undefined
       ? []
       : [`token_service:${backend.drivers.token_service}`]),
@@ -536,13 +531,6 @@ export function validateSelectedBackendDrivers(
       requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
       if (backend.drivers.token_service !== undefined) {
         requires("token_service", backend.drivers.token_service, "TokenService Driver");
-      }
-      if (backend.drivers.credential_proxy !== undefined) {
-        requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");
-      } else if (selected.credential_proxy !== undefined) {
-        throw new DriverSelectionError(
-          "The selected Credential Proxy Driver must belong to the Sandbox's Backend.",
-        );
       }
     }
   }

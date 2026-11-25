@@ -23,7 +23,6 @@ import { ConfigurationHarnessError, OpenClawController } from "../../packages/oc
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { reservedPortArgs } from "../helpers/available-port.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { createSandboxCodexHarnessChecks } from "./sandbox-driver-codex-harness-cases.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
@@ -142,58 +141,32 @@ export function registerSandboxDriverStartupWiringCases() {
     );
   });
 
-  test("startup selects native credential delivery without a legacy Credential Gateway", async (t) => {
+  test("startup selects native credential delivery with TokenService", async (t) => {
     const configuration = sandboxInstallation();
-    // Native delivery uses the Sandbox registration and its OpenShell connection.
     Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
     const runtime = await loadInstallationFile(t, configuration);
-    const owner = runtime!.credentialDeliveryRegistration!;
-    const proxy = owner.require("credential_proxy_delivery");
+    assert.ok(runtime);
+    assert.equal(runtime.installation.drivers.token_service?.id, "occ");
+    const owner = runtime.credentialDeliveryRegistration!;
+    const proxy = owner.require("credential_proxy");
 
     assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
-    assert.equal(owner.require("sandbox"), runtime!.sandboxDriver);
+    assert.equal(owner.require("sandbox"), runtime.sandboxDriver);
     const controller = new OpenClawController(
       { id: "ins_native", name: "Native", createdAt: "2026-11-20T00:00:00Z" },
       {
-        ...installationControllerOptions(runtime!.installation),
-        namespaceLifecycleBindings: runtime!.namespaceLifecycleBindings,
-        backends: runtime!.installation.backend,
+        ...installationControllerOptions(runtime.installation),
+        namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+        backends: runtime.installation.backend,
       },
     );
-    installSelectedSandboxDrivers(controller, runtime!);
+    installSelectedSandboxDrivers(controller, runtime);
     await controller.validateBackendConfiguration();
-    assert.equal(controller.selectedDriver("credential_proxy_delivery"), proxy);
+    assert.equal(controller.selectedDriver("credential_proxy"), proxy);
   });
 
-  test("startup keeps the protected OpenShell owner when native delivery is selected", async (t) => {
-    const configuration = createCredentialProxyInstallationConfiguration();
-    const protectedOnly = (await loadInstallationFile(t, configuration))!;
-    const mixed = (await loadInstallationFile(t, {
-      ...configuration,
-      drivers: { ...configuration.drivers, token_service: { id: "occ", configuration: {} } },
-    }))!;
-    const owner = mixed.credentialDeliveryRegistration!;
-    assert.equal(owner, mixed.protectedDriver);
-    // Selecting native delivery leaves the protected registration identity stable.
-    assert.deepEqual(owner.ref, protectedOnly.protectedDriver!.ref);
-    const controller = new OpenClawController(
-      { id: "ins_mixed", name: "Mixed", createdAt: "2026-11-20T00:00:00Z" },
-      {
-        ...installationControllerOptions(mixed.installation),
-        namespaceLifecycleBindings: mixed.namespaceLifecycleBindings,
-      },
-    );
-    installSelectedSandboxDrivers(controller, mixed);
-    assert.equal(controller.selectedDriver("sandbox"), owner.require("sandbox"));
-    assert.equal(controller.selectedDriver("credential_proxy"), owner.require("credential_proxy"));
-    assert.equal(
-      controller.selectedDriver("credential_proxy_delivery"),
-      owner.require("credential_proxy_delivery"),
-    );
-  });
-
-  test("startup refuses retired Gateway and Refresh selections", async (t) => {
-    for (const key of ["credential_gateway", "credential_refresh"]) {
+  test("startup refuses retired credential driver selections", async (t) => {
+    for (const key of ["credential_gateway", "credential_refresh", "credential_proxy"]) {
       await rejectsAtStartup(
         t,
         (configuration) => {

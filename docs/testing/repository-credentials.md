@@ -61,7 +61,7 @@ node --test tests/integration/repository-credentials-client-config.test.ts \
 
 ### Protected repository metadata reads
 
-`checks-baseline-2` runs the [metadata response test](../../tests/integration/protected-repository-metadata-read.test.ts)
+`checks-baseline-2` runs the [metadata response test](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/protected-repository-metadata-read.test.ts)
 with the real route policy, upstream sender, and a loopback TLS origin. An independent
 socket observer captures the decrypted request and the origin response through EOF.
 Two client processes read through FIN and receive only the configured repository identity.

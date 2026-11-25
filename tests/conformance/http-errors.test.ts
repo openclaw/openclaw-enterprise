@@ -28,8 +28,6 @@ import {
   ChannelDirectoryError,
   ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
-  CredentialGatewayNotConfiguredError,
-  CredentialProxyAdmissionError,
   CredentialSourceRegistrationConfigError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
@@ -77,19 +75,16 @@ import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   callerDenied,
-  CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY,
   namespaceListDenied,
-  PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
 import {
-  CREDENTIAL_GATEWAY_NOT_CONFIGURED,
   SERVICE_ACCOUNT_BACKEND_MISMATCH,
   SERVICE_ACCOUNT_NO_BACKEND_BINDING,
 } from "../helpers/refusal-credential-admission.ts";
@@ -234,15 +229,6 @@ const cases = [
     { status: 409, code: "NAMESPACE_NOT_EMPTY", message: "The requested Namespace is not empty." },
   ],
   [
-    "an Installation without a Credential Gateway",
-    new CredentialGatewayNotConfiguredError(),
-    {
-      status: 409,
-      code: "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
-      message: CREDENTIAL_GATEWAY_NOT_CONFIGURED,
-    },
-  ],
-  [
     "a source delete blocked only by withdrawal work names the wait and Agent deletion",
     new CredentialWithdrawalInProgressError(),
     {
@@ -343,14 +329,14 @@ const cases = [
     { status: 409, code: "RESOURCE_CONFLICT", message: SERVICE_ACCOUNT_BACKEND_MISMATCH },
   ],
   [
-    "installation-wide access without the OpenShell Proxy preview names the setting",
-    new CredentialProxyAdmissionError("installationPreview"),
-    { status: 409, code: "RESOURCE_CONFLICT", message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW },
-  ],
-  [
-    "an OpenShell gateway without the Proxy's middleware names the operator fix",
-    new RetryLaterError("proxyRegistration"),
-    { status: 503, code: "DEPENDENCY_UNAVAILABLE", message: PROXY_REGISTRATION_UNAVAILABLE },
+    "GitHub enrollment failure names the fix when the app cannot prepare access",
+    new RetryLaterError("githubRepositoryEnrollment"),
+    {
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "GitHub access could not be prepared. Verify that the registered GitHub App is installed for the selected repositories, then retry.",
+    },
   ],
   [
     "a stored credential source that breaks a later Gateway rule names the replacement",
@@ -1197,7 +1183,7 @@ for (const [name, error, expected] of cases) {
     );
     assert.doesNotMatch(failure.message, /internal detail/);
     // The wire cap (256 characters) must not cut a mapped message, such as a trailing doc link.
-    type WireError = { error: Pick<ErrorResponse["error"], "message" | "reason"> };
+    type WireError = { error: Pick<ErrorResponse["error"], "message"> };
     const sent: { body?: WireError } = {};
     const headers = new Map<string, string>();
     const reply = {
@@ -1217,8 +1203,8 @@ for (const [name, error, expected] of cases) {
     assert.ok(sent.body);
     assert.equal(sent.body.error.message, failure.message);
     assert.equal(
-      sent.body.error.reason,
-      undefined,
+      Object.hasOwn(sent.body.error, "reason"),
+      false,
       "unrelated failures must not request a registration retry",
     );
     assert.equal(headers.has("retry-after"), false);

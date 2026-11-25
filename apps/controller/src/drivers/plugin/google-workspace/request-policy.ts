@@ -12,7 +12,7 @@ import {
   type GoogleSchema,
 } from "./operations.ts";
 import { parseUnambiguousJson } from "../../json-members.ts";
-import type { OpenShellOnlineHttpRequest } from "../../egress-proxy/openshell-online-authority.ts";
+import type { OpenShellOnlineHttpRequest } from "../openshell-online-authority.ts";
 
 // OpenShell removes routing, framing and credential headers before this RPC. Only these
 // remaining client headers may accompany the request. Method and resource overrides refuse.

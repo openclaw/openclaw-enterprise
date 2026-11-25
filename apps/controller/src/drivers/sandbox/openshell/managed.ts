@@ -21,7 +21,6 @@ import {
   sandboxCommand,
   runtimeProviderSetupUpdate,
   verifyActiveWorkspace,
-  verifyExistingSandbox,
   verifyRuntimeProvider,
   verifyWorkspaceOwnership,
   workspaceLabels,
@@ -43,12 +42,6 @@ import type { openShellManagedMcpPolicies } from "../openshell-managed-mcp-polic
 import type { openShellPluginPolicy } from "../openshell-plugin-policy.ts";
 import { openShellPolicyBaselineDigest, sameOpenShellPolicy } from "../openshell-policy.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../compute/kubernetes/runtime-entrypoints.ts";
-import {
-  deleteRetiredGitProviders,
-  deleteOpenShellPreparedGitProviders,
-  preparedGitProviderForRevision,
-} from "../../egress-proxy/openshell-prepared-git-provider.ts";
-import { readOpenShellGitEvidence } from "../../egress-proxy/openshell-git-installation.ts";
 
 const DATA = "/sandbox/oce";
 const RUNTIME_PARENT = "/opt/oce/managed";
@@ -176,7 +169,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     runtimeProvider: string,
     providerEnvironment: ReadonlySet<string>,
     binding?: WorkspaceNodeBinding,
-    _egressPolicy?: Readonly<Record<string, unknown>>,
     plugin?: ReturnType<typeof openShellPluginPolicy>,
     mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
   ) {
@@ -402,94 +394,15 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       : {};
   }
 
-  protected override retainedGitSandbox(context: SandboxHarnessContext) {
-    return (sandbox: OpenShellSandboxResponse) => this.verifyRetiredGit(context, sandbox);
-  }
-
-  private async verifyRetiredGit(
-    context: SandboxHarnessContext,
-    sandbox: OpenShellSandboxResponse,
-  ): Promise<void> {
-    this.verifyOwner(sandbox, context.namespace.id, context.revision.agentId);
-    if (
-      !stopped(sandbox) ||
-      sandbox.workspace !== workspaceName(context.namespace) ||
-      !sandbox.annotations[REVISION] ||
-      sandbox.annotations[REVISION] === context.revision.id
-    ) {
-      throw new Error("Git replacement requires a stopped predecessor.");
-    }
-    const client = this.gatewayClientForNamespace(context.namespace.name);
-    // Apply the same retirement check when enabling, replacing or disabling Git.
-    // A stopped process alone does not prove that its Git authority was retired.
-    const workspace = workspaceName(context.namespace);
-    const policy = await readOpenShellGitEvidence(
-      () =>
-        client.getPolicyStatus?.({ workspace, sandbox: sandbox.name }, context.signal) ??
-        Promise.resolve(undefined),
-      context.signal,
-    );
-    if (!policy || asRecord(policy.policy.network_middlewares)?.["oce-prepared-git"]) {
-      throw new Error("Retire the predecessor Git middleware before preparing its replacement.");
-    }
-    const providers = await readOpenShellGitEvidence(
-      () => client.listProviders(workspace, context.signal),
-      context.signal,
-    );
-    for (const provider of providers) {
-      if (preparedGitProviderForRevision(provider, sandbox.annotations[REVISION]!)) {
-        throw new Error("Retire the predecessor Git Provider before preparing its replacement.");
-      }
-    }
-  }
-
-  protected override async verifyGitSandbox(
-    client: OpenShellGatewayClient,
-    observed: OpenShellSandboxResponse,
-    create: Omit<OpenShellSandboxCreateRequest, "requestId">,
-    signal: AbortSignal,
-    sourcePolicy?: Readonly<Record<string, unknown>>,
-  ): Promise<void> {
-    if (!client.getPolicyStatus) {
-      throw new Error("Managed Git requires current Sandbox policy observation.");
-    }
-    const policy =
-      sourcePolicy ??
-      (
-        await readOpenShellGitEvidence(
-          () =>
-            client.getPolicyStatus!({ workspace: create.workspace, sandbox: create.name }, signal),
-          signal,
-        )
-      ).policy;
-    // GetSandbox retains the creation policy. Check the current policy without masking any
-    // workload or owner difference, including the successor's exact middleware binding.
-    verifyExistingSandbox(
-      {
-        ...observed,
-        spec: { ...observed.spec, policy, providers: providerNames(observed.spec) },
-      },
-      {
-        ...withManagedPolicyBaseline(create),
-        spec: { ...create.spec, providers: providerNames(create.spec) },
-        requestId: "observation",
-      },
-    );
-  }
-
   protected override async reconcileHarness(
     context: SandboxHarnessContext,
     sandbox: SandboxResourceRef,
     desired: Omit<OpenShellSandboxCreateRequest, "requestId">,
-    existingSandboxId?: string,
   ): Promise<SandboxResourceRef> {
     const create = withManagedPolicyBaseline(desired);
     const client = this.gatewayClientForNamespace(context.namespace.name);
     const selector = { workspace: workspaceName(context.namespace), name: sandbox.resourceName };
     let existing = await client.getSandbox(selector, context.signal);
-    if (existingSandboxId && existing?.id !== existingSandboxId) {
-      throw new Error("The standing Git execution is no longer present.");
-    }
     if (existing === undefined) {
       try {
         await client.createSandbox({ ...create, requestId: randomUUID() }, context.signal);
@@ -505,14 +418,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     }
     this.verifyOwner(existing, context.namespace.id, context.revision.agentId);
     requireManagedTemplate(existing);
-    if (
-      existing.annotations[REVISION] !== context.revision.id &&
-      context.revision.repositoryCredentials === undefined
-    ) {
-      // Git-enabled successors check retirement before preparing their fresh route.
-      // Git-free successors have no prepare call, but must verify retirement too.
-      await this.verifyRetiredGit(context, existing);
-    }
     const matches = (value: OpenShellSandboxResponse) =>
       isDeepStrictEqual(comparableWorkload(value.spec), comparableWorkload(create.spec)) &&
       value.workspace === create.workspace &&
@@ -745,9 +650,7 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       !sameOpenShellPolicy(fixedPolicy(existing.spec?.policy), fixedPolicy(desired.policy)) ||
       !sameOpenShellPolicy(fixedPolicy(current.policy), fixedPolicy(desired.policy))
     ) {
-      throw new Error(
-        "Managed replacement cannot change static policy or non-Git middleware bindings.",
-      );
+      throw new Error("Managed replacement cannot change static policy or middleware bindings.");
     }
     if (sameOpenShellPolicy(current.policy, desired.policy)) {
       return existing;
@@ -883,15 +786,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         return;
       }
       verifyWorkspaceOwnership(current, context.namespace);
-      if (this.openShellGit) {
-        await this.openShellGit.withdrawNamespaceConfirmed(context.namespace.id);
-        await deleteOpenShellPreparedGitProviders(
-          client,
-          workspace,
-          await client.listProviders(workspace, context.signal),
-          context.signal,
-        );
-      }
       for (const profile of ["oce-codex-runtime", "oce-openclaw-runtime"]) {
         await this.deleteRuntimeProfileIfUnused(client, workspace, profile, context.signal);
       }
@@ -901,9 +795,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     const revision = context.revision;
     if (revision.namespaceId !== context.namespace.id || revision.sandboxDriverId !== this.id) {
       throw new Error("Refusing managed cleanup outside its Namespace and Sandbox Driver.");
-    }
-    if (revision.repositoryCredentials) {
-      await this.openShellGit!.withdrawConfirmed(revision.id);
     }
     const selector = { workspace, name: this.agentSandboxName(revision.agentId) };
     const current = await client.getSandbox(selector, context.signal);
@@ -917,12 +808,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       if ((await client.getSandbox(selector, context.signal)) !== undefined) {
         throw new Error("Managed Sandbox appeared during stop; retry reconciliation.");
       }
-      await this.retireGit(context, client, undefined);
       return;
     }
     this.verifyOwner(current, context.namespace.id, revision.agentId);
     if (current.annotations[REVISION] !== revision.id || stopped(current)) {
-      await this.retireGit(context, client, current);
       return;
     }
     if (client.stopSandbox === undefined) {
@@ -940,55 +829,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
       throw new Error("Managed Sandbox stop is not yet confirmed for the requested revision.");
     }
     this.verifyOwner(observed, context.namespace.id, revision.agentId);
-    await this.retireGit(context, client, observed);
-  }
-
-  private async retireGit(
-    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
-    client: OpenShellGatewayClient,
-    sandbox: OpenShellSandboxResponse | undefined,
-  ): Promise<void> {
-    const revision = context.revision!;
-    if (!revision.repositoryCredentials) {
-      return;
-    }
-    const workspace = workspaceName(context.namespace);
-    const providers = (await client.listProviders(workspace, context.signal)).filter((provider) =>
-      preparedGitProviderForRevision(provider, revision.id),
-    );
-    if (sandbox) {
-      const attached = providerNames(sandbox.spec);
-      const obsolete = providers.filter((provider) => attached.includes(provider.name));
-      if (sandbox.annotations[REVISION] !== revision.id) {
-        if (obsolete.length) {
-          throw new Error("A successor still attaches the retired Git Provider.");
-        }
-      } else {
-        if (!stopped(sandbox) || !client.getPolicyStatus) {
-          throw new Error(
-            "Git retirement requires a stopped Sandbox and current policy observation.",
-          );
-        }
-        const current = await client.getPolicyStatus(
-          { workspace, sandbox: sandbox.name },
-          context.signal,
-        );
-        const policy = { ...withoutGitMiddleware(current.policy), network_policies: {} };
-        // Remove the authorization hook before detaching its credential. The workload is
-        // stopped and the durable route is already closed, including after an interrupted cleanup.
-        const desired = {
-          ...sandbox.spec,
-          policy,
-          providers: attached.filter((name) => !obsolete.some((p) => p.name === name)),
-        };
-        // These helpers need only Namespace, revision and signal from the Harness context.
-        const stoppedContext = { ...context, revision };
-        sandbox = await this.reconcilePolicy(client, stoppedContext, sandbox, desired);
-        await this.reconcileProviders(client, stoppedContext, sandbox, desired);
-      }
-    }
-    await deleteRetiredGitProviders(client, workspace, revision.id, context.signal);
-    this.openShellGit!.releaseWithdrawn(revision.id);
   }
 
   async deleteAgent(binding: ComputeAgentBinding, signal: AbortSignal): Promise<void> {
@@ -1076,17 +916,8 @@ function withManagedPolicyBaseline(
 }
 
 function fixedPolicy(policy: unknown) {
-  const { network_policies: _network, ...fixed } = withoutGitMiddleware(policy);
+  const { network_policies: _network, ...fixed } = asRecord(policy) ?? {};
   return fixed;
-}
-
-function withoutGitMiddleware(policy: unknown): Record<string, unknown> {
-  const { network_middlewares, ...rest } = asRecord(policy) ?? {};
-  const { "oce-prepared-git": _git, ...middlewares } = asRecord(network_middlewares) ?? {};
-  return {
-    ...rest,
-    ...(Object.keys(middlewares).length ? { network_middlewares: middlewares } : {}),
-  };
 }
 
 function userMetadata(values: Readonly<Record<string, string>>) {

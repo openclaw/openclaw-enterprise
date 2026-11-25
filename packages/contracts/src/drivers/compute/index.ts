@@ -312,15 +312,6 @@ export interface ComputeDriver extends Driver {
   validateProtectedRepositoryNetworkPolicy?(
     context: ProtectedRepositoryNetworkPolicyContext,
   ): void | Promise<void>;
-  /**
-   * After release is refused, select a withdrawal only for a grant this Compute previously
-   * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
-   * revision's authorized claim; resolve only after observing the grant and workload gone.
-   * Neither selection nor completion permits preparing, activating or replacing that revision.
-   */
-  rejectedExecutionWithdrawal?(
-    revision: Readonly<AgentRevision>,
-  ): (() => Promise<void>) | undefined;
   readonly supportsWorkspaceSetup?: true;
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;

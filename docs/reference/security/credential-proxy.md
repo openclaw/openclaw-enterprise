@@ -55,7 +55,7 @@ and again before authorizing the send. A withdrawal between those checks denies
 the send.
 A request that already has a permit can still reach GitHub. If the outcome
 is unknown, inspect the original attempt. Repeating a possible write can apply it twice.
-See [send authorization](../../../packages/occ/src/credential-proxy.ts) and
+See [send authorization](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/packages/occ/src/credential-proxy.ts) and
 [source withdrawal](../credential-sources/withdrawal.md).
 
 Git access through `repositoryAccess` has its own approval. An operator can
@@ -64,7 +64,7 @@ OCC denial, removal of an installed route and revocation or expiry at GitHub
 are separate events. See the
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle).
 
-In the [withdrawal example](../../../tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and withdrawal checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
+In the [withdrawal example](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/credential-proxy-withdrawal.test.ts), the operator removes binding A while B keeps working. After B is withdrawn, OCC denies it, but the test peer still returns `200` until policy takes effect. After policy application and restart, the stored plan has no routes and both requests receive `403`. An installed sender needs its own [custody and withdrawal checks](../../testing/protected-repository-custody.md#qualify-installed-custody).
 
 ## Who remains trusted?
 
@@ -80,7 +80,7 @@ OCC's management principal as the only member of OCC Workspaces and limit
 OpenShell Platform Admins, who bypass membership. OCC does not validate either
 membership or the administrator list. Its management identity can manage
 Workspaces, Sandboxes, and Providers; keep it outside tenant workloads.
-The [metadata adapter](../../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+The [metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 defines the implemented read. [RFC-0023](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md)
 describes the broader proposal. A controlled peer shows what reached that peer.
 Confirming that a particular build reached GitHub requires evidence from that build and provider.

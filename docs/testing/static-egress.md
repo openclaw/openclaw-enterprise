@@ -6,6 +6,8 @@ last_verified: "2026-11-04"
 
 # Verify protected static inference
 
+Historical record of protected egress.
+
 Local protected static-inference launches are retired. Before effects, the launcher rejects
 `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
 `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including empty values.
@@ -224,7 +226,7 @@ No provider, cluster or model runs; no installation receipt is supplied.
 
 ## Select the prepared connected lane
 
-Run [the installed test](../../tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
+Run [the installed test](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/agent-openshell-static-egress-k3d-real.test.mjs)
 with manual `egress-connected`, outside CI/GitHub dispatch and generic `openshell`
 fixtures. Existing qualified installations require authenticated controllers and
 a supplier gateway. Missing inputs fail; discovery skips prove nothing.

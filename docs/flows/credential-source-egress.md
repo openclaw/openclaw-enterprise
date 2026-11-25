@@ -6,6 +6,9 @@ last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 
 # Protected credential request flow
 
+This page records behavior and verification on earlier releases of the retired
+protected egress implementation. Use [Credential Design 1.0](https://github.com/openclaw/openclaw-enterprise/tree/main/specs/rfcs/20261124-credential-design-1-0) for the current design.
+
 ## Overview
 
 This flow records the deprecated legacy credential-egress Driver. Its protected
@@ -45,7 +48,7 @@ For an admitted `credential-free-repository-metadata` route to repository `12345
 ```
 
 The sender withholds ID `67890` even if GitHub returns it under the same name.
-The [metadata adapter](../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+The [metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 defines the request and response checks.
 
 ```mermaid

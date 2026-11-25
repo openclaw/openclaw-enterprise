@@ -1472,7 +1472,7 @@ test(
     const credentialDeliveryRegistration = runtime.credentialDeliveryRegistration;
     assert.ok(credentialDeliveryRegistration);
     const sandbox = credentialDeliveryRegistration.require("sandbox");
-    const proxy = credentialDeliveryRegistration.require("credential_proxy_delivery");
+    const proxy = credentialDeliveryRegistration.require("credential_proxy");
     assert.ok(proxy instanceof OpenShellCredentialProxyDriver);
     assert.equal(sandbox, runtime.sandboxDriver);
     const credentialSourceDelivery = credentialSourceDeliveryBinding(runtime);
@@ -1497,7 +1497,7 @@ test(
       instanceId,
     );
     installSelectedSandboxDrivers(nativeController, runtime);
-    assert.equal(nativeController.selectedDriver("credential_proxy_delivery"), proxy);
+    assert.equal(nativeController.selectedDriver("credential_proxy"), proxy);
     const pluginDriver = new OCCPluginDriver();
     nativeController.installPluginDrivers([pluginDriver]);
     const nativeApp = createApp(nativeController);

@@ -2,11 +2,6 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { requestCovered, validateMatches } from "../../deployment-request-match.ts";
 import type {
-  CredentialProxyBinding,
-  CredentialProxyExchange,
-  EgressExchangeOwner,
-} from "../../credential-proxy-exchange.ts";
-import type {
   CredentialDeploymentConfiguration,
   CredentialDeploymentReadiness,
   CredentialDeploymentRef,
@@ -21,10 +16,6 @@ import { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type { ResolvedCredential } from "../token-service/index.ts";
 
 export { repositoryGitDeliveryProfile } from "../repo/index.ts";
-import type {
-  ProtectedRepositoryGitAuthority,
-  RepositoryGitBinding,
-} from "../../protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
   CredentialFreeMetadataGrant,
@@ -504,30 +495,6 @@ export interface CredentialUpdateNotification {
   readonly version?: string;
 }
 
-// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
-export interface LegacyEgressProxyDriver extends Driver {
-  readonly capability: "credential_proxy";
-  readonly sourceControl: CredentialSourceControl;
-  readonly policyReduction?: CredentialPolicyReducer;
-  /** API process: bind the installed transport's exchange owner once, before accepting requests. */
-  bindExchange?(
-    createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
-  ): Promise<CredentialProxyBinding>;
-  /** Worker process: bind this sender to the installation's checked Git delivery authority. */
-  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<RepositoryGitBinding>;
-  configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring>;
-  wiringStatus(
-    context: ProxyRevisionContext,
-    prepared: ProxyWiring,
-  ): Promise<EgressInstallation | undefined>;
-  /** Query the counterpart again; persisted installation records are not readiness leases. */
-  verifyInstallation(
-    context: ProxyRevisionContext,
-    installation: EgressInstallation,
-  ): Promise<boolean>;
-  removeRevision(context: ProxyRevisionContext): Promise<boolean>;
-}
-
 /** Trusted, material-free context for a staged credential deployment. */
 export interface CredentialDeploymentContext {
   readonly namespace: Readonly<Namespace>;
@@ -535,9 +502,9 @@ export interface CredentialDeploymentContext {
   readonly signal: AbortSignal;
 }
 
-/** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
+/** Credential delivery for staged Agent deployments. */
 export interface CredentialProxyDriver extends Driver {
-  readonly capability: "credential_proxy_delivery";
+  readonly capability: "credential_proxy";
   /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
   deployProxy(
     context: CredentialDeploymentContext,

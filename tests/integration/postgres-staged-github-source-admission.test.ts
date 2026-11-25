@@ -46,6 +46,7 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
+import { WITHDRAWAL_SOURCE_NOT_USED } from "../helpers/refusal-credential-admission.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
@@ -317,7 +318,6 @@ test(
       assert.ok(runtime);
       assert.ok(runtime.repositoryRegistry && runtime.repositoryAdmission);
       assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
-      assert.equal(runtime.repositoryGitDriver, undefined);
       Reflect.set(
         runtime.computeDriver,
         "apiClients",
@@ -1000,6 +1000,18 @@ test(
       )?.activeRevisionId,
       firstId,
     );
+    // This revision uses only its model Source. Withdrawal must hide whether an unused Source exists.
+    for (const sourceId of [gitSource.id, `cs_${randomUUID()}`]) {
+      const withdrawal = await request(
+        "POST",
+        `${agentPath}/credential-sources/${sourceId}/withdraw`,
+      );
+      assert.equal(withdrawal.statusCode, 409, withdrawal.body);
+      assert.deepEqual(withdrawal.json().error, {
+        code: "RESOURCE_CONFLICT",
+        message: WITHDRAWAL_SOURCE_NOT_USED,
+      });
+    }
     const draft = await request("PATCH", agentPath, {
       configurationId: config.json().data.id,
       repositoryAccess: {

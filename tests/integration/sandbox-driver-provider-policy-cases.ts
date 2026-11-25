@@ -160,7 +160,6 @@ export function registerManagedPluginPolicyCases(): void {
     };
     const cases: Array<[string, AgentRevision, HarnessWorkloadRequirements]> = [
       ["repository credentials", { ...revision, repositoryCredentials }, admitted],
-      ["proxy wiring", revision, { ...admitted, proxyWiring: { plan, configuration: {} } }],
       ["an egress plan", { ...revision, egressPlan: plan }, admitted],
     ];
     for (const [condition, refused, launch] of cases) {

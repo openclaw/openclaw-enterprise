@@ -64,7 +64,7 @@ Backend members (`packages/occ/src/backends.ts:validateOpenShellBackend`).
 
 The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
 
-The deprecated legacy Proxy still exposes a separate [protected metadata Source](../reference/credential-sources/protected-repository-metadata.md). Credential 1.0 retires it; ordinary metadata reads have only a Sandbox network rule.
+Ordinary public metadata requests use a separately admitted Sandbox network rule. The [earlier protected metadata Source](../reference/credential-sources/protected-repository-metadata.md) is retired.
 
 After [Template consent](connection-templates.md#3-authorize-the-account-in-the-browser), TokenService creates the Source and stores the OAuth grant. The Source records the original Template version and client. Each new Plugin deployment resolves the Template’s current approved version. See [Source metadata](../reference/credential-sources.md#read-and-list-sources).
 

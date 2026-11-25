@@ -5,7 +5,6 @@ import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { verifyDeletedResourceAccessBindingContract } from "./platform-state-access-binding-contract.ts";
 import { seedPlatformState } from "./platform-state-contract-fixture.ts";
 import { verifyCredentialSourceContract } from "./platform-state-credential-source-contract.ts";
-import { verifyEgressSendReceiptContract } from "./platform-state-egress-receipt-contract.ts";
 import { verifyPlatformStateLifecycle } from "./platform-state-lifecycle-contract.ts";
 import { verifyStandaloneCredentialStateContract } from "./platform-state-standalone-credential-contract.ts";
 import {
@@ -30,12 +29,6 @@ export async function verifyPlatformStateStoreContract(
   );
   const lifecycle = await verifyPlatformStateLifecycle(store, seed, instance.id);
   await verifyCredentialSourceContract(store, seed, instance.id);
-  await verifyEgressSendReceiptContract(
-    store,
-    seed.installation,
-    seed.namespace,
-    seed.harnessSecret,
-  );
   await verifyDeletedResourceAccessBindingContract(store, seed.revision);
   await verifyDuplicateNameContract(store);
   await verifyNameLengthContract(store);

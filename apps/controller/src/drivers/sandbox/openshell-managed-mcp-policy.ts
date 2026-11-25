@@ -87,7 +87,6 @@ function openShellManagedMcpPolicy(
     selected.requestScope?.host !== host ||
     selected.requestScope.port !== port ||
     selected.requestScope.path !== path ||
-    requirements.proxyWiring ||
     revision.egressPlan ||
     installationProviders.length ||
     (binding &&

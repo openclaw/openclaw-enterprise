@@ -1,25 +1,28 @@
 import { isIP } from "node:net";
-import { hasControlCharacter } from "@openclaw-enterprise/utils";
+import { asRecord, hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
   Server,
   status,
+  type Metadata,
   type ServerDuplexStream,
   type ServerUnaryCall,
   type sendUnaryData,
 } from "@grpc/grpc-js";
 import {
-  describeOpenShellMiddleware,
-  loadOpenShellMiddleware,
-  middlewareBearer,
-  record,
-  type OpenShellHttpPolicySet,
-} from "./openshell-authority.ts";
-import {
   OpenShellExtensionJwtVerifier,
-  type OpenShellEgressIdentityOptions,
-} from "./openshell-identity.ts";
+  type OpenShellExtensionIdentityOptions,
+} from "./openshell-extension-identity.ts";
+import { loadOpenShellMiddleware } from "./openshell-middleware.ts";
 
 type Wire = Record<string, unknown>;
+const record = (input: unknown): Wire => asRecord(input) ?? {};
+const contractCapability = "openshell.supervisor-middleware.contract";
+
+function middlewareBearer(metadata: Metadata): string {
+  const values = metadata.get("authorization");
+  return values.length === 1 && typeof values[0] === "string" ? values[0] : "";
+}
+
 const deny = { decision: 2, reason_code: "online_authorization_denied" };
 /** Decisions in flight on one authority. */
 const pendingDecisionCapacity = 1024;
@@ -52,10 +55,7 @@ const boundedId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{22,128}$/.test(value);
 
 export interface OpenShellOnlineHttpAuthorityOptions {
-  readonly identity: Pick<
-    OpenShellEgressIdentityOptions,
-    "issuer" | "audience" | "keyId" | "publicKey"
-  >;
+  readonly identity: OpenShellExtensionIdentityOptions;
   readonly registrationName: string;
   /**
    * Resolve exactly one current execution and admitted binding from the signed sandbox ID and
@@ -75,7 +75,9 @@ export interface OpenShellOnlineHttpAuthorityOptions {
   ) => Promise<OpenShellOnlineDecision>;
   readonly budgetMs?: number;
   /** Advertise a pinned REST-only policy set. Each binding must name a release in that set. */
-  readonly httpPolicySet?: OpenShellHttpPolicySet & {
+  readonly httpPolicySet?: {
+    readonly implementation: string;
+    readonly version: string;
     readonly validateBindingConfig: (id: string, scope: string) => boolean;
   };
 }
@@ -221,7 +223,44 @@ function supervisor(claims: Wire | undefined): string | undefined {
     : undefined;
 }
 
-/** Private composition seam: only a trusted operation owner may opt into body inspection. */
+function describeMiddleware(
+  gateway: unknown,
+  audience: string,
+  policySet: OpenShellOnlineHttpAuthorityOptions["httpPolicySet"],
+): Wire | undefined {
+  const peer = record(gateway);
+  const supported = peer.supported_capabilities;
+  const required = peer.required_capabilities;
+  if (
+    record(peer.protocol_version).major !== 1 ||
+    !Array.isArray(supported) ||
+    !supported.includes(contractCapability) ||
+    !Array.isArray(required) ||
+    !required.includes(contractCapability) ||
+    !required.every((capability) => capability === contractCapability)
+  ) {
+    return undefined;
+  }
+  const bindings = policySet ? [1, 2] : [1];
+  return {
+    name: "oce-online-request-authorization",
+    expected_audience: audience,
+    extension: {
+      protocol_version: { major: 1, minor: 0 },
+      implementation_name: policySet?.implementation ?? "oce/online-request-authorization",
+      implementation_version: policySet?.version ?? "1",
+      supported_capabilities: [contractCapability],
+      required_capabilities: [contractCapability],
+    },
+    bindings: bindings.map((operation) => ({
+      operation,
+      phase: 1,
+      max_payload_bytes: 4 * 1024 * 1024,
+    })),
+  };
+}
+
+/** Serves the OpenShell supervisor's pre-credential request checks over gRPC. */
 export function createOpenShellOnlineHttpAuthority(
   options: OpenShellOnlineHttpAuthorityOptions,
 ): Server {
@@ -236,7 +275,6 @@ export function createOpenShellOnlineHttpAuthority(
   ) {
     throw new Error("Invalid OpenShell online authorization configuration.");
   }
-  const { service } = loadOpenShellMiddleware();
   const server = new Server({ "grpc.max_receive_message_length": 5 * 1024 * 1024 });
   const claims = (call: Pick<ServerUnaryCall<Wire, Wire>, "metadata">) =>
     verifier.verify(middlewareBearer(call.metadata));
@@ -261,16 +299,11 @@ export function createOpenShellOnlineHttpAuthority(
   // Waiting for a WebSocket frame must never consume HTTP authorization slots.
   let pendingPreflights = 0;
   const sandboxPreflights = new Map<string, number>();
-  server.addService(service.SupervisorMiddleware!.service, {
+  server.addService(loadOpenShellMiddleware(), {
     Describe(call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) {
       const description =
         control(claims(call)) &&
-        describeOpenShellMiddleware(
-          call.request.gateway,
-          options.identity.audience,
-          "online-request-authorization",
-          options.httpPolicySet,
-        );
+        describeMiddleware(call.request.gateway, options.identity.audience, options.httpPolicySet);
       if (description) {
         callback(null, description);
       } else {

@@ -240,7 +240,7 @@ async function createTokenServiceConsoleFixture(t: TestContext) {
   namespaceLifecycleBindings.push(
     sandboxNamespaceLifecycleBinding(computeDriver, sandbox, delivery),
   );
-  fixture.controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
+  fixture.controller.installDriver(delivery, ["sandbox", "credential_proxy"]);
   return fixture;
 }
 

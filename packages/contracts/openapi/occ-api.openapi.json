@@ -850,598 +850,6 @@
           "data": {
             "anyOf": [
               {
-                "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "config": {
-                        "additionalProperties": {
-                          "maxLength": 2048,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "description": "Non-secret source configuration keyed by catalog field name.",
-                        "maxProperties": 32,
-                        "type": "object"
-                      },
-                      "connectionTemplateId": {
-                        "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "createdAt": { "format": "date-time", "type": "string" },
-                      "id": {
-                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "name": {
-                        "maxLength": 200,
-                        "minLength": 1,
-                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                        "type": "string"
-                      },
-                      "namespaceId": {
-                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "ref": {
-                        "additionalProperties": false,
-                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                        "properties": {
-                          "id": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "credential_source", "type": "string" },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          }
-                        },
-                        "required": ["kind", "namespaceId", "id"],
-                        "type": "object"
-                      },
-                      "state": {
-                        "anyOf": [
-                          { "const": "ready", "type": "string" },
-                          { "const": "deleting", "type": "string" }
-                        ]
-                      },
-                      "status": {
-                        "additionalProperties": false,
-                        "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                        "properties": {
-                          "reason": { "maxLength": 512, "type": "string" },
-                          "refresh": {
-                            "additionalProperties": false,
-                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                            "properties": {
-                              "expiresAt": { "format": "date-time", "type": "string" },
-                              "failureCode": { "maxLength": 128, "type": "string" },
-                              "lastRefreshAt": { "format": "date-time", "type": "string" },
-                              "nextRefreshAt": { "format": "date-time", "type": "string" },
-                              "recoveryAction": {
-                                "anyOf": [
-                                  { "const": "retry", "type": "string" },
-                                  { "const": "reauthorize", "type": "string" },
-                                  { "const": "fix_configuration", "type": "string" },
-                                  { "const": "investigate", "type": "string" }
-                                ]
-                              },
-                              "state": {
-                                "anyOf": [
-                                  { "const": "pending", "type": "string" },
-                                  { "const": "ready", "type": "string" },
-                                  { "const": "failed", "type": "string" }
-                                ]
-                              }
-                            },
-                            "required": ["state"],
-                            "type": "object"
-                          },
-                          "state": {
-                            "anyOf": [
-                              { "const": "ready", "type": "string" },
-                              { "const": "pending", "type": "string" },
-                              { "const": "failed", "type": "string" },
-                              { "const": "absent", "type": "string" }
-                            ]
-                          }
-                        },
-                        "required": ["state"],
-                        "type": "object"
-                      },
-                      "type": { "const": "static", "type": "string" }
-                    },
-                    "required": [
-                      "id",
-                      "namespaceId",
-                      "name",
-                      "state",
-                      "createdAt",
-                      "ref",
-                      "type",
-                      "config"
-                    ],
-                    "type": "object"
-                  },
-                  {
-                    "anyOf": [
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "connectionTemplateId": {
-                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "consent": {
-                            "additionalProperties": false,
-                            "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
-                            "properties": {
-                              "clientId": { "type": "string" },
-                              "destinations": {
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "host": { "type": "string" },
-                                    "path": { "type": "string" },
-                                    "port": { "type": "integer" }
-                                  },
-                                  "required": ["host", "port", "path"],
-                                  "type": "object"
-                                },
-                                "type": "array"
-                              },
-                              "grantedScopes": {
-                                "items": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "issuer": { "type": "string" },
-                              "kind": { "const": "connection_template", "type": "string" },
-                              "mcpServerUrl": { "type": "string" },
-                              "oauthClientId": { "type": "string" },
-                              "ownerPrincipalId": { "type": "string" },
-                              "requestedScopes": {
-                                "items": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "resource": { "type": "string" },
-                              "revocationRequestedBy": { "type": "string" },
-                              "revokedAt": { "format": "date-time", "type": "string" },
-                              "tokenUrl": { "type": "string" },
-                              "version": { "minimum": 1, "type": "integer" }
-                            },
-                            "required": [
-                              "ownerPrincipalId",
-                              "requestedScopes",
-                              "grantedScopes",
-                              "kind",
-                              "version",
-                              "oauthClientId",
-                              "issuer",
-                              "tokenUrl",
-                              "clientId",
-                              "destinations"
-                            ],
-                            "type": "object"
-                          },
-                          "createdAt": { "format": "date-time", "type": "string" },
-                          "id": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "name": {
-                            "maxLength": 200,
-                            "minLength": 1,
-                            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                            "type": "string"
-                          },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "ref": {
-                            "additionalProperties": false,
-                            "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                            "properties": {
-                              "id": {
-                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "kind": { "const": "credential_source", "type": "string" },
-                              "namespaceId": {
-                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["kind", "namespaceId", "id"],
-                            "type": "object"
-                          },
-                          "state": {
-                            "anyOf": [
-                              { "const": "ready", "type": "string" },
-                              { "const": "deleting", "type": "string" }
-                            ]
-                          },
-                          "status": {
-                            "additionalProperties": false,
-                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                            "properties": {
-                              "reason": { "maxLength": 512, "type": "string" },
-                              "refresh": {
-                                "additionalProperties": false,
-                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                "properties": {
-                                  "expiresAt": { "format": "date-time", "type": "string" },
-                                  "failureCode": { "maxLength": 128, "type": "string" },
-                                  "lastRefreshAt": { "format": "date-time", "type": "string" },
-                                  "nextRefreshAt": { "format": "date-time", "type": "string" },
-                                  "recoveryAction": {
-                                    "anyOf": [
-                                      { "const": "retry", "type": "string" },
-                                      { "const": "reauthorize", "type": "string" },
-                                      { "const": "fix_configuration", "type": "string" },
-                                      { "const": "investigate", "type": "string" }
-                                    ]
-                                  },
-                                  "state": {
-                                    "anyOf": [
-                                      { "const": "pending", "type": "string" },
-                                      { "const": "ready", "type": "string" },
-                                      { "const": "failed", "type": "string" }
-                                    ]
-                                  }
-                                },
-                                "required": ["state"],
-                                "type": "object"
-                              },
-                              "state": {
-                                "anyOf": [
-                                  { "const": "ready", "type": "string" },
-                                  { "const": "pending", "type": "string" },
-                                  { "const": "failed", "type": "string" },
-                                  { "const": "absent", "type": "string" }
-                                ]
-                              }
-                            },
-                            "required": ["state"],
-                            "type": "object"
-                          },
-                          "type": { "const": "oauth2-refresh-token", "type": "string" }
-                        },
-                        "required": [
-                          "id",
-                          "namespaceId",
-                          "name",
-                          "state",
-                          "createdAt",
-                          "ref",
-                          "type",
-                          "connectionTemplateId",
-                          "consent"
-                        ],
-                        "type": "object"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "properties": {
-                          "consent": {
-                            "additionalProperties": false,
-                            "description": "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
-                            "properties": {
-                              "account": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "accountId": {
-                                    "maxLength": 512,
-                                    "minLength": 1,
-                                    "type": "string"
-                                  },
-                                  "accountUserId": {
-                                    "maxLength": 512,
-                                    "minLength": 1,
-                                    "type": "string"
-                                  },
-                                  "email": { "maxLength": 512, "minLength": 1, "type": "string" },
-                                  "isFedramp": { "type": "boolean" },
-                                  "planType": {
-                                    "maxLength": 512,
-                                    "minLength": 1,
-                                    "type": "string"
-                                  },
-                                  "userId": { "maxLength": 512, "minLength": 1, "type": "string" }
-                                },
-                                "required": ["accountId", "planType", "isFedramp"],
-                                "type": "object"
-                              },
-                              "clientId": { "type": "string" },
-                              "grantedScopes": {
-                                "items": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "issuer": { "type": "string" },
-                              "kind": { "const": "builtin_codex", "type": "string" },
-                              "ownerPrincipalId": { "type": "string" },
-                              "requestedScopes": {
-                                "items": {
-                                  "maxLength": 512,
-                                  "minLength": 1,
-                                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                  "type": "string"
-                                },
-                                "type": "array"
-                              },
-                              "revocationRequestedBy": { "type": "string" },
-                              "revokedAt": { "format": "date-time", "type": "string" },
-                              "tokenUrl": { "type": "string" }
-                            },
-                            "required": [
-                              "ownerPrincipalId",
-                              "requestedScopes",
-                              "grantedScopes",
-                              "kind",
-                              "issuer",
-                              "tokenUrl",
-                              "clientId",
-                              "account"
-                            ],
-                            "type": "object"
-                          },
-                          "createdAt": { "format": "date-time", "type": "string" },
-                          "id": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "name": {
-                            "maxLength": 200,
-                            "minLength": 1,
-                            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                            "type": "string"
-                          },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "ref": {
-                            "additionalProperties": false,
-                            "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                            "properties": {
-                              "id": {
-                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "kind": { "const": "credential_source", "type": "string" },
-                              "namespaceId": {
-                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              }
-                            },
-                            "required": ["kind", "namespaceId", "id"],
-                            "type": "object"
-                          },
-                          "state": {
-                            "anyOf": [
-                              { "const": "ready", "type": "string" },
-                              { "const": "deleting", "type": "string" }
-                            ]
-                          },
-                          "status": {
-                            "additionalProperties": false,
-                            "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                            "properties": {
-                              "reason": { "maxLength": 512, "type": "string" },
-                              "refresh": {
-                                "additionalProperties": false,
-                                "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                "properties": {
-                                  "expiresAt": { "format": "date-time", "type": "string" },
-                                  "failureCode": { "maxLength": 128, "type": "string" },
-                                  "lastRefreshAt": { "format": "date-time", "type": "string" },
-                                  "nextRefreshAt": { "format": "date-time", "type": "string" },
-                                  "recoveryAction": {
-                                    "anyOf": [
-                                      { "const": "retry", "type": "string" },
-                                      { "const": "reauthorize", "type": "string" },
-                                      { "const": "fix_configuration", "type": "string" },
-                                      { "const": "investigate", "type": "string" }
-                                    ]
-                                  },
-                                  "state": {
-                                    "anyOf": [
-                                      { "const": "pending", "type": "string" },
-                                      { "const": "ready", "type": "string" },
-                                      { "const": "failed", "type": "string" }
-                                    ]
-                                  }
-                                },
-                                "required": ["state"],
-                                "type": "object"
-                              },
-                              "state": {
-                                "anyOf": [
-                                  { "const": "ready", "type": "string" },
-                                  { "const": "pending", "type": "string" },
-                                  { "const": "failed", "type": "string" },
-                                  { "const": "absent", "type": "string" }
-                                ]
-                              }
-                            },
-                            "required": ["state"],
-                            "type": "object"
-                          },
-                          "type": { "const": "oauth2-refresh-token", "type": "string" }
-                        },
-                        "required": [
-                          "id",
-                          "namespaceId",
-                          "name",
-                          "state",
-                          "createdAt",
-                          "ref",
-                          "type",
-                          "consent"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "clientId": {
-                        "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "createdAt": { "format": "date-time", "type": "string" },
-                      "id": {
-                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "name": {
-                        "maxLength": 200,
-                        "minLength": 1,
-                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                        "type": "string"
-                      },
-                      "namespaceId": {
-                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                        "type": "string"
-                      },
-                      "ref": {
-                        "additionalProperties": false,
-                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                        "properties": {
-                          "id": {
-                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          },
-                          "kind": { "const": "credential_source", "type": "string" },
-                          "namespaceId": {
-                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                            "type": "string"
-                          }
-                        },
-                        "required": ["kind", "namespaceId", "id"],
-                        "type": "object"
-                      },
-                      "scope": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                          "installationId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
-                          "permissions": {
-                            "additionalProperties": {
-                              "anyOf": [
-                                { "const": "read", "type": "string" },
-                                { "const": "write", "type": "string" }
-                              ]
-                            },
-                            "minProperties": 1,
-                            "type": "object"
-                          },
-                          "repositories": {
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "repository": { "minLength": 3, "type": "string" },
-                                "repositoryId": {
-                                  "pattern": "^[1-9][0-9]{0,15}$",
-                                  "type": "string"
-                                }
-                              },
-                              "required": ["repositoryId", "repository"],
-                              "type": "object"
-                            },
-                            "maxItems": 16,
-                            "minItems": 1,
-                            "type": "array"
-                          }
-                        },
-                        "required": ["appId", "installationId", "repositories", "permissions"],
-                        "type": "object"
-                      },
-                      "state": {
-                        "anyOf": [
-                          { "const": "ready", "type": "string" },
-                          { "const": "deleting", "type": "string" }
-                        ]
-                      },
-                      "status": {
-                        "additionalProperties": false,
-                        "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                        "properties": {
-                          "reason": { "maxLength": 512, "type": "string" },
-                          "refresh": {
-                            "additionalProperties": false,
-                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                            "properties": {
-                              "expiresAt": { "format": "date-time", "type": "string" },
-                              "failureCode": { "maxLength": 128, "type": "string" },
-                              "lastRefreshAt": { "format": "date-time", "type": "string" },
-                              "nextRefreshAt": { "format": "date-time", "type": "string" },
-                              "recoveryAction": {
-                                "anyOf": [
-                                  { "const": "retry", "type": "string" },
-                                  { "const": "reauthorize", "type": "string" },
-                                  { "const": "fix_configuration", "type": "string" },
-                                  { "const": "investigate", "type": "string" }
-                                ]
-                              },
-                              "state": {
-                                "anyOf": [
-                                  { "const": "pending", "type": "string" },
-                                  { "const": "ready", "type": "string" },
-                                  { "const": "failed", "type": "string" }
-                                ]
-                              }
-                            },
-                            "required": ["state"],
-                            "type": "object"
-                          },
-                          "state": {
-                            "anyOf": [
-                              { "const": "ready", "type": "string" },
-                              { "const": "pending", "type": "string" },
-                              { "const": "failed", "type": "string" },
-                              { "const": "absent", "type": "string" }
-                            ]
-                          }
-                        },
-                        "required": ["state"],
-                        "type": "object"
-                      },
-                      "type": { "const": "github-app-installation", "type": "string" }
-                    },
-                    "required": [
-                      "id",
-                      "namespaceId",
-                      "name",
-                      "state",
-                      "createdAt",
-                      "ref",
-                      "type",
-                      "clientId",
-                      "scope"
-                    ],
-                    "type": "object"
-                  }
-                ]
-              },
-              {
                 "additionalProperties": false,
                 "properties": {
                   "config": {
@@ -1450,22 +858,11 @@
                     "maxProperties": 32,
                     "type": "object"
                   },
-                  "egress": {
-                    "additionalProperties": false,
-                    "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
-                    "properties": {
-                      "adoption": {
-                        "anyOf": [
-                          { "const": "live", "type": "string" },
-                          { "const": "prepared", "type": "string" },
-                          { "const": "credential_free", "type": "string" }
-                        ]
-                      },
-                      "retention": { "const": "none", "type": "string" }
-                    },
-                    "required": ["adoption", "retention"],
-                    "type": "object"
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
                   },
+                  "createdAt": { "format": "date-time", "type": "string" },
                   "id": {
                     "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
@@ -1479,12 +876,6 @@
                   "namespaceId": {
                     "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                     "type": "string"
-                  },
-                  "ownerCapability": {
-                    "anyOf": [
-                      { "const": "credential_gateway", "type": "string" },
-                      { "const": "credential_proxy", "type": "string" }
-                    ]
                   },
                   "ref": {
                     "additionalProperties": false,
@@ -1503,38 +894,15 @@
                     "required": ["kind", "namespaceId", "id"],
                     "type": "object"
                   },
-                  "secrets": {
-                    "additionalProperties": {
-                      "additionalProperties": false,
-                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                      "properties": {
-                        "id": {
-                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        },
-                        "kind": { "const": "secret", "type": "string" },
-                        "namespaceId": {
-                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                          "type": "string"
-                        }
-                      },
-                      "required": ["kind", "namespaceId", "id"],
-                      "type": "object"
-                    },
-                    "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                    "maxProperties": 16,
-                    "type": "object"
-                  },
                   "state": {
                     "anyOf": [
-                      { "const": "registering", "type": "string" },
                       { "const": "ready", "type": "string" },
                       { "const": "deleting", "type": "string" }
                     ]
                   },
                   "status": {
                     "additionalProperties": false,
-                    "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                    "description": "Source admission or owner status. This field contains no credential values.",
                     "properties": {
                       "reason": { "maxLength": 512, "type": "string" },
                       "refresh": {
@@ -1576,24 +944,481 @@
                     "required": ["state"],
                     "type": "object"
                   },
-                  "type": {
-                    "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                    "maxLength": 64,
-                    "minLength": 1,
-                    "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                    "type": "string"
-                  }
+                  "type": { "const": "static", "type": "string" }
                 },
                 "required": [
                   "id",
                   "namespaceId",
                   "name",
-                  "type",
-                  "ownerCapability",
-                  "config",
-                  "secrets",
                   "state",
-                  "ref"
+                  "createdAt",
+                  "ref",
+                  "type",
+                  "config"
+                ],
+                "type": "object"
+              },
+              {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "connectionTemplateId": {
+                        "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "consent": {
+                        "additionalProperties": false,
+                        "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+                        "properties": {
+                          "clientId": { "type": "string" },
+                          "destinations": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "grantedScopes": {
+                            "items": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "issuer": { "type": "string" },
+                          "kind": { "const": "connection_template", "type": "string" },
+                          "mcpServerUrl": { "type": "string" },
+                          "oauthClientId": { "type": "string" },
+                          "ownerPrincipalId": { "type": "string" },
+                          "requestedScopes": {
+                            "items": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "resource": { "type": "string" },
+                          "revocationRequestedBy": { "type": "string" },
+                          "revokedAt": { "format": "date-time", "type": "string" },
+                          "tokenUrl": { "type": "string" },
+                          "version": { "minimum": 1, "type": "integer" }
+                        },
+                        "required": [
+                          "ownerPrincipalId",
+                          "requestedScopes",
+                          "grantedScopes",
+                          "kind",
+                          "version",
+                          "oauthClientId",
+                          "issuer",
+                          "tokenUrl",
+                          "clientId",
+                          "destinations"
+                        ],
+                        "type": "object"
+                      },
+                      "createdAt": { "format": "date-time", "type": "string" },
+                      "id": {
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                        "type": "string"
+                      },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "ref": {
+                        "additionalProperties": false,
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                        "properties": {
+                          "id": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "credential_source", "type": "string" },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["kind", "namespaceId", "id"],
+                        "type": "object"
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "ready", "type": "string" },
+                          { "const": "deleting", "type": "string" }
+                        ]
+                      },
+                      "status": {
+                        "additionalProperties": false,
+                        "description": "Source admission or owner status. This field contains no credential values.",
+                        "properties": {
+                          "reason": { "maxLength": 512, "type": "string" },
+                          "refresh": {
+                            "additionalProperties": false,
+                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                            "properties": {
+                              "expiresAt": { "format": "date-time", "type": "string" },
+                              "failureCode": { "maxLength": 128, "type": "string" },
+                              "lastRefreshAt": { "format": "date-time", "type": "string" },
+                              "nextRefreshAt": { "format": "date-time", "type": "string" },
+                              "recoveryAction": {
+                                "anyOf": [
+                                  { "const": "retry", "type": "string" },
+                                  { "const": "reauthorize", "type": "string" },
+                                  { "const": "fix_configuration", "type": "string" },
+                                  { "const": "investigate", "type": "string" }
+                                ]
+                              },
+                              "state": {
+                                "anyOf": [
+                                  { "const": "pending", "type": "string" },
+                                  { "const": "ready", "type": "string" },
+                                  { "const": "failed", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["state"],
+                            "type": "object"
+                          },
+                          "state": {
+                            "anyOf": [
+                              { "const": "ready", "type": "string" },
+                              { "const": "pending", "type": "string" },
+                              { "const": "failed", "type": "string" },
+                              { "const": "absent", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["state"],
+                        "type": "object"
+                      },
+                      "type": { "const": "oauth2-refresh-token", "type": "string" }
+                    },
+                    "required": [
+                      "id",
+                      "namespaceId",
+                      "name",
+                      "state",
+                      "createdAt",
+                      "ref",
+                      "type",
+                      "connectionTemplateId",
+                      "consent"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "consent": {
+                        "additionalProperties": false,
+                        "description": "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
+                        "properties": {
+                          "account": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "accountId": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "accountUserId": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "email": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "isFedramp": { "type": "boolean" },
+                              "planType": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "userId": { "maxLength": 512, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["accountId", "planType", "isFedramp"],
+                            "type": "object"
+                          },
+                          "clientId": { "type": "string" },
+                          "grantedScopes": {
+                            "items": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "issuer": { "type": "string" },
+                          "kind": { "const": "builtin_codex", "type": "string" },
+                          "ownerPrincipalId": { "type": "string" },
+                          "requestedScopes": {
+                            "items": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "revocationRequestedBy": { "type": "string" },
+                          "revokedAt": { "format": "date-time", "type": "string" },
+                          "tokenUrl": { "type": "string" }
+                        },
+                        "required": [
+                          "ownerPrincipalId",
+                          "requestedScopes",
+                          "grantedScopes",
+                          "kind",
+                          "issuer",
+                          "tokenUrl",
+                          "clientId",
+                          "account"
+                        ],
+                        "type": "object"
+                      },
+                      "createdAt": { "format": "date-time", "type": "string" },
+                      "id": {
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "name": {
+                        "maxLength": 200,
+                        "minLength": 1,
+                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                        "type": "string"
+                      },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "ref": {
+                        "additionalProperties": false,
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                        "properties": {
+                          "id": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "kind": { "const": "credential_source", "type": "string" },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": ["kind", "namespaceId", "id"],
+                        "type": "object"
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "ready", "type": "string" },
+                          { "const": "deleting", "type": "string" }
+                        ]
+                      },
+                      "status": {
+                        "additionalProperties": false,
+                        "description": "Source admission or owner status. This field contains no credential values.",
+                        "properties": {
+                          "reason": { "maxLength": 512, "type": "string" },
+                          "refresh": {
+                            "additionalProperties": false,
+                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                            "properties": {
+                              "expiresAt": { "format": "date-time", "type": "string" },
+                              "failureCode": { "maxLength": 128, "type": "string" },
+                              "lastRefreshAt": { "format": "date-time", "type": "string" },
+                              "nextRefreshAt": { "format": "date-time", "type": "string" },
+                              "recoveryAction": {
+                                "anyOf": [
+                                  { "const": "retry", "type": "string" },
+                                  { "const": "reauthorize", "type": "string" },
+                                  { "const": "fix_configuration", "type": "string" },
+                                  { "const": "investigate", "type": "string" }
+                                ]
+                              },
+                              "state": {
+                                "anyOf": [
+                                  { "const": "pending", "type": "string" },
+                                  { "const": "ready", "type": "string" },
+                                  { "const": "failed", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["state"],
+                            "type": "object"
+                          },
+                          "state": {
+                            "anyOf": [
+                              { "const": "ready", "type": "string" },
+                              { "const": "pending", "type": "string" },
+                              { "const": "failed", "type": "string" },
+                              { "const": "absent", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["state"],
+                        "type": "object"
+                      },
+                      "type": { "const": "oauth2-refresh-token", "type": "string" }
+                    },
+                    "required": [
+                      "id",
+                      "namespaceId",
+                      "name",
+                      "state",
+                      "createdAt",
+                      "ref",
+                      "type",
+                      "consent"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "clientId": {
+                    "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "createdAt": { "format": "date-time", "type": "string" },
+                  "id": {
+                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                    "type": "string"
+                  },
+                  "namespaceId": {
+                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "ref": {
+                    "additionalProperties": false,
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                    "properties": {
+                      "id": {
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      },
+                      "kind": { "const": "credential_source", "type": "string" },
+                      "namespaceId": {
+                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["kind", "namespaceId", "id"],
+                    "type": "object"
+                  },
+                  "scope": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                      "installationId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                      "permissions": {
+                        "additionalProperties": {
+                          "anyOf": [
+                            { "const": "read", "type": "string" },
+                            { "const": "write", "type": "string" }
+                          ]
+                        },
+                        "minProperties": 1,
+                        "type": "object"
+                      },
+                      "repositories": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "repository": { "minLength": 3, "type": "string" },
+                            "repositoryId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" }
+                          },
+                          "required": ["repositoryId", "repository"],
+                          "type": "object"
+                        },
+                        "maxItems": 16,
+                        "minItems": 1,
+                        "type": "array"
+                      }
+                    },
+                    "required": ["appId", "installationId", "repositories", "permissions"],
+                    "type": "object"
+                  },
+                  "state": {
+                    "anyOf": [
+                      { "const": "ready", "type": "string" },
+                      { "const": "deleting", "type": "string" }
+                    ]
+                  },
+                  "status": {
+                    "additionalProperties": false,
+                    "description": "Source admission or owner status. This field contains no credential values.",
+                    "properties": {
+                      "reason": { "maxLength": 512, "type": "string" },
+                      "refresh": {
+                        "additionalProperties": false,
+                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                        "properties": {
+                          "expiresAt": { "format": "date-time", "type": "string" },
+                          "failureCode": { "maxLength": 128, "type": "string" },
+                          "lastRefreshAt": { "format": "date-time", "type": "string" },
+                          "nextRefreshAt": { "format": "date-time", "type": "string" },
+                          "recoveryAction": {
+                            "anyOf": [
+                              { "const": "retry", "type": "string" },
+                              { "const": "reauthorize", "type": "string" },
+                              { "const": "fix_configuration", "type": "string" },
+                              { "const": "investigate", "type": "string" }
+                            ]
+                          },
+                          "state": {
+                            "anyOf": [
+                              { "const": "pending", "type": "string" },
+                              { "const": "ready", "type": "string" },
+                              { "const": "failed", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": ["state"],
+                        "type": "object"
+                      },
+                      "state": {
+                        "anyOf": [
+                          { "const": "ready", "type": "string" },
+                          { "const": "pending", "type": "string" },
+                          { "const": "failed", "type": "string" },
+                          { "const": "absent", "type": "string" }
+                        ]
+                      }
+                    },
+                    "required": ["state"],
+                    "type": "object"
+                  },
+                  "type": { "const": "github-app-installation", "type": "string" }
+                },
+                "required": [
+                  "id",
+                  "namespaceId",
+                  "name",
+                  "state",
+                  "createdAt",
+                  "ref",
+                  "type",
+                  "clientId",
+                  "scope"
                 ],
                 "type": "object"
               }
@@ -2019,11 +1844,6 @@
                   { "const": "INTERNAL_ERROR", "type": "string" },
                   { "const": "DEPENDENCY_UNAVAILABLE", "type": "string" },
                   {
-                    "const": "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
-                    "description": "The operation requires a configured Credential Gateway.",
-                    "type": "string"
-                  },
-                  {
                     "const": "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
                     "description": "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
                     "type": "string"
@@ -2119,11 +1939,6 @@
                 "type": "array"
               },
               "message": { "maxLength": 256, "minLength": 1, "type": "string" },
-              "reason": {
-                "const": "credential_registration_pending",
-                "description": "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
-                "type": "string"
-              },
               "remainingResources": {
                 "description": "Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others.",
                 "items": {
@@ -14625,88 +14440,6 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
-                            "credentialSources": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "types": {
-                                  "items": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "config": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "deviceAuthorization": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "harnessId": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["harnessId"],
-                                        "type": "object"
-                                      },
-                                      "harnessAuth": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "loginMode": {
-                                            "anyOf": [
-                                              { "const": "api_key", "type": "string" },
-                                              { "const": "codex_pat", "type": "string" },
-                                              { "const": "chatgptAuthTokens", "type": "string" }
-                                            ]
-                                          },
-                                          "modelProvider": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["modelProvider", "loginMode"],
-                                        "type": "object"
-                                      },
-                                      "rotation": {
-                                        "anyOf": [
-                                          { "const": "none", "type": "string" },
-                                          { "const": "external", "type": "string" },
-                                          { "const": "refresh", "type": "string" }
-                                        ]
-                                      },
-                                      "secrets": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "type": {
-                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                                        "maxLength": 64,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["type", "config", "secrets", "rotation"],
-                                    "type": "object"
-                                  },
-                                  "type": "array"
-                                }
-                              },
-                              "required": ["types"],
-                              "type": "object"
-                            },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
                             "modelCredentialSourcePresets": {
                               "items": {
@@ -15059,88 +14792,6 @@
                                 }
                               },
                               "required": ["executionModes"],
-                              "type": "object"
-                            },
-                            "credentialSources": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "types": {
-                                  "items": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "config": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "deviceAuthorization": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "harnessId": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["harnessId"],
-                                        "type": "object"
-                                      },
-                                      "harnessAuth": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "loginMode": {
-                                            "anyOf": [
-                                              { "const": "api_key", "type": "string" },
-                                              { "const": "codex_pat", "type": "string" },
-                                              { "const": "chatgptAuthTokens", "type": "string" }
-                                            ]
-                                          },
-                                          "modelProvider": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["modelProvider", "loginMode"],
-                                        "type": "object"
-                                      },
-                                      "rotation": {
-                                        "anyOf": [
-                                          { "const": "none", "type": "string" },
-                                          { "const": "external", "type": "string" },
-                                          { "const": "refresh", "type": "string" }
-                                        ]
-                                      },
-                                      "secrets": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "type": {
-                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                                        "maxLength": 64,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["type", "config", "secrets", "rotation"],
-                                    "type": "object"
-                                  },
-                                  "type": "array"
-                                }
-                              },
-                              "required": ["types"],
                               "type": "object"
                             },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
@@ -17329,88 +16980,6 @@
                           "additionalProperties": false,
                           "description": "The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration.",
                           "properties": {
-                            "credentialSources": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "types": {
-                                  "items": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "config": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "deviceAuthorization": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "harnessId": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["harnessId"],
-                                        "type": "object"
-                                      },
-                                      "harnessAuth": {
-                                        "additionalProperties": false,
-                                        "properties": {
-                                          "loginMode": {
-                                            "anyOf": [
-                                              { "const": "api_key", "type": "string" },
-                                              { "const": "codex_pat", "type": "string" },
-                                              { "const": "chatgptAuthTokens", "type": "string" }
-                                            ]
-                                          },
-                                          "modelProvider": { "minLength": 1, "type": "string" }
-                                        },
-                                        "required": ["modelProvider", "loginMode"],
-                                        "type": "object"
-                                      },
-                                      "rotation": {
-                                        "anyOf": [
-                                          { "const": "none", "type": "string" },
-                                          { "const": "external", "type": "string" },
-                                          { "const": "refresh", "type": "string" }
-                                        ]
-                                      },
-                                      "secrets": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "description": { "type": "string" },
-                                            "issuerRotated": { "type": "boolean" },
-                                            "name": { "minLength": 1, "type": "string" },
-                                            "required": { "type": "boolean" }
-                                          },
-                                          "required": ["name", "required"],
-                                          "type": "object"
-                                        },
-                                        "type": "array"
-                                      },
-                                      "type": {
-                                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                                        "maxLength": 64,
-                                        "minLength": 1,
-                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["type", "config", "secrets", "rotation"],
-                                    "type": "object"
-                                  },
-                                  "type": "array"
-                                }
-                              },
-                              "required": ["types"],
-                              "type": "object"
-                            },
                             "deviceAuthorization": { "const": true, "type": "boolean" },
                             "modelCredentialSourcePresets": {
                               "items": {
@@ -25741,7 +25310,7 @@
                           "type": "string"
                         },
                         "reason": {
-                          "description": "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation.",
+                          "description": "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while Compute has not confirmed revocation.",
                           "pattern": "^[A-Z0-9_]{1,64}$",
                           "type": "string"
                         },
@@ -25762,7 +25331,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve."
+                          "description": "`revoked` only after Compute confirms that the Agent revision can no longer use the Source."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
@@ -25967,7 +25536,7 @@
                           "type": "string"
                         },
                         "reason": {
-                          "description": "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation.",
+                          "description": "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while Compute has not confirmed revocation.",
                           "pattern": "^[A-Z0-9_]{1,64}$",
                           "type": "string"
                         },
@@ -25988,7 +25557,7 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve."
+                          "description": "`revoked` only after Compute confirms that the Agent revision can no longer use the Source."
                         },
                         "withdrawalInProgress": {
                           "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
@@ -40714,662 +40283,6 @@
                       "items": {
                         "anyOf": [
                           {
-                            "anyOf": [
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "config": {
-                                    "additionalProperties": {
-                                      "maxLength": 2048,
-                                      "minLength": 1,
-                                      "type": "string"
-                                    },
-                                    "description": "Non-secret source configuration keyed by catalog field name.",
-                                    "maxProperties": 32,
-                                    "type": "object"
-                                  },
-                                  "connectionTemplateId": {
-                                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "createdAt": { "format": "date-time", "type": "string" },
-                                  "id": {
-                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "name": {
-                                    "maxLength": 200,
-                                    "minLength": 1,
-                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                    "type": "string"
-                                  },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "ref": {
-                                    "additionalProperties": false,
-                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                                    "properties": {
-                                      "id": {
-                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "credential_source", "type": "string" },
-                                      "namespaceId": {
-                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["kind", "namespaceId", "id"],
-                                    "type": "object"
-                                  },
-                                  "state": {
-                                    "anyOf": [
-                                      { "const": "ready", "type": "string" },
-                                      { "const": "deleting", "type": "string" }
-                                    ]
-                                  },
-                                  "status": {
-                                    "additionalProperties": false,
-                                    "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                                    "properties": {
-                                      "reason": { "maxLength": 512, "type": "string" },
-                                      "refresh": {
-                                        "additionalProperties": false,
-                                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                        "properties": {
-                                          "expiresAt": { "format": "date-time", "type": "string" },
-                                          "failureCode": { "maxLength": 128, "type": "string" },
-                                          "lastRefreshAt": {
-                                            "format": "date-time",
-                                            "type": "string"
-                                          },
-                                          "nextRefreshAt": {
-                                            "format": "date-time",
-                                            "type": "string"
-                                          },
-                                          "recoveryAction": {
-                                            "anyOf": [
-                                              { "const": "retry", "type": "string" },
-                                              { "const": "reauthorize", "type": "string" },
-                                              { "const": "fix_configuration", "type": "string" },
-                                              { "const": "investigate", "type": "string" }
-                                            ]
-                                          },
-                                          "state": {
-                                            "anyOf": [
-                                              { "const": "pending", "type": "string" },
-                                              { "const": "ready", "type": "string" },
-                                              { "const": "failed", "type": "string" }
-                                            ]
-                                          }
-                                        },
-                                        "required": ["state"],
-                                        "type": "object"
-                                      },
-                                      "state": {
-                                        "anyOf": [
-                                          { "const": "ready", "type": "string" },
-                                          { "const": "pending", "type": "string" },
-                                          { "const": "failed", "type": "string" },
-                                          { "const": "absent", "type": "string" }
-                                        ]
-                                      }
-                                    },
-                                    "required": ["state"],
-                                    "type": "object"
-                                  },
-                                  "type": { "const": "static", "type": "string" }
-                                },
-                                "required": [
-                                  "id",
-                                  "namespaceId",
-                                  "name",
-                                  "state",
-                                  "createdAt",
-                                  "ref",
-                                  "type",
-                                  "config"
-                                ],
-                                "type": "object"
-                              },
-                              {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "connectionTemplateId": {
-                                        "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "consent": {
-                                        "additionalProperties": false,
-                                        "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
-                                        "properties": {
-                                          "clientId": { "type": "string" },
-                                          "destinations": {
-                                            "items": {
-                                              "additionalProperties": false,
-                                              "properties": {
-                                                "host": { "type": "string" },
-                                                "path": { "type": "string" },
-                                                "port": { "type": "integer" }
-                                              },
-                                              "required": ["host", "port", "path"],
-                                              "type": "object"
-                                            },
-                                            "type": "array"
-                                          },
-                                          "grantedScopes": {
-                                            "items": {
-                                              "maxLength": 512,
-                                              "minLength": 1,
-                                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                              "type": "string"
-                                            },
-                                            "type": "array"
-                                          },
-                                          "issuer": { "type": "string" },
-                                          "kind": {
-                                            "const": "connection_template",
-                                            "type": "string"
-                                          },
-                                          "mcpServerUrl": { "type": "string" },
-                                          "oauthClientId": { "type": "string" },
-                                          "ownerPrincipalId": { "type": "string" },
-                                          "requestedScopes": {
-                                            "items": {
-                                              "maxLength": 512,
-                                              "minLength": 1,
-                                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                              "type": "string"
-                                            },
-                                            "type": "array"
-                                          },
-                                          "resource": { "type": "string" },
-                                          "revocationRequestedBy": { "type": "string" },
-                                          "revokedAt": { "format": "date-time", "type": "string" },
-                                          "tokenUrl": { "type": "string" },
-                                          "version": { "minimum": 1, "type": "integer" }
-                                        },
-                                        "required": [
-                                          "ownerPrincipalId",
-                                          "requestedScopes",
-                                          "grantedScopes",
-                                          "kind",
-                                          "version",
-                                          "oauthClientId",
-                                          "issuer",
-                                          "tokenUrl",
-                                          "clientId",
-                                          "destinations"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      "createdAt": { "format": "date-time", "type": "string" },
-                                      "id": {
-                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "name": {
-                                        "maxLength": 200,
-                                        "minLength": 1,
-                                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                        "type": "string"
-                                      },
-                                      "namespaceId": {
-                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "ref": {
-                                        "additionalProperties": false,
-                                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                                        "properties": {
-                                          "id": {
-                                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          },
-                                          "kind": {
-                                            "const": "credential_source",
-                                            "type": "string"
-                                          },
-                                          "namespaceId": {
-                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": ["kind", "namespaceId", "id"],
-                                        "type": "object"
-                                      },
-                                      "state": {
-                                        "anyOf": [
-                                          { "const": "ready", "type": "string" },
-                                          { "const": "deleting", "type": "string" }
-                                        ]
-                                      },
-                                      "status": {
-                                        "additionalProperties": false,
-                                        "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                                        "properties": {
-                                          "reason": { "maxLength": 512, "type": "string" },
-                                          "refresh": {
-                                            "additionalProperties": false,
-                                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                            "properties": {
-                                              "expiresAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "failureCode": { "maxLength": 128, "type": "string" },
-                                              "lastRefreshAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "nextRefreshAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "recoveryAction": {
-                                                "anyOf": [
-                                                  { "const": "retry", "type": "string" },
-                                                  { "const": "reauthorize", "type": "string" },
-                                                  {
-                                                    "const": "fix_configuration",
-                                                    "type": "string"
-                                                  },
-                                                  { "const": "investigate", "type": "string" }
-                                                ]
-                                              },
-                                              "state": {
-                                                "anyOf": [
-                                                  { "const": "pending", "type": "string" },
-                                                  { "const": "ready", "type": "string" },
-                                                  { "const": "failed", "type": "string" }
-                                                ]
-                                              }
-                                            },
-                                            "required": ["state"],
-                                            "type": "object"
-                                          },
-                                          "state": {
-                                            "anyOf": [
-                                              { "const": "ready", "type": "string" },
-                                              { "const": "pending", "type": "string" },
-                                              { "const": "failed", "type": "string" },
-                                              { "const": "absent", "type": "string" }
-                                            ]
-                                          }
-                                        },
-                                        "required": ["state"],
-                                        "type": "object"
-                                      },
-                                      "type": { "const": "oauth2-refresh-token", "type": "string" }
-                                    },
-                                    "required": [
-                                      "id",
-                                      "namespaceId",
-                                      "name",
-                                      "state",
-                                      "createdAt",
-                                      "ref",
-                                      "type",
-                                      "connectionTemplateId",
-                                      "consent"
-                                    ],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "consent": {
-                                        "additionalProperties": false,
-                                        "description": "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
-                                        "properties": {
-                                          "account": {
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "accountId": {
-                                                "maxLength": 512,
-                                                "minLength": 1,
-                                                "type": "string"
-                                              },
-                                              "accountUserId": {
-                                                "maxLength": 512,
-                                                "minLength": 1,
-                                                "type": "string"
-                                              },
-                                              "email": {
-                                                "maxLength": 512,
-                                                "minLength": 1,
-                                                "type": "string"
-                                              },
-                                              "isFedramp": { "type": "boolean" },
-                                              "planType": {
-                                                "maxLength": 512,
-                                                "minLength": 1,
-                                                "type": "string"
-                                              },
-                                              "userId": {
-                                                "maxLength": 512,
-                                                "minLength": 1,
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": ["accountId", "planType", "isFedramp"],
-                                            "type": "object"
-                                          },
-                                          "clientId": { "type": "string" },
-                                          "grantedScopes": {
-                                            "items": {
-                                              "maxLength": 512,
-                                              "minLength": 1,
-                                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                              "type": "string"
-                                            },
-                                            "type": "array"
-                                          },
-                                          "issuer": { "type": "string" },
-                                          "kind": { "const": "builtin_codex", "type": "string" },
-                                          "ownerPrincipalId": { "type": "string" },
-                                          "requestedScopes": {
-                                            "items": {
-                                              "maxLength": 512,
-                                              "minLength": 1,
-                                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
-                                              "type": "string"
-                                            },
-                                            "type": "array"
-                                          },
-                                          "revocationRequestedBy": { "type": "string" },
-                                          "revokedAt": { "format": "date-time", "type": "string" },
-                                          "tokenUrl": { "type": "string" }
-                                        },
-                                        "required": [
-                                          "ownerPrincipalId",
-                                          "requestedScopes",
-                                          "grantedScopes",
-                                          "kind",
-                                          "issuer",
-                                          "tokenUrl",
-                                          "clientId",
-                                          "account"
-                                        ],
-                                        "type": "object"
-                                      },
-                                      "createdAt": { "format": "date-time", "type": "string" },
-                                      "id": {
-                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "name": {
-                                        "maxLength": 200,
-                                        "minLength": 1,
-                                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                        "type": "string"
-                                      },
-                                      "namespaceId": {
-                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "ref": {
-                                        "additionalProperties": false,
-                                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                                        "properties": {
-                                          "id": {
-                                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          },
-                                          "kind": {
-                                            "const": "credential_source",
-                                            "type": "string"
-                                          },
-                                          "namespaceId": {
-                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": ["kind", "namespaceId", "id"],
-                                        "type": "object"
-                                      },
-                                      "state": {
-                                        "anyOf": [
-                                          { "const": "ready", "type": "string" },
-                                          { "const": "deleting", "type": "string" }
-                                        ]
-                                      },
-                                      "status": {
-                                        "additionalProperties": false,
-                                        "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                                        "properties": {
-                                          "reason": { "maxLength": 512, "type": "string" },
-                                          "refresh": {
-                                            "additionalProperties": false,
-                                            "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                            "properties": {
-                                              "expiresAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "failureCode": { "maxLength": 128, "type": "string" },
-                                              "lastRefreshAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "nextRefreshAt": {
-                                                "format": "date-time",
-                                                "type": "string"
-                                              },
-                                              "recoveryAction": {
-                                                "anyOf": [
-                                                  { "const": "retry", "type": "string" },
-                                                  { "const": "reauthorize", "type": "string" },
-                                                  {
-                                                    "const": "fix_configuration",
-                                                    "type": "string"
-                                                  },
-                                                  { "const": "investigate", "type": "string" }
-                                                ]
-                                              },
-                                              "state": {
-                                                "anyOf": [
-                                                  { "const": "pending", "type": "string" },
-                                                  { "const": "ready", "type": "string" },
-                                                  { "const": "failed", "type": "string" }
-                                                ]
-                                              }
-                                            },
-                                            "required": ["state"],
-                                            "type": "object"
-                                          },
-                                          "state": {
-                                            "anyOf": [
-                                              { "const": "ready", "type": "string" },
-                                              { "const": "pending", "type": "string" },
-                                              { "const": "failed", "type": "string" },
-                                              { "const": "absent", "type": "string" }
-                                            ]
-                                          }
-                                        },
-                                        "required": ["state"],
-                                        "type": "object"
-                                      },
-                                      "type": { "const": "oauth2-refresh-token", "type": "string" }
-                                    },
-                                    "required": [
-                                      "id",
-                                      "namespaceId",
-                                      "name",
-                                      "state",
-                                      "createdAt",
-                                      "ref",
-                                      "type",
-                                      "consent"
-                                    ],
-                                    "type": "object"
-                                  }
-                                ]
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "clientId": {
-                                    "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "createdAt": { "format": "date-time", "type": "string" },
-                                  "id": {
-                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "name": {
-                                    "maxLength": 200,
-                                    "minLength": 1,
-                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                    "type": "string"
-                                  },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "ref": {
-                                    "additionalProperties": false,
-                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                                    "properties": {
-                                      "id": {
-                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      },
-                                      "kind": { "const": "credential_source", "type": "string" },
-                                      "namespaceId": {
-                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["kind", "namespaceId", "id"],
-                                    "type": "object"
-                                  },
-                                  "scope": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "appId": {
-                                        "pattern": "^[1-9][0-9]{0,15}$",
-                                        "type": "string"
-                                      },
-                                      "installationId": {
-                                        "pattern": "^[1-9][0-9]{0,15}$",
-                                        "type": "string"
-                                      },
-                                      "permissions": {
-                                        "additionalProperties": {
-                                          "anyOf": [
-                                            { "const": "read", "type": "string" },
-                                            { "const": "write", "type": "string" }
-                                          ]
-                                        },
-                                        "minProperties": 1,
-                                        "type": "object"
-                                      },
-                                      "repositories": {
-                                        "items": {
-                                          "additionalProperties": false,
-                                          "properties": {
-                                            "repository": { "minLength": 3, "type": "string" },
-                                            "repositoryId": {
-                                              "pattern": "^[1-9][0-9]{0,15}$",
-                                              "type": "string"
-                                            }
-                                          },
-                                          "required": ["repositoryId", "repository"],
-                                          "type": "object"
-                                        },
-                                        "maxItems": 16,
-                                        "minItems": 1,
-                                        "type": "array"
-                                      }
-                                    },
-                                    "required": [
-                                      "appId",
-                                      "installationId",
-                                      "repositories",
-                                      "permissions"
-                                    ],
-                                    "type": "object"
-                                  },
-                                  "state": {
-                                    "anyOf": [
-                                      { "const": "ready", "type": "string" },
-                                      { "const": "deleting", "type": "string" }
-                                    ]
-                                  },
-                                  "status": {
-                                    "additionalProperties": false,
-                                    "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
-                                    "properties": {
-                                      "reason": { "maxLength": 512, "type": "string" },
-                                      "refresh": {
-                                        "additionalProperties": false,
-                                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
-                                        "properties": {
-                                          "expiresAt": { "format": "date-time", "type": "string" },
-                                          "failureCode": { "maxLength": 128, "type": "string" },
-                                          "lastRefreshAt": {
-                                            "format": "date-time",
-                                            "type": "string"
-                                          },
-                                          "nextRefreshAt": {
-                                            "format": "date-time",
-                                            "type": "string"
-                                          },
-                                          "recoveryAction": {
-                                            "anyOf": [
-                                              { "const": "retry", "type": "string" },
-                                              { "const": "reauthorize", "type": "string" },
-                                              { "const": "fix_configuration", "type": "string" },
-                                              { "const": "investigate", "type": "string" }
-                                            ]
-                                          },
-                                          "state": {
-                                            "anyOf": [
-                                              { "const": "pending", "type": "string" },
-                                              { "const": "ready", "type": "string" },
-                                              { "const": "failed", "type": "string" }
-                                            ]
-                                          }
-                                        },
-                                        "required": ["state"],
-                                        "type": "object"
-                                      },
-                                      "state": {
-                                        "anyOf": [
-                                          { "const": "ready", "type": "string" },
-                                          { "const": "pending", "type": "string" },
-                                          { "const": "failed", "type": "string" },
-                                          { "const": "absent", "type": "string" }
-                                        ]
-                                      }
-                                    },
-                                    "required": ["state"],
-                                    "type": "object"
-                                  },
-                                  "type": { "const": "github-app-installation", "type": "string" }
-                                },
-                                "required": [
-                                  "id",
-                                  "namespaceId",
-                                  "name",
-                                  "state",
-                                  "createdAt",
-                                  "ref",
-                                  "type",
-                                  "clientId",
-                                  "scope"
-                                ],
-                                "type": "object"
-                              }
-                            ]
-                          },
-                          {
                             "additionalProperties": false,
                             "properties": {
                               "config": {
@@ -41382,22 +40295,11 @@
                                 "maxProperties": 32,
                                 "type": "object"
                               },
-                              "egress": {
-                                "additionalProperties": false,
-                                "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
-                                "properties": {
-                                  "adoption": {
-                                    "anyOf": [
-                                      { "const": "live", "type": "string" },
-                                      { "const": "prepared", "type": "string" },
-                                      { "const": "credential_free", "type": "string" }
-                                    ]
-                                  },
-                                  "retention": { "const": "none", "type": "string" }
-                                },
-                                "required": ["adoption", "retention"],
-                                "type": "object"
+                              "connectionTemplateId": {
+                                "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
                               },
+                              "createdAt": { "format": "date-time", "type": "string" },
                               "id": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
@@ -41411,12 +40313,6 @@
                               "namespaceId": {
                                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
-                              },
-                              "ownerCapability": {
-                                "anyOf": [
-                                  { "const": "credential_gateway", "type": "string" },
-                                  { "const": "credential_proxy", "type": "string" }
-                                ]
                               },
                               "ref": {
                                 "additionalProperties": false,
@@ -41435,38 +40331,15 @@
                                 "required": ["kind", "namespaceId", "id"],
                                 "type": "object"
                               },
-                              "secrets": {
-                                "additionalProperties": {
-                                  "additionalProperties": false,
-                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                  "properties": {
-                                    "id": {
-                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    },
-                                    "kind": { "const": "secret", "type": "string" },
-                                    "namespaceId": {
-                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": ["kind", "namespaceId", "id"],
-                                  "type": "object"
-                                },
-                                "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                                "maxProperties": 16,
-                                "type": "object"
-                              },
                               "state": {
                                 "anyOf": [
-                                  { "const": "registering", "type": "string" },
                                   { "const": "ready", "type": "string" },
                                   { "const": "deleting", "type": "string" }
                                 ]
                               },
                               "status": {
                                 "additionalProperties": false,
-                                "description": "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+                                "description": "Source admission or owner status. This field contains no credential values.",
                                 "properties": {
                                   "reason": { "maxLength": 512, "type": "string" },
                                   "refresh": {
@@ -41508,24 +40381,520 @@
                                 "required": ["state"],
                                 "type": "object"
                               },
-                              "type": {
-                                "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                                "maxLength": 64,
-                                "minLength": 1,
-                                "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                                "type": "string"
-                              }
+                              "type": { "const": "static", "type": "string" }
                             },
                             "required": [
                               "id",
                               "namespaceId",
                               "name",
-                              "type",
-                              "ownerCapability",
-                              "config",
-                              "secrets",
                               "state",
-                              "ref"
+                              "createdAt",
+                              "ref",
+                              "type",
+                              "config"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "connectionTemplateId": {
+                                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "consent": {
+                                    "additionalProperties": false,
+                                    "description": "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+                                    "properties": {
+                                      "clientId": { "type": "string" },
+                                      "destinations": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "host": { "type": "string" },
+                                            "path": { "type": "string" },
+                                            "port": { "type": "integer" }
+                                          },
+                                          "required": ["host", "port", "path"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "grantedScopes": {
+                                        "items": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "issuer": { "type": "string" },
+                                      "kind": { "const": "connection_template", "type": "string" },
+                                      "mcpServerUrl": { "type": "string" },
+                                      "oauthClientId": { "type": "string" },
+                                      "ownerPrincipalId": { "type": "string" },
+                                      "requestedScopes": {
+                                        "items": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "resource": { "type": "string" },
+                                      "revocationRequestedBy": { "type": "string" },
+                                      "revokedAt": { "format": "date-time", "type": "string" },
+                                      "tokenUrl": { "type": "string" },
+                                      "version": { "minimum": 1, "type": "integer" }
+                                    },
+                                    "required": [
+                                      "ownerPrincipalId",
+                                      "requestedScopes",
+                                      "grantedScopes",
+                                      "kind",
+                                      "version",
+                                      "oauthClientId",
+                                      "issuer",
+                                      "tokenUrl",
+                                      "clientId",
+                                      "destinations"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "createdAt": { "format": "date-time", "type": "string" },
+                                  "id": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "maxLength": 200,
+                                    "minLength": 1,
+                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                    "type": "string"
+                                  },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "ref": {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "deleting", "type": "string" }
+                                    ]
+                                  },
+                                  "status": {
+                                    "additionalProperties": false,
+                                    "description": "Source admission or owner status. This field contains no credential values.",
+                                    "properties": {
+                                      "reason": { "maxLength": 512, "type": "string" },
+                                      "refresh": {
+                                        "additionalProperties": false,
+                                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                        "properties": {
+                                          "expiresAt": { "format": "date-time", "type": "string" },
+                                          "failureCode": { "maxLength": 128, "type": "string" },
+                                          "lastRefreshAt": {
+                                            "format": "date-time",
+                                            "type": "string"
+                                          },
+                                          "nextRefreshAt": {
+                                            "format": "date-time",
+                                            "type": "string"
+                                          },
+                                          "recoveryAction": {
+                                            "anyOf": [
+                                              { "const": "retry", "type": "string" },
+                                              { "const": "reauthorize", "type": "string" },
+                                              { "const": "fix_configuration", "type": "string" },
+                                              { "const": "investigate", "type": "string" }
+                                            ]
+                                          },
+                                          "state": {
+                                            "anyOf": [
+                                              { "const": "pending", "type": "string" },
+                                              { "const": "ready", "type": "string" },
+                                              { "const": "failed", "type": "string" }
+                                            ]
+                                          }
+                                        },
+                                        "required": ["state"],
+                                        "type": "object"
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "ready", "type": "string" },
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "failed", "type": "string" },
+                                          { "const": "absent", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "type": "object"
+                                  },
+                                  "type": { "const": "oauth2-refresh-token", "type": "string" }
+                                },
+                                "required": [
+                                  "id",
+                                  "namespaceId",
+                                  "name",
+                                  "state",
+                                  "createdAt",
+                                  "ref",
+                                  "type",
+                                  "connectionTemplateId",
+                                  "consent"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "consent": {
+                                    "additionalProperties": false,
+                                    "description": "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
+                                    "properties": {
+                                      "account": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "accountId": {
+                                            "maxLength": 512,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "accountUserId": {
+                                            "maxLength": 512,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "email": {
+                                            "maxLength": 512,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "isFedramp": { "type": "boolean" },
+                                          "planType": {
+                                            "maxLength": 512,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          },
+                                          "userId": {
+                                            "maxLength": 512,
+                                            "minLength": 1,
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["accountId", "planType", "isFedramp"],
+                                        "type": "object"
+                                      },
+                                      "clientId": { "type": "string" },
+                                      "grantedScopes": {
+                                        "items": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "issuer": { "type": "string" },
+                                      "kind": { "const": "builtin_codex", "type": "string" },
+                                      "ownerPrincipalId": { "type": "string" },
+                                      "requestedScopes": {
+                                        "items": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                                          "type": "string"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "revocationRequestedBy": { "type": "string" },
+                                      "revokedAt": { "format": "date-time", "type": "string" },
+                                      "tokenUrl": { "type": "string" }
+                                    },
+                                    "required": [
+                                      "ownerPrincipalId",
+                                      "requestedScopes",
+                                      "grantedScopes",
+                                      "kind",
+                                      "issuer",
+                                      "tokenUrl",
+                                      "clientId",
+                                      "account"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "createdAt": { "format": "date-time", "type": "string" },
+                                  "id": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "maxLength": 200,
+                                    "minLength": 1,
+                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                    "type": "string"
+                                  },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "ref": {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "deleting", "type": "string" }
+                                    ]
+                                  },
+                                  "status": {
+                                    "additionalProperties": false,
+                                    "description": "Source admission or owner status. This field contains no credential values.",
+                                    "properties": {
+                                      "reason": { "maxLength": 512, "type": "string" },
+                                      "refresh": {
+                                        "additionalProperties": false,
+                                        "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                        "properties": {
+                                          "expiresAt": { "format": "date-time", "type": "string" },
+                                          "failureCode": { "maxLength": 128, "type": "string" },
+                                          "lastRefreshAt": {
+                                            "format": "date-time",
+                                            "type": "string"
+                                          },
+                                          "nextRefreshAt": {
+                                            "format": "date-time",
+                                            "type": "string"
+                                          },
+                                          "recoveryAction": {
+                                            "anyOf": [
+                                              { "const": "retry", "type": "string" },
+                                              { "const": "reauthorize", "type": "string" },
+                                              { "const": "fix_configuration", "type": "string" },
+                                              { "const": "investigate", "type": "string" }
+                                            ]
+                                          },
+                                          "state": {
+                                            "anyOf": [
+                                              { "const": "pending", "type": "string" },
+                                              { "const": "ready", "type": "string" },
+                                              { "const": "failed", "type": "string" }
+                                            ]
+                                          }
+                                        },
+                                        "required": ["state"],
+                                        "type": "object"
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "ready", "type": "string" },
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "failed", "type": "string" },
+                                          { "const": "absent", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "type": "object"
+                                  },
+                                  "type": { "const": "oauth2-refresh-token", "type": "string" }
+                                },
+                                "required": [
+                                  "id",
+                                  "namespaceId",
+                                  "name",
+                                  "state",
+                                  "createdAt",
+                                  "ref",
+                                  "type",
+                                  "consent"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "clientId": {
+                                "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "createdAt": { "format": "date-time", "type": "string" },
+                              "id": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "name": {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                "type": "string"
+                              },
+                              "namespaceId": {
+                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              },
+                              "ref": {
+                                "additionalProperties": false,
+                                "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                "properties": {
+                                  "id": {
+                                    "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  },
+                                  "kind": { "const": "credential_source", "type": "string" },
+                                  "namespaceId": {
+                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["kind", "namespaceId", "id"],
+                                "type": "object"
+                              },
+                              "scope": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "appId": { "pattern": "^[1-9][0-9]{0,15}$", "type": "string" },
+                                  "installationId": {
+                                    "pattern": "^[1-9][0-9]{0,15}$",
+                                    "type": "string"
+                                  },
+                                  "permissions": {
+                                    "additionalProperties": {
+                                      "anyOf": [
+                                        { "const": "read", "type": "string" },
+                                        { "const": "write", "type": "string" }
+                                      ]
+                                    },
+                                    "minProperties": 1,
+                                    "type": "object"
+                                  },
+                                  "repositories": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "repository": { "minLength": 3, "type": "string" },
+                                        "repositoryId": {
+                                          "pattern": "^[1-9][0-9]{0,15}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["repositoryId", "repository"],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 16,
+                                    "minItems": 1,
+                                    "type": "array"
+                                  }
+                                },
+                                "required": [
+                                  "appId",
+                                  "installationId",
+                                  "repositories",
+                                  "permissions"
+                                ],
+                                "type": "object"
+                              },
+                              "state": {
+                                "anyOf": [
+                                  { "const": "ready", "type": "string" },
+                                  { "const": "deleting", "type": "string" }
+                                ]
+                              },
+                              "status": {
+                                "additionalProperties": false,
+                                "description": "Source admission or owner status. This field contains no credential values.",
+                                "properties": {
+                                  "reason": { "maxLength": 512, "type": "string" },
+                                  "refresh": {
+                                    "additionalProperties": false,
+                                    "description": "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
+                                    "properties": {
+                                      "expiresAt": { "format": "date-time", "type": "string" },
+                                      "failureCode": { "maxLength": 128, "type": "string" },
+                                      "lastRefreshAt": { "format": "date-time", "type": "string" },
+                                      "nextRefreshAt": { "format": "date-time", "type": "string" },
+                                      "recoveryAction": {
+                                        "anyOf": [
+                                          { "const": "retry", "type": "string" },
+                                          { "const": "reauthorize", "type": "string" },
+                                          { "const": "fix_configuration", "type": "string" },
+                                          { "const": "investigate", "type": "string" }
+                                        ]
+                                      },
+                                      "state": {
+                                        "anyOf": [
+                                          { "const": "pending", "type": "string" },
+                                          { "const": "ready", "type": "string" },
+                                          { "const": "failed", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["state"],
+                                    "type": "object"
+                                  },
+                                  "state": {
+                                    "anyOf": [
+                                      { "const": "ready", "type": "string" },
+                                      { "const": "pending", "type": "string" },
+                                      { "const": "failed", "type": "string" },
+                                      { "const": "absent", "type": "string" }
+                                    ]
+                                  }
+                                },
+                                "required": ["state"],
+                                "type": "object"
+                              },
+                              "type": { "const": "github-app-installation", "type": "string" }
+                            },
+                            "required": [
+                              "id",
+                              "namespaceId",
+                              "name",
+                              "state",
+                              "createdAt",
+                              "ref",
+                              "type",
+                              "clientId",
+                              "scope"
                             ],
                             "type": "object"
                           }
@@ -41652,59 +41021,6 @@
               },
               "schema": {
                 "anyOf": [
-                  {
-                    "additionalProperties": false,
-                    "description": "Register a prepared or credential-free Source offered by the selected Credential Proxy.",
-                    "properties": {
-                      "config": {
-                        "additionalProperties": {
-                          "maxLength": 2048,
-                          "minLength": 1,
-                          "type": "string"
-                        },
-                        "description": "Non-secret source configuration keyed by catalog field name.",
-                        "maxProperties": 32,
-                        "type": "object"
-                      },
-                      "name": {
-                        "maxLength": 200,
-                        "minLength": 1,
-                        "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                        "type": "string"
-                      },
-                      "secrets": {
-                        "additionalProperties": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "description": "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
-                        "maxProperties": 16,
-                        "type": "object"
-                      },
-                      "type": {
-                        "description": "Source type accepted by the Driver registering the credential, for example `openai`.",
-                        "maxLength": 64,
-                        "minLength": 1,
-                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
-                        "type": "string"
-                      }
-                    },
-                    "required": ["name", "type"],
-                    "type": "object"
-                  },
                   { "$ref": "#/components/schemas/RegisterTokenServiceSourceBody" },
                   { "$ref": "#/components/schemas/RegisterGitHubAppTokenServiceSourceBody" }
                 ]
@@ -41839,7 +41155,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a credential source",
+        "summary": "Register a TokenService credential source",
         "tags": ["Credential sources"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
@@ -41944,16 +41260,10 @@
                 "examples": {
                   "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
                 },
-                "schema": { "allOf": [{ "$ref": "#/components/schemas/def-7" }] }
+                "schema": { "$ref": "#/components/schemas/def-7" }
               }
             },
-            "description": "A required dependency is unavailable.",
-            "headers": {
-              "Retry-After": {
-                "description": "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
-                "schema": { "pattern": "^[1-9][0-9]*$", "type": "string" }
-              }
-            }
+            "description": "A required dependency is unavailable."
           }
         },
         "summary": "Remove an unreferenced credential source",
@@ -42082,6 +41392,15 @@
               }
             },
             "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
           },
           "500": {
             "content": {

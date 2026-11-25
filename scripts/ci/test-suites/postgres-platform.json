@@ -51,35 +51,22 @@
     "tests/integration/postgres-controller-work-targets.test.ts",
     "tests/integration/postgres-transaction-commit.test.ts",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
-    "tests/integration/postgres-static-egress.test.ts",
-    "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-repository-git-broker.test.ts",
     "tests/integration/postgres-prepared-receipt-restart.test.ts",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
-    "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-prepared-git-route-selection.test.ts",
-    "tests/integration/postgres-openshell-git-routes.test.ts",
-    "tests/integration/postgres-openshell-standing-route.test.ts",
-    "tests/integration/postgres-external-protected-git.test.ts",
-    "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
-    "tests/integration/postgres-egress-send-receipts.test.ts",
-    "tests/integration/postgres-protected-credential-free.test.ts",
     "tests/integration/postgres-standing-approval-api.test.ts",
     "tests/integration/postgres-standing-repository-boundary.test.ts",
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts",
-    "tests/integration/credential-proxy-revision-currentness.test.ts",
-    "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-worker-process-shutdown.test.ts",
     "tests/integration/postgres-preset-template-validation.test.ts",
     "tests/integration/postgres-readiness-capacity.test.ts",
     "tests/integration/postgres-private-secret-create.test.ts",
-    "tests/integration/postgres-iam-durable-authority.test.ts",
-    "tests/integration/postgres-egress-replacement.test.ts"
+    "tests/integration/postgres-iam-durable-authority.test.ts"
   ],
   "files": [
     {
@@ -439,12 +426,6 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-prepared-token-service.test.ts",
-      "expectedTests": [
-        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue"
-      ]
-    },
-    {
       "path": "tests/integration/postgres-prepared-repository-git-broker.test.ts"
     },
     {
@@ -467,22 +448,6 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
-      "expectedTests": [
-        "only the installed Git recipient owner may use its material or retire its ended admission",
-        "changing between repository and installation scope waits for the previous owner to settle its token",
-        "a replacement Git Driver waits out a disposed standing predecessor without taking its custody",
-        "bundled OpenShell custody discovers and prepares a native v9 repository session",
-        "OpenShell preparation refuses historical custody and preserves v6 observed-hook custody",
-        "selected repository set retires after B session across owner restart",
-        "selected repository set retires after B replacement across owner restart",
-        "selected repository set retires after B deadline across owner restart",
-        "selected repository set retires after NULL selection across owner restart",
-        "selected repository set retires after empty selection across owner restart",
-        "only matching terminal OpenShell evidence retires selected custody while OCC admission stays live"
-      ]
-    },
-    {
       "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
       "expectedTests": [
         "standing removal orders native request authorization (removal first)",
@@ -502,65 +467,6 @@
       "path": "tests/integration/postgres-prepared-git-route-selection.test.ts",
       "expectedTests": [
         "prepared Git keeps the reserved route and rechecks a withdrawn grant before origin I/O"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-openshell-git-routes.test.ts",
-      "expectedTests": [
-        "finite Git removal is revision scoped and wins concurrent cold route adoption",
-        "OpenShell Git routes persist identity and custody facts under one fenced holder",
-        "a replacement lease cannot settle or replay an uncertain rotate installation",
-        "settlement policy and operation identity cannot be substituted",
-        "retained OpenShell detach settles after deletion without authorizing another apply"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-openshell-standing-route.test.ts",
-      "expectedTests": [
-        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
-        "uncertain preview release preserves fenced retirement with a fault before write",
-        "uncertain preview release preserves fenced retirement with a fault after commit",
-        "uncertain preview release preserves fenced retirement with a fault during worker replacement"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-external-protected-git.test.ts",
-      "expectedTests": [
-        "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
-        "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
-        "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
-        "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
-        "an installed external Driver pushes only the granted ref and opens one draft pull request under git-write until withdrawal",
-        "built-in repository policy admits authenticated native Git, survives worker restart, and denies withdrawn access",
-        "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
-        "a capable external Driver reduces finite Git binding removal on the original execution across worker replacement",
-        "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
-        "production composition separates repository policy from protected and explicitly selected native senders",
-        "external Git reduction authenticates and observes exact policy without mutation replay"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
-      "expectedTests": [
-        "historical v5 installation cannot renew and settles the original lost detach without replay"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-static-egress.test.ts"
-    },
-    {
-      "path": "tests/integration/postgres-egress-send-receipts.test.ts",
-      "expectedTests": [
-        "PostgreSQL send receipts survive owner loss and fence exact static versions",
-        "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",
-        "lost pre-send acknowledgment leaves possible evidence, never a retry verdict",
-        "closed outcomes, exact bindings, and concurrent duplicates preserve their original verdict"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-protected-credential-free.test.ts",
-      "expectedTests": [
-        "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
       ]
     },
     {
@@ -604,18 +510,6 @@
       ]
     },
     {
-      "path": "tests/integration/credential-proxy-withdrawal.test.ts",
-      "expectedTests": [
-        "Git reduction v7 preserves earlier admission meanings and rejects widening"
-      ]
-    },
-    {
-      "path": "tests/integration/credential-proxy-revision-currentness.test.ts",
-      "expectedTests": [
-        "credential exchange consults revision history only for inactive executions"
-      ]
-    },
-    {
       "path": "tests/integration/postgres-standing-expiry-authority.test.ts",
       "expectedTests": [
         "standing expiry worker distinguishes IAM denied",
@@ -646,40 +540,6 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
-      ]
-    },
-    {
-      "path": "tests/integration/postgres-egress-policy-transaction.test.ts",
-      "expectedTests": [
-        "memory: no material policy transaction - revoke first",
-        "memory: no material policy transaction - permit first",
-        "memory: no material policy transaction - lost commit reply",
-        "postgres: no material policy transaction - revoke first",
-        "postgres: no material policy transaction - permit first",
-        "postgres: no material policy transaction - lost commit reply",
-        "postgres: supported revoke waits for the final authorization transaction",
-        "postgres: native send reads policy after a pending withdrawal commits",
-        "directory: fresh final allow through authenticated exchange",
-        "directory: fresh final deny through authenticated exchange",
-        "directory: fresh final unavailable through authenticated exchange",
-        "callback: fresh final allow through authenticated exchange",
-        "callback: fresh final deny through authenticated exchange",
-        "callback: fresh final unavailable through authenticated exchange",
-        "memory: no material slow final runtime verification precedes the short send window",
-        "memory: no material slow final runtime verification does not block DELETE",
-        "postgres: no material slow final runtime verification precedes the short send window",
-        "postgres: no material slow final runtime verification does not block DELETE",
-        "postgres: external directory withdrawal after final read can race receipt commit",
-        "a short send window expiring after receipt commit cannot be renewed or replayed",
-        "final runtime verification false preserves refusal and audit meaning",
-        "final runtime verification unavailable preserves refusal and audit meaning",
-        "final runtime verification unknown preserves refusal and audit meaning",
-        "Compute placement ignores a resolver's own call through authenticated exchange",
-        "final placement binds the original Compute receiver",
-        "final placement binds the original Compute method",
-        "final placement binds the original Credential Proxy method",
-        "authorization throw before mint fences a retained callback",
-        "authorization throw after mint fences a retained callback"
       ]
     },
     {
@@ -719,9 +579,6 @@
       "expectedTests": [
         "durable authority writes order configured-policy withdrawal at the real callers"
       ]
-    },
-    {
-      "path": "tests/integration/postgres-egress-replacement.test.ts"
     }
   ]
 }

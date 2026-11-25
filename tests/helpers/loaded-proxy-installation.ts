@@ -10,13 +10,8 @@ import { temporaryDirectory } from "./temporary-directory.ts";
 export async function loadedProxyInstallation(
   t: Parameters<typeof temporaryDirectory>[0],
   input: {
-    profile: "repository" | "execution";
     id: string;
     registry: { backendId: string };
-    preview?: boolean;
-    tokenService?: true;
-    /** repository.preparedGitHub.apiOrigin; omitted selects github.com. */
-    apiOrigin?: string;
     createOpenShellBackend: NonNullable<
       Parameters<typeof loadInstallationConfiguration>[0]["createOpenShellBackend"]
     >;
@@ -26,43 +21,19 @@ export async function loadedProxyInstallation(
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(input.registry), { mode: 0o644 });
   const base = createCredentialProxyInstallationConfiguration();
-  const authority = base.drivers.credential_proxy.configuration.authority;
-  const repository = input.profile === "repository";
   const configuration = {
     ...base,
     backend: [
+      { ...base.backend[0], drivers: { sandbox: input.id } },
       {
-        ...base.backend[0],
-        configuration: {
-          ...base.backend[0]!.configuration,
-          ...(input.preview && {
-            auth: {
-              mode: "mtls",
-              certificatePath: join(directory, "client.crt"),
-              privateKeyPath: join(directory, "client.key"),
-            },
-          }),
-        },
-        drivers: {
-          ...base.backend[0]!.drivers,
-          sandbox: input.id,
-          credential_proxy: input.id,
-        },
+        id: input.registry.backendId,
+        type: "github",
+        configuration: { registryPath },
+        drivers: { repo: "repository-credentials" },
       },
-      ...(repository
-        ? [
-            {
-              id: input.registry.backendId,
-              type: "github",
-              configuration: { registryPath },
-              drivers: { repo: "repository-credentials" },
-            },
-          ]
-        : []),
     ],
     drivers: {
       ...base.drivers,
-      ...(input.tokenService && { token_service: { id: "occ", configuration: {} } }),
       sandbox: {
         ...base.drivers.sandbox,
         id: input.id,
@@ -71,25 +42,11 @@ export async function loadedProxyInstallation(
           kubernetes: { ...base.drivers.sandbox.configuration.kubernetes, userNamespaces: false },
         },
       },
-      credential_proxy: {
-        id: input.id,
-        configuration: repository
-          ? { ...(input.preview && { observedHookPreviewWorkspace: "preview-1" }) }
-          : base.drivers.credential_proxy.configuration,
-      },
     },
-    ...(repository && {
-      repository: {
-        id: "repository-credentials",
-        configuration: { sessionDurationSeconds: 600 },
-        preparedGitHub: {
-          custodyKeyPath: join(directory, "custody.key"),
-          privateKeyPath: join(directory, "app.pem"),
-          ...(input.apiOrigin && { apiOrigin: input.apiOrigin }),
-        },
-        openShell: { registrationName: "oce-prepared-git", authority },
-      },
-    }),
+    repository: {
+      id: "repository-credentials",
+      configuration: { sessionDurationSeconds: 600 },
+    },
   };
   const loaded = await loadInstallationFile(t, configuration, {
     mode: "development",

@@ -18,25 +18,21 @@ credential delivery and enables injection only for bindings and requests admitte
 in the Agent revision. `SandboxDriver` enforces network policy and routing;
 it does not delegate network authorization to the Proxy.
 
-The separate `LegacyEgressProxyDriver` credential-egress interface is deprecated
-and pending removal. Credential Design 1.0 retires its special protected
-metadata and repository exchanges instead of migrating them. The interface
-remains in current code until removal. Credential Gateway and
-Credential Refresh selections are retired and unsupported; their exported
-legacy contracts are deprecated pending removal.
+The native Driver owns the `credential_proxy` capability. The historical protected
+exchanges used a separate Driver that is retired.
 
 ## Interface
 
 The public [contracts entry point](../../../packages/contracts/src/index.ts)
-exports both interfaces. The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
+exports `CredentialProxyDriver`. The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 defines the canonical `CredentialProxyDriver` contract, which extends `Driver`.
 
 ### Properties
 
-| Property                                     | Requirement | Value and meaning                                     |
-| -------------------------------------------- | ----------- | ----------------------------------------------------- |
-| `id`, `implementation`                       | Required    | Identify the selected Driver and its implementation.  |
-| <a id="property-capability"></a>`capability` | Required    | `credential_proxy_delivery`; native managed delivery. |
+| Property                                     | Requirement | Value and meaning                                    |
+| -------------------------------------------- | ----------- | ---------------------------------------------------- |
+| `id`, `implementation`                       | Required    | Identify the selected Driver and its implementation. |
+| <a id="property-capability"></a>`capability` | Required    | `credential_proxy`; native managed delivery.         |
 
 ### Methods
 
@@ -54,12 +50,9 @@ Provider per projection. See [current support and limits](../credential-sources.
 
 <a id="legacy-protected-egress"></a>
 
-### Deprecated legacy protected egress
+### Historical protected egress
 
-`LegacyEgressProxyDriver` uses the `credential_proxy` capability. Do not select
-it for new workflows. Its protected exchange features are retired from 1.0. It
-is distinct from both native
-`CredentialProxyDriver` delivery and ordinary network egress.
+This section records the old contract for earlier releases.
 
 | Member               | Requirement | Retained behavior                                                                                            |
 | -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
@@ -162,7 +155,7 @@ TokenService retains Source custody until Source deletion.
 ## Configuration
 
 Select TokenService and a compatible Sandbox registration. The registration
-supplies `credential_proxy_delivery`; it has no separate Installation YAML
+supplies `credential_proxy`; it has no separate Installation YAML
 selector. See [supported selections](selection.md#supported-selections).
 
 ## Limits

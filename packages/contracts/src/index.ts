@@ -62,7 +62,6 @@ export type {
   CredentialSourceControl,
   CredentialUpdateNotification,
   CredentialProxyDriver,
-  LegacyEgressProxyDriver,
   CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
@@ -358,7 +357,6 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_proxy?: string;
     readonly token_service?: string;
   };
 }
