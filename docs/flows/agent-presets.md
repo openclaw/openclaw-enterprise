@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-22
-last_updated_session: authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d
+updated: 2026-11-25
+last_updated_session: authoring-run/45279767-5ec8-49ae-a32f-464aab2a86dc
 ---
 
 # Agent Presets flow
@@ -123,16 +123,14 @@ the grant get 403 before any body is read.
 
 `packages/occ/src/preset-operations.ts:createPreset`
 
-The [Preset operations module](../../packages/occ/src/preset-operations.ts) checks
-the exact collection grant, locks the Namespace, and checks the grant again and
-the ready state. It then calls [`normalizePresetTemplate`](../../packages/contracts/src/presets.ts).
-The normalizer copies the template and fills omitted `namespaceId` fields in
-Harness authentication and Configuration Secret binding sources from the locked
-Namespace. Explicit scopes remain unchanged for same-Namespace validation.
-Template structure, variable declarations, default types, and credential
-references are checked without requiring unfilled variables. Password definitions
-have no defaults and can appear only as whole tokens at `agent.harnessAuth.secret`;
-literal credentials and substitution into ordinary settings are rejected.
+[OCC](../../packages/occ/src/preset-operations.ts) checks the collection grant,
+locks the Namespace, rechecks permission and requires a ready Namespace.
+[`normalizePresetTemplate`](../../packages/contracts/src/presets.ts) copies the
+template and fills omitted `namespaceId` fields in Harness authentication and
+Configuration Secret binding sources. Explicit IDs must match the Namespace.
+Validation checks structure, declarations, default types and credential references.
+It rejects literal credentials. Password variables cannot have defaults and must
+occupy the entire `agent.harnessAuth.secret` field.
 `validatePresetLaunchFields` uses the shared tokenizer to distinguish declared,
 unescaped variable tokens from literal launch fields. Tokens wait for launch,
 including tokens with defaults; other text receives Agent create's rules.
@@ -144,17 +142,27 @@ reference. A missing Driver validation capability fails closed.
 
 `packages/occ/src/preset-operations.ts:updatePreset`
 
-PATCH checks the exact update grant in its transaction before locking the
-Namespace and checks it again under the lock before looking up the Preset.
-AccessBinding DELETE takes the same Namespace lock. With Native IAM on
-PostgreSQL at READ COMMITTED, PATCH returns 403 if DELETE commits first and
-removes the caller's update permission.
+PATCH checks `preset:update` on the target before and after locking the Namespace.
+It then locks the Preset and atomically replaces any submitted template in
+[`occ.presets`](../../packages/occ/src/state/postgres-state.ts).
 
-The [repository](../../packages/occ/src/state/postgres-state.ts) stores the whole
-template in `occ.presets`. PATCH then locks the Preset and replaces an included
-template atomically. Preset DELETE removes its exact IAM bindings in the transaction.
-Presets prevent Namespace deletion while present. The controller's normal audit
-path records mutations and denials without template or variable contents.
+`packages/occ/src/preset-operations.ts:deletePreset`
+
+The [DELETE handler](../../apps/controller/src/http/presets.ts) and OCC's
+`deletePreset` request `READ COMMITTED`. An enclosing transaction must
+explicitly request this isolation level. On PostgreSQL, `holdAuthority`
+locks the request session when present, then takes the shared IAM configuration
+lock. OCC checks `preset:delete` before lookup and locks the Namespace.
+`deletePresetInState` rechecks permission, locks the target and deletes its
+AccessBindings and the Preset. The handler commits the deletion and audit
+together. Locks last until the transaction ends.
+
+AccessBinding deletion takes the same Namespace lock. With Native IAM on
+PostgreSQL at `READ COMMITTED`, the recheck sees withdrawals committed during
+the wait. PATCH and DELETE return 403 if permission was lost. Mutation and
+denial audits omit templates and variable values. Namespace deletion can
+remove [unmodified defaults](../reference/presets.md#bundled-default-upgrades)
+in its own transaction.
 
 ### 3. Read and render the selected copy
 
@@ -300,8 +308,9 @@ or an immutable saved version.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.ts)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.ts) exercises
-  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
-  exercises the real selection form. Coverage names are not proof of a live model response.
+  persistence. The [concurrency test](../../tests/integration/postgres-preset-update-authority.test.ts)
+  orders competing lock requests. [Browser coverage](../../tests/browser/console-agent-presets.test.ts)
+  exercises the selection form.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)
   covers source builds with cold dependency caches behind an enforcing HTTPS
   proxy. It establishes required destinations for those targets, not native
@@ -321,6 +330,7 @@ or an immutable saved version.
 
 ## Changelog
 
+- 2026-11-25 06:43: Trace authorization and locking for direct Preset deletion. (authoring-run/45279767-5ec8-49ae-a32f-464aab2a86dc - 738d973508be39f8c8f426d7e4688d209d094404)
 - 2026-11-22 12:08: Explain how Preset PATCH rechecks the update grant under the Namespace lock. (authoring-run/fa04a724-f976-4d2d-8880-441c38f9f34d - ec37f064957a64fb8b8f4185ae17de6ca86f0b7a)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-10 23:35: Explain real-token Preset launch validation and deferred Gateway password references. (authoring-run/1321c9af-ae4c-4a8f-bf46-69a02bbb2a8d - 60cf8f904c39918ddd5b23a42fa2d7591c2eb193)
