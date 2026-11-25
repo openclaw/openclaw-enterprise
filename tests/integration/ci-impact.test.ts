@@ -4176,12 +4176,20 @@ test("full integration selects images and gates runtime artifact consumers", (t)
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: gateway,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: agent,
     };
+    // A release must build its own selected source even when the environment
+    // supplies image digests for ordinary manual and scheduled lanes.
+    for (const expression of Object.values(step.env)) {
+      assert.equal(evaluate(expression, { vars, inputs: { source_sha: "a".repeat(40) } }), "");
+    }
     const output = join(selectionDirectory, `output-${index}`);
     const result = spawnSync("bash", ["-e", "-c", present(step.run)], {
       env: {
         ...process.env,
         ...Object.fromEntries(
-          Object.entries(step.env).map(([name, value]) => [name, text(evaluate(value, { vars }))]),
+          Object.entries(step.env).map(([name, value]) => [
+            name,
+            text(evaluate(value, { vars, inputs: {} })),
+          ]),
         ),
         GITHUB_OUTPUT: output,
       },

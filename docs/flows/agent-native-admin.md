@@ -112,11 +112,10 @@ does not enroll devices or issue reusable device tokens. Existing helper-owned n
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayConfiguration`
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayRouteHeaderFilter`
 
-Preparation creates or reuses the revision's immutable browser Secret, mounted
-only in the Gateway. Configuration specifies its file; the protocol fixes
-authority and subject prefix.
-`/native-browser/` preserves delegated headers; machine/node routes remove the
-credential. Retirement removes the Secret, retaining native profiles.
+Compute mounts the immutable browser Secret only in the revision's Gateway.
+Inspected Repository deployments start from the read-only revision configuration.
+`/native-browser/` preserves delegated headers. Machine and node routes remove
+the credential. Retirement deletes the Secret and retains native profiles.
 
 ### 1. Console renders native admin availability
 

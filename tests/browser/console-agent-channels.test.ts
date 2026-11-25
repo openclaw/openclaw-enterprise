@@ -12,7 +12,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { responseTo } from "./console-action-helpers.ts";
 import {
@@ -1080,6 +1080,72 @@ describe("Agent channels", { concurrency: 3 }, () => {
       assert.doesNotMatch(await panel.innerText(), denial);
       assert.equal(await draftEntry.textContent(), "Draft · Editable Configuration");
       assert.equal(pathRequests(requests, "GET", permissionsPath).length, 8);
+
+      const readAnchor = () =>
+        tab.evaluate((control) => ({
+          top: control.getBoundingClientRect().top,
+          scroll: window.scrollY,
+          maxScroll: document.documentElement.scrollHeight - window.innerHeight,
+        }));
+      const expectSettledAnchor = async (previousTop: number, phase: string) => {
+        const { top, scroll, maxScroll } = await readAnchor();
+        const target = Math.max(0, Math.min(maxScroll, scroll + top - previousTop));
+        assert.ok(
+          Math.abs(scroll - target) <= 1,
+          `${phase}: Channels tab moved from ${previousTop} to ${top} at scroll ${scroll}, expected ${target} of ${maxScroll}`,
+        );
+        return top;
+      };
+      await edit.click();
+      const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+      const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+      await cancel.press("Enter");
+      await dialog.waitFor({ state: "detached" });
+      assert.equal(await hasFocus(edit), true, "Cancel restores Edit Slack focus");
+      await page.evaluate(() => {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+      });
+      const bottom = await readAnchor();
+      assert.ok(bottom.maxScroll > 0);
+      assert.equal(bottom.scroll, bottom.maxScroll, "the reader starts at the bottom");
+      assert.ok(bottom.top > 0 && bottom.top < viewport.height, "Channels tab starts in view");
+
+      // Use the settled scroll range. A shorter page can make the old screen position unreachable.
+      unavailable = true;
+      await recheck(503);
+      await expectUnconfirmed();
+      const unconfirmedTop = await expectSettledAnchor(bottom.top, "unavailable access");
+      assert.equal(await hasFocus(tab), true);
+      await recheck(200, true);
+      await waitForEnabled(edit);
+      await expectSettledAnchor(unconfirmedTop, "confirmed access");
+      assert.equal(await hasFocus(tab), true);
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 10);
+
+      // Returning to the browser tab must preserve arrow-key focus without activating it.
+      const strip = page.getByRole("tablist").filter({ has: tab });
+      const repositories = strip.getByRole("tab", { name: "Repositories", exact: true });
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await hasFocus(repositories), true);
+      assert.equal(await tab.getAttribute("aria-selected"), "true");
+      await recheck(200, true);
+      assert.equal(await hasFocus(repositories), true);
+      assert.equal(await tab.getAttribute("aria-selected"), "true");
+      const stops = await strip
+        .getByRole("tab")
+        .evaluateAll((tabs) =>
+          tabs.filter((item) => item.tabIndex >= 0).map((item) => item.textContent?.trim()),
+        );
+      await page.keyboard.press("Shift+Tab");
+      assert.equal(
+        await strip.evaluate((list) => list.matches(":focus-within")),
+        false,
+        "Shift+Tab leaves the Agent tabs in one step",
+      );
+      await page.keyboard.press("Tab");
+      assert.equal(await hasFocus(tab), true, "Tab returns to the selected Channels tab");
+      assert.deepEqual(stops, ["Repositories"]);
+      assert.equal(pathRequests(requests, "GET", permissionsPath).length, 11);
       assert.deepEqual(nonAuthWriteRequests(requests), []);
     });
   }

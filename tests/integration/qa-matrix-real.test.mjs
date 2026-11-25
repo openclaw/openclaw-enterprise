@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
@@ -200,14 +200,41 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
-    if (selection.gitModel) {
-      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+    if (selection.optionalPluginWithdrawal) {
+      const { verifyOpenShellOptionalPluginWithdrawal } =
+        await import("../helpers/openshell-optional-plugin-withdrawal.ts");
       await stage(
         context,
-        "kubernetes/Codex/OpenShell",
-        "fresh Gateway model delivery with and without Git access",
-        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
-        "openshell-git-model",
+        "kubernetes/OpenClaw/OpenShell",
+        "optional Slack withdrawal preserves other native bindings and Source custody",
+        () => verifyOpenShellOptionalPluginWithdrawal(context),
+        "openshell-optional-plugin-withdrawal",
+      );
+    }
+    if (selection.tokenServiceAgent) {
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "native Source custody, dedicated model turn, rotation and withdrawal",
+        async () => {
+          const env = { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" };
+          // The parent test runner marks its worker with this variable. Passing it to a new
+          // node --test process makes Node suppress the child suite as a recursive run.
+          delete env.NODE_TEST_CONTEXT;
+          const result = await promisify(execFile)(
+            process.execPath,
+            ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
+            {
+              env,
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /\btests 1(?:\r?\n|$)/);
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "openshell-token-service-agent",
       );
     }
     if (selection.oidcAgentChat) {

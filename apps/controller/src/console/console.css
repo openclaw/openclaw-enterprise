@@ -1070,6 +1070,7 @@ p {
   min-width: 0;
   height: 100%;
   min-height: 0;
+  scroll-margin-block: var(--space-2);
   padding: 0 var(--space-8) 0 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -3877,6 +3878,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   resize: vertical;
   font: var(--text-md)/1.6 var(--font-mono);
   tab-size: 2;
+}
+
+@media (max-height: 480px) {
+  .configuration-document .configuration-editor {
+    /* Leave room for a wrapped syntax diagnostic in short windows. */
+    height: calc(100dvh - 4lh);
+  }
 }
 
 .workspace-files .configuration-editor {

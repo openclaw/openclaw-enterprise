@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createConnection } from "node:net";
-import { repository, repositoryPath } from "../fixtures/egress-custody-repository-origin.mjs";
 
 // The same exact refusal covers each dispatch state; the retry hint is advisory.
 export const refusal =
@@ -66,10 +65,9 @@ export async function receipts(pool, installation, selection = "prepared_github"
   return rows;
 }
 
-export function agentClients({ inAgent }, origin, path = repositoryPath) {
+export function agentClients({ inAgent }, origin, path) {
   const target = origin + path;
-  // Ordinary independent clients. Neither conveys an identity, credential, binding,
-  // executable assertion or capture hook. Both must receive exactly the selected identity.
+  // The ordinary client supplies no credential, assertion, or capture hook.
   const curl = () =>
     inAgent(
       "curl",
@@ -78,7 +76,6 @@ export function agentClients({ inAgent }, origin, path = repositoryPath) {
       "--show-error",
       "--include",
       "--raw",
-      // Wait for FIN, including in the simultaneous authorized curl/Node comparison.
       "--ignore-content-length",
       "--max-time",
       "90",
@@ -86,26 +83,11 @@ export function agentClients({ inAgent }, origin, path = repositoryPath) {
       "Connection: close",
       target,
     );
-  const node = () =>
-    inAgent(
-      "node",
-      "-e",
-      `
-    const https=require("node:https");
-    const req=https.get(process.argv[1], {headers:{connection:"close"}}, res => {
-      const authorized = res.socket.authorized; let body=""; res.on("data",c=>body+=c); res.on("end",()=> {
-        if (!res.complete || Object.keys(res.trailers).length || !authorized) process.exitCode=3;
-        process.stdout.write(JSON.stringify({status:res.statusCode,body}));
-      });
-    }); req.on("error",()=>{process.exitCode=4}); req.setTimeout(28000,()=>req.destroy());
-  `,
-      target,
-    );
   // Observe the TLS socket through FIN, including bytes beyond Content-Length.
   // No caller pin, proof, private trust override, or HTTP parser stopping at the head.
   const throughFin = () =>
     inAgent("node", "-e", "(" + readTlsThroughFin.toString() + ")(process.argv[1])", target);
-  return { curl, node, throughFin, inAgent };
+  return { curl, throughFin };
 }
 
 function readTlsThroughFin(target) {
@@ -136,7 +118,7 @@ function readTlsThroughFin(target) {
   });
 }
 
-export function assertIdentityResponse(raw, expected = repository) {
+export function assertIdentityResponse(raw, expected) {
   const identity = JSON.stringify(expected);
   const [headers, body, ...extra] = raw.split("\r\n\r\n");
   const [status, ...fields] = headers.split("\r\n");

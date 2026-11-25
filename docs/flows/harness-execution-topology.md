@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-23
-last_updated_session: authoring-run/3c950f6a-7199-45dc-aa5d-a50930d02e77
+updated: 2026-11-24
+last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
 ---
 
 # Harness Execution Topology Flow
@@ -67,12 +67,9 @@ Docker, SSH and Kubernetes require native HTTP.
 The revision saves [Gateway managed mode](../reference/agent-native-admin.md#gateway-managed-mode),
 native configuration, Harness identity/version/mode, Compute selection, and Agent
 ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/harness-execution.md).
-Custom images must declare native-worker support. An associated `access_token` requires dedicated Codex;
-its snapshot contains the OCC identity, credential kind, and opaque Secret reference.
-`KubernetesComputeDriver.resolveHarnessConfiguration` resolves overrides before
-admission. OCC atomically saves `harness.overrides` and `harness.configuration`;
-`validateHarnessCredentialSources` checks consent and `admitRevision` fingerprints
-the provider.
+Custom images declare native-worker support. An associated `access_token` requires
+dedicated Codex and an opaque Secret snapshot. Compute resolves overrides before
+admission; OCC saves Harness settings, checks consent, and fingerprints the provider.
 
 ### 2. Claim work and realize the approved topology
 
@@ -80,7 +77,10 @@ the provider.
 
 The worker rechecks authority and Harness on claim. For dedicated Kubernetes replacements, it stops every predecessor, including embedded revisions, before `ComputeDriver.prepareRevision`. Yield leaves the candidate untouched.
 
-This worker caches successful stops for one claim lease, doubling that interval on repeat success. Failed preparation clears predecessor entries. Preparing or activating a predecessor clears its entry. Returning predecessors can block readiness. Exclusive replacements supersede predecessors’ reconciliation and maintenance. [Production version stages](../reference/drivers/compute.md#production-revision-stages).
+Worker caches confirmed stops for one claim lease, twice on repeat success. Failed
+preparation or predecessor reactivation clears the cache; returning predecessors
+block readiness. Exclusive replacement supersedes predecessor work. See
+[Production version stages](../reference/drivers/compute.md#production-revision-stages).
 
 `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 supplies native administration controls to the Gateway child after OCE setup.
@@ -105,21 +105,16 @@ The Strands supervisor and workload share read-only runtime objects. `listenerCe
 reads or execution updates. Refusal requires a new deployment. `runtimeAdmission`
 separately reads saved launch facts for cleanup and public-reader withdrawal.
 
-Kubernetes calls `prepareHarnessAuth` once per resolved source, delivering selected
-fields, including ChatGPT account tokens, from canonical tenant storage to versioned
-Harness Secrets. Only embedded OpenClaw or dedicated Harnesses receive model keys,
-never dedicated Gateways. Fixture images use the same namespace-local delivery; only
-native dedicated transport tokens depend on runtime configuration. The
-[harness authentication flow](native-service-account-credential-delivery.md) covers
-admission, immutable source snapshots and worker reauthorization.
+For Secret-based authentication, Kubernetes prepares versioned Harness Secrets;
+dedicated Gateways receive no model keys. Staged Codex account delivery instead
+passes the Proxy placeholder and nonsecret account metadata to its dedicated launch.
+Compute selects the native HTTPS provider for the probe and app-server. See the
+[Harness authentication flow](native-service-account-credential-delivery.md).
 
-API composition, including development, and worker startup call
-`KubernetesComputeDriver.preflight` before reconciliation. `KubernetesComputeDriver.validateConfiguration`
-first rejects native Gateway or derived sandbox listener ports overlapping private
-runtime status TCP/18791. Single-cluster
-preflight checks every storage-namespace page and refuses split targets without
-the tenant label. Resolution accepts an adopted `oce-gateways-<hash>` tenant
-only beside its storage label.
+API and Worker startup run `KubernetesComputeDriver.preflight`. Configuration
+rejects listener overlap with private status TCP/18791. Single-cluster preflight
+checks all storage Namespace pages and refuses split targets without the tenant
+label; adopted tenants also require the storage label.
 The [upgrade requirements](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations)
 own the operator boundary.
 
@@ -342,6 +337,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 10:41: Describe placeholder-backed Codex account launch through the native HTTPS provider. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
 - 2026-11-23 03:34: Correct dedicated preparation, readiness and stop ordering. (authoring-run/3c950f6a-7199-45dc-aa5d-a50930d02e77 - 627029a99cf9b5dc5f20bda8450cffd73900a538)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

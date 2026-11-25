@@ -1,8 +1,14 @@
-import { keycloakRealmAdmin } from "../helpers/ci-keycloak-realm.mjs";
+import {
+  keycloakBrowserRoute,
+  keycloakHostPort,
+  keycloakRealmAdmin,
+  keycloakRealmRows,
+} from "../helpers/ci-keycloak-realm.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { enrollmentWait } from "../helpers/keycloak-enrollment-wait.ts";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.ts";
 import pg from "pg";
@@ -29,10 +35,9 @@ import {
 
 // Real Keycloak, prepared by scripts/ci/prepare.ts for the keycloak-oidc lane
 // (docs/testing/kubernetes.md#keycloak-oidc-tests): it imports tests/fixtures/keycloak/realm-oce.json and serves
-// https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
-// trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's
-// own login form, and the controller reaches the real token and JWKS endpoints with its
-// production transport. Requests are only observed.
+// https://keycloak.oce.localhost under a per-run CA that this process trusts through
+// NODE_EXTRA_CA_CERTS. The browser fills Keycloak's login form, and the controller
+// reaches the real token and JWKS endpoints with its production HTTPS transport.
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -131,12 +136,12 @@ after(async () => {
   }
 });
 
-/** The Keycloak leaf as served on 127.0.0.1:443, verified against the lane CA. */
+/** The Keycloak leaf served on the fixture port, verified against the lane CA. */
 async function keycloakLeaf() {
   const ca = await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT);
   return tlsPeerCertificate({
     host: "127.0.0.1",
-    port: 443,
+    port: keycloakHostPort,
     servername: new URL(issuer).hostname,
     ca,
   });
@@ -271,7 +276,10 @@ async function serveConsole(t, tokenAuth, overrides = {}, wait = unmeasured) {
     browser = await chromium.launch({
       headless: true,
       // Trusts exactly the two lane leaves: the Console origin and Keycloak.
-      args: [chromiumTrustArg([tls.cert, await keycloakLeaf()])],
+      args: [
+        chromiumTrustArg([tls.cert, await keycloakLeaf()]),
+        `--host-resolver-rules=${keycloakBrowserRoute(new URL(issuer).hostname)}`,
+      ],
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
         : {}),
@@ -498,22 +506,25 @@ test(
     // This lane owns the disposable realm. Temporarily suppress its standard
     // email mappings so per-client mappings can exercise absent claims. Restore
     // them before any later lane file uses the realm.
-    const scopes = await admin(setup, "GET", "/client-scopes");
+    const scopes = keycloakRealmRows(await admin(setup, "GET", "/client-scopes"));
     const emailScope = scopes.find((scope) => scope.name === "email");
     assert.ok(emailScope);
-    const emailMappers = await admin(
-      setup,
-      "GET",
-      `/client-scopes/${emailScope.id}/protocol-mappers/models`,
+    const emailMappers = keycloakRealmRows(
+      await admin(setup, "GET", `/client-scopes/${emailScope.id}/protocol-mappers/models`),
     );
     for (const mapper of emailMappers) {
+      const config = asRecord(mapper.config);
+      assert.ok(
+        mapper.config === undefined || mapper.config === null || config,
+        "invalid Keycloak mapper config",
+      );
       await admin(
         setup,
         "PUT",
         `/client-scopes/${emailScope.id}/protocol-mappers/models/${mapper.id}`,
         {
           ...mapper,
-          config: { ...mapper.config, "id.token.claim": "false" },
+          config: { ...config, "id.token.claim": "false" },
         },
       );
       t.after(() =>
@@ -630,7 +641,10 @@ test(
               : [mapper("email_verified", scenario.verification)]),
           ],
         });
-        const [client] = await admin(wait, "GET", `/clients?clientId=${clientId}`);
+        const [client] = keycloakRealmRows(
+          await admin(wait, "GET", `/clients?clientId=${clientId}`),
+        );
+        assert.ok(client);
         subtest.after(() => admin(wait, "DELETE", `/clients/${client.id}`));
         await admin(wait, "POST", "/users", {
           username,
@@ -641,7 +655,10 @@ test(
           emailVerified: true,
           credentials: [{ type: "password", value: password, temporary: false }],
         });
-        const [user] = await admin(wait, "GET", `/users?username=${username}&exact=true`);
+        const [user] = keycloakRealmRows(
+          await admin(wait, "GET", `/users?username=${username}&exact=true`),
+        );
+        assert.ok(user);
         subtest.after(() => admin(wait, "DELETE", `/users/${user.id}`));
         const query = (sql, values) => wait("query-users", prepared.pool.query(sql, values));
         const count = async () =>

@@ -21,14 +21,19 @@ Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
 3. In the same story, select **Open draft**. The draft's header shows
    Refresh only. Select **Edit Configuration**, change a value, and select
    **← Agents**. The page stays and says why.
-4. Open **Pages / Agent detail / Page header at 390px**. The header is four
+4. Open **Pages / Agent detail / First version** at desktop and phone widths. Tab to
+   **Namespace**, then Tab once more. Scroll down with the mouse wheel and press
+   Shift+Tab to return to Namespace. The whole focus outline, including its top
+   edge, must be visible. Repeat on a signed-in draft Agent’s Configuration page
+   to check the real Console.
+5. Open **Pages / Agent detail / Page header at 390px**. The header is four
    rows: ← Agents with the actions, the name, the ID row, then the Namespace
    control at full width. It ends by 240 px. Switch to another window and back.
    While the access check runs, Open draft is held with the page, and
    focus returns to it.
-5. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
+6. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
    entire Agent ID is selected and "Copy selection" appears.
-6. Open **Pages / Create Agent / Choose a starting point** and **Pages / Settings / Account**.
+7. Open **Pages / Create Agent / Choose a starting point** and **Pages / Settings / Account**.
    Create Agent has ← Agents and the Namespace control under its title. Its
    card heading, **Your next teammate**, is a step smaller than the page title
    (18 px against 24 px). Settings has no Namespace control.

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { asRecord, cookieHeaderFromSetCookie } from "../../packages/utils/src/index.ts";
-import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { idTokenSigner, rsaSigningKey } from "./id-token.ts";
 
 type GoogleCredentials = {
   clientId: string;

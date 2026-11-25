@@ -1,11 +1,17 @@
 import {
   assertChatStreamStopAndResume,
+  assertStockChatReconnected,
   submitChatTurnWithAssistantProof,
   textFromFrame,
   waitForStockUi,
 } from "../helpers/native-ui-chat.ts";
 import assert from "node:assert/strict";
-import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
+import {
+  keycloakBrowserRoute,
+  keycloakHostPort,
+  keycloakRealmAdmin,
+  keycloakRealmRows,
+} from "./ci-keycloak-realm.ts";
 import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -1527,8 +1533,6 @@ export async function runNativeAdminScenario(context) {
   const browserContext = await browser.newContext();
   context.after(() => browserContext.close());
   const nativeResponses = [];
-  const nativeWebSockets = [];
-  const nativeSocketFrames = [];
   browserContext.on("response", (response) => {
     const url = new URL(response.url());
     if (url.origin === status.origin) {
@@ -1539,15 +1543,6 @@ export async function runNativeAdminScenario(context) {
       });
     }
   });
-  browserContext.on("page", (observedPage) =>
-    observedPage.on("websocket", (socket) => {
-      const url = new URL(socket.url());
-      if (url.origin === status.origin.replace(/^http/, "ws")) {
-        nativeWebSockets.push(socket.url());
-        socket.on("framereceived", (frame) => nativeSocketFrames.push(frame));
-      }
-    }),
-  );
 
   const page = await browserContext.newPage();
   await page.goto(new URL(agentDetailPath(topology), ingress.origin).href);
@@ -1590,6 +1585,12 @@ export async function runNativeAdminScenario(context) {
     "native raw-editor changes must not mutate OCC Configuration or active revision state",
   );
 
+  const nativeSocketFrames = [];
+  nativePage.on("websocket", (socket) => {
+    if (new URL(socket.url()).origin === status.origin.replace(/^http/, "ws")) {
+      socket.on("framereceived", (frame) => nativeSocketFrames.push({ ...frame, socket }));
+    }
+  });
   const marker = `native-admin-browser-${randomUUID()}`;
   const terminal = await recordNativeChatTurn(
     nativePage,
@@ -1617,7 +1618,6 @@ export async function runNativeAdminScenario(context) {
       `stock native UI ${resourceType} must be served from the isolated Agent origin`,
     );
   }
-  assert.ok(nativeWebSockets.length > 0, "stock native UI must establish a browser WebSocket");
 
   const siblingHost = status.host.replace(/^agent-/, "agent-deadbeef");
   const siblingPage = await browserContext.newPage();
@@ -1638,6 +1638,10 @@ export async function runNativeAdminScenario(context) {
     "another Agent host must not borrow the native admin session",
   );
 
+  // Check the open tab before the existing reload gives it a fresh connection.
+  const chatDocument = await nativePage.evaluateHandle(() => globalThis.document);
+  const reconnectStart = nativeSocketFrames.length;
+  assert.ok(!terminal.socket.isClosed(), "the socket that delivered the reply must still be open");
   await kubectl(
     "delete",
     "pod",
@@ -1652,8 +1656,26 @@ export async function runNativeAdminScenario(context) {
     topology.revision.id,
     topology.gatewayPod.metadata.uid,
   );
+  await assertStockChatReconnected(
+    nativePage,
+    terminal,
+    nativeSocketFrames,
+    reconnectStart,
+    waitFor,
+  );
+  const answer = nativePage
+    .getByRole("log")
+    .locator(".chat-group.assistant .chat-bubble")
+    .getByText(marker);
+  await answer.waitFor({ state: "visible", timeout: 60_000 });
+  assert.ok(
+    await chatDocument.evaluate((original) => original === globalThis.document),
+    "the original chat document must survive replacement",
+  );
+  await chatDocument.dispose();
   await nativePage.reload({ waitUntil: "domcontentloaded" });
   await waitForStockUi(nativePage);
+  await answer.waitFor({ state: "visible", timeout: 60_000 });
   assert.equal(
     (await nativeProfile(nativePage, "operator.admin")).id,
     nativePerson.id,
@@ -1711,7 +1733,7 @@ export async function runNativeAdminScenario(context) {
   await assertManagedNativeConfigWriteRejected(currentSessionPage, currentStatus.origin, topology);
   await currentSessionPage.close();
   context.diagnostic(
-    "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit with managed mode off, restored OCE config and rejected a native config write after managed mode was re-enabled, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
+    "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit with managed mode off, restored OCE config and rejected a native config write after managed mode was re-enabled, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and showed the earlier assistant reply in the automatically reconnected chat before reloading after Gateway Pod replacement.",
   );
 }
 
@@ -1789,16 +1811,19 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
 
   // A disposable client admits this run's exact Console callback without changing
   // the separately prepared sign-in fixture or weakening redirect validation.
-  const [preparedClient] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/clients?clientId=${secrets.clientId}`,
+  const [preparedClient] = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${secrets.clientId}`),
   );
   assert.ok(preparedClient);
   const clientId = `oce-native-${randomUUID()}`;
   const clientSecret = randomUUID() + randomUUID();
   const { id: _preparedId, ...clientSettings } = preparedClient;
+  assert.ok(
+    clientSettings.protocolMappers === undefined ||
+      clientSettings.protocolMappers === null ||
+      Array.isArray(clientSettings.protocolMappers),
+    "invalid Keycloak client protocol mappers",
+  );
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
     ...clientSettings,
     clientId,
@@ -1821,20 +1846,15 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       },
     ],
   });
-  const [client] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/clients?clientId=${clientId}`,
+  const [client] = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${clientId}`),
   );
+  assert.ok(client);
   context.after(() => keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`));
   const groupName = `oce-members-${randomUUID()}`;
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/groups", { name: groupName });
-  const groups = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/groups?search=${groupName}`,
+  const groups = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/groups?search=${groupName}`),
   );
   const group = groups.find((entry) => entry.name === groupName);
   assert.ok(group);
@@ -1871,7 +1891,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
   const issuerHost = new URL(issuer).hostname;
   const providerCertificate = await tlsPeerCertificate({
     host: "127.0.0.1",
-    port: 443,
+    port: keycloakHostPort,
     servername: issuerHost,
     ca: caCert,
   });
@@ -1880,7 +1900,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       new X509Certificate(providerCertificate).publicKey.export({ type: "spki", format: "der" }),
     )
     .digest("base64");
-  ingress.browserArgs[0] += `,MAP ${issuerHost} 127.0.0.1`;
+  ingress.browserArgs[0] += `,${keycloakBrowserRoute(issuerHost)}`;
   ingress.browserArgs[1] += `,${providerSpki}`;
   const browser = await launchBrowser(context, ingress);
   const namespacePath = `/namespaces/${topology.agent.namespaceId}`;
@@ -2296,11 +2316,13 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
     lastName: "Person",
     credentials: [{ type: "password", value: linkedPassword, temporary: false }],
   });
-  const [linkedUser] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/users?exact=true&username=${linkedUsername}`,
+  const [linkedUser] = keycloakRealmRows(
+    await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      `/users?exact=true&username=${linkedUsername}`,
+    ),
   );
   assert.ok(linkedUser);
   context.after(() =>

@@ -101,7 +101,7 @@ test(
 );
 
 test(
-  "PostgreSQL pins managed sources to a durable TokenService instance and keeps OAuth sources unpinned",
+  "PostgreSQL pins managed sources to a durable TokenService instance",
   requiresPostgres,
   async (context) => {
     const [{ randomUUID }, { Pool }, { PostgresPlatformState }, { databaseUrl }] =
@@ -158,7 +158,6 @@ test(
         name: "Managed source",
         type: "static",
         config: {},
-        secrets: {},
         ownerCapability: "token_service",
         tokenServiceInstanceId: selected.id,
         state: "ready",
@@ -184,33 +183,12 @@ test(
       ),
       /still has registrations/,
     );
-    const oauthId = `cs_${randomUUID()}`;
-    // Existing consent first reserves an unpinned OAuth source; adding managed storage must not alter it.
-    const oauth = await state.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: oauthId,
-        namespaceId,
-        name: "OAuth reservation",
-        type: "oauth2-refresh-token",
-        config: {},
-        secrets: {},
-        ownerCapability: "token_service",
-        state: "registering",
-        createdAt,
-      }),
-    );
-    assert.equal(
-      oauth.ownerCapability === "token_service" ? oauth.tokenServiceInstanceId : undefined,
-      undefined,
-    );
     await state.transact(async (unit) => {
       await unit.credentialSources.markCredentialSourceDeleting(namespaceId, sourceId);
       assert.equal(
         await unit.credentialSources.deleteCredentialSource(namespaceId, sourceId),
         true,
       );
-      await unit.credentialSources.markCredentialSourceDeleting(namespaceId, oauthId);
-      await unit.credentialSources.deleteCredentialSource(namespaceId, oauthId);
     });
     const replacement = {
       id: randomUUID(),

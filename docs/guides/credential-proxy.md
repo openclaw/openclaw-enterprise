@@ -32,7 +32,7 @@ which implementation OCC loads; qualification establishes what the installed
 sender actually enforces.
 
 Use the [upgrade procedure](deploy/credential-proxy-upgrade.md) for an existing
-installation, including when a Gateway source or its owner must remain.
+installation moving from Credential Gateway to TokenService.
 
 ## Prepare enforcement, trust, and custody
 
@@ -165,64 +165,7 @@ by the running version.
 
 ## Register, authorize, and deploy an OpenAI static inference source
 
-The bundled OpenShell Driver rejects the source creation, live adoption and
-deployment operations below with `409 RESOURCE_CONFLICT`, including on existing
-installations. These steps require a [separately selected Driver](../reference/drivers/selection.md#select-a-protected-sender)
-that supports new protected static admission and has qualified static enforcement.
-For an existing bundled revision, keep its recorded owner and follow the
-[upgrade and withdrawal procedures](deploy/credential-proxy-upgrade.md).
-
-Use the built CLI from the
-repository root with `jq`, a ready Namespace, `OCC_URL`, `OCC_NAMESPACE`, and a
-private `OCC_SERVICE_KEY_FILE` for an authorized operator.
-
-Obtain whole-execution consent **before creating the source**: protection covers
-sibling processes in that execution, not another execution of the same Agent.
-Follow only the `openai` API-key example in
-[Register the key](deploy/openshell-credential-sources.md#register-the-key), then
-return here. Do not use that page's `codex-pat` variant for this profile, or follow
-its copied-key rotation and Agent-deleting cleanup as a live-adoption procedure.
-Retain `SOURCE_ID` and the Secret reference.
-
-Registration creates a Gateway copy. Before binding the source to an Agent,
-explicitly adopt protected live reads with whole-execution consent:
-
-```bash
-cat > source-adoption.json <<'JSON'
-{"adoption":"live","authorityScope":"execution"}
-JSON
-./bin/occ credential-source update "$SOURCE_ID" --file source-adoption.json
-./bin/occ credential-source get "$SOURCE_ID" -o json
-```
-
-Require `ownerCapability: credential_gateway`, `egress.adoption: live` and
-`egress.retention: none`. Keep the Gateway selected: adoption does not transfer
-ownership. A ready source alone does not prove installed enforcement.
-
-This update requires exact source `update` and `operate` on every referenced
-Secret, advances the source generation, and retains its Gateway owner. It does
-not remove an old Gateway copy: `retention: none` describes live reads, not past
-custody. A bound source cannot take this first cutover.
-
-Follow [create the Agent and grant the source](deploy/openshell-credential-sources.md#create-the-agent-and-grant-the-source)
-for the dedicated Codex Configuration, Agent request, and exact IAM binding.
-Use an authorized native model ID; keep `models.providers.codex.baseUrl` at
-`http://127.0.0.1:9`. The Agent lists `{ "sourceId": "$SOURCE_ID" }` in
-`credentialSources` and names that source in `harnessAuth`. The creating operator
-and Agent service principal each need exact source `operate`; the Agent needs
-no underlying Secret permission.
-
-```bash
-./bin/occ agent runtime-credentials provision "$AGENT_ID"
-DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
-./bin/occ agent deployment-status "$AGENT_ID" "$DEPLOYMENT_ID" -o json
-./bin/occ agent get "$AGENT_ID" -o json
-./bin/occ agent runtime "$AGENT_ID" -o json
-```
-
-Require the requested revision to succeed, become selected, and have a ready
-runtime. Protected Compute checks the current installation before releasing the
-workload. Do not bypass pending or failed admission.
+Use [managed static Source enrollment](../reference/credential-sources/managed-static.md) with the selected TokenService and native Credential Proxy. The [local OpenShell walkthrough](deploy/openshell-credential-sources.md#register-the-key) describes binding and verifying the new Source. Existing Gateway Sources require re-enrollment. See [Source ownership and current limits](../reference/credential-sources.md#implementation-status).
 
 ## Enroll prepared GitHub access
 
@@ -231,8 +174,7 @@ to authorize repositories for a Namespace and select up to 16 on an Agent using
 `github-repository`. The worker prepares a token for exactly that selection;
 GitHub permissions and branch rules still apply. No preview option or OCE branch
 list is needed. Existing explicit `git-write` grants retain their ref limits.
-The walkthrough includes the separate Gateway model source, worker custody,
-registry and mandatory pre-credential middleware setup.
+The walkthrough covers Repository approval and Admin setup. Enroll model credentials as a separate TokenService Source.
 
 ## Verify use, loss, and withdrawal
 
@@ -316,7 +258,7 @@ token and session are still valid:
 
    ```bash
    jq -n --arg configuration "$CONFIGURATION_ID" \
-     '{configurationId: $configuration, repositoryBindings: []}' > repository-withdrawal.json
+     '{configurationId: $configuration, repositoryAccess: {defaultProfile:"github-repository", repositories:[]}}' > repository-withdrawal.json
    ./bin/occ agent update "$AGENT_ID" --file repository-withdrawal.json
    ```
 
@@ -331,18 +273,17 @@ Unavailable evidence keeps cleanup pending without repeating the reduction or st
 a healthy Agent. Verify continuity on the selected release; readiness alone does
 not prove it. Static model sources do not renew tokens;
 existing Gateway refresh sources use their own
-[rotation procedure](../reference/credential-sources.md#rotate-a-refresh-source).
+[rotation procedure](../reference/credential-sources/other-delivery-modes.md#rotate-a-refresh-source).
 
 ## Diagnose before retrying
 
-| Observation                                       | Action and recovery evidence                                                                                                                                                                                         |
-| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.                                                                     |
-| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified.                                                                  |
-| Prepared material is pending or expired           | Check the Token Service’s issuer access. An authorized GitHub metadata request can start or join renewal until its deadline. Readiness checks and native Git broker requests still depend on background preparation. |
-| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                                                                                     |
-| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.                                                                     |
-| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                                                                                       |
+| Observation                                       | Action and recovery evidence                                                                                                                        |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source `failed`, `absent`, or missing credentials | Read `credential-source get` and its `reason`; correct the owning Secret or enrollment. Require a new successful real request, not just `ready`.    |
+| Unavailable authority or lost installation        | Check peer TLS trust, selected Driver identity, network access, and current runtime. Keep access closed until the current installation is verified. |
+| Refresh reports `reauthorize`                     | Obtain new provider authorization through the source's supported enrollment; do not replay an old refresh token.                                    |
+| Installation or send outcome is unknown           | Preserve the original operation and custody. Fence the old worker/recipient and reconcile through its owner; do not resend or fabricate success.    |
+| Withdrawal remains `pending`                      | Inspect its reason and `withdrawalInProgress`; follow the withdrawal recovery procedure. Do not report revocation as complete.                      |
 
 Public deployment status is not a token-custody ledger. If the selected owner
 cannot establish whether issuance, installation, or retirement completed, stop
