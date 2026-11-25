@@ -1927,6 +1927,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         out({
           id,
           kind: "agent",
+          generation: 1,
           values: optionalField(state.configurationValues, String(id)) ?? {},
         });
       } else if (args.includes("deploy")) {

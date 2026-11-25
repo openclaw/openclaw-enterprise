@@ -3,6 +3,7 @@
 // before it stops OCC: the selected controller image loads the candidate
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, and checks migration compatibility against the database.
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { gzipSync } from "node:zlib";
@@ -24,6 +25,7 @@ const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
 // the temporary Secret, gzipped, under this key and path.
 const draftsKey = "agent-drafts.json.gz";
 const draftsDirectory = "/var/run/openclaw/upgrade-preflight";
+const replacementVariable = "OCC_UPGRADE_PREFLIGHT_REPLACEMENTS";
 const draftsVariable = "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS";
 const channelTargetsFilename = "channel-targets.json.gz";
 
@@ -38,6 +40,36 @@ const channelTargetsVariable = "OCC_UPGRADE_PREFLIGHT_CHANNEL_TARGETS";
 const draftRefusal = "Agent draft refused:";
 // Kubernetes refuses a Secret whose values exceed 1 MiB in total.
 const secretLimitBytes = 1024 * 1024;
+
+// Runtime upgrades replace the complete running fleet. Compare only public
+// selection fields before reporting refusals for any Agent. This also fits when
+// the optional draft values exceed the Secret limit.
+function replacementDigest(targets: JsonObject[]): string {
+  const keys = targets.map(
+    ({ namespaceId, agentId, baselineRevisionId, executionMode, configurationId, generation }) =>
+      JSON.stringify([
+        namespaceId,
+        agentId,
+        baselineRevisionId,
+        executionMode,
+        configurationId,
+        String(generation),
+      ]),
+  );
+  return createHash("sha256").update(keys.sort().join("\n")).digest("hex");
+}
+
+const replacementQuery = `SELECT a.namespace_id AS "namespaceId", a.id AS "agentId", a.name,
+    r.id AS "baselineRevisionId", a.execution_mode AS "executionMode",
+    c.id AS "configurationId", c.generation::text AS generation,
+    r.admitted_spec #>> '{execution_admission,version}' AS version,
+    COALESCE(s.owner_capability, '') AS owner
+  FROM occ.agents a
+  JOIN occ.namespaces n ON n.id = a.namespace_id AND n.status = 'ready' AND n.deleted_at IS NULL
+  JOIN occ.agent_revisions r ON (r.namespace_id, r.agent_id, r.id) = (a.namespace_id, a.id, a.active_revision_id)
+  JOIN occ.configurations c ON (c.namespace_id, c.id) = (a.namespace_id, a.configuration_id)
+  LEFT JOIN occ.credential_sources s ON (s.namespace_id, s.id) = (a.namespace_id, a.harness_auth_credential_source_id)
+  WHERE a.status = 'active' AND a.desired_runtime_state = 'running'`;
 
 const identityCheck = `
 // Use the candidate's connection owner, including its TLS and credential handling.
@@ -85,6 +117,38 @@ try {
   if (rows.length !== 1 || rows[0].id !== expectedId) {
     identityMismatch = true;
     throw new Error();
+  }
+  if (process.env.${replacementVariable} !== undefined) {
+    try {
+      // Before migration 0085 neither a managed TokenService instance nor a
+      // version 8 admission can exist. Avoid querying a newer schema there.
+      const { rows: [schema] } = await identityClient.query(
+        "SELECT (to_regclass('occ.token_service_instances') IS NOT NULL)::text AS supported",
+      );
+      if (schema.supported === "true") {
+        const { rows: fleet } = await identityClient.query(${JSON.stringify(replacementQuery)});
+        const { createHash } = await import("node:crypto");
+        ${replacementDigest.toString()}
+        if (replacementDigest(fleet) !== process.env.${replacementVariable}) throw new Error();
+        let refused = false;
+        for (const { namespaceId, agentId, name, version, owner } of fleet) {
+          if (version !== "8" && owner !== "token_service") continue;
+          const message = version === "8"
+            ? "The active revision uses staged credentials. Complete Stop before replacing it."
+            : "The draft selects a TokenService Harness source. Complete Stop before deploying it.";
+          process.stdout.write(${JSON.stringify(draftRefusal)} + " " +
+            JSON.stringify({ namespaceId, agentId, name, message }) + "\\n");
+          refused = true;
+        }
+        if (refused) throw new Error();
+      } else if (schema.supported !== "false") throw new Error();
+      process.stdout.write("agent-replacements-checked\\n");
+    } catch {
+      // A large refusal list may still be queued on the Job's stdout pipe.
+      await new Promise((done) => process.stdout.write("", done));
+      await new Promise((done) => process.stderr.write("Runtime replacement preflight failed.\\n", done));
+      process.exit(1);
+    }
   }
   await identityClient.query("ROLLBACK");
   identityClient.release(true);
@@ -966,6 +1030,7 @@ type JobArguments = [
   timeoutSeconds: number,
   storedInstallationPath: string,
   withDrafts: string,
+  replacements: string | undefined,
 ];
 
 function job(
@@ -981,6 +1046,7 @@ function job(
     timeoutSeconds,
     storedInstallationPath,
     withDrafts,
+    replacements,
   ]: JobArguments,
   check = startupCheck,
 ): JobManifest {
@@ -1040,6 +1106,7 @@ function job(
           idVariable,
           componentVariable,
           draftsVariable,
+          replacementVariable,
           channelTargetsVariable,
         ].includes(variable.name),
     ),
@@ -1047,6 +1114,12 @@ function job(
     { name: idVariable, value: JSON.stringify(storedId).replaceAll("$", () => "$$") },
     { name: componentVariable, value: component },
   ];
+  if (replacements) {
+    container.env.push({
+      name: replacementVariable,
+      value: replacementDigest(documents(replacements)),
+    });
+  }
   const mounted = new Set(
     [container, ...plan.initContainers].flatMap((item) =>
       (item.volumeMounts ?? []).map((mount) => mount.name),
@@ -1334,6 +1407,7 @@ function parseCommand([action, ...input]: string[]): Command {
   switch (action) {
     case "job":
     case "identity-job": {
+      const replacements = input.length === 12 ? input.pop() : undefined;
       const [
         rendered,
         component,
@@ -1361,6 +1435,7 @@ function parseCommand([action, ...input]: string[]): Command {
           Number(timeout),
           stored,
           draftSelection,
+          replacements,
         ],
       };
     }

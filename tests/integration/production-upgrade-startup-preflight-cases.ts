@@ -2562,6 +2562,57 @@ exec "$0.fixture" "$@"
     await assertStoppedBeforeWriters(f);
   });
 
+  // The API Job evaluates current PostgreSQL metadata. The wire fixture supplies
+  // rows, not admission decisions. It does not exercise SQL or installed workloads.
+  for (const staged of [true, false]) {
+    test(
+      staged
+        ? "runtime preflight refuses a staged active revision after the Harness selection changes"
+        : "runtime resume rechecks the selected Harness source and recorded Configuration before shutdown",
+      async (t) => {
+        if (skipWithoutHelm(t, realHelm)) {
+          return;
+        }
+        const agent = {
+          namespaceId: "ns_test",
+          agentId: "agt_test",
+          name: "Mail triage",
+          baselineRevisionId: "rev_old",
+          executionMode: "embedded",
+          configurationId: "cfg_agt_test",
+          generation: "1",
+          version: staged ? "8" : "2",
+          owner: "",
+        };
+        const f = await fixture(t, {
+          agent: true,
+          chart: { installation: (installation) => installation },
+          databaseAnswer: () => ({ rows: [{ id: "ins_test", supported: "true", ...agent }] }),
+        });
+        if (staged) {
+          await assert.rejects(
+            f.run("--preflight-only"),
+            /Agent agt_test .*active revision uses staged credentials/,
+          );
+          await assertStoppedBeforeWriters(f);
+          return;
+        }
+        // Preparation succeeds. Refuse the Worker preview before either writer stops.
+        await f.failNext("nonzero-worker-patch-preview");
+        await assert.rejects(f.run(), /Server-side dry-run did not confirm zero replicas/);
+        agent.owner = "token_service";
+        await assert.rejects(
+          f.run("--resume"),
+          /Agent agt_test .*draft selects a TokenService Harness source/,
+        );
+        agent.owner = "";
+        agent.generation = "2";
+        await assert.rejects(f.run("--resume"), /Cannot replace the recorded Agent revisions/);
+        await assertStoppedBeforeWriters(f);
+      },
+    );
+  }
+
   // A draft saved before the selected release retired one of its settings: deploy admission
   // refuses it, so before finding 2809 the upgrade moved the controller and then stopped at the
   // fleet deploy with the Agents on the old runtime. The API preflight Pod runs the selected

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: 2026-11-24
-last_updated_session: authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa
+updated: 2026-11-25
+last_updated_session: authoring-run/a52b8fcb-6ec3-4ae1-b6f2-ea12cf9120ae
 ---
 
 # Production image upgrade flow
@@ -158,18 +158,18 @@ keeps policy labels and checks recognized history with `--check` or
 migrator and CA Secret identities and requires `migration.checked-for-installation`.
 After cleanup, recheck and bind the Secret identities to the evidence.
 
-The API Job tests themes. Both Jobs load startup and Installation
-configuration without database access and check token file readability without
-reading tokens.
+The API Job tests themes. Both Jobs load startup and Installation configuration
+and check token file readability. `connectionPlan` preserves OIDC CA
+mounts and database preload. Read-only queries verify Installation identity
+against OCC and the Secret. Timeouts are five seconds per statement or lock,
+15 seconds overall. Logs omit connection details.
 
-`connectionPlan` retains private OIDC CA mounts and database preload. A read-only
-`OCC_DATABASE_URL` query must return the Installation matching OCC and the Secret.
-Statement and lock timeouts are five seconds, with 15 seconds for the full
-check. Logs omit connection errors and rows.
+Before handoff or Helm submission, including resume, runtime preflight
+compares revisions and Configuration generations on schemas supporting staged
+credentials. Version 8 admissions or TokenService Harness selections block replacement.
 
-`preflight_resume` checks history and writer identities before shutdown or Helm,
-even when stopped. Completed Helm releases skip these Jobs. Preflight verifies
-Job and Pod identities around log retrieval and rejects NUL bytes.
+`preflight_resume` verifies history and writer identities until Helm completes.
+Preflight verifies Job and Pod identities around log retrieval and rejects NUL.
 `formatStartupConfigurationFailure` reports up to 32 field diagnostics.
 
 Kubernetes Compute uses the Pod service account and refuses single-cluster
@@ -366,6 +366,8 @@ requires no Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 04:17: Refuse staged replacements. (authoring-run/a52b8fcb-6ec3-4ae1-b6f2-ea12cf9120ae - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-24 19:54: Clarify writer previews. (authoring-run/46f01900-6b22-479c-9e19-3ea5a6e7eaaa - 071f8b1ec12648ce2d755e86323cb958a3c005f5)
 

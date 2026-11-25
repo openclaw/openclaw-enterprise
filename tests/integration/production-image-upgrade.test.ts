@@ -744,7 +744,7 @@ fi
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 case "\${!#}" in
-  */before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
+  */inventory/*|*/before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
     PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
 esac
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
@@ -757,10 +757,6 @@ case "$*" in
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
   *'.installationId == '*) exit 0 ;;
   *'.spec.template.spec as $pod'*) exit 0 ;;
-  *'.deploymentInProgress'*|*'.activeRevisionId == null'*|*'.status != "ready"'*) exit 1 ;;
-  *'.configurationId | select'*) printf 'cfg_test\\n' ;;
-  *'configurationId: $configurationId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","name":"Test","configurationId":"cfg_test","values":{}}' ;;
-  *'namespaceId: $namespace.id'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","baselineRevisionId":"rev_test"}' ;;
   *'gatewayNamespace: $gatewayNamespace'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","deploymentId":"rev_candidate","gatewayNamespace":"tenant-test","gatewayName":"gateway-test","gatewayRestarts":0,"gatewayUid":"gateway-test-uid","revisionPods":[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]}' ;;
   *'{namespaceId: $namespaceId'*) printf '%s\\n' '{"namespaceId":"ns_test","agentId":"agt_test","executionMode":"dedicated","deploymentId":"rev_candidate"}' ;;
   *'role: $role'*) printf '%s\\n' '[{"role":"gateway","namespace":"tenant-test","name":"gateway-test","uid":"gateway-test-uid","restarts":0}]' ;;
@@ -785,7 +781,7 @@ case "$*" in
     printf '%s\\n' "$attempts" >"$READINESS_COUNTER"
     ((attempts >= 2))
     ;;
-  *'.activeRevisionId'*) cat >/dev/null; printf 'rev_candidate\\n' ;;
+  *'.activeRevisionId'*) PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
   *'.executionMode'*) cat >/dev/null; printf 'dedicated\\n' ;;
   *'.deploymentId'*) printf 'rev_candidate\\n' ;;
   *'.role'*) cat >/dev/null; printf 'gateway\\n' ;;
@@ -843,7 +839,7 @@ if (args.includes("create")) {
 } else if (args.includes("logs")) {
   result = value("--container") === "migration"
     ? JSON.stringify({ event: "migration.checked", history: "completed" }) + "\\n"
-    : "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+    : "agent-drafts-accepted\\nagent-replacements-checked\\ninstallation-startup-ready\\n";
 } else if (args.includes("pods")) {
   const uid = args.includes("--selector")
     ? value("--selector").slice("batch.kubernetes.io/controller-uid=".length) : undefined;
@@ -941,7 +937,7 @@ case "$*" in
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get deployments,statefulsets,pods,persistentvolumeclaims '*|*'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
-  *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
+  *' logs pod/'*) printf 'agent-drafts-accepted\\nagent-replacements-checked\\ninstallation-startup-ready\\n' ;;
 esac
 `,
     { interpreter: "bash" },
@@ -955,8 +951,12 @@ case "$*" in
   *'agent revision '*) printf '%s\\n' '{"id":"rev_test","namespaceId":"ns_test","agentId":"agt_test","harness":{"overrides":{},"configuration":{}}}' ;;
   *'agent deploy '*) printf '%s\\n' "$AGENT_DEPLOY_RESPONSE" ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
-  *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate","configurationId":"cfg_test"}' ;;
-  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
+  *'agent get'*)
+    revision=rev_test
+    if grep -q ' agent deploy ' "$COMMAND_LOG"; then revision=rev_candidate; fi
+    printf '{"id":"agt_test","namespaceId":"ns_test","name":"Test","activeRevisionId":"%s","configurationId":"cfg_test","executionMode":"dedicated","harnessAuth":null}\\n' "$revision"
+    ;;
+  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","generation":1,"values":{}}' ;;
   *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,

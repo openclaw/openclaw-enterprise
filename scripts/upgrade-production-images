@@ -1524,6 +1524,9 @@ run_preflight_jobs() {
         "$component" "$job" "$namespace" "$release" "$installation_secret" "$secret"
         "$selected_controller" "$timeout_seconds" "$evidence_dir/installation.json" "$preflight_input")
     fi
+    if [[ "$component" == api && -n "${replacement_targets:-}" ]]; then
+      builder+=("$replacement_targets")
+    fi
     node scripts/upgrade-startup-preflight.ts "${builder[@]}" >"$evidence_dir/preflight-$component-job.json" ||
       die "cannot build the $component startup preflight Job from the rendered chart; no ${writer_qualifier}OCC writer was stopped."
     delete_options=$(create_preflight "$component" "$evidence_dir/preflight-$component-job.json" \
@@ -1643,6 +1646,10 @@ run_preflight_jobs() {
             ! grep -qx agent-drafts-accepted "$evidence_dir/preflight-api.log"; then
             message="the api startup preflight succeeded without checking the Agent drafts; no ${writer_qualifier}OCC writer was stopped."
           fi
+          if [[ -z "$message" && "$component" == api && -n "${replacement_targets:-}" ]] &&
+            ! grep -qx agent-replacements-checked "$evidence_dir/preflight-api.log"; then
+            message="the API preflight did not confirm the runtime replacement check. No ${writer_qualifier}OCC writer was stopped."
+          fi
           if [[ -z "$message" && "$component" == worker && -n "${channel_targets:-}" ]] &&
             grep -qx channel-direct-egress-guard-unavailable "$evidence_dir/preflight-worker.log"; then
             warn "the selected controller image cannot forecast the channel direct-egress guard before the upgrade. The Worker runs the guard during activation."
@@ -1660,7 +1667,7 @@ run_preflight_jobs() {
           refusal=$(grep -m 1 -E '^Kubernetes Compute startup preflight (refused the candidate release|could not complete):' \
             "$evidence_dir/preflight-$component.log" | cut -c 1-600 || true)
           draft_refusals=
-          if [[ "$component" == api && -n "$drafts" ]]; then
+          if [[ "$component" == api && ( -n "$drafts" || -n "${replacement_targets:-}" ) ]]; then
             draft_refusals=$(node scripts/upgrade-startup-preflight.ts refusals \
               "$evidence_dir/preflight-api.log") || draft_refusals=
           fi
@@ -1676,6 +1683,11 @@ run_preflight_jobs() {
             fi
           elif [[ "$component" == migration ]]; then
             message="the selected controller image could not confirm database migration compatibility. See preflight-migration.log and preflight-migration-status.json in $evidence_dir. No additional OCC writer was stopped; reconcile the database history, migrator access, or database connectivity before retrying."
+          elif [[ "$component" == api && -n "${replacement_targets:-}" ]] &&
+            grep -Fxq 'Runtime replacement preflight failed.' "$evidence_dir/preflight-api.log"; then
+            message="Cannot replace the recorded Agent revisions. Check the active revisions, Configuration generations and database access.${draft_refusals:+
+$draft_refusals}
+No ${writer_qualifier}OCC writer was stopped. Preserve the evidence and reconcile any partial shutdown before preparing a new upgrade."
           elif [[ -n "$draft_refusals" ]]; then
             message="the selected controller image refuses to deploy $(grep -c '^Agent draft refused: ' "$evidence_dir/preflight-api.log") recorded Agent draft(s):
 $draft_refusals
@@ -1767,6 +1779,11 @@ migration_mode() {
 # migration.
 preflight_startup() {
   local preflight_action=${1:-job} expected_migration=${2:-} attempt=. writer_qualifier=''
+  local replacement_targets=''
+  if [[ -n "$runtime_image" && -s "$targets" && ! -f "$upgrade_evidence_dir/helm-started" &&
+        ! -f "$upgrade_evidence_dir/database-migration-handoff.json" ]]; then
+    replacement_targets=$targets
+  fi
   ((resume == 0)) || writer_qualifier='additional '
   [[ "$evidence_dir" == "$upgrade_evidence_dir" ]] || attempt=${evidence_dir##*/}
   local suffix secret delete_options
@@ -2657,17 +2674,16 @@ Stop or delete each running Agent without an active revision (occ --namespace NA
     "${occ_json[@]}" --namespace "$namespace_id" configuration get "$configuration_id" </dev/null \
       >"$prefix.configuration.json" ||
       die "cannot read Configuration $configuration_id of Agent $agent_id in Namespace $namespace_id to check its draft; no cluster changes were made."
-    jq -ec --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
-      --arg configurationId "$configuration_id" --arg executionMode "$execution_mode" \
-      --slurpfile agent "$prefix.agent.json" '
+    jq -ec --arg configurationId "$configuration_id" --argjson target "$target" --slurpfile agent "$prefix.agent.json" '
       select(.id == $configurationId and (.values | type) == "object") |
-      {namespaceId: $namespaceId, agentId: $agentId, name: $agent[0].name,
-        configurationId: $configurationId, executionMode: $executionMode, values: .values}
+      $target + {name: $agent[0].name, configurationId: $configurationId, generation: .generation, values: .values}
     ' "$prefix.configuration.json" >>"$agent_drafts" ||
       die "OCC returned no values for Configuration $configuration_id of Agent $agent_id; no cluster changes were made."
   done <"$targets"
 
   if [[ -n "$runtime_image" ]]; then
+  # Freeze the Configuration identity with each revision, even if draft values do not fit.
+  jq -c 'del(.name, .values)' "$agent_drafts" >"$targets"
   current_gateway=$(yq -er '.drivers.compute.configuration.images.gateway' "$evidence_dir/before-installation.yaml")
   current_agent=$(yq -er '.drivers.compute.configuration.images.agent' "$evidence_dir/before-installation.yaml")
   [[ "$runtime_image" != "$current_gateway" || "$runtime_image" != "$current_agent" ]] ||

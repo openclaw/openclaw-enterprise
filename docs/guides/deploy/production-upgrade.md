@@ -1,6 +1,7 @@
 # Upgrade production images
 
-See [One Off Upgrades](one-off-upgrades.md).
+Check [one-off upgrades](one-off-upgrades.md). For [Credential Gateway cutover](credential-proxy-upgrade.md),
+verify credentials and pending work before shutdown, even if migration history matches.
 
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
@@ -15,8 +16,8 @@ lack the required chart-owned initializer.
 4. [Verify](#verify-the-release) with a real workload.
 5. [Recover from a partial failure](#recover-from-a-partial-failure) before retrying.
 
-Use `--controller-image` for API and worker. Repository credentials also require
-`--broker-image`; restarting the broker can interrupt existing Agents.
+Select `--controller-image` for API and worker. Repository credentials require
+`--broker-image`. Broker restarts can interrupt Agents.
 `--runtime-image` updates Gateway and runtime images, redeploying running Agents
 concurrently. Allow capacity for overlapping versions. API and worker stop during
 migration and rollout.
@@ -29,9 +30,8 @@ Unset `HELM_KUBEAPISERVER`, `HELM_KUBECAFILE`, `HELM_KUBETLS_SERVER_NAME` and
 `HELM_KUBEINSECURE_SKIP_TLS_VERIFY` before starting or resuming.
 These override kubeconfig/context flags.
 
-For settings changes, [prepare reviewed candidate files](#include-reviewed-settings).
-For the experimental two-cluster profile, first
-[upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
+[Prepare settings changes](#include-reviewed-settings). For experimental
+two-cluster upgrades, [upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart) first.
 
 ## Prepare the release
 
@@ -311,17 +311,18 @@ scripts/upgrade-production-images "${target[@]}" \
 With repository credentials, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-Check preflight warnings. The controller image checks saved Agent Configurations
-if it supports draft validation and the drafts fit in the temporary Secret.
-Otherwise, OCC checks them at deployment. Correct refused drafts or stop their
-Agents before retrying. Deployment checks Drivers, credentials, plugins and repositories.
+Preflight refuses replacement when the active revision uses staged credentials
+or the draft selects a TokenService Harness source. Schedule downtime, complete
+Agent Stop, upgrade with fresh evidence and deploy affected Agents separately.
 
-Before mutation, the command requires a complete authorized inventory with no
-deployment in progress. Every running Agent must have a readable selected version
-in a ready Namespace. A running Agent without one, usually a failed initial
-deployment, stops the command before any change; the refusal lists up to ten
-by ID, name and Namespace. Stop, delete or successfully deploy each, then start
-again with a new evidence directory.
+Check warnings. Older images or oversized drafts defer Configuration checks
+until deployment, which also checks Drivers, credentials, plugins and repositories.
+Correct refused drafts or stop affected Agents.
+
+Preparation requires complete authorized inventory without pending deployments.
+Each running Agent needs a readable active revision in a ready Namespace.
+For missing revisions, the refusal lists up to ten Agents by ID, name and
+Namespace. Stop, delete or deploy them successfully and prepare fresh evidence.
 
 The command writes the runtime digest to both Kubernetes Compute image fields,
 updates the mutable Installation Secret or selects its staged immutable successor,
