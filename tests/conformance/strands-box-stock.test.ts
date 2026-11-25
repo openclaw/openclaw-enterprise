@@ -7,41 +7,10 @@ import type {
   V1NetworkPolicy,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
 import { strandsBoxResources } from "../../apps/controller/src/drivers/sandbox/strands-box-resources.ts";
-import {
-  validateConfiguration,
-  type StrandsBoxOptions,
-} from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
-import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
+import { validateConfiguration } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
+import { preparedHarness, selection, stagedStockFixture } from "../fixtures/strands-box.ts";
 
 type Context = Parameters<typeof strandsBoxResources>[0];
-
-async function preparedHarness(): Promise<Context> {
-  // Capture the real Compute-generated launch description, including the
-  // distinct model and transport keys in one revision-owned Secret.
-  const fixture = providerEndpointFixture({ servicePrincipalCredentials: { mode: "disabled" } });
-  Object.assign(fixture.sandbox, { implementation: "strands-box" });
-  Object.assign(fixture.revision.compute, {
-    admission: fixture.driver.admitRevision(fixture.revision),
-  });
-  await fixture.prepare();
-  fixture.setGatewayServing();
-  fixture.setSetupAvailable(true);
-  fixture.observePods([fixture.pod("ready")]);
-  assert.equal((await fixture.prepare()).ready, true);
-  return fixture.provisions[0]!;
-}
-
-function selection(namespace?: string): StrandsBoxOptions {
-  return {
-    kubernetes: {
-      ...(namespace !== undefined && { stockLauncher: { namespace } }),
-      seccompProfile: "oce-strands-box-v0.3.1.json",
-      nodeSelector: { "kubernetes.io/arch": "arm64" },
-      controlPlanePeer: { namespace: "control-plane", podLabels: { app: "worker" } },
-    },
-    policy: { network: { endpoints: [{ host: "api.openai.com", ports: [443] }] } },
-  };
-}
 
 const gateway = {
   host: "gateway.oce.svc",
@@ -238,4 +207,60 @@ test("stock rendering refuses credential aliases, extra authorities and another 
     () => render({ ...context, revision: { ...context.revision, sandboxPolicy } }),
     unsupported,
   );
+});
+
+test("a held stock revision projects material only on its launcher and refuses mismatched policies", async () => {
+  const { staged, stagedOptions, context, route, allowed, deployment, sourceId, configurationId } =
+    await stagedStockFixture();
+  const { pod, workload, data } = render(staged, stagedOptions);
+  assert.deepEqual(workload.stockStaged, { sourceId, configurationId });
+  assert.deepEqual(workload.secretEnvironment, {});
+  assert.doesNotMatch(data["box.toml"]!, /strands-material|strands-release/u);
+  const legacy = render(context);
+  assert.equal(data["policy.dw"], legacy.data["policy.dw"]);
+  assert.equal(data["box.toml"], legacy.data["box.toml"]);
+  assert.ok(!pod.containers.some((c) => c.env?.some((e) => e.valueFrom?.secretKeyRef)));
+  for (const suffix of ["material", "release"]) {
+    const volume = pod.volumes!.find(
+      (v) => (v.secret?.secretName ?? v.configMap?.name) === `box-${suffix}`,
+    )!;
+    assert.equal((volume.secret ?? volume.configMap)?.optional, true);
+    const users = [...pod.containers, ...pod.initContainers!].flatMap((c) =>
+      (c.volumeMounts ?? [])
+        .filter((m) => m.name === volume.name)
+        .map((m) => [c.name, m.readOnly, m.subPath]),
+    );
+    assert.deepEqual(users, [["box-workload", true, undefined]]);
+  }
+  const refused = { code: "SANDBOX_HARNESS_UNSUPPORTED" };
+  assert.throws(() => render(staged), refused);
+  assert.throws(() => render(context, stagedOptions), refused);
+  assert.throws(
+    () => render({ ...staged, requirements: context.requirements }, stagedOptions),
+    refused,
+  );
+  assert.throws(
+    () => render({ ...staged, revision: { ...staged.revision, agentId: "other" } }, stagedOptions),
+    refused,
+  );
+  // An executable-only authorization cannot become a grant to every process.
+  for (const grants of [
+    [{ ...route, binary: "/usr/bin/codex" }],
+    [
+      {
+        ...route,
+        subject: "agent" as const,
+        requestPolicy: { ...route.requestPolicy, path: "/v1/**" },
+      },
+    ],
+    [...allowed, { subject: "agent" as const, host: route.host, ports: route.ports }],
+  ]) {
+    for (const override of [
+      { networkAccessPolicy: { allowed: grants } },
+      { injectionPolicies: [{ bindingRef: "model", allowedRequests: grants }] },
+    ]) {
+      const revision = { ...staged.revision, credentialDeployment: { ...deployment, ...override } };
+      assert.throws(() => render({ ...staged, revision }, stagedOptions), refused);
+    }
+  }
 });

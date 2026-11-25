@@ -1,4 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { holdStockKey, requireModelKey } from "./stock-stage.mjs";
 import { prepareStockConfig, requireStockProfile } from "./stock-guard.mjs";
 import { connectStockControl, pipeStockBox } from "./stock-launch-transport.mjs";
 
@@ -8,11 +10,18 @@ try {
   // Container PID 1 exiting also retires descendants if Box loses supervision.
   if (process.pid !== 1) throw new Error();
   requireStockProfile();
-  const key = process.env.OCE_STRANDS_OPENAI_KEY;
+  const manifest = JSON.parse(readFileSync("/etc/strands-box/workload.json", "utf8"));
+  const supplied = process.env.OCE_STRANDS_OPENAI_KEY;
   delete process.env.OCE_STRANDS_OPENAI_KEY;
-  if (!key || !/^[!-~]{16,4096}$/u.test(key) || key.startsWith("strands_box_")) {
+  const podUid = process.env.OCE_STRANDS_POD_UID;
+  const staged = manifest.stockStaged !== undefined;
+  if (
+    manifest.stockTransport !== true ||
+    (staged ? supplied !== undefined || !podUid : podUid !== undefined)
+  ) {
     throw new Error();
   }
+  let key = staged ? undefined : requireModelKey(supplied);
   const env = { HOME: "/home/node", PATH: process.env.PATH, EXPERIMENTAL_LINUX_SUPPORT: "TRUE" };
   const version = execFileSync(executable, ["--version"], {
     env,
@@ -21,8 +30,18 @@ try {
     timeout: 5000,
   });
   if (version.trim() !== "strands-box 0.3.1") throw new Error();
-  const config = prepareStockConfig();
+  const input = readFileSync("/etc/strands-box/box.toml");
+  const config = prepareStockConfig(input.toString());
   control = await connectStockControl();
+  if (staged) {
+    key = await holdStockKey(
+      control,
+      manifest.stockStaged,
+      podUid,
+      input,
+      readFileSync("/etc/strands-box/policy.dw"),
+    );
+  }
   // Only Box run receives the real value. Its env:// route substitutes the
   // placeholder in the nested namespace. Never forward raw Box diagnostics.
   const box = spawn(executable, ["run", "--config", config], {

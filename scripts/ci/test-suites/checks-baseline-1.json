@@ -96,6 +96,7 @@
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/conformance/strands-box-status.test.ts",
     "tests/conformance/strands-box-stock.test.ts",
+    "tests/conformance/strands-box-staged-lifecycle.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
     "tests/conformance/kubernetes-configuration.test.ts",
     "tests/conformance/occ-read.test.ts",
@@ -408,7 +409,14 @@
       "expectedTests": [
         "only the stock supervisor receives the API key and unmasked procfs",
         "stock configuration rejects overlapping destinations and foreign profiles",
-        "stock rendering refuses credential aliases, extra authorities and another tenant"
+        "stock rendering refuses credential aliases, extra authorities and another tenant",
+        "a held stock revision projects material only on its launcher and refuses mismatched policies"
+      ]
+    },
+    {
+      "path": "tests/conformance/strands-box-staged-lifecycle.test.ts",
+      "expectedTests": [
+        "Box requires a measured, pinned launcher for activation and retains evidence until its Pod disappears"
       ]
     },
     {

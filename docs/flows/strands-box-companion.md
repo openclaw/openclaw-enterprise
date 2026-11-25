@@ -50,6 +50,20 @@ Box from starting. The launcher then has 60 seconds to connect over the
 private socket for Harness frames. Loss of supervision ends the
 workload. The key remains a startup snapshot.
 
+### Managed Source startup
+
+The [staged mode](../reference/drivers/strands-box.md#use-a-managed-openai-source)
+keeps the workload stopped while the Worker authenticates the idle launcher
+and projects the selected Source. Only the trusted launcher mounts the
+credential. It reports its version, a fresh challenge and hashes of the
+policy and Box configuration through the pinned diagnostic listener.
+
+Worker rechecks authority. Compute releases the execution only if those
+measurements and the Deployment and Pod identities still match. A replacement
+may mount the existing Secret in its trusted launcher but cannot reuse the
+release. The workload never mounts that Secret. Retirement must confirm the
+Pod and credential copy are gone before settling withdrawal.
+
 ## Kubernetes startup convergence
 
 [Kubernetes Compute](../../apps/controller/src/drivers/compute/kubernetes/index.ts) requests the Harness endpoint, then reads its status. The [Sandbox Driver](../../apps/controller/src/drivers/sandbox/strands-box.ts) reuses an owned, immutable listener receipt with a valid pinned certificate. Without a receipt, startup is pending only for an empty Pod list or one revision-labelled Pod with a valid UID, no deletion request and a verified controller chain through its ReplicaSet to the expected Deployment. Its phase must be absent, `Pending` or `Running`. The initializer must be absent, running, or waiting with no reason, `ContainerCreating` or `PodInitializing`.

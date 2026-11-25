@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, mkdirSync } from "node:fs";
+import { lstatSync, readFileSync, mkdirSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { spawn } from "node:child_process";
 import {
@@ -29,6 +29,14 @@ if (manifest.stockTransport !== undefined) {
   const { requireStockProfile, requireStockMasks } = await import("./stock-guard.mjs");
   requireStockProfile();
   requireStockMasks();
+  if (
+    manifest.stockStaged !== undefined &&
+    ["/run/strands-material", "/run/strands-release", "/run/strands-stock"].some((path) =>
+      lstatSync(path, { throwIfNoEntry: false }),
+    )
+  ) {
+    throw new Error("Exposed stock Strands Box launch files");
+  }
 }
 const boxProxy = new URL(process.env.HTTPS_PROXY);
 if (boxProxy.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(boxProxy.hostname)) {

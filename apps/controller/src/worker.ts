@@ -1,4 +1,8 @@
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
+import {
+  strandsBoxAgentModelGrant,
+  supportsStrandsBoxCredentialDeployment,
+} from "./composition/strands-box-credential-admission.ts";
 import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2509,7 +2513,7 @@ export class ControllerWorker {
       await this.closeRevisionCredentials(claim, previous);
       if (drain === "wait") {
         await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
-        await this.retireEgressInstallation(previous);
+        await this.confirmCredentialRetirement(claim, previous);
       } else {
         try {
           await this.stopYieldingDrain(claim, previous);
@@ -2709,7 +2713,7 @@ export class ControllerWorker {
           : { ...cleanup, runtime };
       }
       await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
-      await this.retireEgressInstallation(revision);
+      await this.confirmCredentialRetirement(claim, revision);
       return { ...cleanup, runtime: { kind: "stopped", revision } };
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
@@ -3784,10 +3788,62 @@ export class ControllerWorker {
         this.compute.stopRevision(revision),
       ),
     );
-    await this.retireEgressInstallation(revision);
+    await this.confirmCredentialRetirement(claim, revision);
   }
 
-  private async retireEgressInstallation(revision: Readonly<AgentRevision>): Promise<void> {
+  private async confirmCredentialRetirement(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    // Box cannot detach its static model key. A withdrawal remains pending
+    // until Compute confirms shutdown of the exact Pod and its projection.
+    const deployment = revision.credentialDeployment;
+    if (deployment?.driver.implementation === "strands-box") {
+      const binding = deployment.bindings[0];
+      if (
+        revision.executionAdmission.version !== 8 ||
+        deployment.bindings.length !== 1 ||
+        binding?.consumer.kind !== "model" ||
+        binding.sourceRef.namespaceId !== revision.namespaceId
+      ) {
+        throw new Error("Unexpected credential scope for a retired Box execution.");
+      }
+      const sourceId = binding.sourceRef.id;
+      await this.state.transactWithQueue(async (unit, queue) => {
+        await this.lockClaimScope(unit, claim);
+        requireClaimRenewal(await queue.heartbeat(claim));
+        const at = new Date().toISOString();
+        const code = "WITHDRAWAL_REVISION_RETIRED";
+        const recorded = await unit.credentialSources.recordCredentialWithdrawalAttempt(
+          revision.namespaceId,
+          revision.id,
+          sourceId,
+          { reason: code, at },
+        );
+        if (recorded === undefined) {
+          return;
+        }
+        await unit.credentialSources.markCredentialWithdrawalRevoked(
+          revision.namespaceId,
+          revision.id,
+          sourceId,
+          at,
+        );
+        // Attribute retirement to the actor whose lifecycle operation stopped
+        // this execution, even if someone else requested withdrawal.
+        await this.appendCredentialWithdrawalAudit(
+          unit,
+          { ...claim, revisionId: revision.id },
+          {
+            actorId: claim.actorId,
+            outcome: "success",
+            code,
+            credentialSourceIds: [sourceId],
+          },
+        );
+      }, this.queueOptions);
+      return;
+    }
     if (revision.egressPlan === undefined) {
       return;
     }
@@ -3941,7 +3997,7 @@ export class ControllerWorker {
       for (const revision of revisions) {
         await this.closeRevisionCredentials(claim, revision, { awaitCleanup: false });
         await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(revision));
-        await this.retireEgressInstallation(revision);
+        await this.confirmCredentialRetirement(claim, revision);
       }
       if (this.compute.deleteAgentRuntimeCredentials !== undefined) {
         await this.withClaimHeartbeat(claim, () =>
@@ -6270,6 +6326,32 @@ export class ControllerWorker {
       sources.set(source.id, source);
     }
     signal.throwIfAborted();
+    const modelBinding = policy.bindings.find(({ consumer }) => consumer.kind === "model");
+    const model = modelBinding && sources.get(modelBinding.sourceRef.id);
+    const agentGrant = strandsBoxAgentModelGrant({
+      agent,
+      sandbox: this.sandbox,
+      harness: revision.harness,
+      source: model?.ownerCapability === "token_service" ? model : undefined,
+    });
+    const usesAgentSubject =
+      policy.networkAccessPolicy.allowed.some(({ subject }) => subject === "agent") ||
+      policy.injectionPolicies.some(({ allowedRequests }) =>
+        allowedRequests.some(({ subject }) => subject === "agent"),
+      );
+    if (
+      (agentGrant || usesAgentSubject) &&
+      (!agentGrant ||
+        !this.sandbox ||
+        !this.credentialDeploymentProxy ||
+        !supportsStrandsBoxCredentialDeployment({
+          sandbox: this.sandbox,
+          proxy: this.credentialDeploymentProxy,
+          policy,
+        }))
+    ) {
+      throw new DependencyUnavailableError("The whole-Agent model grant is no longer approved.");
+    }
     const bindings = policy.bindings.filter(({ sourceRef }) => sources.has(sourceRef.id));
     const repositoryBinding = bindings.find(({ consumer }) => consumer.kind === "repository");
     if (repositoryBinding) {
@@ -7187,7 +7269,7 @@ export class ControllerWorker {
       await this.withClaimHeartbeat(claim, () =>
         withYieldingComputeStop(() => compute.stopRevision(revision)),
       );
-      await this.retireEgressInstallation(revision);
+      await this.confirmCredentialRetirement(claim, revision);
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         // A graceful shutdown aborts a slow stop (a Pod-termination wait) like a lost claim.
@@ -7432,7 +7514,7 @@ export class ControllerWorker {
     for (const previous of earlier) {
       await this.closeRevisionCredentials(claim, previous);
       await this.withClaimHeartbeat(claim, () => this.compute.retireRevision(previous));
-      await this.retireEgressInstallation(previous);
+      await this.confirmCredentialRetirement(claim, previous);
     }
   }
 

@@ -36,7 +36,7 @@ import {
   ScopeViolationError,
   TokenServiceSourceInputError,
 } from "@openclaw-enterprise/occ";
-import type { PlatformStateStore } from "@openclaw-enterprise/occ";
+import type { PlatformReadView, PlatformStateStore } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import type { OAuthAccountTokens } from "../../backends/token-service/oauth-connection.ts";
@@ -96,7 +96,7 @@ function encodeCredential(value: string): {
   return { stored: encoded, version };
 }
 
-function decodeCredential(value: string): ResolvedCredential {
+function decodeCredential(value: string) {
   let record: Record<string, unknown> | undefined;
   try {
     record = asRecord(JSON.parse(value));
@@ -151,6 +151,12 @@ function sourceMaintenanceResult(
   };
 }
 
+type StaticUpdateGuard = (
+  ref: CredentialSourceReference,
+  agents: PlatformReadView["agents"],
+  signal: AbortSignal,
+) => Promise<void>;
+
 export class OCCTokenServiceDriver implements TokenServiceDriver {
   static readonly implementation = "occ/token-service";
   static readonly configurationSchema: JSONSchema = Object.freeze({
@@ -178,6 +184,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
   private readonly githubApp: GitHubAppEnrollment | undefined;
   private readonly githubAppIssuer: GitHubAppSourceIssuer;
   private readonly renewingGitSources = new Map<string, Promise<boolean>>();
+  private staticUpdateGuard?: StaticUpdateGuard;
   private readonly credentialProxy:
     Pick<CredentialProxyDriver, "notifyCredentialUpdated"> | undefined;
 
@@ -603,6 +610,11 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     return oauth.registerSource(this.oauthAccount(ref), source, input.grant, signal);
   }
 
+  /** Bundled recipients with immutable projections require a stopped Agent before rotation. */
+  bindStaticUpdateGuard(check: StaticUpdateGuard) {
+    this.staticUpdateGuard = check;
+  }
+
   async updateSource(
     source: TokenServiceSourceInstance,
     update: SourceUpdate,
@@ -614,7 +626,7 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       checkLifecycle(update.lifecycleConfig);
     }
     let version: string | undefined;
-    const updated = await this.state.transact(async ({ namespaces, credentialSources }) => {
+    const updated = await this.state.transact(async ({ namespaces, credentialSources, agents }) => {
       const namespace = await namespaces.lockNamespace(ref.namespaceId);
       if (namespace?.status !== "ready") {
         throw new ResourceStateConflictError("The credential source Namespace is not ready.");
@@ -626,6 +638,8 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
         throw new ResourceStateConflictError("Only a ready static Source can be updated.");
       }
       if (update.secret) {
+        // Admission locks this Namespace and Source before requesting execution.
+        await this.staticUpdateGuard?.(ref, agents, signal);
         const stored = encodeCredential(update.secret);
         await withComputeAbortSignal(signal, () =>
           this.store.update(this.storageRef(ref), stored.stored),
@@ -666,6 +680,26 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     } catch {
       throw new CredentialDeliveryFailedError();
     }
+  }
+
+  /** Confirm an immutable projection without returning credential material to its observer. */
+  async currentStaticVersion(
+    source: TokenServiceSourceInstance,
+    signal: AbortSignal,
+  ): Promise<string> {
+    signal.throwIfAborted();
+    const ref = this.ownedRef(source);
+    const found = this.ownedSource(
+      await this.state.read(({ credentialSources }) =>
+        credentialSources.findCredentialSource(ref.namespaceId, ref.id),
+      ),
+    );
+    if (found?.state !== "ready" || found.type !== "static") {
+      throw new ResourceStateConflictError("The static credential source is unavailable.");
+    }
+    return withComputeAbortSignal(signal, () =>
+      this.store.withValue(this.storageRef(ref), async (value) => decodeCredential(value).version),
+    );
   }
 
   async resolveCredential(

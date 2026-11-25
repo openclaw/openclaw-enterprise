@@ -22,6 +22,10 @@ test(
     const agent = process.env.OCC_TEST_PROVIDER_AGENT ?? "";
     assert.match(namespace, /^ns_[a-f0-9-]{36}$/);
     assert.match(agent, /^agt_[a-f0-9-]{36}$/);
+    const sourceId = process.env.OCC_TEST_STRANDS_STOCK_SOURCE_ID;
+    if (sourceId !== undefined) {
+      assert.match(sourceId, /^cs_[a-f0-9-]{36}$/);
+    }
     const keyFile = process.env.OCC_SERVICE_KEY_FILE;
     assert.ok(keyFile);
     let key: string;
@@ -71,10 +75,18 @@ test(
     const { data: revision }: { data: AgentRevisionWire } = await request(
       `${path}/revisions/${id}`,
     );
-    assert.equal(revision.sandboxDriverId, "strands-box-sandbox-stock-model-credential-preview-v1");
     assert.equal(revision.harness.id, "codex");
     assert.equal(revision.harness.mode, "dedicated");
-    assert.equal(revision.harnessAuth.method, "api_key");
+    if (sourceId === undefined) {
+      assert.equal(
+        revision.sandboxDriverId,
+        "strands-box-sandbox-stock-model-credential-preview-v1",
+      );
+      assert.equal(revision.harnessAuth.method, "api_key");
+    } else {
+      assert.equal(revision.sandboxDriverId, "strands-box-sandbox-stock-model-source-v1");
+      assert.deepEqual(revision.harnessAuth, { method: "credential_source", sourceId });
+    }
 
     // A new conversation excludes previous replies and keeps the prepared Agent's sessions intact.
     const nonce = `BOX_LAB_CHALLENGE_${randomBytes(12).toString("hex")}`;

@@ -50,12 +50,41 @@ for a placeholder on HTTPS `POST api.openai.com/v1/responses`. Every process
 in the Agent may use this route. The caller controls the model, body and
 hosted tools. Use a dedicated provider project with spending limits.
 
-The saved revision uses a distinct Sandbox identity and ordinary
-`unprotected` admission. Git, staged Sources, additional endpoints, standalone
-search and managed plugins are unavailable. Stop the old Agent and confirm
+The dedicated-key revision uses a distinct Sandbox identity and ordinary
+`unprotected` admission. Git, additional endpoints, standalone search and
+managed plugins are unavailable in either stock mode. Stop the old Agent and confirm
 retirement with the original Worker before switching launchers. Revoke a
 previously exposed key. Rotation requires a fresh revision. For immediate
 withdrawal, revoke at the provider.
 
 Read the [deployment and isolation requirements](../../flows/strands-box-companion.md#stock-launcher)
 before enabling the preview. Omit `stockLauncher` to keep the receiver.
+
+### Use a managed OpenAI Source
+
+Apply migration 0097 and upgrade the controllers and Workers before enabling
+this mode. Select the `occ` TokenService, register a static OpenAI Source and
+save the dedicated Codex Agent with that Source for model access. Keep it
+stopped. The deployer and the Agent must each be authorized to use the Source.
+
+Add one grant under `kubernetes.stockLauncher`, using the saved IDs.
+
+```yaml
+agentGrants:
+  - agentId: <saved Agent ID>
+    sourceId: <OpenAI Source ID>
+    profile: openai-responses
+```
+
+Apply the same configuration to the API and Worker, then deploy the Agent.
+This switches the installation to staged delivery. It accepts only the named
+Agent and Source and still requires the exact endpoint above. Leave other
+network and repository ceilings empty. Executable-specific rules cannot
+authorize a whole Agent.
+
+Stop the Agent and confirm retirement before changing the grant or key.
+Withdrawal can remain pending until an operator with Stop permission retires
+the execution. Preserve the original API, Worker and grant until cleanup
+finishes. Removing the pair disables its checks for retained copies.
+To rotate the static key, update the Source after retirement,
+then deploy a fresh revision.

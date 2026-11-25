@@ -37,6 +37,9 @@ const tls = {
 };
 // A restarted supervisor cannot inherit the admitted execution's TLS identity.
 unlinkSync(directory + "/key.pem");
+if (manifest.stockStaged !== undefined && manifest.stockTransport !== true) {
+  throw new Error("Missing stock Strands Box transport");
+}
 if (manifest.stockTransport === true && manifest.gateway !== undefined) {
   throw new Error("Unexpected stock Strands Box Gateway route");
 }

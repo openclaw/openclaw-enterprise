@@ -189,7 +189,8 @@
         "the policy proxy delivers the complete response to a slow reader at EOF",
         "stock control waits for its pin, connects once and stops the child on loss",
         "a missing pin or a replacement Pod cannot activate stock control",
-        "stock bootstrap refuses missing or overridden placeholders without logging credentials"
+        "stock bootstrap refuses missing or overridden placeholders without logging credentials",
+        "only Worker diagnostics expose held versions and a fresh challenge on the pinned control channel"
       ]
     },
     {

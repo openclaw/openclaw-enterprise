@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer as createTlsServer } from "node:tls";
 import { createServer, connect } from "node:net";
+import { stockStage } from "./stock-stage.mjs";
 import {
   channelId,
   framed,
@@ -24,6 +25,8 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
   ) {
     throw new Error("Invalid prepared transport configuration");
   }
+  const stage =
+    reader && manifest.stockStaged !== undefined ? stockStage(manifest.stockStaged) : undefined;
   const channels = new Map();
   const accepted = new Set();
   const probes = new Set();
@@ -76,6 +79,7 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
         }
       },
       stop,
+      stage?.consume,
     );
   const route = "/revisions/" + encodeURIComponent(manifest.revisionId) + "/readiness";
   function accept(socket, probe) {
@@ -121,7 +125,7 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
         return;
       }
       if (!probe && path === route) {
-        status().then(
+        (stage ? stage.status(status) : status()).then(
           (result) => {
             const body = JSON.stringify(result);
             socket.end(
@@ -135,7 +139,7 @@ export function serveHarness(manifest, { reader, writer, terminate, tls, probePa
         );
         return;
       }
-      if (!send) {
+      if (!send || stage?.held) {
         reject("503 Service Unavailable");
         return;
       }

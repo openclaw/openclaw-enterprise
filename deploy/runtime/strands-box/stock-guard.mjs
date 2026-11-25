@@ -41,8 +41,7 @@ function procEntries() {
   return entries;
 }
 
-export function prepareStockConfig() {
-  const config = readFileSync("/etc/strands-box/box.toml", "utf8");
+export function prepareStockConfig(config) {
   const sections = config.split("\n[agent.filesystem]\n");
   if (sections.length !== 2) throw new Error("Invalid stock Strands Box configuration");
   const paths = procEntries().map(({ path }) => path);

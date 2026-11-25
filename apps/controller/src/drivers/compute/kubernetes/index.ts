@@ -1192,6 +1192,21 @@ interface NativeRuntimeSnapshot {
   readonly configuration: string;
 }
 
+// Box computes the verifier from the revision-owned transport Secret. Its
+// renderer omits that reference from the Pod and retains it in trusted inputs
+// so Credential Proxy can authenticate read-only diagnostics.
+function computeTransportVerifier(
+  revision: Readonly<AgentRevision>,
+  sandbox: string | undefined,
+): boolean {
+  return (
+    (revision.egressPlan !== undefined ||
+      (revision.credentialDeployment !== undefined && sandbox !== "strands-box") ||
+      sandbox === "openshell") &&
+    (revision.harness.id === "codex" || revision.harness.id === "openclaw")
+  );
+}
+
 function stagedCodexStaticAuth(
   harness: RevisionHarnessDescriptor,
   auth: HarnessAuthSnapshot,
@@ -7490,12 +7505,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        (revision.egressPlan !== undefined ||
-          revision.credentialDeployment !== undefined ||
-          sandboxDriver?.implementation === "openshell") &&
-          (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-          ? "verifier"
-          : "secret",
+        computeTransportVerifier(revision, sandboxDriver?.implementation) ? "verifier" : "secret",
       ),
     );
     const gatewaySecretEnvironment = await this.prepareRevisionStage(
@@ -7833,7 +7843,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // worker's exposure serves only Compute's status read before its first enrollment,
         // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
         const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
-        if (staged !== undefined && context?.existingHarnessOnly) {
+        if (
+          staged !== undefined &&
+          context?.existingHarnessOnly &&
+          sandboxDriver.implementation !== "strands-box"
+        ) {
           throw new DependencyUnavailableError(
             "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
           );
@@ -7895,6 +7909,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
             const targetNamespace = await this.controlNamespace(revision.namespaceId);
             let sandboxId = await this.credentialDeploymentTarget(revision, targetNamespace);
             if (sandboxId === undefined) {
+              if (context?.existingHarnessOnly || credentialActivationRequested) {
+                throw new DependencyUnavailableError(
+                  "A staged execution cannot be recreated during activation or maintenance.",
+                );
+              }
               mayHaveUnboundProxy = true;
               const stagedProxy = await this.prepareRevisionStage("sandbox_provision", () =>
                 proxy!.deployProxy(proxyContext, {
@@ -7924,6 +7943,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
               sandboxId = targetRef.sandboxId;
               await this.credentialDeploymentTarget(revision, targetNamespace, sandboxId);
+            } else if (context?.existingHarnessOnly) {
+              // Retained Box executions refresh DNS grants without recreating a missing Pod.
+              const retained = await sandboxDriver.provisionStagedHarness!(harnessContext);
+              if (!isDeepStrictEqual(retained, { ...deployment, sandboxId })) {
+                throw new OwnershipFailure("The retained staged execution changed.");
+              }
             }
             expected = {
               targetRef: { ...deployment, sandboxId },
@@ -8499,7 +8524,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.sandboxNamespaceForRevision(revision, namespace),
       namespace,
     );
-    await this.sandboxDriverForRevision(revision)!.activateStagedHarness!({
+    const sandbox = this.sandboxDriverForRevision(revision)!;
+    if (sandbox.implementation === "strands-box") {
+      const status = await this.credentialDeploymentProxyDriver!.getDeploymentStatus(
+        { namespace: sandboxContext.namespace, revision, signal: sandboxContext.signal },
+        {
+          configurationId: revision.configurationId,
+          targetRef: {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            sandboxId: target,
+          },
+        },
+      );
+      if (status.state === "failed") {
+        throw new CredentialDeploymentFailedError(status.code);
+      }
+      if (status.state !== "ready") {
+        throw new ActivationPendingError(
+          "CREDENTIAL_ACTIVATION_PENDING",
+          "Awaiting the retained Box execution.",
+        );
+      }
+    }
+    await sandbox.activateStagedHarness!({
       ...sandboxContext,
       revision,
     });
@@ -8743,19 +8792,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
-    const activatedHarnessAuth =
-      (revision.egressPlan !== undefined ||
-        revision.credentialDeployment !== undefined ||
-        sandboxDriver?.implementation === "openshell") &&
-      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
-        ? {
-            ...harnessAuth,
-            environment: [
-              ...harnessAuth.environment,
-              await this.sandboxTransportVerifier(admittedRevision),
-            ],
-          }
-        : harnessAuth;
+    const activatedHarnessAuth = computeTransportVerifier(revision, sandboxDriver?.implementation)
+      ? {
+          ...harnessAuth,
+          environment: [
+            ...harnessAuth.environment,
+            await this.sandboxTransportVerifier(admittedRevision),
+          ],
+        }
+      : harnessAuth;
     const codexLaunch = this.codexLaunch(revision, sandboxDriver);
     const renderAgentDeployment = (
       environment: Readonly<Record<string, string>>,
@@ -9338,6 +9383,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const targetNamespace = await this.controlNamespace(revision.namespaceId);
     const sandboxId = await this.credentialDeploymentTarget(revision, targetNamespace);
     if (sandboxId === undefined) {
+      if (proxy.implementation === "strands-box") {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+          "A missing Box target cannot prove withdrawal from its execution.",
+        );
+      }
       throw new DependencyUnavailableError(
         "The staged Sandbox target is unavailable for withdrawal.",
       );
@@ -9450,6 +9501,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
+      if (revision.credentialDeployment?.driver.implementation === "strands-box") {
+        throw new DependencyUnavailableError(
+          "Cannot verify retirement of the staged Box execution.",
+        );
+      }
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
       if (enabledChannelEntries(revision.configuration).length > 0) {
@@ -9526,6 +9582,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const existingNamespace = await this.getNamespace(namespace);
     if (existingNamespace === undefined) {
+      if (revision.credentialDeployment?.driver.implementation === "strands-box") {
+        throw new DependencyUnavailableError(
+          "Cannot verify retirement of the staged Box execution.",
+        );
+      }
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
       if (enabledChannelEntries(revision.configuration).length > 0) {

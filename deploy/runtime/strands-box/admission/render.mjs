@@ -47,6 +47,11 @@ const policy = {
         expression: "object.spec.containers + object.spec.?initContainers.orValue([])",
       },
       { name: "box", expression: "object.spec.containers.filter(c, c.name == 'box-workload')[0]" },
+      { name: "staged", expression: "variables.box.env[0].name == 'OCE_STRANDS_POD_UID'" },
+      {
+        name: "inputs",
+        expression: "variables.pod.volumes.filter(v, v.name == 'inputs')[0].configMap.name",
+      },
     ],
     validations: [],
   },
@@ -142,16 +147,19 @@ requireRule(
 );
 
 requireRule(
-  "Box requires the stock launcher with a single Secret reference",
+  "Box requires the stock launcher and exactly one delivery mode",
   `
   !variables.pod.enableServiceLinks &&
   variables.box.command == ['/usr/local/bin/node', '--jitless', '/opt/oce/strands-box/stock-launch.mjs'] &&
   !has(variables.box.args) && !has(variables.box.workingDir) &&
   !has(variables.box.envFrom) &&
   size(variables.box.env) == 1 &&
-  variables.box.env[0].name == 'OCE_STRANDS_OPENAI_KEY' &&
-  has(variables.box.env[0].valueFrom.secretKeyRef) &&
-  !variables.box.env[0].valueFrom.secretKeyRef.?optional.orValue(false)
+  (variables.staged
+    ? variables.box.env[0].valueFrom.fieldRef.fieldPath == 'metadata.uid'
+    : (variables.box.env[0].name == 'OCE_STRANDS_OPENAI_KEY' &&
+       variables.box.env[0].valueFrom.secretKeyRef.key == 'OPENAI_API_KEY' &&
+       !variables.box.env[0].valueFrom.secretKeyRef.?optional.orValue(false) &&
+       variables.pod.volumes.all(v, !(v.name in ['stock-material','stock-release']))))
 `,
 );
 
@@ -165,10 +173,38 @@ requireRule(
      (m.name == 'temporary' && m.mountPath == '/tmp') ||
      (m.name == 'box-state' && m.mountPath == '/run/strands-box') ||
      (m.name == 'stock-control' && m.mountPath == '/run/strands-stock' && m.readOnly) ||
+     (m.name == 'stock-material' && m.mountPath == '/run/strands-material' && m.readOnly && !has(m.subPath)) ||
+     (m.name == 'stock-release' && m.mountPath == '/run/strands-release' && m.readOnly && !has(m.subPath)) ||
      (m.name == 'inputs' && m.readOnly &&
        (m.mountPath in ['/etc/strands-box/box.toml', '/etc/strands-box/policy.dw', '/etc/strands-box/workload.json'] ||
         m.mountPath.startsWith('/run/strands-files/'))) ||
      (m.name.startsWith('workspace-') && m.mountPath.startsWith('/home/node/'))))
+`,
+);
+
+requireRule(
+  "Staged Box requires private revision material and release projections",
+  `
+  !variables.staged || (
+    variables.pod.volumes.exists(v, v.name == 'stock-material' &&
+      v.secret.secretName == variables.inputs + '-material' && v.secret.optional &&
+      v.secret.defaultMode == 288 &&
+      size(v.secret.items) == 1 && v.secret.items[0].key == 'material.json' &&
+      v.secret.items[0].path == 'material.json' && !has(v.secret.items[0].mode)) &&
+    variables.pod.volumes.exists(v, v.name == 'stock-release' &&
+      v.configMap.name == variables.inputs + '-release' && v.configMap.optional &&
+      size(v.configMap.items) == 1 && v.configMap.items[0].key == 'release' &&
+      v.configMap.items[0].path == 'release') &&
+    variables.box.volumeMounts.exists(m, m.name == 'stock-material') &&
+    variables.box.volumeMounts.exists(m, m.name == 'stock-release') &&
+    variables.pod.volumes.all(v,
+      !has(v.projected) &&
+      (v.name == 'stock-material' || !has(v.secret) || v.secret.secretName != variables.inputs + '-material') &&
+      (v.name == 'stock-release' || !has(v.configMap) || v.configMap.name != variables.inputs + '-release')) &&
+    variables.allContainers.all(c, c.name == 'box-workload' ||
+      (!has(c.envFrom) &&
+       c.?env.orValue([]).all(e, !has(e.valueFrom) || has(e.valueFrom.fieldRef)) &&
+       c.?volumeMounts.orValue([]).all(m, !(m.name in ['stock-material','stock-release','box-state'])))))
 `,
 );
 

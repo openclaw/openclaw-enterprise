@@ -46,6 +46,20 @@ check("wrong launcher", (c) => (c.command = ["/bin/true"]));
 check("lifecycle hook", (c) => (c.lifecycle = { postStart: { exec: { command: ["/bin/true"] } } }));
 check("injected environment", (c) => c.env.push({ name: "UNEXPECTED", value: "test" }));
 check("mount over launcher", (c) => (c.volumeMounts[0].mountPath = "/opt/oce"));
+if (approved.spec.containers[1].env[0].name === "OCE_STRANDS_POD_UID") {
+  check("material on sibling", (c, s) =>
+    s.containers[0].volumeMounts.push(c.volumeMounts.find((m) => m.name === "stock-material")),
+  );
+  check("Box state on sibling", (_, s) =>
+    s.containers[0].volumeMounts.push({ name: "box-state", mountPath: "/state", readOnly: true }),
+  );
+  check("aliased material", (_, s) =>
+    s.volumes.push({ ...s.volumes.find((v) => v.name === "stock-material"), name: "extra" }),
+  );
+  check("foreign release", (_, s) => {
+    s.volumes.find((v) => v.name === "stock-release").configMap.name = "other-release";
+  });
+}
 check("missing AppArmor", (c) => delete c.securityContext.appArmorProfile);
 check("wrong seccomp", (c) => (c.securityContext.seccompProfile = { type: "RuntimeDefault" }));
 check("unmasked sibling", (_, s) => (s.containers[0].securityContext.procMount = "Unmasked"));
