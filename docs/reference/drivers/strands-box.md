@@ -29,13 +29,17 @@ workspace setup succeeds.
 
 ## Configure the sandbox without Credential Proxy
 
-**Ordinary API-key authentication makes the model key readable by Codex and
-its tools.** For an isolation test, use an invented key and a controlled
-[Responses endpoint](kubernetes-compute/model-provider.md). Leave Credential
-Proxy and repository credentials unconfigured.
+You can validate the configuration and save a draft without a model key.
+Deployment requires a dedicated Codex Agent with a Harness authentication
+binding. The draft has no running workspace.
+
+**With API-key authentication, Codex and its tools can read the key.**
+For an isolation test, use an invented key that your controlled
+[Responses endpoint](kubernetes-compute/model-provider.md) accepts. Leave
+Credential Proxy and repository credentials unconfigured.
 
 1. Build the [companion image](../../flows/strands-box-companion.md) with a
-   matched set of Box binaries. Released Box 0.3.0 lacks the
+   matched set of Box binaries. Box releases 0.3.0 and 0.3.1 lack the
    `--receive-container` launcher that this Pod uses to preserve Kubernetes’
    masked `/proc`. [Box #482](https://github.com/strands-agents/box/pull/482)
    supplies the experimental launcher. Set `drivers.compute.configuration.images.agent`
@@ -79,11 +83,31 @@ drivers:
               ports: [443]
 ```
 
-Deploy a dedicated Codex Agent and test a model turn and workspace read/write.
-The endpoint list applies to every workload process and allows whole hosts and
-ports. Try an allowed destination, a different host or port, and a direct
-connection with the proxy disabled. Check the receiving servers to verify that
-only the allowed request arrived.
+4. Store the invented key in a Secret. In the Agent's Harness authentication
+   binding, set `method` to `api_key` and `source` to the Secret reference.
+   If the Agent configuration specifies an OpenAI provider URL, it must match
+   the Installation's `runtime.modelProvider.baseUrl`.
+5. Deploy the Agent. Verify that the model answers and that you can read and
+   write a workspace file.
+
+### Check network isolation
+
+The endpoint list applies to every process in the workload. It allows whole
+hosts and ports. Run these checks **inside the contained Codex workload**.
+Use a controlled HTTPS endpoint with a single address and a probe path that
+requires no credentials.
+
+1. Send a request through the Box proxy to the allowed hostname and port.
+   Confirm receipt at the server and record the destination IP address and port.
+2. Open a direct TCP connection to that same IP address and port, bypassing
+   the proxy. If TCP connects, isolation fails even if TLS or HTTP fails
+   later. If the connection fails, confirm that the server saw no direct connection.
+3. Repeat the proxied request and confirm receipt at the same server. Only count
+   a blocked connection as a pass if both proxied requests arrived and the
+   workload actually attempted the direct connection.
+
+Test a denied host or port separately. Confirm that the request through Box
+fails and that the denied server receives no request.
 
 ## Gateway and transport
 
