@@ -14,7 +14,7 @@ import {
   type HumanLoginProviders,
 } from "../../apps/controller/src/auth/human-login.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
-import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { idTokenSigner, rsaSigningKey } from "./id-token.ts";
 import type { ProviderHandler } from "./provider-http-transport.ts";
 import { waitUntil } from "./wait-for.ts";
 

@@ -16,11 +16,11 @@ whose selections belonged to the Codex Driver.
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, add
-**Google Workspace** with **Install without an account** to check `gog --version`.
-Google OAuth delivery is deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
-For a credentialed static MCP integration, select a compatible TokenService
-Source in its slot and load the tools. See [managed OpenClaw plugins](openclaw-plugins.md).
-The operator and Agent need Source `operate` permission. Clearing a slot or
+**Google Workspace** with **Install without an account** to check `gog --version`,
+or select a compatible OAuth Source to make approved Google API calls.
+Managed HTTP and MCP Plugins select a TokenService Source in their account
+slot. See [managed OpenClaw plugins](openclaw-plugins.md). The operator and
+Agent need Source `operate` permission. Clearing a slot or
 removing a Plugin applies on the next deployment; to end access sooner,
 [withdraw the binding](../../reference/credential-sources/withdrawal.md).
 
@@ -59,43 +59,46 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-For static HTTP or MCP credentials, register a TokenService Source using a
-Static Bearer Connection Template restricted to the endpoint and method. Select
-that Source in the Plugin slot, grant the operator and Agent service principal
-`credential_source:operate`, and deploy with the paired Credential Proxy and
-Sandbox. The worker advertises selected tools; the Sandbox enforces the selection
-for worker and script calls. Follow [managed OpenClaw plugins](openclaw-plugins.md)
-for the commands. See the [support limits](../../reference/agent-plugins.md#current-support).
-Plugin OAuth serving remains deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+On a dedicated OpenClaw Agent, select a ready TokenService Source for that slot
+and choose **Load tools**. Select the tools the Agent may use, then save the
+Plugin selection. The worker advertises
+those tools; the Sandbox enforces the selection for both worker and script calls. See
+[Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
+walkthrough. [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
+
+For a static bearer, register a Source through a compatible static Connection
+Template. See [Register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
 For **Load tools**, verify that the OCC API can resolve and reach the MCP
-endpoint. The chart permits API egress. Runtime tool calls use the Agent's
-Sandbox policy.
+endpoint. Runtime tool calls use the Agent's Sandbox policy. The picker omits
+upstream tool names that the reviewed Plugin cannot deploy.
 
-Open **Plugins**, add the plugin, choose the Source, and choose **Load tools**.
-Choose the tools to enable, then save and [deploy the change](#deploy-the-change). Loading tools again refreshes the inventory and preserves your selection.
-Changing the Source clears the tools and their approval overrides. Choose and
-configure tools again before you deploy. An empty selection leaves the server disabled.
+Open **Plugins** and add the plugin. Choose a compatible account directly in the
+plugin or use **Connect account** to authorize one from an approved Connection
+Template. Switching accounts clears the plugin's tool inventory, tool selection,
+and per-tool approval overrides. Select **Load tools**, choose the tools to
+enable, and set their approvals again before you save and deploy. Loading tools
+again refreshes the inventory and preserves your selection. An empty selection
+leaves the worker server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;
 it does not show arguments. Save and [deploy the change](#deploy-the-change). A direct
 script using the same credential can call that enabled tool without Gateway approval.
 If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
-Removing the plugin keeps its independently attached
-credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
-to revoke a running version's credential access.
+Removing the Plugin does not delete its Source or change an independent Agent credential attachment. [Withdraw the Source](../../reference/credential-sources/withdrawal.md) to revoke a running version's credential access.
 
-For Slack MCP, restrict the Template to `POST https://mcp.slack.com/mcp` and select
-`slack_search_public` if the account advertises it. Inspect the worker server and
-tool filter:
+For example, the reviewed Slack MCP server is `https://mcp.slack.com/mcp`; the
+worker receives a credential placeholder in `SLACK_MCP_TOKEN`. Select `slack_search_public` if
+the account advertises it. Inspect its worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
 ```
 
-These checks verify configuration and admission. A real Slack MCP tool call with
-this static Source has not been qualified.
+These checks verify configuration and admission. Live Slack OAuth search and
+an unselected-tool denial were qualified in [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+A real Slack MCP call using a static Source remains separately unverified.
 
 ## Before you start
 
@@ -246,8 +249,8 @@ Agent uses [native admin access](../deploy/native-admin.md) with
 points at the Gateway's private loopback address. Use `mode: "file"` when you
 need the rendered diff without a link.
 The [Chat Completions check](../operate/model-verification.md) reads only
-assistant text; it cannot verify that Diffs ran. The OCC console has no chat.
-Use the TUI's tool activity for this verification.
+assistant text; it cannot verify that Diffs ran. Use the TUI's tool activity
+for this verification.
 
 For `failed`, use the returned error and the
 [deployment status reference](../../reference/agents.md#deployment-status). Check

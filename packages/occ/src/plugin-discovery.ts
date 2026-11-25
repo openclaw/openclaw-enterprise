@@ -135,6 +135,17 @@ function undiscoveredPlugin(
   ).withoutRequestPath();
 }
 
+function assertDiscoveryResponse(value: unknown, token?: string): void {
+  const serialized = JSON.stringify(value);
+  if (
+    serialized === undefined ||
+    (token !== undefined &&
+      (token.length === 0 || serialized.includes(JSON.stringify(token).slice(1, -1))))
+  ) {
+    throw new PluginDiscoveryError("invalid_response");
+  }
+}
+
 async function invokePluginDiscovery<T>(
   driver: PluginDriver,
   discover: (authentication: PluginDiscoveryAuthentication) => Promise<T>,
@@ -144,15 +155,7 @@ async function invokePluginDiscovery<T>(
   signal?.throwIfAborted();
   try {
     const value = await discover(authentication);
-    const serialized = JSON.stringify(value);
-    const token = authentication.accessToken;
-    if (
-      serialized === undefined ||
-      (token !== undefined &&
-        (token.length === 0 || serialized.includes(JSON.stringify(token).slice(1, -1))))
-    ) {
-      throw new PluginDiscoveryError("invalid_response");
-    }
+    assertDiscoveryResponse(value, authentication.accessToken);
     return value;
   } catch (error) {
     // Rebuild Plugin refusals without Driver-supplied text or credential material.
@@ -912,14 +915,29 @@ export function createPluginDiscovery(dependencies: PluginDiscoveryDependencies)
             allowedMethods,
             beforeRequest: validateCurrent,
           });
-          return {
-            ...entry,
-            tools: [...names].map((name) => ({
-              id: name,
-              name,
-              ownerId: entry.id,
-            })),
-          };
+          const upstreamNames = [...names];
+          // Never move a peer's echoed bearer across the Plugin Driver boundary.
+          assertDiscoveryResponse(upstreamNames, accessToken);
+          const described = await target.driver.getCatalogPlugin?.(
+            { pluginId, discoveredMcpToolNames: upstreamNames },
+            signal,
+          );
+          if (!described || described.id !== pluginId || !Array.isArray(described.tools)) {
+            throw new PluginDiscoveryError("invalid_response");
+          }
+          const selected = new Set<string>();
+          for (const tool of described.tools) {
+            if (
+              typeof tool?.id !== "string" ||
+              !names.has(tool.id) ||
+              selected.has(tool.id) ||
+              tool.ownerId !== pluginId
+            ) {
+              throw new PluginDiscoveryError("invalid_response");
+            }
+            selected.add(tool.id);
+          }
+          return described;
         },
         { accessToken: resolved.credential },
         signal,

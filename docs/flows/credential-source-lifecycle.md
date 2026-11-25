@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-24
-last_updated_session: authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902
+updated: 2026-11-25
+last_updated_session: authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb
 ---
 
 # Credential source lifecycle flow
@@ -98,7 +98,7 @@ Compute records an idle Sandbox with model credential routes withheld, opens the
 
 For OCC custody, OpenShell Proxy creates or reuses a Provider per projection, resolving each Source at most once for new copies. Existing Providers attach without renewal. Each binding receives a fresh placeholder; failed attachment triggers cleanup. OpenShell refuses to delete an attached Provider.
 
-In the [OpenShell custody preview](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies the Source locator, Workspace, and Provider. Proxy attaches the authoritative Provider directly and the Harness receives a placeholder.
+For [OpenShell custody](../reference/credential-sources/managed-static.md#preview-openshell-custody), `apps/controller/src/drivers/token-service/openshell.ts:resolveNativeProvider` verifies Source, Workspace, and Provider identity. Proxy attaches that Provider. `apps/controller/src/drivers/sandbox/openshell.ts:prepareStagedHarness` maps its Source-specific supervisor placeholder to the binding's environment and removes the internal variable before starting the Harness.
 
 Admission freezes the [three OAuth requests](../reference/credential-sources.md#codex-account-model-requests) or [seven PAT requests](../reference/credential-sources/managed-static.md#codex-pat) for one stock executable within the Installation ceiling. Both receive placeholders. Worker also projects trusted account metadata for OAuth.
 
@@ -159,9 +159,9 @@ The API scans ready GitHub App Sources every five seconds. When a token is withi
 
 For an Agent credential push, OCC selects unwithdrawn bindings from the active revision. It checks caller `agent:operate` and exact `credential_source:update`, plus Agent service-principal `credential_source:operate`, for the entire request before notifying Proxy.
 
-A principal denial asks the operator to restore Source access. It identifies the Source only if explicitly selected or readable.
+A principal denial requests restored access and names only explicitly selected or readable Sources.
 
-OCC sends Proxy each authorized Source reference and TokenService-bound resolver. For OCC custody, Proxy retries the conditional update and verifies serving receipts, including stale targets at the same version. The update can affect other Agents using that Provider. For OpenShell custody, success verifies Provider metadata; verify delivery on the running Sandbox. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. Earlier live verification covered OAuth and Git rotation on one Dedicated Codex Agent. See the [verification scope](../reference/credential-sources.md#implementation-status).
+OCC sends Proxy each authorized Source reference and TokenService-bound resolver. For OCC custody, Proxy retries the conditional update and verifies serving receipts, including stale targets at the same version. The update can affect other Agents using that Provider. For OpenShell custody, success verifies Provider metadata; verify delivery on the running Sandbox. OCC reports `succeeded`, `resolution_failed`, or `delivery_failed` per Source. See [verification scope](../reference/credential-sources.md#implementation-status).
 
 #### Retire the Source
 
@@ -195,6 +195,7 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 
 - 2026-11-25 13:09: Trace Client continuity during GitHub Source persistence. (authoring-run/2f7e175f-ccea-4569-8017-cb40f1852076 - 1fdc956c0c6f8e9c2d94f22adf220cc4dec92d19)
 - 2026-11-25 11:27: Trace Credential Client persistence and direct GitHub issuance before the Source save transaction. (authoring-run/4cdd2925-8687-45e2-8e5f-6bc296f9f54c - b29bb40f04d07fb306f87aa8c1c260bb2a6e1e19)
+- 2026-11-25 06:13: Trace generic native static custody and binding-specific placeholder delivery. (authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb - 2ed738ba4cb4c54802879a4c41ca98221f9716e8)
 
 - 2026-11-24 15:22: Verify GitHub installation and mint by name. (authoring-run/2fff43ca-53a8-4cd9-a462-25f833fec902 - 83575ae57607ec1302aa119523df6e3b39a53c50)
 

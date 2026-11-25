@@ -35,10 +35,6 @@ The operator selects Sources for the model or named Plugin connections. PluginDr
 
 Each new Agent revision freezes the current compatible Template version for a Template-backed Plugin Source. A running Agent keeps its saved policy until redeployment. To end access sooner, withdraw the binding or stop the Agent. This supersedes [RFC-0027’s live Template reconciliation](../0027-agent-oauth-connections/index.md#versions-and-consent). The Source retains the Template ID and, for OAuth, its consent version, client, and granted scopes.
 
-The diagram shows the 1.0 ownership and deployment model. Check the
-[implementation status](../../../docs/reference/credential-sources.md#implementation-status)
-for the available consumer paths.
-
 ```mermaid
 ---
 config:

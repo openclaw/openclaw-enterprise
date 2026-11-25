@@ -40,7 +40,7 @@ import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { injectJson } from "../helpers/inject-json.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.ts";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";

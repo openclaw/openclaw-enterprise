@@ -12,7 +12,7 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { responseTo } from "./console-action-helpers.ts";
 import {

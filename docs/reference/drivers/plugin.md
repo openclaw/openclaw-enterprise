@@ -116,30 +116,32 @@ Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
 cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
-`getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
+`getCatalogPlugin({accessToken?, pluginId, discoveredMcpToolNames?}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Include the target `harnessId` in each request.
-OCC selects the catalog before reading a credential. For a hosted Codex
-catalog, send the ready account `credentialSource` as
-`{kind: "credential_source", namespaceId, id}`. Omit it for credential-free
-catalogs. For managed MCP details, send `managedConnection: {slot, sourceId}`.
-OCC checks caller Source `operate` or the authorized saved binding and Agent
-grant before MCP discovery.
+OCC resolves the catalog before it reads a credential. The selected Driver reports
+`pluginDiscovery.credential` in Installation capabilities as `required` or `none`.
+When required, provide `credentialSource: {kind: "credential_source", namespaceId, id}`
+for a ready Codex account Source in that Namespace. For credential-free discovery,
+omit it. Managed MCP details instead require `managedConnection: {slot, sourceId}`;
+OCC checks caller Source `operate` or, for saved discovery, the verified saved
+binding and Agent grant before using it. The supported slot flow accepts only
+TokenService Sources. An MCP bearer must contain visible ASCII without spaces or control
+characters.
 
-For details, include `pluginId`. Catalog discovery accepts `q` up to 1,024
-characters and `cursor`. Keep the query fixed while paging. The pre-Agent
-routes require Namespace Agent `create` and caller `operate` on the exact,
-same-Namespace Source. Saved-Agent hosted discovery also checks the Agent's
-binding and its principal's access.
+For managed MCP, OCC lists upstream tool names through its credential-authorized transport, then passes `discoveredMcpToolNames` to the selected Driver without the bearer. The Driver returns the catalog entry and omits names that cannot map to distinct reviewed OpenClaw aliases. OCC rejects tools that are duplicated, absent from the upstream inventory, or owned by another plugin.
+For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 characters) or
+`cursor` as needed. Keep the same query while paging.
 
-TokenService resolves the Source credential. OCC rechecks the Source owner,
-binding and authority before passing the credential to the Plugin Driver in
-server memory. The bundled Codex Driver derives the account ID from the
-credential. A cross-Namespace reference returns `400 INVALID_REQUEST`.
-An unavailable or non-ready account Source returns `409 RESOURCE_CONFLICT`.
-A denied grant returns `403`. If the issuer rejects the PAT with
-`PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`, update the PAT Source and retry.
+Both pre-Agent routes require Agent `create` in the Namespace. OCC authorizes the
+exact Source, resolves fresh material through its owning TokenService, and rechecks
+access and Source state before dispatch. Hosted Codex discovery passes the
+credential and trusted account metadata to the PluginDriver only in server
+memory. Managed MCP discovery keeps the bearer in OCC's transport and sends the
+Driver only discovered names. Refresh remains with TokenService.
+A wrong-Namespace reference returns `400 INVALID_REQUEST`; a missing or non-ready
+Source returns `409 RESOURCE_CONFLICT`, and denied Source access returns `403`.
 For details of an ID that a bundled catalog (`occ-plugin` or the curated
 `codex-plugin` catalog) does not offer, the Driver throws the `unknownPlugin`
 refusal that admission uses. OCC returns `400 INVALID_REQUEST` that names the ID
@@ -153,8 +155,8 @@ The controller signals the selected Plugin Driver when the HTTP client
 disconnects during a catalog or detail request for a new or saved Agent.
 Credential values do not appear in catalog responses or audit events; responses
 that echo a credential are rejected. A missing PluginDriver method reports
-unsupported discovery. The pre-Agent methods require no existing Agent,
-Plugin installation, or runtime connection.
+unsupported discovery. These methods do not require an existing Agent,
+plugin installation, or runtime connection.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 
 ## IAM

@@ -5,96 +5,101 @@ last_verified: "2026-11-06"
 
 # Get started with managed OpenClaw plugins
 
-Configure a managed Plugin on a dedicated OpenClaw Agent. Use TokenService and the native OpenShell Credential Proxy for a static Slack MCP credential. Install Google Workspace without an account to check the bundled CLI. Google Workspace OAuth delivery is deferred. [Plugin OAuth follow-up #4673](https://github.com/openclaw/openclaw-enterprise/pull/4673)
-
-Dedicated Codex Agents use their own catalog and approval policy. [Add Codex apps](../integrations/codex-plugins.md)
+Add a reviewed Plugin to a dedicated OpenClaw Agent, select its account and tools, then deploy a new Agent revision.
 
 <a id="use-a-pre-cutover-release"></a>
-
 <a id="evaluate-plugin-credentials-in-the-cutover-candidate"></a>
 
 ## Before you start
 
-- Use a dedicated OpenClaw Agent on Kubernetes. Select the bundled OpenClaw Plugin Driver, OCC TokenService, and the OpenShell Sandbox that supplies native Credential Proxy delivery. [Driver selections](../../reference/drivers/selection.md#supported-selections)
-- Verify the Agent's [managed model Source configuration](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source). To edit and deploy a Plugin selection you need read, update, and deploy access to the Agent.
-- For Slack, ensure that the OCC API can reach `mcp.slack.com:443` for tool discovery. The Agent's Sandbox applies separate policy to runtime requests.
+- Use dedicated OpenClaw with Kubernetes Compute and the `occ-plugin` Plugin Driver. See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+- Have Agent `read`, `update`, and `deploy` permission. To select an account, you also need `credential_source:operate` on its Source. Source `read` controls which accounts appear in the picker.
+- To connect a new OAuth account, have Namespace `credential_source:create`. To create an Agent, have Namespace `agent:create`.
+- Configure the selected Credential Proxy and Sandbox for native HTTP or MCP delivery. The OCE API must also reach the MCP server for tool discovery.
+- Prepare a compatible approved Connection Template and OAuth client, or a ready static Source associated with that Template. See [credential sources](../../reference/credential-sources.md) and [register a static Source](../../reference/credential-sources/managed-static.md#register-a-source).
 
 <a id="2-add-a-hosted-mcp-plugin-slack"></a>
-
-## 1. Add a hosted MCP plugin (Slack)
-
-Slack uses the fixed endpoint `https://mcp.slack.com/mcp`. Live Slack MCP tool execution through native Credential Proxy remains unqualified. The steps below cover Source setup and admission. [Plugin binding rules](../../reference/credential-sources.md#bind-a-source-to-an-agent)
-
 <a id="installation-prerequisites"></a>
 
-### Set up the credential source
+## Set up a static Slack credential source
 
-1. Ask an Installation administrator to create a **Static Bearer** Template in **Credentials → Connection templates**, available in the Agent's Namespace. Add the exact destination `POST`, host `mcp.slack.com`, port `443`, path `/mcp`. Record the Template ID. [Create a Template](../../reference/connection-templates.md#create-a-template)
-2. Obtain a valid Slack MCP OAuth user token for an eligible registered Slack app outside this procedure. It must have the [Slack scopes required by the selected tools](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes-needed-on-user-token-for-different-tools). With `credential_source:create` in the ready Namespace, register it as a managed static Source. Set `NAMESPACE_ID` and `TEMPLATE_ID` to the exact IDs, and `TOKEN_FILE` to the path of your private token file. The command prints the new Source ID. [Static Source registration](../../reference/credential-sources/managed-static.md#register-a-source)
+For static Slack MCP access, ask an Installation administrator to create a
+**Static Bearer** Connection Template available in the Agent's Namespace. Allow
+only `POST mcp.slack.com:443/mcp`. Obtain a valid Slack MCP OAuth user token
+for an eligible registered Slack app with the
+[scopes required by the selected tools](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes-needed-on-user-token-for-different-tools).
+With Namespace `credential_source:create`, set `NAMESPACE_ID`, `TEMPLATE_ID`,
+and `TOKEN_FILE` to the exact IDs and private token file, then register the Source:
 
-   ```bash
-   (
-     set -euo pipefail
-     umask 077
-     source_request=$(mktemp)
-     trap 'rm -f "$source_request"' EXIT
-     jq -n --arg template "$TEMPLATE_ID" --rawfile token "$TOKEN_FILE" \
-       '{name:"slack-mcp",type:"static",connectionTemplateId:$template,secret:($token|rtrimstr("\n"))}' \
-       > "$source_request"
-     occ credential-source create --namespace "$NAMESPACE_ID" \
-       --file "$source_request" --output json | jq -er .id
-   )
-   ```
+```bash
+(
+  set -euo pipefail
+  umask 077
+  source_request=$(mktemp)
+  trap 'rm -f "$source_request"' EXIT
+  jq -n --arg template "$TEMPLATE_ID" --rawfile token "$TOKEN_FILE" \
+    '{name:"slack-mcp",type:"static",connectionTemplateId:$template,secret:($token|rtrimstr("\n"))}' \
+    > "$source_request"
+  occ credential-source create --namespace "$NAMESPACE_ID" \
+    --file "$source_request" --output json | jq -er .id
+)
+```
 
-3. Give the selecting operator exact `credential_source:read` and `credential_source:operate` on the Source. The deployer and Agent service principal also need exact `credential_source:operate`. With OCC-managed Native IAM, saving an eligible Plugin selection can grant the Agent access as part of the same transaction.
-
-### Load and select MCP tools
-
-1. Open the Agent draft's **Plugins** tab, select **Configure plugins**, and add **Slack**.
-2. Select the static Source in the credential slot. The slot supplies the Source at admission.
-3. Select **Load tools** and choose the exact tools the Agent may call. An empty selection leaves the server disabled.
-4. Select **Save plugin selections**. The selection applies when you deploy a new revision.
+Give the selecting operator exact Source `read` and `operate`. The deployer
+and Agent service principal need exact Source `operate`; Native IAM can grant
+the Agent access transactionally when saving an eligible selection.
 
 <a id="1-add-a-cli-plugin-google-workspace"></a>
-
-## 2. Add a CLI plugin (Google Workspace)
-
 <a id="account-and-request-guard-prerequisites"></a>
 <a id="configure-the-plugin-in-the-console"></a>
 <a id="configure-via-cli"></a>
 
-The Google Workspace package (`occ-plugin:google@1.0.0`) includes the `gog` command. Under **Plugins → Configure plugins**, add **Google Workspace**, choose **Install without an account**, and save the selection. This checks CLI startup without making Google API calls.
+## Select a Plugin and account
 
-## 3. Deploy the new revision
+1. Open the Agent in Console and choose **Open draft** → **Plugins** → **Configure plugins**. The same picker is available when creating an Agent.
+2. Add **Google Workspace** for the worker's pinned `gog` CLI, or **Slack** for a hosted MCP server.
+3. Select a compatible account in the Plugin's credential slot. For OAuth, choose **Connect account**, select the Connection Template and OAuth client, and complete provider consent. Console returns the created Source to the Plugin editor. For a static bearer, select an existing compatible Source.
+4. Save the Plugin selection. Selecting the Source in the slot contributes it to deployment admission; do not create a separate Agent credential attachment for the Plugin.
 
-If the Agent is running, use **Stop** and wait until it has no active revision. Deploy the saved draft from the Console or from an [authenticated OCC CLI session](../cli.md#connect-to-your-installation):
+Google Workspace executes `gog` on the dedicated worker. Slack connects to its reviewed MCP endpoint. Neither Plugin needs its account's real token in Gateway configuration.
 
-```bash
-occ agent deploy "$AGENT_ID" --output json > deployment.json
-DEPLOYMENT_ID="$(jq -er .id deployment.json)"
-occ agent deployment-status "$AGENT_ID" "$DEPLOYMENT_ID" --output json
-```
+## Select MCP tools
 
-Wait for `succeeded` and check that the Agent's `activeRevisionId` matches `DEPLOYMENT_ID`. This checks activation. For Slack, a successful tool discovery or deployment does not establish a working runtime call.
+1. In the Slack Plugin, select **Load tools**. OCE authenticates to the reviewed MCP server using the selected Source.
+2. Select the upstream tools the Agent may use. The picker omits names that the reviewed Plugin cannot deploy. Tools are not selected automatically.
+3. Save the Plugin selection. An empty selection leaves the hosted MCP server disabled.
 
-## 4. Verify tool calls with the OpenClaw TUI
+The worker advertises the selected names. With a compatible Credential Proxy and Sandbox, the deployed MCP policy also rejects unselected direct requests from scripts. See [managed MCP support](../../reference/agent-plugins.md#current-support) for implementation limits.
+
+## Deploy and verify
+
+If an active revision exists and either it or the saved draft uses managed credential delivery, Stop the Agent and wait until it has no active revision. Deploy the draft to apply the account and tool selection. Edits to the draft do not change the running Agent. Follow
+[verify an Agent with the OpenClaw TUI](../deploy/production-tui.md) to start a real model turn.
 
 <a id="attach-to-the-agent"></a>
 <a id="verify-google-workspace-cli"></a>
 
-Follow the [OpenClaw TUI procedure](../deploy/production-tui.md) to attach to the Ready Agent Gateway. Ask the Agent to run `gog --version`. The tool output should report the installed CLI version.
+For Google Workspace, ask the Agent to run `gog --version`, then list one Gmail message ID with the reviewed `gmail.users.messages.list` operation:
+
+```sh
+gog --json --no-input api call gmail v1 gmail.users.messages.list --params '{"userId":"me","maxResults":1}'
+```
+
+The version check proves CLI installation; a successful API result proves credentialed access. The Source must permit the Gmail messages-list endpoint and have a compatible Gmail scope.
 
 <a id="verify-slack-mcp"></a>
 
-For a Slack evaluation, check that the intended tool is advertised. A live verification requires a tool call from the running Agent and a successful upstream tool result. It also requires a denied call for an ungranted tool to establish policy enforcement.
-
-## Open implementation boundaries
-
-- [Plugin OAuth delivery](https://github.com/openclaw/openclaw-enterprise/pull/4673)
-- [Multi-account Plugin slots](https://github.com/openclaw/openclaw-enterprise/issues/4815)
-- [Custom Namespace plugins](https://github.com/openclaw/openclaw-enterprise/issues/4816)
+For Slack, ask the Agent to search a harmless term using a selected search tool.
+Check the actual MCP tool result. To verify enforcement, attempt an unselected
+tool through a direct script and inspect the Sandbox or Credential Proxy denial.
+Live [Slack OAuth qualification](https://github.com/openclaw/openclaw-enterprise/pull/4673)
+covered a successful selected search and an OpenShell denial for an unselected
+tool; it did not provide an upstream request counter. Static Slack MCP and
+Google OAuth live execution remain separately unverified.
 
 ## Related documentation
 
 - [Configure Agent plugins](plugins-configure.md)
 - [Agent plugin reference](../../reference/agent-plugins.md)
+- [Credential Proxy](../credential-proxy.md)
+- [Add Codex plugins](../integrations/codex-plugins.md)

@@ -11,7 +11,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {

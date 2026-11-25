@@ -101,8 +101,12 @@ export async function installTokenServiceDriver(
       },
       credentialProxy: delivery,
     });
-    delivery.bindNativeSourceResolver((sourceRef, signal) =>
-      owner.resolveNativeProvider({ sourceRef, tokenServiceInstanceId: instanceId }, signal),
+    delivery.bindNativeSourceResolver((sourceRef, signal, purpose) =>
+      owner.resolveNativeProvider(
+        { sourceRef, tokenServiceInstanceId: instanceId },
+        signal,
+        purpose,
+      ),
     );
     controller.registerDriver(owner);
     controller.selectDriver("token_service", owner.id);

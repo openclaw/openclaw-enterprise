@@ -44,11 +44,11 @@ For a dedicated Codex example, see [first Agent setup](deploy/deploy-first-agent
 [Register a GitHub App Client and select repositories for the Agent](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 Keep the model Source and Git Source permissions separate.
 
-## Enable Google Workspace requests from a dedicated worker
+<a id="enable-google-workspace-requests-from-a-dedicated-worker"></a>
 
-Live Google Workspace OAuth delivery through the native Proxy remains deferred
-to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673). Follow the
-[Plugin setup guide](topics/openclaw-plugins.md) for managed static Slack MCP setup.
+## Connect a Plugin account
+
+Use the [Plugin setup guide](topics/openclaw-plugins.md) to connect an OAuth account or select a static MCP Source. Live Slack OAuth tool execution and an unselected-tool denial were verified in [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673); live Google OAuth and static Slack tool execution remain unverified.
 
 ## Verify use, loss, and withdrawal
 

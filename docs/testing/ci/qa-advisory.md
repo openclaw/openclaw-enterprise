@@ -73,6 +73,8 @@ for Codex.
 | `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
 | `openshell-template-resources`   | No                   | Codex           | [Template resource delivery](../openshell-managed.md#template-resource-delivery).                                                                                                |
 | `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
+| `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
+| `openshell-token-service-agent`  | No                   | OpenClaw        | [Prepared native Source custody](../manual-tests.md): a real dedicated Agent turn, rotation, withdrawal, and deletion of the supplied disposable Source.                         |
 
 Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
 [scenario selection](../../../tests/helpers/qa-selection.mjs).

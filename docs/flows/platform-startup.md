@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: "2026-11-24"
+last_updated_session: "authoring-run/59040b80-7a9f-4651-bf33-dd81410ba9a1"
 ---
 
 # Platform Startup Flow
@@ -144,6 +144,11 @@ required member selections without scanning saved Backend references. Exact
 ownership is checked when credentials or deployments are used, allowing the API
 to start so stale references can be repaired. Lifecycle owners remain stable,
 and controller Drivers are never exposed to tenant workloads.
+
+If API setup fails after Installation configuration loads but before composition
+takes ownership, `apps/controller/src/api-startup.ts:startApi` closes the loaded
+protected Driver and credential-delivery registration. It preserves the startup
+error even if cleanup fails.
 
 ### 3. Compose the API according to its persistence and execution mode
 
@@ -289,6 +294,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 03:21: Document API cleanup before composition takes ownership. (authoring-run/59040b80-7a9f-4651-bf33-dd81410ba9a1 - 3ab8f42b0e1933c0d9510c3f2331d089d244ba1a)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 18:44: Update controller construction sources. (authoring-run/38e2165b-e5b2-4007-92cf-748673a94e25 - 261eb78aef5e3ae3b61bb0a0ea7e0583b5e59371)
