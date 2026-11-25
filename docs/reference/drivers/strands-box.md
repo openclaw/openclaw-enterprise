@@ -17,10 +17,10 @@ providerHarness:
 ```
 
 Before deployment, check `/opt/oce/runtime/provenance.json` in the Gateway
-image. Its `source` must be `https://github.com/openclaw/openclaw` and its
-`commit` must match `commit` in the controller checkout's
-`deploy/runtime/openclaw-source.json`. A mismatch leaves the Gateway unready.
-Pin that image by digest and use it as the base for the companion image.
+image. Verify that `source` is `https://github.com/openclaw/openclaw` and
+`commit` matches the controller checkout’s `deploy/runtime/openclaw-source.json`.
+Check the image directly. Gateway readiness alone does not verify its provenance.
+Pin the image by digest and use it as the base for the companion image.
 
 The first Gateway issues workspace-node setup. The trusted file node reports
 migration or baseline failures through a private socket. The supervisor exposes
