@@ -1571,23 +1571,6 @@ test("a Namespace member enrolls a TokenService model credential before saving a
     },
   });
   assert.equal(grant.status, 201, JSON.stringify(grant.body));
-  const network = `${agents}/${agent.id}/sandbox-policy/networking`;
-  const edit = await fixture.request("PATCH", `${network}/editing`, { body: { enabled: true } });
-  assert.equal(edit.status, 200, JSON.stringify(edit.body));
-  const savedPolicy = await fixture.request("PUT", network, {
-    body: {
-      expectedVersion: 1,
-      additions: [
-        {
-          id: "console-codex-model",
-          binary: OPEN_SHELL_CODEX_BINARIES[0],
-          host: "api.openai.com",
-          ports: [{ from: 443, to: 443 }],
-        },
-      ],
-    },
-  });
-  assert.equal(savedPolicy.status, 200, JSON.stringify(savedPolicy.body));
   const admitted = await deployDraft();
   assert.equal(admitted.status(), 202, await admitted.text());
 });

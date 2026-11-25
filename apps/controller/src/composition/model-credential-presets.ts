@@ -111,7 +111,11 @@ export const resolveModelCredentialPreset: NonNullable<
       providerId: selected.provider,
       provider,
       destinations,
-      ...(harness.id === "codex" ? { binaries: OPEN_SHELL_CODEX_BINARIES } : {}),
+      ...(harness.id === "codex" && { binaries: OPEN_SHELL_CODEX_BINARIES }),
+      ...(harness.id === "openclaw" &&
+        harness.mode === "dedicated" && {
+          defaultBinary: "/usr/local/bin/node",
+        }),
       projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
     };
   } catch {
