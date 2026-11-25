@@ -10,12 +10,7 @@ import {
   SandboxPolicyViewResponse,
 } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import {
-  resolveSelectedRepositoryScope,
-  validateGitHubRepositoryRegistry,
-  type GitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
+import { type GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import {
   AgentListResponse,
   AgentReadResponse,
@@ -144,24 +139,6 @@ function checkedEnvelope<Schema extends TSchema>(
   const { status: _status, ...body } = response;
   assert.ok(Check(schemaContext, schema, body), message);
   return body;
-}
-
-function compiledRepositoryApiRoutes(
-  grants: readonly RepositoryNetworkGrant[],
-  permissions: Parameters<typeof compileOpenShellBoundGitRule>[3],
-) {
-  const rule = compileOpenShellBoundGitRule(
-    grants,
-    "oce-github-installation-" + "a".repeat(32),
-    ["/usr/bin/git"],
-    permissions,
-  );
-  assert.ok(rule.endpoints.some(({ host }) => host === "github.com"));
-  return rule.endpoints.flatMap((endpoint) =>
-    endpoint.host === "api.github.com" && "rules" in endpoint
-      ? endpoint.rules.map(({ allow }) => `${allow.method} ${allow.path}`)
-      : [],
-  );
 }
 
 export async function verifyRepositoryPolicyWriteProjection(
@@ -483,81 +460,6 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     assert.ok(!("configurationReadError" in unchanged));
     assert.deepEqual(repositoryAccessSelections(unchanged.repositoryAccess), selection);
     assert.equal(unchanged.desiredRuntimeState, "stopped");
-  });
-
-  test("Redeploying an unchanged repository binding takes the current Namespace REST policy", async (t) => {
-    const bindings = [{ repositoryRef: "project", profile: "github-repository" }];
-    const grant = { repository: "example/project", access: "write" } as const;
-    const f = await fixture(t, {
-      configureRegistry: selectedRepositoryRegistry("write", { nativeGit: "v1" }),
-    });
-    const agent = await f.createAgent({
-      repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
-    });
-    await f.prepareDeployment(agent);
-    const path = `${f.collection}/${agent.id}`;
-    const namespaceId = f.namespace.id;
-    const deploy = async (request: Request) => {
-      const { data: response } = checkedEnvelope(
-        await request("POST", `${path}/deploy`),
-        AgentRevisionResponse,
-        202,
-      );
-      assert.deepEqual(response.repositoryCredentials?.bindings, bindings);
-      const revision = await f.state.read((view) =>
-        view.revisions.findRevision(namespaceId, agent.id, response.id),
-      );
-      assert.ok(revision?.repositoryCredentials);
-      return revision.repositoryCredentials.bindings;
-    };
-    const initial = await deploy(f.request);
-    function restRoutes(registry: GitHubRepositoryRegistry, admitted: typeof initial) {
-      const { scopedRest } = resolveSelectedRepositoryScope(
-        validateGitHubRepositoryRegistry(registry, backendId),
-        namespaceId,
-        admitted,
-      );
-      // Feed the exact admitted credential scope to the Sandbox compiler with a Write grant.
-      return compiledRepositoryApiRoutes([grant], scopedRest);
-    }
-    assert.deepEqual(restRoutes(f.registry, initial), []);
-
-    const expanded: GitHubRepositoryRegistry = {
-      ...f.registry,
-      repositories: f.registry.repositories.map((entry) => ({
-        ...entry,
-        namespaces: entry.namespaces.map((policy) =>
-          entry.repositoryRef === "project" && policy.namespaceId === namespaceId
-            ? {
-                ...policy,
-                permissions: {
-                  contents: "write",
-                  metadata: "read",
-                  issues: "write",
-                  pull_requests: "write",
-                },
-              }
-            : policy,
-        ),
-      })),
-    };
-    const reconfigured = await f.compose(expanded);
-    const current = await deploy(reconfigured.request);
-    // A changed registration preserves the draft selector without refreshing an old revision.
-    assert.throws(() => restRoutes(expanded, initial), {
-      message: "selected-repository-grant-changed",
-    });
-    const routes = restRoutes(expanded, current);
-    assert.ok(routes.includes("GET /repos/example/project/issues"));
-    assert.ok(routes.includes("POST /repos/example/project/pulls"));
-    assert.ok(routes.includes("POST /repos/example/project/issues"));
-    const { data: draft } = checkedEnvelope(
-      await reconfigured.request("GET", path),
-      AgentReadResponse,
-      200,
-    );
-    assert.ok(!("configurationReadError" in draft));
-    assert.deepEqual(repositoryAccessSelections(draft.repositoryAccess), bindings);
   });
 
   test("Repository refusals wait for the Agent grant: a missing and an unreadable Agent answer alike", async (t) => {

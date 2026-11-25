@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { OpenShellOnlineHttpRequest } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
+import type { OpenShellOnlineHttpRequest } from "../../apps/controller/src/drivers/plugin/openshell-online-authority.ts";
 import { grpc } from "../helpers/openshell-grpc-sdk.ts";
 import { openStockOnlineHttpWire, type HttpEvaluation } from "../helpers/stock-online-http-wire.ts";
 import { verifyPendingDecisionCapacity } from "./egress-stock-online-authority-capacity.ts";

@@ -16,9 +16,8 @@ and [access levels](repository-credentials/access-levels.md).
 
 ## Prepared Git through the repository sender
 
-This separate no-Sandbox broker is outside Credential Design 1.0. It does not
-depend on `LegacyEgressProxyDriver`. Its exact-ref and draft-PR features are
-not part of Source-backed 1.0 Git.
+This separate no-Sandbox broker is outside Credential Design 1.0. The broker
+supports exact-ref writes and draft pull requests.
 
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT
 service account) and Kubernetes Compute without a Sandbox Driver. Git presents
@@ -33,7 +32,7 @@ and [withdrawal and draft creation](repository-credentials/prepared-native-git.m
 
 The special [protected metadata](credential-sources/protected-repository-metadata.md)
 and [protected OpenShell Git](repository-credentials/protected-openshell-git.md) exchanges
-are retired from 1.0. Their deprecated legacy egress code remains pending removal.
+are retired.
 Helm uses `Recreate` to prevent overlapping worker or credential service owners.
 
 The repository-bound Codex proxy allows the exact broker hostname.
@@ -47,18 +46,16 @@ and [anonymous public reads](public-github-reads.md).
 
 The GitHub Backend selects [GitHub repository policy](../../apps/controller/src/drivers/repo/github/policy.ts)
 by ID in `drivers.repo`. Its [contract](../../packages/contracts/src/drivers/repo/index.ts) is separate from
-`NativeRepositorySender`. For protected Git, [installation composition](../../apps/controller/src/composition/installation-config.ts)
-supplies the resolver that checks the admitted grant and selects its destination.
+`NativeRepositorySender`.
 
 - `listOptions` lists approved repositories and profiles for the Namespace.
 - `resolve` checks the selection against Namespace policy and returns the bindings and duration.
 
 For native OpenShell Git, select `repository` with the TokenService and paired
 Sandbox and native Credential Proxy. For the prepared sender, select
-`repository.nativeSender` with `repository.preparedGitHub`. Protected Git uses
-the deprecated legacy credential-egress Driver and its own repository settings. Controller startup rejects the legacy
-Installation-level `drivers.repo` in every mode. Before switching, stop new
-admissions and drain accepted work on its original owner.
+`repository.nativeSender` with `repository.preparedGitHub`. Controller startup
+rejects the legacy Installation-level `drivers.repo` setting. Drain accepted
+work on its original owner before changing the repository sender.
 
 | Native sender operation          | Result                                                                                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -277,10 +274,9 @@ until callbacks and disposal finish.
 
 ## GitHub response data
 
-The deprecated [protected metadata exchange](credential-sources/protected-repository-metadata.md)
-releases only `{ id, full_name }` after checking repository identity and reaching
-stream end without actual trailers. Joined OpenShell enforcement still needs
-deployment proof.
+The retired [protected metadata exchange](credential-sources/protected-repository-metadata.md)
+returned only `{ id, full_name }`. For public metadata, an admitted Sandbox
+network rule lets the Agent receive GitHub's full response.
 
 For legacy profiles with broader API access, bounded REST JSON responses omit
 `temp_clone_token` from the repository, its `parent` and `source`, and a pull

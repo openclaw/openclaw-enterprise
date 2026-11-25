@@ -1,7 +1,5 @@
-import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/installation-fields.ts";
 import type { KubernetesComputeDriverOptions } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import type { KubernetesConfigurationDriverOptions } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import type { OpenShellProxyOptions } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import type { KubernetesAuthentication } from "../../apps/controller/src/drivers/kubernetes/authentication.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { KubernetesSecretDriverOptions } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
@@ -92,7 +90,6 @@ export function createCredentialProxyInstallationConfiguration() {
       },
       drivers: {
         sandbox: "openshell-sandbox",
-        credential_proxy: "openshell-egress",
       },
     },
   ] satisfies [OpenShellBackendDefinition];
@@ -121,30 +118,13 @@ export function createCredentialProxyInstallationConfiguration() {
       },
     } satisfies OpenShellSandboxDriverOptions,
   };
-  const credentialProxy = {
-    id: "openshell-egress",
-    configuration: {
-      middlewareName: "oce-authority",
-      authorityScope: "execution",
-      authority: {
-        host: "127.0.0.1",
-        port: 9444,
-        certificatePath: "/etc/openclaw/egress/tls/tls.crt",
-        privateKeyPath: "/etc/openclaw/egress/tls/tls.key",
-        issuerPublicKeyPath: "/etc/openclaw/egress/issuer/issuer.pub",
-        issuer: "openshell-gateway:openshell-gateway",
-        audience: "oce-egress",
-        keyId: "current",
-      },
-    } satisfies OpenShellProxyOptions & { authority: EgressAuthorityConfiguration },
-  };
   return {
     ...configuration,
     backend,
     drivers: {
       ...configuration.drivers,
       sandbox,
-      credential_proxy: credentialProxy,
+      token_service: { id: "occ", configuration: {} },
     },
   };
 }

@@ -678,7 +678,14 @@
       "idx": 97,
       "version": "7",
       "when": 1787000000097,
-      "tag": "0097_shared_git_source_repository_grants",
+      "tag": "0097_retire_legacy_proxy_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787000000098,
+      "tag": "0098_shared_git_source_repository_grants",
       "breakpoints": true
     }
   ]

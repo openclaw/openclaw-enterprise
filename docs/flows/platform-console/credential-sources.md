@@ -39,7 +39,7 @@ graph TD
 
 `apps/controller/src/console/console.mts:loadSources`; `apps/controller/src/console/credential-sources.mts:readInventorySource`
 
-Console requests `GET /namespaces/:namespaceId/credential-sources`. OpenClaw Control Plane (OCC) requires Namespace `read`, excludes Credential Gateway records, and filters each remaining Source by exact `read`. Console validates the Namespace and Source reference before listing the returned managed and deprecated protected Proxy Sources, including OAuth Sources. It keeps the name, ID, type, state, and applicable managed purpose. It does not copy credential, account, or consent data into the inventory. Secret controls remain available in a separate section of the same tab. A temporary collection failure affects its own section; a Namespace access refusal clears the page.
+Console requests `GET /namespaces/:namespaceId/credential-sources`. OpenClaw Control Plane (OCC) requires Namespace `read` and returns the managed TokenService Sources for which the caller has exact Source `read`. Console validates the Namespace and Source reference before listing them. It keeps the name, ID, type, state, and applicable managed purpose. It does not copy credential, account, or consent data into the inventory. Secret controls remain available in a separate section of the same tab. A temporary collection failure affects its own section; a Namespace access refusal clears the page.
 
 ### 2. Discover creation choices
 

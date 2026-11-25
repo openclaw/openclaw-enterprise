@@ -44,7 +44,11 @@ import {
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
+import {
+  normalizePresetTemplate,
+  type CredentialProxyDriver,
+  type SandboxDriver,
+} from "../../packages/contracts/src/index.ts";
 import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
@@ -54,7 +58,7 @@ import {
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { productionBootstrapEnvironment } from "../helpers/bootstrap-installation.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
-import { createDriver as createProtectedFixture } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -225,6 +229,58 @@ async function productionDrivers({
         implementation: installation.drivers.iam.implementation,
       });
     },
+  };
+}
+
+function withCredentialDeliveryRegistration(
+  runtime: InstallationRuntimeDrivers,
+  close: () => Promise<void>,
+): InstallationRuntimeDrivers {
+  const selection = {
+    id: "cleanup-fixture",
+    implementation: "cleanup-fixture",
+    configuration: {},
+    definition: {
+      configurationSchema: { type: "object", additionalProperties: false },
+      validateConfiguration: () => [],
+    },
+  } as const;
+  const sandbox: SandboxDriver = {
+    id: selection.id,
+    implementation: selection.implementation,
+    capability: "sandbox",
+    facets: ["networking"],
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    async cleanup() {},
+  };
+  const proxy: CredentialProxyDriver = {
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    capability: "credential_proxy",
+    async deployProxy() {
+      assert.fail("Startup does not deploy credentials.");
+    },
+    async configureDeployment() {
+      assert.fail("Startup does not configure credentials.");
+    },
+    async getDeploymentStatus() {
+      assert.fail("Startup does not observe a deployment.");
+    },
+    async removeDeployment() {
+      assert.fail("Shutdown does not remove deployments.");
+    },
+  };
+  return {
+    ...runtime,
+    installation: {
+      ...runtime.installation,
+      drivers: { ...runtime.installation.drivers, sandbox: selection },
+    },
+    sandboxDriver: sandbox,
+    credentialDeliveryRegistration: new InstalledDriver(selection, {
+      capabilities: { sandbox, credential_proxy: proxy },
+      close,
+    }),
   };
 }
 
@@ -573,51 +629,24 @@ test(
       for (const [mode, failure] of [
         ["production", "shutdown"],
         ["development", "shutdown"],
-        ["production", "bind"],
-        ["development", "bind"],
         ["production", "routes"],
       ] as const) {
         await t.test(`${mode} cleanup after ${failure} failure`, async () => {
           const events: string[] = [];
           const first = mode === "production" ? 0 : new Error("first cleanup failure");
           const startup = new Error("original startup failure");
-          const runtimeBase = await productionDrivers();
-          const registration = {
-            ...createProtectedFixture({
-              id: "cleanup-fixture",
-              implementation: "cleanup-fixture",
-              configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
-            }),
-          };
-          delete registration.computeLifecycleHooks;
-          assert.ok(registration.capabilities.credential_proxy);
-          registration.capabilities.credential_proxy.bindExchange = async (connect) => {
-            events.push("bind");
-            if (failure === "bind") {
-              throw startup;
-            }
-            connect({ verify: async () => undefined, capture: () => undefined, owns: () => false });
-            return {
-              async close() {
-                events.push("exchange");
-                throw first;
-              },
-            };
-          };
-          registration.close = async () => {
-            events.push("driver");
-            throw new Error("later cleanup failure");
-          };
-          const protectedDriver = new InstalledDriver(
-            { id: "cleanup-fixture", implementation: "cleanup-fixture", configuration: {} },
-            registration,
+          const runtime = withCredentialDeliveryRegistration(
+            await productionDrivers(),
+            async () => {
+              events.push("driver");
+              throw first;
+            },
           );
           const closePool: (this: Pool) => Promise<void> = Pool.prototype.end;
           const observePool = t.mock.method(Pool.prototype, "end", function (this: Pool) {
             events.push("pool");
             return closePool.call(this);
           });
-          const runtime = { ...runtimeBase, protectedDriver };
           const config = {
             host: "127.0.0.1",
             databaseUrl,
@@ -653,12 +682,7 @@ test(
             } else {
               await assert.rejects(build, (error) => error === startup);
             }
-            assert.deepEqual(
-              events,
-              failure === "bind"
-                ? ["bind", "driver", "pool"]
-                : ["bind", "exchange", "driver", "pool"],
-            );
+            assert.deepEqual(events, ["driver", "pool"]);
             assert.equal(observePool.mock.callCount(), 1);
           } finally {
             observePool.mock.restore();
@@ -666,33 +690,18 @@ test(
         });
       }
 
-      // The worker owns the same protected Driver and its own pool. A Driver that fails to close
+      // The worker owns its credential delivery registration and its pool. A Driver that fails to close
       // must not strand the worker's PostgreSQL connections at shutdown.
       await t.test(
-        "worker stop closes its pool after a protected Driver close failure",
+        "worker stop closes its pool after a credential delivery Driver close failure",
         async () => {
-          const driverFailure = new Error("protected Driver cleanup failure");
-          const runtimeBase = await productionDrivers();
-          const registration = {
-            ...createProtectedFixture({
-              id: "worker-cleanup-fixture",
-              implementation: "worker-cleanup-fixture",
-              configuration: { endpoint: "https://127.0.0.1:1", ca: "unused" },
-            }),
-          };
-          delete registration.computeLifecycleHooks;
-          registration.close = async () => {
-            throw driverFailure;
-          };
-          const protectedDriver = new InstalledDriver(
-            {
-              id: "worker-cleanup-fixture",
-              implementation: "worker-cleanup-fixture",
-              configuration: {},
+          const driverFailure = new Error("credential delivery Driver cleanup failure");
+          const runtime = withCredentialDeliveryRegistration(
+            await productionDrivers(),
+            async () => {
+              throw driverFailure;
             },
-            registration,
           );
-          const runtime = { ...runtimeBase, protectedDriver };
           const workerPool = new Pool({ connectionString: databaseUrl });
           const worker = createControllerWorker({
             pool: workerPool,

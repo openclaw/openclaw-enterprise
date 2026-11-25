@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { CouplingEdge } from "./coupling.ts";
 import type { EvidenceDiagram } from "./evidence.ts";
@@ -143,10 +142,10 @@ test("all five trusted diagrams expose coverage and bounded report language", ()
   assert.deepEqual(
     result.diagrams.map(({ id, classification }) => [id, classification]),
     [
-      ["platform-roles", "contract"],
-      ["current-git", "source-preview"],
-      ["current-git-setup", "source-preview"],
-      ["generic-exchange", "conditional-composition"],
+      ["platform-roles", "historical"],
+      ["current-git", "historical"],
+      ["current-git-setup", "historical"],
+      ["generic-exchange", "historical"],
       ["credential-pull-proposal", "proposal"],
     ],
   );
@@ -158,32 +157,4 @@ test("all five trusted diagrams expose coverage and bounded report language", ()
   assert.match(formatEvidenceReport(result), /No runtime execution/);
   assert.ok(result.claims.every((claim) => claim.status === "missing-evidence"));
   assert.ok(sourceFiles.every((file) => !file.startsWith("/") && !file.includes("node_modules")));
-});
-
-test("repository sources support the catalog, and removing or redirecting any witness fails", async () => {
-  const { analyzeCoupling } = await import("./coupling.ts");
-  const root = fileURLToPath(new URL("../../", import.meta.url));
-  const graph = analyzeCoupling(root, sourceFiles);
-  const result = verifyEvidence(graph.edges);
-  assert.deepEqual(result.problems, []);
-  assert.ok(result.claims.every((claim) => claim.status === "static-match"));
-  // Each requirement is a necessary witness. Other edges cannot substitute for it.
-  for (const entry of evidenceCatalog) {
-    for (const claim of entry.claims) {
-      for (const witness of claim.required) {
-        const same = (candidate: CouplingEdge) =>
-          candidate.from === witness.from &&
-          candidate.kind === witness.kind &&
-          candidate.to === witness.to;
-        const removed = verifyEvidence(graph.edges.filter((candidate) => !same(candidate)));
-        assert.ok(removed.problems.length > 0, `removed ${witness.to}`);
-        const redirected = verifyEvidence(
-          graph.edges.map((candidate) =>
-            same(candidate) ? { ...candidate, to: "src/unrelated.ts#unrelated" } : candidate,
-          ),
-        );
-        assert.ok(redirected.problems.length > 0, `redirected ${witness.to}`);
-      }
-    }
-  }
 });

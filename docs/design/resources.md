@@ -108,7 +108,7 @@ versions.
 | `SandboxPolicy`    | Namespace                 | Workload containment requirements for an Agent deployment. The selected `SandboxDriver` must support and enforce the exact admitted policy.                                                                                                                                                                                      |
 | `Restriction`      | Installation or Namespace | Platform-wide guardrail enforced by every relevant authority and integration. It can narrow an otherwise allowed operation, but it cannot grant or expand permission.                                                                                                                                                            |
 
-Legacy Proxy-owned credential-free metadata Sources are deprecated and outside the 1.0 model. Ordinary credential-free requests use Sandbox network policy.
+Ordinary credential-free requests use Sandbox network policy without a Source.
 
 Identities, groups, roles, permissions, and access bindings are IAM resources,
 not additional deployment primitives. Workloads, Kubernetes objects, Drivers,

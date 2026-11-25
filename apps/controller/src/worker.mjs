@@ -5,7 +5,6 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
-import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
 import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
   loadInstallationConfiguration,
@@ -104,9 +103,8 @@ let metricsPool;
 let metricsListener;
 let metricsClosing;
 let receiptServer;
-let repositoryGitTransport;
 let preparedRepositoryGit;
-let protectedDriver;
+let credentialDeliveryRegistration;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -170,7 +168,7 @@ try {
     }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
-  protectedDriver = drivers?.protectedDriver;
+  credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
   let computeDriver;
   if (drivers === undefined && mode === "development") {
     const { createDevelopmentDockerComputeDriver } =
@@ -215,14 +213,6 @@ try {
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
-    repositoryGitTransport = await bindRepositoryGitTransport(
-      drivers,
-      preparedRepositoryGit.protectedGit,
-      pool,
-      (event) => emitOccLogEvent(logger, event),
-    );
-  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
-    throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
   if (metricsSettings !== undefined) {
@@ -278,7 +268,6 @@ try {
     try {
       await closeWorkerComposition({
         readinessPath,
-        repositoryGitTransport,
         preparedRepositoryGit,
         receiptServer,
         closeMetrics,
@@ -293,7 +282,6 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
-  await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
@@ -301,10 +289,10 @@ try {
     await unlink(readinessPath).catch(() => {});
   }
   if (worker !== undefined) {
-    // The worker closes its protected Driver; before it exists, close the loaded registration.
+    // The worker closes credential delivery. Close the registration here if startup failed first.
     await worker.stop().catch(() => {});
   } else {
-    await protectedDriver?.close().catch(() => {});
+    await credentialDeliveryRegistration?.close().catch(() => {});
     await pool?.end();
   }
   try {

@@ -52,6 +52,15 @@ func TestInstallationDoctor(t *testing.T) {
 	}
 	const unchecked = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"demo-initialization","namespace":"operations","uid":"id","labels":{"app.kubernetes.io/instance":"demo","app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/component":"initialization","app.kubernetes.io/managed-by":"Helm"},"annotations":{"helm.sh/hook":"pre-install,pre-upgrade"}},"spec":{"template":{"spec":{"initContainers":[{"name":"migration","args":["scripts/migrate-production.ts","--expect-empty"]}],"containers":[{"name":"bootstrap","args":["scripts/bootstrap-installation.mjs"]}]}}},"status":{"succeeded":1,"conditions":[{"type":"Complete","status":"True"}]}}`
 	checkArg := installationCheckArg(t)
+	// The previous chart embedded these exact bytes in its retained Job.
+	retainedCheck, err := os.ReadFile("testdata/check-installation-pre-egress-removal.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedCheckArg, err := json.Marshal(string(retainedCheck))
+	if err != nil {
+		t.Fatal(err)
+	}
 	alteredCheckArg := strings.TrimSuffix(checkArg, `"`) + ` "`
 	check := installationCheckContainer(checkArg)
 	job := strings.Replace(unchecked, `"initContainers":[`, `"initContainers":[`+check+`,`, 1)
@@ -62,6 +71,7 @@ func TestInstallationDoctor(t *testing.T) {
 		t.Fatal(err)
 	}
 	selectedMigration := selectedMigrationArg(t, string(program))
+	selectedInstall := strings.Replace(job, migration, selectedMigration, 1)
 	alteredMigration := selectedMigrationArg(t, string(program)+" ")
 	// The previous chart wrapper dispatched flags without checking whether the image supports them.
 	const legacyProgram = `
@@ -89,7 +99,8 @@ import("./" + entry);
 		success    bool
 		uid        string
 	}{
-		{"selected-install", 200, strings.Replace(job, migration, selectedMigration, 1), "Initialization Job (install hook): complete", true, ""},
+		{"selected-install", 200, selectedInstall, "Initialization Job (install hook): complete", true, ""},
+		{"retained-chart-check", 200, strings.Replace(selectedInstall, checkArg, string(retainedCheckArg), 1), "matches the recorded UID", true, "id"},
 		{"selected-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration, 1), "upgrade hook): complete", true, ""},
 		{"selected-separate-upgrade", 200, strings.Replace(upgrade, migration, selectedMigration+`,"--require-current"`, 1), "schema verification and bootstrap completed", true, ""},
 		{"altered-selected-program", 200, strings.Replace(job, migration, `"-e","process.exit(0)","--"`, 1), "steps do not match", false, ""},

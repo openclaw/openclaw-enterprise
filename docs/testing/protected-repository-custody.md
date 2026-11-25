@@ -6,6 +6,9 @@ last_verified: "2026-11-04"
 
 # Qualify the installed repository response and dispatch custody
 
+This page records behavior and verification on earlier releases of the retired
+protected egress implementation. Use [Credential Design 1.0](https://github.com/openclaw/openclaw-enterprise/tree/main/specs/rfcs/20261124-credential-design-1-0) for the current design.
+
 ## Check useful Git work
 
 From the repository root, use a Node.js version supported by [the workspace](../../package.json), Git, OpenSSL, matching installed

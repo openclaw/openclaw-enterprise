@@ -168,10 +168,7 @@ export function registerManagedStartupNetworkReplacementCases(): void {
     for (const field of ["process", "network_middlewares"]) {
       const saved = structuredClone(currentPolicy());
       currentPolicy()[field] = { changed: true };
-      await assert.rejects(
-        provision(replacement, next),
-        /static policy or non-Git middleware bindings/,
-      );
+      await assert.rejects(provision(replacement, next), /static policy or middleware bindings/);
       policy = saved;
     }
     assert.equal(writes, 0);

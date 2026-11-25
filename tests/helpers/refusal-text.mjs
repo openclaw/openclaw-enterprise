@@ -57,9 +57,6 @@ export const COMPUTE_REPOSITORY_UNSUPPORTED =
 // approves: deploy, the approval scope read and the provisioning worker answer 409, not 400.
 export const SAVED_REPOSITORY_SELECTION_NOT_APPROVED =
   "The saved repository selections are no longer approved for this Namespace: repository policy changed after they were saved. Choose approved ones from the repository options, or ask an Installation administrator to approve them again.";
-// Protected deploy admission (packages/occ/src/errors.ts CredentialProxyAdmissionError).
-export const CREDENTIAL_PROXY_INSTALLATION_ACCESS =
-  "Installation-wide repository access (profile github-installation) needs a Credential Proxy, and this Installation selects none. Choose another repository profile, or ask an Installation administrator to select drivers.credential_proxy.";
 // Deploy of several protected sources on a Credential Proxy without policy reduction (409).
 export const CREDENTIAL_PROXY_ONE_SOURCE =
   "The selected Credential Proxy cannot verify a reduced policy, so a protected revision can use only one credential source. Remove the others, or ask an Installation administrator to select a Proxy release with policy reduction.";

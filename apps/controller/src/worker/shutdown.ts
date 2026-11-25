@@ -10,7 +10,6 @@ interface Closable {
 export interface WorkerComposition {
   /** The readiness marker the worker loop's health checks write. */
   readonly readinessPath?: string;
-  readonly repositoryGitTransport?: Closable;
   readonly preparedRepositoryGit?: Closable;
   readonly receiptServer?: Closable;
   readonly closeMetrics: () => Promise<void>;
@@ -31,7 +30,6 @@ export function closeWorkerComposition(composition: WorkerComposition): Promise<
     readinessPath === undefined
       ? undefined
       : { close: () => unlink(readinessPath).catch(() => {}) },
-    composition.repositoryGitTransport,
     composition.preparedRepositoryGit,
     composition.receiptServer,
     { close: composition.closeMetrics },

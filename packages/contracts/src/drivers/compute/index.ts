@@ -4,7 +4,6 @@ import type {
   NamespaceDeletionEligibility,
 } from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
-import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
   CredentialDeploymentConfiguration,
   CredentialProjection,
@@ -263,6 +262,12 @@ export interface ProtectedRepositoryNetworkPolicySaveContext {
   }>;
 }
 
+export interface CredentialAttachmentStatus {
+  readonly sourceId: string;
+  readonly state: "ready" | "pending" | "withheld" | "failed" | "revoked" | "absent";
+  readonly reason?: string;
+}
+
 export interface ComputeDriver extends Driver {
   /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
   repositoryWorkerRestartDisposition?(
@@ -307,15 +312,6 @@ export interface ComputeDriver extends Driver {
   validateProtectedRepositoryNetworkPolicy?(
     context: ProtectedRepositoryNetworkPolicyContext,
   ): void | Promise<void>;
-  /**
-   * After release is refused, select a withdrawal only for a grant this Compute previously
-   * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
-   * revision's authorized claim; resolve only after observing the grant and workload gone.
-   * Neither selection nor completion permits preparing, activating or replacing that revision.
-   */
-  rejectedExecutionWithdrawal?(
-    revision: Readonly<AgentRevision>,
-  ): (() => Promise<void>) | undefined;
   readonly supportsWorkspaceSetup?: true;
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;

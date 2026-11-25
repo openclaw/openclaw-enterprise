@@ -1,9 +1,9 @@
 # GitHub access levels
 
 For Credential Design 1.0, choose repository **Read** or **Read/write**. These
-Source-backed grants admit Git operations only; GitHub enforces branch rules.
-They do not authorize GitHub REST or pull request creation. The separate prepared
-broker and deprecated protected profiles documented below are outside 1.0.
+Source-backed grants admit Git operations. Branch protection is outside 1.0.
+GitHub REST and pull request creation are outside those grants. The separate
+prepared broker is outside 1.0.
 
 ## Registry profiles
 

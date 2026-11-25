@@ -1,7 +1,4 @@
-import type {
-  CredentialSourceManagementMetadata,
-  LegacyCredentialSourceMetadata,
-} from "./credential-source-metadata.ts";
+import type { CredentialSourceManagementMetadata } from "./credential-source-metadata.ts";
 import { ScopeViolationError } from "./errors.ts";
 import type { RepositoryNetworkGrant } from "@openclaw-enterprise/contracts";
 import {
@@ -38,13 +35,8 @@ import {
   type RemoveStandingApprovalInput,
 } from "./repository-policy.ts";
 
-import {
-  type CreateCredentialSourceInput,
-  type RotateCredentialSourceInput,
-} from "./credential-source-operations.ts";
+import { type RotateCredentialSourceInput } from "./credential-source-operations.ts";
 
-import { CredentialProxy } from "./credential-proxy.ts";
-import type { EgressExchangeOwner } from "@openclaw-enterprise/contracts";
 import { runtimeCredentialsInput } from "./agent-runtime-credentials.ts";
 import type { InstalledDriver } from "./installed-driver.ts";
 import {
@@ -1137,14 +1129,6 @@ export class OpenClawController {
   }
 
   /** Trusted composition only: public workloads never supply an identity verifier. */
-  createCredentialProxy(exchangeOwner: EgressExchangeOwner): CredentialProxy {
-    return new CredentialProxy(
-      this.composition.credentials.createProxyAuthority(exchangeOwner),
-      this.composition.credentialProxyCapacity,
-    );
-  }
-
-  /** Bind the configured adapter to the actual durable credential store before use. */
   async activateTokenServiceInstance(driverId: string, storeIdentity: string): Promise<string> {
     return this.composition.credentials.managedCredentialSources.activateTokenServiceInstance(
       driverId,
@@ -1183,20 +1167,6 @@ export class OpenClawController {
       input,
       audit,
       failureAudit,
-    );
-  }
-
-  async createCredentialSource(
-    principalId: string,
-    input: CreateCredentialSourceInput,
-    audit?: (source: Readonly<LegacyCredentialSourceMetadata>) => AuditEvent,
-    registrationAudit?: (source: Readonly<LegacyCredentialSourceMetadata>) => AuditEvent,
-  ): Promise<Readonly<LegacyCredentialSourceMetadata>> {
-    return this.composition.credentials.credentialSourceOperations.createCredentialSource(
-      principalId,
-      input,
-      audit,
-      registrationAudit,
     );
   }
 
@@ -1560,14 +1530,13 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
     facet: SandboxFacet,
-    resolveHarness?: HarnessResolver,
+    _resolveHarness?: HarnessResolver,
   ) {
     return this.composition.sandboxPolicyOperations.getAgentSandboxPolicy(
       principalId,
       namespaceId,
       agentId,
       facet,
-      resolveHarness,
     );
   }
 
@@ -1596,7 +1565,7 @@ export class OpenClawController {
     expectedVersion: number,
     additions: readonly SandboxNetworkGrant[],
     repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
-    resolveHarness?: HarnessResolver,
+    _resolveHarness?: HarnessResolver,
   ): Promise<Readonly<SandboxPolicy>> {
     return this.composition.sandboxPolicyOperations.updateAgentSandboxPolicy(
       principalId,
@@ -1606,7 +1575,6 @@ export class OpenClawController {
       expectedVersion,
       additions,
       repositoryNetworkPolicy,
-      resolveHarness,
     );
   }
 

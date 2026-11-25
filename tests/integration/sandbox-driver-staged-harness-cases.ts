@@ -514,24 +514,6 @@ export async function verifyStagedModelPolicyObservation(
       .matches,
     false,
   );
-
-  if (mode === "service") {
-    // OpenShell keeps the combined policy after stopping. It rejects detachment while a
-    // stored route still selects the Provider, even though the Supervisor is stopped.
-    loaded = structuredClone(combined);
-    gateway.stopSandbox = async ({ name }) => {
-      const target = gateway.sandboxes.get(name);
-      assert.ok(target);
-      const stopped = { ...target, phase: "SANDBOX_PHASE_STOPPED" };
-      gateway.sandboxes.set(name, stopped);
-      return stopped;
-    };
-    await driver.cleanup(repositoryContext);
-    const stopped = gateway.sandboxes.get(repositorySandboxName);
-    assert.equal(stopped?.phase, "SANDBOX_PHASE_STOPPED");
-    assert.deepEqual(stopped.spec?.providers, [...idleProviders, provider, repositoryProvider]);
-    assert.deepEqual(loaded.network_policies, {});
-  }
 }
 
 export async function verifyStagedCodexAccountProjection(t: TestContext): Promise<void> {

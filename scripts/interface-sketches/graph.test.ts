@@ -53,11 +53,19 @@ test("CLI rejects incompatible checks and invalid source paths with actionable e
     [["--root"], /--root requires a value/],
     [["--root", root, "--file", "../entry.ts"], /repo-relative source path/],
     [["--root", root, "--file", "missing.ts"], /Source file is missing/],
-    [["--root", root, "--check"], /Source file is missing/],
   ] as const) {
     const result = run(...args);
     assert.equal(result.status, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, message);
   }
+});
+
+test("CLI reports a catalog of historical diagrams and proposals without current claims", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "coupling-cli-historical-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const result = run("--root", root, "--check");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /^Static diagram claims: NOT APPLICABLE; 0 claims, 0 files,/u);
 });

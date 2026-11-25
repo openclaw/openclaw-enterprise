@@ -1,20 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
-import type {
-  CredentialRevisionContext,
-  LegacyCredentialSource,
-  CredentialSourceInput,
-} from "../../packages/contracts/src/index.ts";
-import { ScopeViolationError } from "../../packages/occ/src/index.ts";
-import { registerSandboxCredentialContractCases } from "./sandbox-driver-credential-contract-cases.ts";
-import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import { callCount } from "./sandbox-driver-gateway-response-fixture.ts";
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import { verifyOperatorWorkspaceChart } from "./sandbox-driver-operator-chart-case.ts";
-import { createSandboxProviderProfileChecks } from "./sandbox-driver-provider-profiles-cases.ts";
 import { verifyManagedNamespaceRejectsMutation } from "./sandbox-driver-startup-composition-cases.ts";
 import type { createSandboxStartupGuardChecks } from "./sandbox-driver-startup-guard-cases.ts";
 import { buildSandboxInstallation as sandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
@@ -23,7 +12,6 @@ import {
   namespaceContext,
   ownedWorkspace,
   type ResourceReference,
-  structuralRefusal,
 } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 
@@ -34,10 +22,8 @@ type StartupGuards = Pick<
 
 export function registerSandboxDriverNamespaceProviderCases({
   sandboxStartupGuardChecks,
-  negotiatedGoogleGuard,
 }: {
   sandboxStartupGuardChecks: () => StartupGuards;
-  negotiatedGoogleGuard: () => Readonly<Record<string, unknown>>;
 }): void {
   test("OpenShell Namespace lifecycle creates, adopts, and deletes its exact operator Workspace", async () => {
     const gatewayClient = workspaceGatewayClient();
@@ -140,160 +126,5 @@ export function registerSandboxDriverNamespaceProviderCases({
   // the apply failing later.
   test("startup refuses NetworkPolicy ingress rules that are not objects", async (t) => {
     await sandboxStartupGuardChecks().refusesNonObjectNetworkPolicyIngress(t);
-  });
-
-  createSandboxProviderProfileChecks({ credentialGatewayOverProviders, ScopeViolationError });
-
-  test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
-    const pinned = managedGoogleInstall.binaryPath;
-    const other = "/usr/bin/curl";
-    const sourceId = "cs_00000000-0000-4000-8000-0000000000e9";
-    const config = {
-      host: "gmail.googleapis.com",
-      path: "/gmail/v1/users/me/messages",
-      token_url: "https://oauth2.googleapis.com/token",
-      scope: "https://www.googleapis.com/auth/gmail.readonly",
-      client_id: "test-client",
-      env_var: "GOG_ACCESS_TOKEN",
-    };
-    const scenarios = [
-      { list: [pinned], binary: undefined, acceptable: true },
-      { list: [pinned, other, "/opt/tools/*"], binary: pinned, acceptable: true },
-      { list: [pinned, other], binary: undefined, acceptable: false },
-    ];
-    for (const { list, binary, acceptable } of scenarios) {
-      const f = credentialGatewayOverProviders({ toolBinaries: list, refresh: true });
-      const context = f.context(sourceId);
-      const source: LegacyCredentialSource = {
-        ...context.source,
-        type: "oauth2-refresh-token",
-        config: { ...config, ...(binary && { binary }) },
-      };
-      const register = (config: CredentialSourceInput["config"]) =>
-        f.driver.registerSource({ ...context, source }, { type: source.type, config, secrets: {} });
-      for (const invalid of ["/tmp/other", "/opt/tools/*"]) {
-        await assert.rejects(
-          register({ ...source.config, binary: invalid }),
-          /installation toolBinaries/,
-        );
-      }
-      assert.deepEqual([...f.profileWrites], []);
-      await register(source.config);
-      const profile = f.profiles.get(openShellProviderName(sourceId));
-      assert.ok(profile);
-      assert.deepEqual(profile.binaries, binary ? [binary] : list);
-      const revisionContext = f.revisionContext([source]);
-      const attachment: CredentialRevisionContext = {
-        ...revisionContext,
-        revision: {
-          ...revisionContext.revision,
-          plugins: {
-            driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-            plugins: {
-              [managedGoogleInstall.id]: {
-                enabled: true,
-                driverPolicy: {
-                  releaseSha256: managedGoogleInstall.releaseSha256,
-                  credentials: { account: sourceId },
-                },
-              },
-            },
-          },
-        },
-      };
-      if (acceptable) {
-        const service = { ...negotiatedGoogleGuard(), implementation_version: "old-release" };
-        f.client.getGatewayInfo = async () => ({ extensions: [service] });
-        await assert.rejects(f.driver.attachForRevision(attachment), /has not negotiated/);
-        Object.assign(service, negotiatedGoogleGuard());
-        assert.deepEqual(await f.driver.attachForRevision(attachment), [
-          {
-            sourceId,
-            ref: openShellProviderName(sourceId),
-            requestScope: {
-              host: "gmail.googleapis.com",
-              port: 443,
-              path: "/gmail/v1/users/me/messages",
-              scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-            },
-          },
-        ]);
-      } else {
-        await assert.rejects(
-          f.driver.attachForRevision(attachment),
-          /grant only the pinned Google executable/,
-        );
-      }
-      assert.deepEqual(
-        f.profileWrites.map(([operation]) => operation),
-        ["import"],
-      );
-    }
-  });
-
-  test("a Slack MCP source stays independent and cannot acquire a broad REST credential route", async () => {
-    const f = credentialGatewayOverProviders({
-      toolBinaries: ["/usr/bin/curl", "/usr/local/bin/node"],
-    });
-    const sourceId = "cs_00000000-0000-4000-8000-000000000092";
-    const context = f.context(sourceId);
-    const endpoint = {
-      host: "mcp.slack.com",
-      path: "/mcp",
-      env_var: "SLACK_MCP_TOKEN",
-    };
-    const config = { protocol: "mcp", ...endpoint };
-    const source: LegacyCredentialSource = {
-      ...context.source,
-      type: "bearer-token",
-      config,
-      secrets: { token: { kind: "secret", id: "sec_mcp", namespaceId: context.namespace.id } },
-    };
-    const sourceContext = { ...context, source };
-    const register = (config: CredentialSourceInput["config"]) =>
-      f.driver.registerSource(sourceContext, {
-        type: source.type,
-        config,
-        secrets: { token: "synthetic-slack-bearer" },
-      });
-    await assert.rejects(register({ ...config, path: "/**" }), /reviewed settings/);
-    await assert.rejects(register({ ...config, protocol: "rest" }), /reviewed settings/);
-    assert.deepEqual([...f.profileWrites], []);
-    await register(config);
-    const ref = openShellProviderName(sourceId);
-    const profile = f.profiles.get(ref);
-    assert.ok(profile);
-    assert.deepEqual(profile.binaries, ["/usr/local/bin/node"]);
-    const [profileEndpoint] = profile.endpoints;
-    assert.ok(profileEndpoint);
-    assert.equal(profileEndpoint.protocol, "mcp");
-    assert.equal(profileEndpoint.access, undefined);
-    assert.deepEqual(profileEndpoint.rules, [{ allow: { method: "ping" } }]);
-    assert.deepEqual(await f.driver.attachForRevision(f.revisionContext([source])), [
-      {
-        sourceId,
-        ref,
-        requestScope: {
-          host: "mcp.slack.com",
-          port: 443,
-          path: "/mcp",
-          scopes: [],
-        },
-      },
-    ]);
-    const legacy = {
-      ...source,
-      id: "cs_00000000-0000-4000-8000-000000000093",
-      config: { ...endpoint, env_var: "LEGACY_SLACK_TOKEN" },
-    };
-    await assert.rejects(
-      f.driver.attachForRevision(f.revisionContext([source, legacy])),
-      /conflicts with another credential for its host/,
-    );
-  });
-
-  registerSandboxCredentialContractCases({
-    credentialGatewayOverProviders,
-    structuralRefusal,
   });
 }

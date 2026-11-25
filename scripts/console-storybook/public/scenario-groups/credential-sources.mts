@@ -7,7 +7,6 @@ const replacementId = "cs_00000000-0000-4000-8000-000000000021";
 const codexPatId = "cs_00000000-0000-4000-8000-000000000023";
 type StaticSource = Extract<CredentialSourceResponse["data"], { type: "static" }>;
 type OAuthSource = Extract<CredentialSourceResponse["data"], { type: "oauth2-refresh-token" }>;
-type ProxySource = Extract<CredentialSourceResponse["data"], { ownerCapability: string }>;
 const source = (id: string, name: string): StaticSource => ({
   id,
   namespaceId,
@@ -53,31 +52,7 @@ const previewOAuthSource: OAuthSource = {
   ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
   createdAt: "2026-09-01T12:00:00.000Z",
 };
-const proxySourceId = "cs_00000000-0000-4000-8000-000000000025";
-const previewProxySource: ProxySource = {
-  id: proxySourceId,
-  namespaceId,
-  name: "Repository metadata",
-  type: "credential-free-repository-metadata",
-  ownerCapability: "credential_proxy",
-  config: {
-    origin: "https://api.github.com",
-    repository_id: "12345",
-    repository: "example/widgets",
-    agent_id: "agt_00000000-0000-4000-8000-000000000001",
-    authority: "execution",
-  },
-  secrets: {},
-  egress: { adoption: "credential_free", retention: "none" },
-  state: "registering",
-  ref: { kind: "credential_source", namespaceId, id: proxySourceId },
-};
-const previewInventory = [
-  ...previewModelSources,
-  previewTemplateSource,
-  previewOAuthSource,
-  previewProxySource,
-];
+const previewInventory = [...previewModelSources, previewTemplateSource, previewOAuthSource];
 const previewCodexPatSource: StaticSource = {
   ...source(codexPatId, "Codex PAT"),
   config: { provider_preset: "codex-pat" },

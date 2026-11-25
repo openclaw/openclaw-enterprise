@@ -119,9 +119,8 @@ to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
 `repository.nativeSender` and `repository.preparedGitHub`, with the matching
 Backend `drivers.repo` policy member. The worker alone mounts the App key and
-32-byte custody key. Deprecated protected Git instead selects a qualified legacy credential-egress Proxy
-and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
-and public CA paths; Helm mounts exactly those locations.
+32-byte custody key. Keep the registry, control socket, and public CA paths shown
+in the fragment so they match the Helm mounts.
 
 For native delivery only, add this peer under the existing
 `drivers.compute.configuration.network` object, retaining its other settings.

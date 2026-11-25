@@ -3,7 +3,7 @@ import type { InstallationRuntimeDrivers } from "../installation-config.ts";
 import {
   openShellGitRecipientEvidence,
   openShellPreviewEnded,
-} from "../../drivers/egress-proxy/openshell-repository-git-evidence.ts";
+} from "../../drivers/repo/access/openshell-repository-git-evidence.ts";
 import {
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
@@ -69,23 +69,14 @@ export function selectBundledRepositoryGitCustody(
   return Object.freeze({ kind: "selected", driver, policy: openShellSnapshot });
 }
 
-/** Trusted Worker composition. The transport is the private first-party binding;
- * external Drivers do not carry it and use the controller's registered witness. */
+/** Select custody for the worker-owned native Repository broker. */
 export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryGitDriver: driver, repositoryTransport } = drivers;
+  const { tokenService, repositoryOwner } = drivers;
   if (!tokenService) {
     throw new Error("Prepared repository Git requires the installed Token Service.");
   }
-  if ((driver || repositoryTransport) && (!driver || driver !== drivers.protectedDriver)) {
-    throw new Error("Missing the selected Driver's protected repository Git authority.");
-  }
-  const repositoryGitCustody: RepositoryGitCustody = driver
-    ? (repositoryTransport
-        ? selectBundledRepositoryGitCustody
-        : selectRegisteredRepositoryGitCustody)(driver.ref)
-    : {
-        kind:
-          drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
-      };
+  const repositoryGitCustody: RepositoryGitCustody = {
+    kind: repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
+  };
   return { tokenService, repositoryGitCustody };
 }

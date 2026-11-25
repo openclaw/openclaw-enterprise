@@ -1,6 +1,5 @@
 import { admitsOpenClawExecutionMode } from "./agent-harness-topology.ts";
 import type {
-  CredentialSourceType,
   HarnessExecutionMode,
   Installation,
   InstallationCapabilities,
@@ -17,7 +16,6 @@ import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
 import { exactNamespace, namespaceIdentity } from "./resource-scope.ts";
 
 interface InstallationCapabilityDependencies {
-  readonly protectedSourceTypes: () => readonly CredentialSourceType[];
   readonly enabledPluginDrivers: () => readonly PluginDriver[];
   readonly sandboxDriver: () => SandboxDriver | undefined;
   readonly tokenServiceDriver: () => TokenServiceDriver | undefined;
@@ -43,12 +41,10 @@ async function readInstallationCapabilities(
   const nativeWorkers = openclaw.executionModes.includes("dedicated")
     ? nativeWorkerSupport
     : undefined;
-  const types = dependencies.protectedSourceTypes();
   const capabilities = {
     ...declared,
     ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
     openclaw,
-    ...(types.length > 0 ? { credentialSources: { types } } : {}),
   };
   const catalogs = dependencies.enabledPluginDrivers().map((driver) => ({
     harnessId: driver.harnessId,

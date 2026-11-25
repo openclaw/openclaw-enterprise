@@ -29,7 +29,7 @@ export function nonempty(value: unknown, path: string): string {
   return value;
 }
 
-export interface EgressAuthorityConfiguration {
+export interface TlsListenerConfiguration {
   readonly host: string;
   readonly port: number;
   readonly certificatePath: string;
@@ -79,11 +79,11 @@ export class InstallationFieldError extends Error {
   }
 }
 
-const egressAuthorityFiles = ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"];
-const egressAuthorityFields = [
+const tlsListenerFiles = ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"];
+const tlsListenerFields = [
   "host",
   "port",
-  ...egressAuthorityFiles,
+  ...tlsListenerFiles,
   "issuer",
   "audience",
   "keyId",
@@ -93,11 +93,11 @@ const egressAuthorityFields = [
  * Validate one TLS and issuer listener block. Each fault names its own field and never echoes a value,
  * so startup logs and the chart's upgrade check say which key to fix (finding 2216).
  */
-export function egressAuthorityConfiguration(
+export function tlsListenerConfiguration(
   input: unknown,
   mode: "development" | "production",
   path: string,
-): EgressAuthorityConfiguration {
+): TlsListenerConfiguration {
   const pointer = (field?: string) =>
     settingPointer(field === undefined ? path : `${path}.${field}`);
   const value = asRecord(input);
@@ -113,16 +113,14 @@ export function egressAuthorityConfiguration(
   const details: InstallationFieldDetail[] = [];
   // The block's own pointer: an operator's key may be long, contain control characters or
   // look like a credential, and the log filter would drop a detail that echoed it.
-  if (
-    Object.keys(value).some((key) => !(egressAuthorityFields as readonly string[]).includes(key))
-  ) {
+  if (Object.keys(value).some((key) => !(tlsListenerFields as readonly string[]).includes(key))) {
     details.push({
       path: pointer(),
       code: "UNKNOWN_FIELD",
-      message: `${path} supports only ${egressAuthorityFields.join(", ")}.`,
+      message: `${path} supports only ${tlsListenerFields.join(", ")}.`,
     });
   }
-  for (const field of egressAuthorityFields) {
+  for (const field of tlsListenerFields) {
     const entry = value[field];
     if (field === "port") {
       if (
@@ -148,7 +146,7 @@ export function egressAuthorityConfiguration(
         code: entry === undefined ? "REQUIRED" : entry === "" ? "INVALID_VALUE" : "INVALID_TYPE",
         message: `${path}.${field} must be a nonempty string.`,
       });
-    } else if (egressAuthorityFiles.includes(field) && !isAbsolute(entry)) {
+    } else if (tlsListenerFiles.includes(field) && !isAbsolute(entry)) {
       details.push({
         path: pointer(field),
         code: "INVALID_FORMAT",
@@ -170,15 +168,12 @@ export function egressAuthorityConfiguration(
   if (first) {
     throw new InstallationFieldError([first, ...rest]);
   }
-  return value as unknown as EgressAuthorityConfiguration;
+  return value as unknown as TlsListenerConfiguration;
 }
 
 /**
- * An Installation listener that the production chart's Service cannot reach: the chart
- * serves no such listener, serves it on another port, the listener does not bind all
- * addresses, or it names TLS or issuer files where the chart mounts none. Startup and the
- * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`. Private Gateway
- * routing must also agree with the chart's listener and resource identity.
+ * The Installation's private Gateway routing differs from the chart's resource or listener.
+ * Startup and the chart's upgrade check report it as `CHART_LISTENER_MISMATCH`.
  * The message names the Installation and Helm settings and values, which hold no secret;
  * `path` is the refused Installation setting as a JSON Pointer (finding 2213).
  */
@@ -189,101 +184,6 @@ export class ChartListenerMismatchError extends Error {
   constructor(message: string, setting: string) {
     super(message);
     this.path = settingPointer(setting);
-  }
-}
-
-/**
- * The chart routes these listeners and passes each one's port, or `disabled`, to startup.
- * `files` are the fixed paths where the chart mounts each listener's TLS and issuer files
- * (deployments.yaml), and the Helm value each comes from.
- */
-export const chartListeners = {
-  egressAuthority: {
-    path: "drivers.credential_proxy.configuration.authority",
-    chart: "egressAuthority",
-    variable: "OCC_EGRESS_AUTHORITY_PORT",
-    files: {
-      certificatePath: ["/etc/openclaw/egress/tls/tls.crt", "egressAuthority.tlsSecretName"],
-      privateKeyPath: ["/etc/openclaw/egress/tls/tls.key", "egressAuthority.tlsSecretName"],
-      issuerPublicKeyPath: [
-        "/etc/openclaw/egress/issuer/issuer.pub",
-        "egressAuthority.issuerSecretName",
-      ],
-    },
-  },
-} as const;
-
-/**
- * Refuse an Installation listener the chart's Service cannot reach. The Service targets the
- * Pod's address, which the Installation cannot name, so the listener must bind all addresses
- * and read its files where the chart mounts them.
- * Without the chart's variable (no chart, for example a test or another packaging) there is
- * nothing to compare.
- */
-export function requireChartListener(
-  authority:
-    | Pick<
-        EgressAuthorityConfiguration,
-        "host" | "port" | "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath"
-      >
-    | undefined,
-  environment: Readonly<Record<string, string | undefined>>,
-  listener: {
-    readonly path: string;
-    readonly chart: string;
-    readonly variable: string;
-    readonly files: Readonly<
-      Record<
-        "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath",
-        readonly [string, string]
-      >
-    >;
-  },
-): void {
-  const declared = environment[listener.variable];
-  if (declared === undefined) {
-    return;
-  }
-  if (declared === "disabled") {
-    if (authority !== undefined) {
-      throw new ChartListenerMismatchError(
-        `${listener.path}.port is ${authority.port}, but Helm ${listener.chart}.enabled is false, so no chart Service reaches it.`,
-        `${listener.path}.port`,
-      );
-    }
-    return;
-  }
-  const port = /^[1-9][0-9]{0,4}$/.test(declared) ? Number(declared) : 0;
-  if (port < 1 || port > 65535) {
-    throw new ChartListenerMismatchError(
-      `${listener.variable} must be a TCP port from 1 to 65535 or disabled.`,
-      "",
-    );
-  }
-  if (authority === undefined) {
-    return;
-  }
-  if (authority.port !== port) {
-    throw new ChartListenerMismatchError(
-      `${listener.path}.port is ${authority.port}, but Helm ${listener.chart}.port is ${port}.`,
-      `${listener.path}.port`,
-    );
-  }
-  if (authority.host !== "0.0.0.0" && authority.host !== "::") {
-    throw new ChartListenerMismatchError(
-      `${listener.path}.host is ${authority.host}, but the chart's ${listener.chart} Service on port ${port} reaches only a listener on all addresses: use 0.0.0.0 or ::.`,
-      `${listener.path}.host`,
-    );
-  }
-  // The listener reads these files only when it starts, after a Recreate upgrade has stopped
-  // the old Pod. Name only the chart's path: the configured one is the operator's layout.
-  for (const [field, [mounted, value]] of Object.entries(listener.files)) {
-    if (authority[field as keyof typeof listener.files] !== mounted) {
-      throw new ChartListenerMismatchError(
-        `${listener.path}.${field} must be ${mounted}, where the chart mounts the file from Helm ${value}.`,
-        `${listener.path}.${field}`,
-      );
-    }
   }
 }
 

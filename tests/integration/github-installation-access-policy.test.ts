@@ -3,8 +3,6 @@ import { generateKeyPairSync, verify } from "node:crypto";
 import test from "node:test";
 import {
   githubInstallationProfile as profile,
-  repositoryGitProfileAvailable,
-  type CredentialSourceControl,
   type RepositoryGitRecipient,
 } from "../../packages/contracts/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
@@ -175,38 +173,8 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
   assert.equal("open" in repo, false);
 });
 
-test("installation access needs positive sender capability and a profile-bound signed recipient", async () => {
-  const signal = new AbortController().signal;
+test("installation access evidence requires a profile-bound signed recipient", () => {
   const identity = { id: "example", generation: 1 };
-  const oldControl = {
-    backend: identity,
-    sender: identity,
-    resolver: identity,
-    providers: [],
-    async assertAvailable() {
-      /* old counterpart ignores the requested profile */
-    },
-  } satisfies CredentialSourceControl;
-  assert.equal(await repositoryGitProfileAvailable(oldControl, signal, "repository_git"), true);
-  assert.equal(
-    await repositoryGitProfileAvailable(oldControl, signal, "github_installation"),
-    false,
-  );
-  assert.equal(
-    await repositoryGitProfileAvailable(
-      {
-        ...oldControl,
-        async assertAvailable(_signal, requested) {
-          assert.equal(requested, "github_installation");
-          return "github_installation";
-        },
-      },
-      signal,
-      "github_installation",
-    ),
-    true,
-  );
-
   const selected = driver(config(policy)).resolve({
     namespaceId,
     bindings: [{ repositoryRef, profile }],

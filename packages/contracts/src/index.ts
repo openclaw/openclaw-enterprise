@@ -14,6 +14,7 @@ import type {
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+import type { CredentialRefreshStatus } from "./drivers/token-service/index.ts";
 
 export type { NetworkDestinationRule } from "./network-destination.ts";
 export type { AgentNetworkProxy } from "./agent-network-proxy.ts";
@@ -61,7 +62,6 @@ export type {
   CredentialSourceControl,
   CredentialUpdateNotification,
   CredentialProxyDriver,
-  LegacyEgressProxyDriver,
   CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
@@ -131,8 +131,6 @@ export {
   assertExecutionReleaseAllowed,
   repositoryGitRecipientFields,
   validRepositoryGitRecipient,
-  repositoryGitAuthorization,
-  repositoryGitProfileAvailable,
   protectedRepositoryGitAdmission,
 } from "./drivers/credential-proxy/index.ts";
 
@@ -357,11 +355,6 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    /** Legacy credential Source owner, when selected. The Gateway service is configured separately. */
-    readonly credential_gateway?: string;
-    readonly credential_proxy?: string;
-    /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
-    readonly credential_refresh?: string;
     readonly token_service?: string;
   };
 }
@@ -384,8 +377,6 @@ export interface InstallationCapabilities {
   readonly deviceAuthorization?: true;
   /** Model presets that enroll credentials through the selected TokenService and native delivery. */
   readonly modelCredentialSourcePresets?: readonly import("./model-providers.ts").SourceProviderPresetId[];
-  /** Source types offered by independently selected protected request transports. */
-  readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
   readonly pluginCatalogs?: readonly {
     readonly harnessId: "openclaw" | "codex";
@@ -733,6 +724,12 @@ interface CredentialSourceMetadataBase {
   readonly ref: CredentialSourceReference;
 }
 
+export interface CredentialSourceStatus {
+  readonly state: "ready" | "pending" | "failed" | "absent";
+  readonly reason?: string;
+  readonly refresh?: CredentialRefreshStatus;
+}
+
 export type CredentialSourceMetadata =
   | (CredentialSourceMetadataBase & {
       readonly type: "static";
@@ -757,8 +754,8 @@ export type CredentialSourceMetadata =
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`
- * is recorded only after the Credential Gateway confirms the revision's placeholders no
- * longer resolve; the revision cannot re-attach the source.
+ * is recorded only after Compute confirms withdrawal from the revision. The revision
+ * cannot re-attach the source.
  */
 export interface CredentialWithdrawal {
   readonly namespaceId: string;
@@ -1741,24 +1738,8 @@ export type {
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
 export type { PrivateSecretRef, PrivateSecretStore, SecretDriver } from "./drivers/secret/index.ts";
 export type {
-  CredentialGatewayDriver,
-  CredentialGatewayContext,
-  CredentialSourceContext,
-  CredentialSourceInput,
-  CredentialSourceStatus,
-  CredentialRevisionContext,
-  CredentialWithdrawalContext,
-  ExternalChatgptAuth,
   CredentialSourceAttachment,
-  CredentialAttachmentStatus,
-  CredentialSourceToken,
-} from "./drivers/credential-gateway/index.ts";
-export type {
-  CredentialRefreshDriver,
-  CredentialRefreshInput,
-  CredentialSourceDeviceAuthorizationResult,
-} from "./drivers/credential-refresh/index.ts";
-export type {
+  ExternalChatgptAuth,
   HarnessExecutionModeSupport,
   SandboxDriver,
   ProtectedRepositoryNetworkPolicyContext,
@@ -1796,6 +1777,7 @@ export type {
 export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  CredentialAttachmentStatus,
   ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,

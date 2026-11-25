@@ -1516,8 +1516,7 @@ test(
       resolveApprovedHarness,
     );
     assert.equal(revision.repositoryCredentials, undefined);
-    assert.equal(revision.egressPlan?.repositoryGit, undefined);
-    assert.equal(revision.egressPlan?.repositoryGitAuthorization, undefined);
+    assert.equal(revision.egressPlan, undefined);
     assert.equal(revision.compute.id, compute.id);
     assert.equal(revision.compute.implementation, compute.implementation);
     assert.match(required(revision.compute.admission), /^model-provider:v1:[a-f0-9]{64}:$/u);
@@ -1534,7 +1533,7 @@ test(
 
     // A separately composed API must ask the real Compute owner rather than infer
     // permission to restart from the absence of repository rows or a warm cache.
-    const inventory = await repositoryRestartInventory(context, revision, undefined, fixture);
+    const inventory = await repositoryRestartInventory(context, revision, fixture);
     const before = await repositoryRestartState(fixture.observerPool, revision.id);
     assert.equal(await inventory.read(), "not-applicable");
     assert.deepEqual(await repositoryRestartState(fixture.observerPool, revision.id), before);

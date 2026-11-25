@@ -77,7 +77,7 @@ function edit(directory: string) {
   });
 }
 
-test("quickstart configuration script explicitly selects the supplied artifact rule and the real Sandbox admits only that subset", async (t) => {
+test("quickstart retains the native Codex artifact network rule without permitting uninspected Git", async (t) => {
   const directory = await temporaryDirectory(t, "oce-quickstart-policy-");
   const file = join(directory, "installation.yaml");
   const input = installation(example.networkPolicies);
@@ -98,10 +98,10 @@ test("quickstart configuration script explicitly selects the supplied artifact r
     id: output.drivers.sandbox.id,
     backend,
   });
-  const admitted = driver.admitProtectedCodexArtifactPolicy(1);
-  assert.deepEqual(admitted.declaredRuleNames, ["codex-plugin-artifacts"]);
-  assert.deepEqual(Object.keys(admitted.snapshot.defaults), ["codex-plugin-artifacts"]);
-  assert.deepEqual(admitted.snapshot.additions, []);
+  const admitted = driver.admitNetworkPolicy([], 1);
+  assert.ok(Object.hasOwn(admitted.defaults, "codex-plugin-artifacts"));
+  assert.equal(Object.hasOwn(admitted.defaults, "source-control"), false);
+  assert.deepEqual(admitted.additions, []);
 });
 
 test("quickstart configuration script refuses a missing or ambiguous supplied artifact rule without changing the Installation", async (t) => {

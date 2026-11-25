@@ -669,14 +669,6 @@ test("direct controller creates and renames apply the API Name rule", async () =
       label,
     );
     await assert.rejects(
-      invokeMalformed(controller.createCredentialSource, controller, [
-        "principal-admin",
-        { namespaceId, name, config: {} },
-      ]),
-      { message: "The credential source name is invalid." },
-      label,
-    );
-    await assert.rejects(
       controller.createServiceAccount("principal-admin", { namespaceId, name }),
       { message: "The ServiceAccount name is invalid." },
       label,

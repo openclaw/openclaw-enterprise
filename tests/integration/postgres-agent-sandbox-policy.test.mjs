@@ -8,14 +8,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import {
-  InstalledDriver,
-  OpenClawController,
-  ResourceStateConflictError,
-} from "../../packages/occ/src/index.ts";
+import { OpenClawController, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   editStoredRepositoryGrants,
   rejectStaleRepositoryPolicySave,
@@ -75,7 +70,7 @@ async function createPolicyApp(
     implementation: "openshell",
     backend: {
       id: "openshell",
-      drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
+      drivers: { sandbox: "policy-openshell" },
       client: new OpenShellGateway(
         { serviceName: "openshell-gateway" },
         { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },
@@ -132,16 +127,7 @@ test(
   requiresPostgres,
   async (t) => {
     const fixture = await createPolicyApp(t);
-    const {
-      controller,
-      state,
-      pool,
-      inject,
-      deployAgent,
-      grant,
-      sandboxDriver,
-      sandboxConfiguration,
-    } = fixture;
+    const { controller, state, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
     const second = { ...grant, id: "second", host: "second.example.org" };
     const cases = [
       { name: "empty", ceiling: [], input: [], allowed: true },
@@ -179,15 +165,6 @@ test(
         fault: "accessor",
         allowed: true,
       },
-      { name: "protected empty", ceiling: [], input: [], protected: true, allowed: true },
-      {
-        name: "protected Driver adds",
-        ceiling: [],
-        input: [],
-        replacement: [grant],
-        protected: true,
-      },
-      { name: "protected caller adds", ceiling: [grant], input: [grant], protected: true },
     ];
     for (const scenario of cases) {
       await t.test(scenario.name, async () => {
@@ -214,38 +191,8 @@ test(
           restarted.registerDriver(driver);
           restarted.selectDriver(capability, driver.id);
         }
-        if (scenario.protected) {
-          const proxyConfiguration = { middlewareName: "integrity", authorityScope: "execution" };
-          const proxy = new OpenShellLegacyEgressProxyDriver(proxyConfiguration, {
-            id: sandboxDriver.id,
-            sandbox: sandboxDriver,
-            backend: {
-              id: "openshell",
-              drivers: { sandbox: sandboxDriver.id, credential_proxy: sandboxDriver.id },
-              client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
-            },
-          });
-          restarted.installDriver(
-            new InstalledDriver(
-              {
-                id: sandboxDriver.id,
-                implementation: "openshell",
-                configuration: { sandbox: sandboxConfiguration, proxy: proxyConfiguration },
-              },
-              {
-                capabilities: { sandbox: sandboxDriver, credential_proxy: proxy },
-                namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
-                  controller.selectedDriver("compute"),
-                  sandboxDriver,
-                ).hooks,
-              },
-            ),
-            ["sandbox", "credential_proxy"],
-          );
-        } else {
-          restarted.registerDriver(sandboxDriver);
-          restarted.selectDriver("sandbox", sandboxDriver.id);
-        }
+        restarted.registerDriver(sandboxDriver);
+        restarted.selectDriver("sandbox", sandboxDriver.id);
         const app = fixture.createApp(restarted);
         const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
         const enabled = await inject("PATCH", `${path}/editing`, { enabled: true }, app);
@@ -360,19 +307,13 @@ test(
           } else {
             assert.deepEqual(await policy(), before, "refusal must not persist any policy change");
             assert.equal(save.statusCode, 409, save.body);
-            if (scenario.protected && scenario.input.length > 0) {
-              assert.equal(preview.statusCode, 409, preview.body);
-            } else {
-              assert.equal(preview.statusCode, 200, preview.body);
-              assert.equal(preview.json().data.success, false, preview.body);
-              assert.ok(
-                preview
-                  .json()
-                  .data.error.details.some(
-                    ({ code }) => code === (scenario.code ?? "INVALID_VALUE"),
-                  ),
-              );
-            }
+            assert.equal(preview.statusCode, 200, preview.body);
+            assert.equal(preview.json().data.success, false, preview.body);
+            assert.ok(
+              preview
+                .json()
+                .data.error.details.some(({ code }) => code === (scenario.code ?? "INVALID_VALUE")),
+            );
             if (scenario.code === "OUTSIDE_CEILING") {
               assert.equal(admissions, 0, "OCC must refuse the caller before Driver admission");
             } else if (scenario.replacement !== undefined || scenario.fault !== undefined) {
@@ -1291,7 +1232,7 @@ test(
   "Channel credential handoff respects a concurrent Secret permission revocation",
   requiresPostgres,
   async (t) => {
-    await verifyChannelPolicyHandoff(await createPolicyApp(t));
+    await verifyChannelPolicyHandoff(t, await createPolicyApp(t));
   },
 );
 
@@ -1303,7 +1244,6 @@ for (const boundary of /** @type {const} */ (["channel", "admission"])) {
       const fixture = await createPolicyApp(t, true, {
         poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
       });
-      Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
       await verifyDeploymentAuthorityAfterWait(fixture, boundary);
     },
   );

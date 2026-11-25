@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import type { SpawnOptions } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { chmod, mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,12 +9,8 @@ import {
   loadInstallationConfiguration,
   type InstallationRuntimeDrivers,
 } from "../../apps/controller/src/composition/installation-config.ts";
-import type {
-  GitHubRepositoryRegistration,
-  GitHubRepositoryRegistry,
-} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import type { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import type { OpenShellGitRuntimeConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import type {
   BackendConfiguration,
@@ -24,14 +19,7 @@ import type {
   GitHubRepositoryCredentialBackendDefinition,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type {
-  reservePort as reserveStartupPort,
-  reservedPortArgs as startupReservedPortArgs,
-} from "../helpers/available-port.ts";
-import type {
-  createCredentialProxyInstallationConfiguration,
-  createInstallationDriverConfiguration,
-} from "../helpers/installation-driver-configuration.ts";
+import type { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { settled as waitForSiblings } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
@@ -72,7 +60,6 @@ type MutableComputeInstallation = InstallationInput & {
 type InstallationFactory = () => MutableComputeInstallation;
 
 type BaseInstallation = ReturnType<typeof createInstallationDriverConfiguration>;
-type ProxyInstallation = ReturnType<typeof createCredentialProxyInstallationConfiguration>;
 type RepositoryBackendInput = {
   -readonly [
     K in keyof GitHubRepositoryCredentialBackendDefinition
@@ -92,23 +79,6 @@ type CombinedRepositoryInput = Omit<RepositoryStartupInput, "backend" | "drivers
   backend: (RepositoryBackendInput | ChatGPTBackendDefinition)[];
   drivers: BaseInstallation["drivers"] & { service_account?: ChatGPTServiceAccountInput };
 };
-type ProtectedWorkerInput = Omit<ProxyInstallation, "backend" | "drivers"> & {
-  backend: [
-    ProxyInstallation["backend"][0],
-    ...(ProxyInstallation["backend"][0] | RepositoryBackendInput)[],
-  ];
-  drivers: Omit<ProxyInstallation["drivers"], "credential_proxy"> & {
-    credential_proxy: {
-      id: string;
-      configuration:
-        ProxyInstallation["drivers"]["credential_proxy"]["configuration"] | Record<string, never>;
-    };
-  };
-  repository?: Omit<RepositoryOptionsInput, "nativeSender"> & {
-    openShell: OpenShellGitRuntimeConfiguration;
-  };
-};
-type RepositoryFiles = Awaited<ReturnType<typeof prepareRepositoryFiles>>;
 
 type RepositoryInstallation = Readonly<Record<string, unknown>> & {
   drivers: {
@@ -734,7 +704,7 @@ export function registerStartupDriverResolutionCases(
         path: "/drivers/compute/configuration/network/repositoryCredentials",
         code: "INVALID_VALUE",
         message:
-          "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
+          "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for other delivery modes.",
       },
     ];
     const [server, worker] = await settled([
@@ -870,116 +840,6 @@ export async function checkRepositoryResolution(
   });
   assert.equal(server.status, 1);
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
-}
-
-export async function checkProtectedRepositoryWorker(
-  t: TestContext,
-  {
-    repository,
-    registry,
-    registrySource,
-    certFile,
-    keyFile,
-  }: {
-    repository: RepositoryStartupInput;
-    registry: RepositoryFiles["registry"];
-    registrySource: string;
-    certFile: string;
-    keyFile: string;
-  },
-  {
-    boot,
-    fixture,
-    reservePort,
-    reservedPortArgs,
-    credentialProxyInstallation,
-  }: Pick<StartupProcessFixtures, "boot" | "fixture"> & {
-    reservePort: typeof reserveStartupPort;
-    reservedPortArgs: typeof startupReservedPortArgs;
-    credentialProxyInstallation: typeof createCredentialProxyInstallationConfiguration;
-  },
-): Promise<void> {
-  // Finding 2866: worker.mjs starts the prepared owner and hands the selected OpenShell transport
-  // only its protected authority, never the owner, which also holds the revision material
-  // reader and the trial request callback. This boots the real worker with repository.openShell:
-  // it starts the owner, binds the transport (its Git authority listener included) and stops
-  // only at the unreachable database.
-  // The prepared owner admits only one explicit write ref per Namespace.
-  const registration = registry.repositories[0];
-  const namespace = registration?.namespaces[0];
-  assert.ok(namespace);
-  Object.assign(namespace, {
-    profiles: ["git-write"],
-    transport: "git-only",
-    pushRefAllowlist: ["refs/heads/review"],
-  } satisfies Pick<
-    GitHubRepositoryRegistration["namespaces"][number],
-    "profiles" | "transport" | "pushRefAllowlist"
-  >);
-  await writeFile(registrySource, JSON.stringify(registry));
-  const configuration: ProtectedWorkerInput = credentialProxyInstallation();
-  configuration.backend.push(...repository.backend);
-  // repository.openShell selects the bundled Proxy's Git registration, with no egress authority,
-  // on the same installed Driver as the Sandbox.
-  const { sandbox } = configuration.drivers;
-  configuration.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
-  configuration.backend[0].drivers.credential_proxy = sandbox.id;
-  const { nativeSender: _native, ...protectedRepository } = repository.repository;
-  const directory = dirname(protectedRepository.preparedGitHub.custodyKeyPath);
-  const issuerPublicKeyPath = join(directory, "gateway-public.pem");
-  // The worker binds the Git authority on this port seconds after its configuration names it,
-  // once its boot gets a slot. Hold the port until the worker exits, so a test file running in
-  // parallel cannot take it (finding 3024's race).
-  const authority = await reservePort();
-  t.after(() => authority.release());
-  configuration.repository = {
-    ...protectedRepository,
-    openShell: {
-      registrationName: "oce-prepared-git",
-      authority: {
-        host: "127.0.0.1",
-        port: authority.port,
-        certificatePath: certFile,
-        privateKeyPath: keyFile,
-        issuerPublicKeyPath,
-        issuer: "openshell-gateway:openshell-gateway",
-        audience: "oce-prepared-git",
-        keyId: "current",
-      },
-    },
-  };
-  const pkcs8 = { type: "pkcs8", format: "pem" } as const;
-  await Promise.all([
-    writeFile(protectedRepository.preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 }),
-    writeFile(
-      protectedRepository.preparedGitHub.privateKeyPath,
-      generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export(pkcs8),
-      { mode: 0o600 },
-    ),
-    writeFile(
-      issuerPublicKeyPath,
-      generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
-    ),
-  ]);
-  const worker = await boot(
-    "apps/controller/src/worker.mjs",
-    {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: await fixture(t, configuration),
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    },
-    undefined,
-    reservedPortArgs(authority),
-  );
-  assert.equal(worker.status, 1, worker.stderr);
-  // The bundled sender reads the authority's online port, which the owner does not have: handing
-  // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.
-  assert.equal(
-    startupDiagnostic(worker.stderr, "worker.startup-error").code,
-    "PERSISTENCE_UNAVAILABLE",
-    worker.stderr,
-  );
 }
 
 export async function checkNativeRepositoryStartup(
