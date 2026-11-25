@@ -7,7 +7,6 @@ import {
   InstallationFieldError,
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
-import { preparedGitHubConfiguration } from "../repo/github/access/prepared-configuration.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -74,10 +73,10 @@ export function openShellProxyConfiguration(
   }
   closed(
     egress,
-    ["middlewareName", "authorityScope", "authority", "preparedGitHub"],
+    ["middlewareName", "authorityScope", "authority"],
     "drivers.credential_proxy.configuration",
   );
-  const { authority, preparedGitHub, ...policy } = egress;
+  const { authority, ...policy } = egress;
   return {
     policy,
     authority: egressAuthorityConfiguration(
@@ -85,8 +84,6 @@ export function openShellProxyConfiguration(
       mode,
       "drivers.credential_proxy.configuration.authority",
     ),
-    prepared:
-      preparedGitHub === undefined ? undefined : preparedGitHubConfiguration(preparedGitHub, false),
   };
 }
 

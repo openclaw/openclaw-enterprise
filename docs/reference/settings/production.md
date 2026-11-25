@@ -12,11 +12,16 @@ selectors. Production Helm validates peer label maps. The cluster must enforce
 NetworkPolicies. Do not expose the listener through a `NodePort`,
 `LoadBalancer`, `hostNetwork`, or public endpoint.
 
-The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
-configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
-OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
-demo workloads.
+The production chart gives the API and worker Pods unrestricted egress. Their
+inbound access remains restricted by the release's default-deny and approved
+ingress policies. Initialization, Agent, Sandbox, collector, and proxy workloads
+do not inherit the control-plane egress grant. The chart gives initialization
+only its configured DNS, database, and Kubernetes API access.
+
+Chart-managed isolated workloads, including initialization, collector, and proxy
+Pods, use the configured `dns.namespace` and `dns.podLabels` peers on UDP and TCP
+ports `53` and `5353`. Port `5353` supports OpenShift DNS backends after Service
+address translation.
 
 The trusted-operator native admin pilot is the only documented public-ingress
 exception: the console host and Agent wildcard hosts route to OCC through the
@@ -140,9 +145,7 @@ These optional variables reach only the API, never other workloads.
 The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
 two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
-Google and OIDC have API-only HTTPS egress rules. Empty provider `egressCidrs`
-allows every address except link-local `169.254.0.0/16`. An explicit list replaces
-that default, including the exception; keep it narrow. Direct GitHub sign-in
+Google and OIDC use the API's control-plane egress. Direct GitHub sign-in
 settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
@@ -186,10 +189,6 @@ guarded profile and `OCC_AUTH_RECOVERY_USER_ID` recovery user; see
 | `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey` | Google OAuth client secret, read from the dedicated `auth.google.secretName` Secret.                                                               |
 | `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`               | Optional comma-separated hosted domains. When set, the ID token's `hd` must match one and `email_verified` must be `true`. Requires the client ID. |
 
-With `auth.google.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-google-login-egress` on TCP 443 for
-`oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
-allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
 Rendering fails on incomplete Google values, a Secret shared with any other
 chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
 domain that is not a DNS name.
@@ -199,8 +198,8 @@ domain that is not a DNS name.
 OIDC requires the
 [single-controller external sign-in profile](../authentication/external-sign-in.md#external-sign-in-profile)
 and a recovery account. Google sign-in is optional. See
-[OIDC controller settings](oidc.md) for the API’s provider URLs, client
-credentials, egress requirements and optional private CA trust.
+[OIDC controller settings](oidc.md) for provider endpoints, client credentials
+and optional private CA trust.
 
 ### Production Installation bootstrap environment
 

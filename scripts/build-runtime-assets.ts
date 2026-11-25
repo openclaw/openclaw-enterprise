@@ -58,6 +58,10 @@ const appliedPatches: readonly AppliedPatch[] = [
     file: "openclaw-planned-completion.patch",
     sha256: "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
   },
+  {
+    file: "openclaw-http-chat-input.patch",
+    sha256: "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
+  },
 ];
 const runtimePaths = [
   "dist",

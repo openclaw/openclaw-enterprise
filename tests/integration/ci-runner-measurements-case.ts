@@ -256,6 +256,20 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  const migrationBootstrap = {
+    kind: "production-migration-phase",
+    stage: "fixture-bootstrap",
+    outcome: "passed",
+    elapsedMs: 0,
+  };
+  const migrationTimings = [
+    migrationBootstrap,
+    { ...migrationBootstrap, stage: "cli-rebuild", elapsedMs: 240 },
+    { ...migrationBootstrap, stage: "initial-apply-writer-pause", elapsedMs: 19_012 },
+    { ...migrationBootstrap, stage: "migration-apply-verify", elapsedMs: 31_501 },
+    { ...migrationBootstrap, stage: "attested-resume", elapsedMs: 2_400_000 },
+  ];
+  const migrationCanary = "unregistered-production-migration-private-text";
   // These receipts travel through the real reporter and runner into the uploaded
   // result, including after a later failure. Unknown text must never reach a tail.
   const uuid = "12345678-1234-1234-1234-123456789abc";
@@ -806,6 +820,17 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
           },
           { stage: "secretauthvalue-stage", outcome: "passed", elapsedMs: 123 },
         ]),
+        ...migrationTimings.map((timing) => measurement({ ...timing, command: migrationCanary })),
+        ...[
+          { stage: migrationCanary },
+          { outcome: "failed" },
+          { elapsedMs: 2_400_001 },
+          { elapsedMs: -1 },
+          { elapsedMs: 1.5 },
+        ].map((invalid) =>
+          measurement({ ...migrationBootstrap, ...invalid, command: migrationCanary }),
+        ),
+        `openclaw-ci-measurement {"kind":"production-migration-phase","command":"${migrationCanary}"`,
         measurement({
           kind: "local-first-agent-command",
           phase: "setup",
@@ -1032,6 +1057,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     otherMeasurements.filter(({ kind }) => kind !== retentionKind),
     [
       { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
+      ...migrationTimings,
       {
         kind: "local-first-agent-command",
         phase: "setup",
@@ -1325,6 +1351,7 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
   for (const output of [result.stdout, result.stderr, artifact]) {
     assert.ok(!output.includes(forbidden));
     assert.ok(!output.includes(opaque));
+    assert.ok(!output.includes(migrationCanary));
   }
 
   // A later failure makes the reporter emit its raw output buffer. Invalid
@@ -1364,8 +1391,13 @@ export async function checkAllowlistedMeasurements(t: TestContext) {
     "Expected the deliberate child failure in diagnostics",
   );
   assert.deepEqual(failure.receipts, receipts);
+  assert.deepEqual(
+    failure.measurements.filter(({ kind }) => kind === migrationBootstrap.kind),
+    migrationTimings,
+  );
   for (const output of [failed.stdout, failed.stderr, failure.artifact, diagnostics]) {
     assert.ok(!output.includes(forbidden));
     assert.ok(!output.includes(opaque));
+    assert.ok(!output.includes(migrationCanary));
   }
 }

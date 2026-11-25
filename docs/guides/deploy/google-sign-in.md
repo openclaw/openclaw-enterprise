@@ -66,7 +66,6 @@ auth:
     clientIdKey: client-id
     clientSecretKey: client-secret
     allowedDomains: [] # optional, for example ["example.com"]
-    egressCidrs: [] # optional IPv4 CIDRs
 agentNativeAdmin:
   enabled: false
 ```
@@ -79,11 +78,8 @@ provider. Rendering fails on incomplete Google values, a shared Secret, an HTTP 
 native administration, an invalid CIDR, or an allowed domain that is not a DNS name. It
 also fails when `allowedDomains` is set without `auth.google.enabled`.
 
-The chart adds the API-only NetworkPolicy
-`openclaw-enterprise-api-google-login-egress` on TCP 443. Empty
-`auth.google.egressCidrs` allows any address except link-local `169.254.0.0/16`. Google
-publishes no small, stable address range for these hosts, so narrow egress with an egress
-proxy rather than static CIDRs.
+The API uses the chart's unrestricted [control-plane egress](../../reference/settings/production.md#required-production-controller-environment).
+Verify DNS and HTTPS connectivity to the Google token and key endpoints.
 
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#google-sign-in):

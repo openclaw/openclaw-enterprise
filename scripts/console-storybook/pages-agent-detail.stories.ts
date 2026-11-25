@@ -1,11 +1,15 @@
 import { story } from "./story.ts";
 
 export const PluginsOAuthRevision = story("pluginsOAuthRevision");
+export const PluginsApiKeySource = story("pluginsApiKeySource");
 
 export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const Layout = story("agentDetailLayout");
+export const ChannelsAccessUnconfirmedOnRefocus = story("channelsAccessUnconfirmedOnRefocus", {
+  openInNewTab: true,
+});
 export const EmptyDeployment = story("deploymentEmpty");
 export const DeploymentSnapshotUnavailable = story("deploymentSnapshotUnavailable");
 export const NewVersion = story("newVersion");
@@ -86,7 +90,15 @@ export const SlackMcpAccountRecovery = {
   ...story("slackMcpAccountRecovery"),
   name: "Recover a Slack account after access is restored",
 };
+export const SlackMcpBoundAgentDiscovery = story("slackMcpBoundAgentDiscovery");
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
+export const PluginAccountConsent = story("pluginAccountConsent");
+export const PluginAccountConsentNoClients = story("pluginAccountConsentNoClients");
+export const PluginAccountConsentClientsLoading = story("pluginAccountConsentClientsLoading");
+export const PluginAccountConsentClientsFailed = story("pluginAccountConsentClientsFailed");
+export const PluginAccountConsentStartFailed = story("pluginAccountConsentStartFailed");
+export const PluginAccountConsentStartDelayed = story("pluginAccountConsentStartDelayed");
+export const PluginAccountTemplateNeedsClient = story("pluginAccountTemplateNeedsClient");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
@@ -282,6 +294,11 @@ export const DeployAgentPrincipalDenied = {
 };
 export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
+export const RepositoryPermissionsDraft = story("repositoryPermissionsDraft");
+export const RepositoryPermissions = story("repositoryPermissions");
+export const RepositoryPermissionsLimited = story("repositoryPermissionsLimited");
+export const RepositoryPermissionsDenied = story("repositoryPermissionsDenied");
+export const RepositoryPermissionsLoading = story("repositoryPermissionsLoading");
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryCollaborator = story("repositoryCollaborator");
 export const RepositoryCollaboratorSaved = story("repositoryCollaboratorSaved");

@@ -81,17 +81,10 @@ The [ServiceAccount Driver conformance suite](../../tests/conformance/service-ac
 covers the provider contract with synthetic data. The
 [ServiceAccount HTTP suite](../../tests/integration/occ-service-account-lifecycle.test.ts)
 covers native accounts, credential privacy, and Namespace access.
-The [PostgreSQL compensation suite](../../tests/integration/postgres-service-account-compensation.test.ts)
-checks forced deletion and audit details with PostgreSQL and loopback HTTPS
-fixtures. It requires `openssl`. Use the [PostgreSQL setup](postgresql.md).
-Live provider revocation and model turns require separate verification.
-
-[`postgres-service-account-issuance-recovery.test.ts`](../../tests/integration/postgres-service-account-issuance-recovery.test.ts)
-runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
-issuance that never committed. The next issuance and account deletion reclaim
-the leftover Secret and credential. Ending a session during reclamation must
-preserve a later issuance. The provider and Secret store are in-memory; conformance
-tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).
+The [PostgreSQL issuance case](../../tests/integration/postgres-service-account-compensation.test.ts)
+checks fresh PAT enrollment, Source binding, and independent issuer revocation
+with loopback HTTPS. Use the [PostgreSQL setup](postgresql.md). Live provider
+revocation and model execution require separate verification.
 
 ## One-off channel upgrade proof
 

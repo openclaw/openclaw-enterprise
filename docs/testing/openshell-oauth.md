@@ -6,9 +6,26 @@ last_verified: "2026-11-04"
 
 # Test experimental OpenShell OAuth
 
-Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)
-with upstream OpenShell components and dedicated Codex. Use an owned, disposable
-environment; this procedure does not establish production support.
+Use an owned, disposable environment for account verification. The image and
+synthetic refresh procedure below tests the older [Gateway-owned OAuth
+source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc);
+it does not qualify the TokenService account path.
+
+## TokenService Codex account verification
+
+`device-authorization-api.test.ts` and `openshell-device-authorization-api.test.ts`
+exercise the production Fastify, IAM, and selected TokenService device-login path
+with a controlled issuer. The PostgreSQL device-login suite is intended to exercise
+persisted session and Source settlement; it has not been qualified for this cutover.
+These tests do not prove a real user grant,
+Worker activation, or native bearer substitution.
+
+Full account qualification requires an approved Codex account and device-login
+interaction, a disposable application-role PostgreSQL database, and a qualified
+stock Codex/OpenShell runtime with selected Compute and Credential Proxy. Verify
+the real login, Agent model turn, retained Provider, renewal and Proxy update,
+then required-model withdrawal and Source cleanup. Also check native behavior that
+requires issuer-signed claims; the launcher supplies unsigned local metadata.
 
 ## Prepare images and trust
 
@@ -168,22 +185,8 @@ does not prove plugin execution. The remaining qualification boundaries are belo
 
 ## Receiver fixtures and full-stack qualification
 
-`tests/integration/device-authorization-api.test.ts` exercises real Fastify,
-OCC, IAM and credential-source storage through login, Agent creation/version
-admission and plugin discovery. The external credential services and provider HTTP
-are simulated. It verifies session fencing, source grants, configuration discovery after
-session closure/expiry, and rejection of credential leakage. The Console OAuth
-browser case exercises those routes through the actual controls; Storybook is
-separate simulated UI evidence. Neither proves external token refresh or injection.
-
-`tests/integration/postgres-device-authorization.test.ts` exercises device login
-and browser OAuth consent through two API instances sharing PostgreSQL. It checks
-that both kinds coexist in `authentication_states`, a browser attempt can be
-consumed once only by its starting session, and expiry removes its unfinished
-source. It also checks encrypted device state, polling across instances, absence
-of a session IAM grant, and cancellation fencing. The external device exchange
-uses a fixture Refresh Driver; the consent-refusal callback makes no provider
-request.
+For the new account login and its proof limits, see [TokenService Codex account
+verification](#tokenservice-codex-account-verification).
 
 `tests/conformance/kubernetes-compute.test.mjs` exercises the real Compute
 preparation path with Driver transport fixtures. It checks source matching,
@@ -195,7 +198,7 @@ immutable Node image with `OCC_TEST_CODEX_PROBE_IMAGE`.
 
 The [external ChatGPT receiving contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication)
 does not establish OAuth injection or refresh through OpenShell. The bundled
-real-runtime suite uses an API-key source. Qualifying an OAuth source requires
+real-runtime suite uses an API-key source. Qualifying a Gateway-owned OAuth Source requires
 the external Token Service and paired gateway: verify native Codex startup,
 inference and hosted app/MCP requests, access-token rotation without a Harness
 restart, restart, and refusal after source withdrawal. Receiver fixtures alone

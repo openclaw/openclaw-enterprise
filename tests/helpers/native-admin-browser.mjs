@@ -5,7 +5,11 @@ import {
   waitForStockUi,
 } from "../helpers/native-ui-chat.ts";
 import assert from "node:assert/strict";
-import { keycloakRealmAdmin } from "./ci-keycloak-realm.mjs";
+import {
+  keycloakBrowserRoute,
+  keycloakHostPort,
+  keycloakRealmAdmin,
+} from "./ci-keycloak-realm.mjs";
 import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -1871,7 +1875,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
   const issuerHost = new URL(issuer).hostname;
   const providerCertificate = await tlsPeerCertificate({
     host: "127.0.0.1",
-    port: 443,
+    port: keycloakHostPort,
     servername: issuerHost,
     ca: caCert,
   });
@@ -1880,7 +1884,7 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       new X509Certificate(providerCertificate).publicKey.export({ type: "spki", format: "der" }),
     )
     .digest("base64");
-  ingress.browserArgs[0] += `,MAP ${issuerHost} 127.0.0.1`;
+  ingress.browserArgs[0] += `,${keycloakBrowserRoute(issuerHost)}`;
   ingress.browserArgs[1] += `,${providerSpki}`;
   const browser = await launchBrowser(context, ingress);
   const namespacePath = `/namespaces/${topology.agent.namespaceId}`;

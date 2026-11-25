@@ -168,6 +168,13 @@ Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository del
 
 `GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
 
+GET `repositoryApiMaxima` shows eligible native Git and API levels before Agent grants apply.
+
+To keep Git Write and disable PR creation, send
+`{"repository":"owner/name","access":"write","apiLimits":{"pull_requests":"read"}}`
+in the policy PUT. Preserve the other grants, then deploy again. The initial
+grant and ceiling exclude API limits. See [API limits](repository-credentials/access-levels.md#api-limits).
+
 PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
 
 A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
@@ -179,14 +186,15 @@ permissions committed before it acquires the lock. It releases the lock before
 waiting for the provider and checks deployment admission again before saving the
 revision.
 
-To opt into repository policy, an Agent must have an explicit list from its
-first deployment. Ordinary Agents can keep deploying without a list.
-A delayed write to its Gateway can outlive a Worker claim and a completed
-stop. Deployment returns 409 if any earlier revision has no list. The Worker
-checks the same history before preparing a queued scoped revision. For a
-previously deployed Agent with that history, create a new Agent and save
-the list before deploying it. An Agent that started with a list can
-deploy subsequent policy changes under the same Agent ID.
+Save a repository list before first deployment to opt in. A Dedicated Agent with
+only standalone TokenService model revisions can opt in later. Save the list,
+complete Stop, then deploy. The Worker rechecks revision history before preparation.
+
+With earlier unscoped Git, scoped deployment returns 409 even after Stop. A
+delayed Gateway write can outlive Stop. Create a draft for scoped access and
+save its list before deploying. Keep the original Agent and its storage for
+existing chats and files. Reusing a [conversation label](agent-http-chat.md#conversations-and-execution)
+does not transfer history.
 
 After refusing a scoped replacement before its first provider call, the Worker
 can maintain the serving predecessor if the deployment has no earlier attempt.

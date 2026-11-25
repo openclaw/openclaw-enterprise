@@ -579,6 +579,20 @@ export function secretOptionLabel(secret: Pick<Secret, "name"> | null | undefine
   return secret.name;
 }
 
+export async function chooseCredentialSecretStorage(scope: Scope, label: string) {
+  if (label !== "API key Secret") {
+    return;
+  }
+  const storage = scope.getByLabel("Credential storage", { exact: true });
+  if (
+    (await storage.count()) &&
+    (await storage.isVisible()) &&
+    (await storage.inputValue()) !== "secret"
+  ) {
+    await storage.selectOption("secret");
+  }
+}
+
 export async function selectSecret(
   scope: Scope,
   label: string,
@@ -586,6 +600,7 @@ export async function selectSecret(
   options: { query?: string } = {},
 ) {
   assert.ok(secret);
+  await chooseCredentialSecretStorage(scope, label);
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? secret.name);
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
@@ -600,6 +615,7 @@ export async function operateDeniedSecretOption(
   secret: Pick<Secret, "name"> | null | undefined,
 ) {
   assert.ok(secret);
+  await chooseCredentialSecretStorage(scope, label);
   await scope.getByLabel(label, { exact: true }).fill(secret.name);
   const option = scope.getByRole("option", {
     name: `${secretOptionLabel(secret)} ${SECRET_OPERATE_DENIED}`,

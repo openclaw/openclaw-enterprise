@@ -478,6 +478,9 @@ test("apply requires approval of the current target before reserving private evi
   const fresh = { automaticEvidence: true };
   const plan = run("plan", f);
   assert.equal(plan.status, 0, plan.stderr);
+  assert.match(plan.stdout, /Database migration mode: hook/);
+  assert.match(plan.stdout, /interrupts the OCC API and Worker even when no migration is pending/);
+  assert.doesNotMatch(plan.stdout, /separate migration pause/);
   assert.ok(plan.stdout.includes(profile.images.controller));
   assert.ok(plan.stdout.includes(`Kubeconfig: ${join(f.directory, profile.kubeconfig)}`));
   assert.ok(
@@ -493,6 +496,7 @@ test("apply requires approval of the current target before reserving private evi
   await writeFile(f.profile, JSON.stringify(profile));
   const refused = run("apply", f, [], fresh);
   assert.equal(refused.status, 2);
+  assert.equal(refused.stdout, plan.stdout);
   assert.match(refused.stderr, /--auto-approve/);
   assert.equal(run("upgrade", f).status, 2);
   assert.deepEqual((await readdir(f.directory)).sort(), [
@@ -937,7 +941,11 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(apply.stderr, /--auto-approve/);
   assert.equal(apply.stdout, plan.stdout);
   assert.match(plan.stdout, /Database migration mode: separate/);
-  assert.match(plan.stdout, /pause for separate database migration \(exit 3\)/);
+  assert.match(plan.stdout, /interrupts the OCC API and Worker even when no migration is pending/);
+  assert.match(
+    plan.stdout,
+    /If apply reports a separate migration pause \(exit 3\), confirm both writers are stopped.*resume the original run/,
+  );
   assert.match(plan.stdout, /Helm values change: Slack directory proxy/);
   assert.match(plan.stdout, /Candidate Installation Secret: occ-staged/);
   assert.match(plan.stdout, /Installation change: Plugin Driver registration/);
