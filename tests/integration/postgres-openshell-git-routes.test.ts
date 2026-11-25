@@ -412,7 +412,8 @@ function retainedGitWithdrawal(removal: boolean) {
           undefined,
           undefined,
           undefined,
-          [],
+          undefined,
+          { defaultProfile: "git-write", repositories: [] },
         );
         await unit.repositorySessions.withdrawFinite(
           { namespaceId: current.namespaceId, agentId: current.agentId, revisionId: current.id },

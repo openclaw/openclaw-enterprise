@@ -13,6 +13,7 @@ kind: reference/driver
   - [`activationOrder`](#property-activation-order)
   - [`agentProvisioning`](#property-agent-provisioning)
   - [`computeLifecycleHooks`](#property-compute-lifecycle-hooks)
+  - [`namespaceLifecycleHooks`](#property-namespace-lifecycle-hooks)
   - [`maintenanceIntervalMs`](#property-maintenance-interval-ms)
   - [`requiresAgentRuntimeCredentials`](#property-requires-agent-runtime-credentials)
   - [`runtimeLogging`](#property-runtime-logging)
@@ -54,7 +55,6 @@ kind: reference/driver
   - [`getAgentRuntimeCredentialStatus`](#method-get-agent-runtime-credential-status)
   - [`provisionAgentRuntimeCredentials`](#method-provision-agent-runtime-credentials)
   - [`deleteAgentRuntimeCredentials`](#method-delete-agent-runtime-credentials)
-  - [`deleteServiceAccountCredential`](#method-delete-service-account-credential)
   - [`resolveSandboxNamespace`](#method-resolve-sandbox-namespace)
   - [`withdrawCredentialSource`](#method-withdraw-credential-source)
   - [`withdrawHarnessExposure`](#method-withdraw-harness-exposure)
@@ -87,7 +87,7 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="property-activation-order"></a>`activationOrder`                                   | Optional    | Defaults to `"afterCommit"`; controls traffic switching relative to saving the selected revision.                                                                               |
 | <a id="property-agent-provisioning"></a>`agentProvisioning`                               | Optional    | Lists supported execution modes; OCC rejects unlisted modes. Omission does not disable provisioning.                                                                            |
 | <a id="property-compute-lifecycle-hooks"></a>`computeLifecycleHooks`                      | Optional    | [Workload hooks](#optional-selected-driver-hooks).                                                                                                                              |
-| `namespaceLifecycleHooks`                                                                 | Optional    | [Registration-level Namespace hooks](namespace-lifecycle.md).                                                                                                                   |
+| <a id="property-namespace-lifecycle-hooks"></a>`namespaceLifecycleHooks`                  | Optional    | [Registration-level Namespace hooks](namespace-lifecycle.md).                                                                                                                   |
 | <a id="property-maintenance-interval-ms"></a>`maintenanceIntervalMs`                      | Optional    | Interval between maintenance passes, in milliseconds; positive safe integer.                                                                                                    |
 | <a id="property-requires-agent-runtime-credentials"></a>`requiresAgentRuntimeCredentials` | Optional    | When `true`, OCC checks transport credentials before deployment and can create them before the first revision. Missing status/provisioning methods mean dependency unavailable. |
 | <a id="property-runtime-logging"></a>`runtimeLogging`                                     | Optional    | Defaults to `"platform"`; `"driver"` gives Compute ownership of native logging configuration and delivery.                                                                      |
@@ -111,7 +111,7 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-preflight"></a>`preflight`                                                                             | Optional    | Check startup dependencies; errors block startup. Log warnings as `compute.preflight-warning`. Required for production Kubernetes Compute.                                                                                                                                                                                                                |
 | <a id="method-set-lifecycle-drivers"></a>`setLifecycleDrivers`                                                       | Optional    | Receive the selected Drivers that supply lifecycle hooks. Startup refuses a hook provider if Compute cannot accept it.                                                                                                                                                                                                                                    |
 | <a id="method-bind-agent"></a>`bindAgent`                                                                            | Optional    | Receive the approved Namespace and Agent before revision work; rejection ends the attempt.                                                                                                                                                                                                                                                                |
-| <a id="method-validate-configuration"></a>`validateConfiguration`                                                    | Optional    | Check native Configuration values on save. Preset validation identifies unresolved variables separately.                                                                                                                                                                                                                                                  |
+| <a id="method-validate-configuration"></a>`validateConfiguration`                                                    | Optional    | Check native Configuration values, including at deployment. OCC marks unresolved Preset paths.                                                                                                                                                                                                                                                            |
 | <a id="method-validate-gateway-settings"></a>`validateGatewaySettings`                                               | Optional    | Refuse gateway settings the Driver cannot honor at deployment. Name the setting without exposing its value. OCC skips this check if omitted.                                                                                                                                                                                                              |
 | <a id="method-normalize-harness-overrides"></a>`normalizeHarnessOverrides`                                           | Optional    | Normalize overrides; requires `resolveHarnessConfiguration`. Omission rejects nonempty requests.                                                                                                                                                                                                                                                          |
 | <a id="method-resolve-harness-configuration"></a>`resolveHarnessConfiguration`                                       | Optional    | Resolve before credentials and egress; save for execution. Omission saves `{}`.                                                                                                                                                                                                                                                                           |
@@ -135,9 +135,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 | <a id="method-get-agent-runtime-credential-status"></a>`getAgentRuntimeCredentialStatus`                             | Optional    | Report whether the Agent's generated transport credentials are stored. Missing support prevents the status read.                                                                                                                                                                                                                                          |
 | <a id="method-provision-agent-runtime-credentials"></a>`provisionAgentRuntimeCredentials`                            | Optional    | Create initial transport credentials for the approved Agent. Missing support prevents provisioning.                                                                                                                                                                                                                                                       |
 | <a id="method-delete-agent-runtime-credentials"></a>`deleteAgentRuntimeCredentials`                                  | Optional    | Remove Agent-owned credentials after revision retirement. A Driver that provisions them but omits deletion fails Agent deletion permanently.                                                                                                                                                                                                              |
-| <a id="method-delete-service-account-credential"></a>`deleteServiceAccountCredential`                                | Optional    | On forced ServiceAccount deletion, remove the account-owned Secret when the ServiceAccount Driver can no longer revoke the token. OCC skips this call if absent.                                                                                                                                                                                          |
-| <a id="method-resolve-sandbox-namespace"></a>`resolveSandboxNamespace`                                               | Optional    | Return the Namespace as provisioned by Compute. Paired Sandbox and Credential Gateway operations need this placement.                                                                                                                                                                                                                                     |
-| <a id="method-withdraw-credential-source"></a>`withdrawCredentialSource`                                             | Optional    | Confirm that the revision's attachment was revoked or is absent. Without this method the worker fails withdrawal with `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`.                                                                                                                                                                                                |
+| <a id="method-resolve-sandbox-namespace"></a>`resolveSandboxNamespace`                                               | Optional    | Return the Namespace as provisioned by Compute. Credential Proxy uses this placement for managed delivery and protected Sources.                                                                                                                                                                                                                          |
+| <a id="method-withdraw-credential-source"></a>`withdrawCredentialSource`                                             | Optional    | Remove access to a Source from the exact deployed revision. Return `revoked` or `absent` only when confirmed. Without this method the worker fails withdrawal with `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`.                                                                                                                                                   |
 | <a id="method-withdraw-harness-exposure"></a>`withdrawHarnessExposure`                                               | Optional    | Remove dedicated OpenClaw status exposure after enrollment or permanent candidate failure with a Sandbox retained for diagnosis. The sweep makes at most five attempts per revision per worker start. Without this method the worker skips it.                                                                                                            |
 | <a id="method-repository-worker-restart-disposition"></a>`repositoryWorkerRestartDisposition`                        | Optional    | Assess [replacement](../repository-credentials/worker-replacement.md) from existing revision evidence. Omission means `unknown`.                                                                                                                                                                                                                          |
 | <a id="method-verify-repository-execution"></a>`verifyRepositoryExecution`                                           | Optional    | Identify an existing execution without starting or repairing it. Missing support supplies no identity for a repository credential session.                                                                                                                                                                                                                |
@@ -193,8 +192,8 @@ Read status with Agent `read`. Initial provisioning also requires
 identities under Namespace and Agent locks. External credential writes can
 survive a database rollback. Read stored status before retrying. If credentials
 are missing after a revision exists, restore them before deploying. These methods
-verify stored transport credentials. They cannot rotate them or verify model authentication. Codex device login
-belongs to the [Credential Refresh Driver](credential-refresh.md#device-authorization).
+verify stored transport credentials. They cannot rotate them or verify model
+authentication. TokenService owns [Codex device login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 
 ### Startup failure evidence
 
@@ -235,13 +234,12 @@ OCC authenticates the caller and uses the [IAM Driver](iam.md) to authorize the
 exact resource. For deployment, the worker rechecks the original actor's
 `deploy` on the Agent and `read` on its Configuration. Both actor and Agent
 service principal need `operate` on each bound Secret and applicable credential
-source. ServiceAccount authentication also requires the actor to read the
-account. Denied access or unavailable IAM blocks preparation.
+Source. Denied access or unavailable IAM blocks preparation.
 
 Use the Namespace, Agent, revision, and references supplied by OCC. Deliver
 model credentials only to the selected Harness. Keep Secret values out of
 Configuration, responses, logs, errors, and audit records. See
-[credential delivery](../../flows/native-service-account-credential-delivery.md).
+[credential delivery](../../flows/credential-source-lifecycle.md).
 Installed Drivers run with control-plane privileges.
 
 ## Lifecycle
@@ -303,8 +301,8 @@ Repeated stops must preserve workspace data; stopped revisions cannot be recreat
 
 Bundled Kubernetes Compute prepares Namespace isolation before Sandbox setup.
 A Sandbox can create the dedicated Harness. Compute owns the gateway, workload
-identity, readiness decision, and routing. Wait for required credential
-attachments before activation. Complete [Sandbox cleanup](sandbox.md#lifecycle)
+identity, readiness decision, and routing. Before starting a managed Harness,
+wait for Sandbox policy and Credential Proxy delivery readiness. Complete [Sandbox cleanup](sandbox.md#lifecycle)
 even if the workload is already absent.
 
 ### Optional selected-driver hooks

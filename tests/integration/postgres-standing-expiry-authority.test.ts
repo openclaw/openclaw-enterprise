@@ -2,12 +2,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import {
-  backendDefinition,
-  createAccessTokenServiceAccount,
-  createBackendController,
-  seedBackendBinding,
-} from "../helpers/postgres-backend-state.mjs";
+import { backendDefinition, createBackendController } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
   deferWork,
@@ -16,7 +11,6 @@ import {
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import {
-  observationGateway,
   setupStandingWorkerAuthority,
   setupStandingWorkerDatabase,
 } from "../helpers/postgres-standing-worker-fixture.ts";
@@ -26,8 +20,6 @@ import type {
   SandboxHarnessObservation,
   RepositoryCredentialRuntimeBinding,
 } from "../../packages/contracts/src/index.ts";
-
-import { CredentialWithdrawalRefusedError } from "../../packages/occ/src/index.ts";
 
 const WITHDRAWAL_SANDBOX_INTERVAL_MS = 5_000;
 
@@ -125,15 +117,6 @@ function assertActorRevocationAudit(
   assert.equal(Object.hasOwn(audit.metadata, "decisionReason"), hasDecisionReason);
 }
 
-async function withdrawalOwners(f: WorkerFixture) {
-  return (
-    await f.observerPool.query(
-      "SELECT namespace_id, revision_id, credential_source_id, requested_by, requested_at FROM occ.credential_withdrawals WHERE namespace_id=$1 ORDER BY revision_id",
-      [f.namespace.id],
-    )
-  ).rows;
-}
-
 async function advanceRetainedCleanup(f: WorkerFixture) {
   await makeWorkDue(f.observerPool, {
     namespaceId: f.namespace.id,
@@ -167,27 +150,18 @@ async function settleDeletedAgentWork(
 // Real queue, worker, State and prepared native sender; Compute is a controlled
 // observation adapter. This does not prove an OpenShell process or actual chat.
 for (const scenario of [
-  "model withdrawn",
   "IAM denied",
   "unsupported",
   "replacement revision",
   "unknown reply",
   "transport unavailable",
-  "optional withdrawn",
-  "gateway unavailable",
   "actor absent",
   "principal absent",
   "State unavailable",
   "IAM unavailable",
   "execution admission unavailable",
   "execution admission unavailable IAM unavailable",
-  "model withdrawn gateway unavailable",
-  "model withdrawn IAM unavailable",
   "actor absent IAM unavailable",
-  "optional recovery pending",
-  "optional recovery withdrawn",
-  "optional manual replay",
-  "model withdrawn State unavailable",
   "unsupported IAM unavailable",
   "IAM invalid",
   "handoff actor absent",
@@ -201,29 +175,22 @@ for (const scenario of [
   "handoff healthy backend unavailable",
   "handoff admitted exclusive successor backend unavailable",
   "handoff admitted nonexclusive successor backend unavailable",
-  "handoff actor absent service account unavailable",
-  "handoff healthy service account unavailable",
 ] as const) {
   const handoff = scenario.startsWith("handoff ");
   const sandboxCadence = scenario === "handoff healthy";
   const admittedSuccessor = scenario.startsWith("handoff admitted ");
   const exclusiveSuccessor = scenario.startsWith("handoff admitted exclusive successor");
   const backendUnavailable = scenario.includes("backend unavailable");
-  const serviceAccountUnavailable = scenario.includes("service account unavailable");
-  const configuredBackend = backendUnavailable || serviceAccountUnavailable;
+  const configuredBackend = backendUnavailable;
   const backendRecovery =
     configuredBackend && !scenario.includes("actor absent") && !exclusiveSuccessor;
   const terminal = [
-    "model withdrawn",
     "IAM denied",
     "unsupported",
     "replacement revision",
     "actor absent",
     "principal absent",
-    "model withdrawn gateway unavailable",
-    "model withdrawn IAM unavailable",
     "actor absent IAM unavailable",
-    "model withdrawn State unavailable",
     "unsupported IAM unavailable",
     "handoff actor absent",
     "handoff actor absent IAM unavailable",
@@ -231,16 +198,11 @@ for (const scenario of [
     "handoff admitted exclusive successor",
     "handoff actor absent backend unavailable",
     "handoff admitted exclusive successor backend unavailable",
-    "handoff actor absent service account unavailable",
   ].includes(scenario);
   let cleanupCode = terminal
     ? "REPOSITORY_RUNTIME_RETIREMENT_QUEUED"
     : "REPOSITORY_CLEANUP_PENDING";
-  if (
-    scenario === "optional recovery withdrawn" ||
-    scenario === "handoff healthy" ||
-    admittedSuccessor
-  ) {
+  if (scenario === "handoff healthy" || admittedSuccessor) {
     cleanupCode = "REPOSITORY_ACCESS_WITHDRAWN";
   }
   if (scenario === "handoff replacement revision") {
@@ -252,13 +214,6 @@ for (const scenario of [
   if (exclusiveSuccessor) {
     cleanupCode = "REVISION_SUPERSEDED";
   }
-  let expectedSourceAttempts = 0;
-  if (scenario.startsWith("optional recovery")) {
-    expectedSourceAttempts = 4;
-  }
-  if (scenario === "optional manual replay") {
-    expectedSourceAttempts = 2;
-  }
   test(
     `standing expiry worker distinguishes ${scenario}`,
     { ...requiresPostgres, timeout: 60_000 },
@@ -267,18 +222,10 @@ for (const scenario of [
       let disposeAgent: (() => Promise<void>) | undefined;
       try {
         const backend = backendDefinition();
-        const account = serviceAccountUnavailable
-          ? await createAccessTokenServiceAccount(f.state, f.namespace.id, "expiry")
-          : undefined;
-        if (account !== undefined) {
-          await seedBackendBinding(f.observerPool, account);
-        }
         const controller = configuredBackend
           ? createBackendController(f, { backends: [backend] })
           : f.controller;
-        let accountCredentialId: string | undefined;
-        // Persist the actual Backend selection and, when selected, its service account
-        // before admitting r1. The shared fixture still owns standing Git admission.
+        // Persist the selected Backend before the shared fixture admits standing Git.
         const sandbox = {
           id: "sandbox-worker-fixture",
           capability: "sandbox" as const,
@@ -302,7 +249,6 @@ for (const scenario of [
               (f.agent as BackendAgentFactory)(label, {
                 ...options,
                 backendId: backend.id,
-                ...(account === undefined ? {} : { auth: "secret", serviceAccountId: account.id }),
               }),
           }),
           ...(sandboxCadence && {
@@ -313,17 +259,8 @@ for (const scenario of [
             ) => f.revision(agent, number, { ...options, sandboxDriverId: sandbox.id }),
           }),
         };
-        const {
-          credentials,
-          driver,
-          sender,
-          owner,
-          modelSourceId,
-          approval,
-          revision,
-          revisionOptions,
-          execution,
-        } = await setupStandingWorkerAuthority(t, authorityFixture, { nonModelSources: 1 });
+        const { credentials, driver, sender, owner, approval, revision, execution } =
+          await setupStandingWorkerAuthority(t, authorityFixture);
         if (sandboxCadence) {
           assert.equal(sender.maintenanceIntervalMs, 30_000);
         }
@@ -341,24 +278,15 @@ for (const scenario of [
         let created = false;
         const stopped: string[] = [];
         let reductions = 0;
-        let unavailableGateway = false;
         let disposing = false;
         let replacementId: string | undefined;
         let admittedSuccessorId: string | undefined;
 
         let prepares = 0;
         let activations = 0;
-        let modelWithdrawals = 0;
-        const sourceAttempts: string[] = [];
-        let sourceUnavailable = true;
         let authorityFault = false;
         let faultReads = 0;
         let admissionFailures = 0;
-        let companionId: string | undefined;
-        let initialWithdrawalOwners: unknown[] = [];
-        let releaseSourceClaim: (() => Promise<void>) | undefined;
-        const recovering = scenario.startsWith("optional recovery");
-        const manualReplay = scenario === "optional manual replay";
         const harness: SandboxHarnessObservation = { state: "running" };
         const compute = {
           ...f.compute,
@@ -393,28 +321,6 @@ for (const scenario of [
           async activateRevision() {
             activations++;
           },
-          async withdrawCredentialSource(
-            r: Parameters<ComputeDriver["prepareRevision"]>[0],
-            source: { id: string },
-          ) {
-            if (source.id !== modelSourceId) {
-              assert.ok(r.id === revision.id || r.id === companionId);
-              sourceAttempts.push(r.id);
-              if (manualReplay) {
-                throw new CredentialWithdrawalRefusedError(
-                  "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
-                  "An unknown policy write requires operator replay",
-                );
-              }
-              if (sourceUnavailable) {
-                throw new Error("controlled source transport outage");
-              }
-              return { sourceId: source.id, state: "revoked" as const };
-            }
-            assert.equal(r.id, revision.id);
-            modelWithdrawals++;
-            return { sourceId: source.id, state: "revoked" as const };
-          },
           async retireExpiredRepositoryAccess(r: Parameters<ComputeDriver["prepareRevision"]>[0]) {
             assert.equal(r.id, revision.id);
             assert.equal(created, true);
@@ -422,9 +328,7 @@ for (const scenario of [
             if (scenario === "transport unavailable") {
               throw new Error("local transport unavailable");
             }
-            return handoff || (scenario === "optional recovery withdrawn" && authorityFault)
-              ? ("withdrawn" as const)
-              : ("pending" as const);
+            return handoff ? ("withdrawn" as const) : ("pending" as const);
           },
           async stopRevision(r: Parameters<ComputeDriver["stopRevision"]>[0]) {
             if (!disposing) {
@@ -446,15 +350,10 @@ for (const scenario of [
               }
             },
             transformDrivers: (d: { installation: { drivers: object } }) => {
-              const gateway = {
-                ...observationGateway(),
-                ...(unavailableGateway && { id: "replacement-gateway" }),
-              };
               return {
                 ...d,
                 repositoryPolicy: driver,
                 nativeRepositorySender: sender,
-                credentialGatewayDriver: gateway,
                 sandboxDriver: sandbox,
                 installation: {
                   ...d.installation,
@@ -463,7 +362,6 @@ for (const scenario of [
                   drivers: {
                     ...d.installation.drivers,
                     sandbox: { id: sandbox.id, configuration: {} },
-                    credential_gateway: { id: gateway.id, configuration: {} },
                   },
                 },
               };
@@ -540,7 +438,6 @@ for (const scenario of [
           // All fixture workers are stopped. Expire only their owned claims so teardown
           // can recover an interrupted observation before deleting the Agent.
           await expireWorkLease(f.observerPool, { namespaceId: f.namespace.id, state: "claimed" });
-          unavailableGateway = false;
           await f.requestDeletion(owner);
           await start();
           await waitFor("Agent deleted", async () =>
@@ -571,12 +468,6 @@ for (const scenario of [
           15_000,
         );
         const provider = credentials.repositories[0]!.github;
-        if (account === undefined) {
-          assert.ok(modelSourceId);
-        } else {
-          assert.equal(revision.backendId, backend.id);
-          assert.equal(revision.harnessAuth.method, "codex_pat");
-        }
         // The first observation can precede completion of the claim that schedules maintenance.
         await waitFor("active maintenance established", async () =>
           events.find((e) => e.revisionId === revision.id && e.code === "REVISION_ALREADY_ACTIVE"),
@@ -689,80 +580,11 @@ for (const scenario of [
           await stopAfterWorkSettles();
         }
         assert.deepEqual(stopped, []);
-        if (recovering || manualReplay || scenario === "optional withdrawn") {
-          // An admitted successor has no maintenance owner of its own. Its deployment stays
-          // queued while source withdrawal must recover through the active revision.
-          const companion = await f.revision(owner, 2, revisionOptions);
-          companionId = companion.id;
-          await deferWork(f.observerPool, companion.idempotencyKey);
-        }
-        if (
-          scenario.startsWith("model withdrawn") ||
-          scenario === "optional withdrawn" ||
-          recovering ||
-          manualReplay
-        ) {
-          const sourceId = scenario.startsWith("model withdrawn")
-            ? modelSourceId
-            : owner.credentialSources!.find(
-                (s: { sourceId: string }) => s.sourceId !== modelSourceId,
-              )!.sourceId;
-          assert.ok(sourceId);
-          await f.controller.withdrawAgentCredentialSource(f.actor.id, {
-            namespaceId: f.namespace.id,
-            agentId: owner.id,
-            credentialSourceId: sourceId,
-          });
-          if (recovering || manualReplay) {
-            await start();
-            await waitFor("original and companion source work exhausted", async () => {
-              const { rows } = await f.observerPool.query(
-                "SELECT state FROM occ.controller_work WHERE namespace_id=$1 AND agent_target='credentials_withdrawn'",
-                [f.namespace.id],
-              );
-              return rows.length === 2 &&
-                rows.every((r: { state: string }) => r.state === "failed_permanent")
-                ? true
-                : undefined;
-            });
-            await stopAfterWorkSettles();
-            assert.deepEqual([...sourceAttempts].sort(), [revision.id, companionId].sort());
-            sourceUnavailable = false;
-          }
-          initialWithdrawalOwners = await withdrawalOwners(f);
-          // Isolate the maintenance ordering: the separately durable source-withdrawal job
-          // remains scheduled, but does not race this expiry claim or issue a detach.
-          await deferWork(f.observerPool, {
-            namespaceId: f.namespace.id,
-            agentTarget: "credentials_withdrawn",
-          });
-        }
-        if (scenario === "optional withdrawn") {
-          // One deferred queued owner and one live companion claim exercise both duplicate
-          // guards. Claim through the real queue, after making only this companion due.
-          await deferWork(f.observerPool, { namespaceId: f.namespace.id, state: "queued" });
-          await makeWorkDue(f.observerPool, {
-            namespaceId: f.namespace.id,
-            revisionId: companionId,
-            agentTarget: "credentials_withdrawn",
-          });
-          const sourceQueue = new f.PostgresWorkQueue(f.observerPool, { leaseDurationMs: 120_000 });
-          const held = await sourceQueue.claim();
-          assert.ok(held);
-          assert.equal(held?.revisionId, companionId);
-          assert.equal(held?.agentTarget, "credentials_withdrawn");
-          releaseSourceClaim = async () => {
-            await sourceQueue.defer(
-              held,
-              { code: "CREDENTIAL_WITHDRAWAL_PENDING" },
-              { delayMs: 3_600_000 },
-            );
-          };
-        }
         if (scenario === "IAM denied") {
+          assert.ok(owner.harnessAuth?.method === "api_key");
           await f.observerPool.query(
             "DELETE FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_id=$3",
-            [f.namespace.id, owner.servicePrincipalId, modelSourceId],
+            [f.namespace.id, owner.servicePrincipalId, owner.harnessAuth.source.id],
           );
         }
         if (scenario.startsWith("unsupported")) {
@@ -778,21 +600,7 @@ for (const scenario of [
             });
           };
         }
-        unavailableGateway = scenario.includes("gateway unavailable");
         authorityFault = true;
-        if (account !== undefined) {
-          // Revoke the issued credential in this real binding after successful activation.
-          const { rows } = await f.observerPool.query(
-            "SELECT external_credential_id FROM occ.service_account_driver_bindings WHERE namespace_id=$1 AND service_account_id=$2",
-            [f.namespace.id, account.id],
-          );
-          accountCredentialId = rows[0].external_credential_id;
-          assert.ok(accountCredentialId);
-          await f.observerPool.query(
-            "UPDATE occ.service_account_driver_bindings SET external_credential_id=NULL WHERE namespace_id=$1 AND service_account_id=$2",
-            [f.namespace.id, account.id],
-          );
-        }
         if (
           scenario === "replacement revision" ||
           scenario === "handoff replacement revision" ||
@@ -804,7 +612,7 @@ for (const scenario of [
             namespaceId: f.namespace.id,
             agentId: owner.id,
             configurationId: owner.configurationId,
-            repositoryBindings: [],
+            repositoryAccess: { defaultProfile: "git-write", repositories: [] },
           });
           const successor = await f.revision(owner, 2);
           admittedSuccessorId = successor.id;
@@ -848,15 +656,6 @@ for (const scenario of [
 
         // A replacement process gets both the regular maintenance and the retained expiry
         // obligation. Neither is allowed to prepare or activate the old revision again.
-        // Resume the original maintenance ID as a recovered observation. Expiry may have
-        // completed it while transferring its obligation to repository cleanup.
-        if (recovering || manualReplay || scenario === "optional withdrawn") {
-          const resumed = await f.observerPool.query(
-            "UPDATE occ.controller_work SET state='queued', attempt_count=0, completed_at=NULL, result_data=NULL, reason_code=NULL, available_at=clock_timestamp() WHERE idempotency_key=$1 AND state='succeeded' RETURNING idempotency_key",
-            [originalMaintenanceKey],
-          );
-          assert.equal(resumed.rowCount, 1);
-        }
         // The healthy handoff must resume on the untouched, database-assigned due time.
         const scheduled =
           firstCleanupKey === undefined
@@ -876,15 +675,6 @@ for (const scenario of [
           } else {
             await advanceRetainedCleanup(f);
           }
-        }
-        if (releaseSourceClaim !== undefined) {
-          assert.equal(
-            await queue.claim(),
-            undefined,
-            "a live source claim excludes concurrent Agent maintenance",
-          );
-          await releaseSourceClaim();
-          releaseSourceClaim = undefined;
         }
         if (scheduled === undefined) {
           await start();
@@ -970,28 +760,6 @@ for (const scenario of [
             return rows.length === 1 && rows[0].state === "succeeded" ? true : undefined;
           });
         }
-        if (recovering || manualReplay || scenario === "optional withdrawn") {
-          await waitFor("original maintenance work executed", async () =>
-            events.find(
-              (e) => e.workId === originalMaintenanceKey && e.event === "worker.completed",
-            ),
-          );
-        }
-        if (recovering) {
-          await waitFor("source recovery for original and companion", async () => {
-            const { rows } = await f.observerPool.query(
-              "SELECT state FROM occ.credential_withdrawals WHERE namespace_id=$1",
-              [f.namespace.id],
-            );
-            return rows.length === 2 && rows.every((r: { state: string }) => r.state === "revoked")
-              ? true
-              : undefined;
-          });
-          assert.deepEqual(
-            [...sourceAttempts].sort(),
-            [revision.id, revision.id, companionId, companionId].sort(),
-          );
-        }
         if (!sandboxCadence) {
           await stopAfterWorkSettles();
         }
@@ -1001,34 +769,9 @@ for (const scenario of [
           await advanceRetainedCleanup(f);
           await start();
           await waitFor("second replacement still pending", async () =>
-            events.find(
-              (e) =>
-                e.code ===
-                (scenario === "optional recovery withdrawn"
-                  ? "REPOSITORY_ACCESS_WITHDRAWN"
-                  : "REPOSITORY_CLEANUP_PENDING"),
-            ),
+            events.find((e) => e.code === "REPOSITORY_CLEANUP_PENDING"),
           );
           await stopAfterWorkSettles();
-        }
-        if (recovering || manualReplay || scenario === "optional withdrawn") {
-          const ownersAfter = await withdrawalOwners(f);
-          assert.deepEqual(
-            ownersAfter,
-            initialWithdrawalOwners,
-            "recovery preserves the exact withdrawal and requester",
-          );
-          assert.equal(
-            sourceAttempts.length,
-            expectedSourceAttempts,
-            "no duplicate source writes or automatic manual replay",
-          );
-          const { rows } = await f.observerPool.query(
-            "SELECT revision_id, actor_id, state FROM occ.controller_work WHERE namespace_id=$1 AND agent_target='credentials_withdrawn' ORDER BY revision_id, state",
-            [f.namespace.id],
-          );
-          assert.equal(rows.length, recovering ? 4 : 2);
-          assert.ok(rows.every((r: { actor_id: string }) => r.actor_id === f.actor.id));
         }
         if (
           scenario === "principal absent" ||
@@ -1047,13 +790,11 @@ for (const scenario of [
           replacementId ?? (terminal ? undefined : revision.id),
         );
         assert.deepEqual({ prepares, activations, deliveries: deliveries.length }, before);
-        assert.equal(modelWithdrawals, 0, "expiry must not replay a source detach");
         assert.equal(provider.issuesOfTokens.length, 0, "maintenance must not issue Git material");
         if (
           terminal ||
           backendRecovery ||
           scenario === "handoff replacement revision" ||
-          unavailableGateway ||
           admissionUnavailable ||
           scenario.includes("State unavailable") ||
           scenario === "IAM unavailable" ||
@@ -1061,7 +802,6 @@ for (const scenario of [
         ) {
           assert.equal(reductions, beforeRecovery);
         } else if (sandboxCadence) {
-          assert.deepEqual(sourceAttempts, [], "expiry must not detach non-model sources");
           assert.equal(reductions, beforeRecovery + 1);
         } else {
           assert.ok(reductions > beforeRecovery);
@@ -1077,7 +817,7 @@ for (const scenario of [
           terminal ? [{ state: "succeeded", revision_id: revision.id }] : [],
           "retirement must settle for the original revision only",
         );
-        if (!terminal && !handoff && scenario !== "optional recovery withdrawn") {
+        if (!terminal && !handoff) {
           assert.equal(await queue.repositoryExpiryState(ownerRef), "expiry");
           const { rows } = await f.observerPool.query(
             "SELECT state, attempt_count FROM occ.controller_work WHERE namespace_id=$1 AND idempotency_key LIKE '%:repository_cleanup:%'",
@@ -1088,12 +828,6 @@ for (const scenario of [
         if (scenario === "handoff State unavailable" || backendRecovery) {
           assert.equal(await queue.repositoryExpiryState(ownerRef), "expiry");
           authorityFault = false;
-          if (account !== undefined) {
-            await f.observerPool.query(
-              "UPDATE occ.service_account_driver_bindings SET external_credential_id=$3 WHERE namespace_id=$1 AND service_account_id=$2",
-              [f.namespace.id, account.id, accountCredentialId],
-            );
-          }
           events.length = 0;
           const retry = await f.advanceMaintenance(revision);
           assert.equal(retry.rowCount, 1);
@@ -1142,9 +876,6 @@ for (const scenario of [
             preparesAfterExpiry: prepares - before.prepares,
             activationsAfterExpiry: activations - before.activations,
             tokenIssues: provider.issuesOfTokens.length,
-            sourceDetaches: modelWithdrawals,
-            sourceAttempts,
-            originalMaintenanceKey: recovering || manualReplay ? originalMaintenanceKey : undefined,
             recoveryObservations: reductions - beforeRecovery,
             terminalRows,
           }),

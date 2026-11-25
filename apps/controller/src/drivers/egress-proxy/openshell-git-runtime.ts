@@ -7,7 +7,7 @@ import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
-  admitRepositoryNetworkPolicy,
+  isCanonicalRepositoryNetworkPolicy,
   githubInstallationProfile,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -476,6 +476,7 @@ export class OpenShellGitRuntime {
       revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
+      state.authorization === "credential_source" ||
       (state.bindings.length !== 1 &&
         !state.bindings.every((b) => b.profile === "github-repository")) ||
       !binding ||
@@ -526,7 +527,7 @@ export class OpenShellGitRuntime {
       binding.profile !== "github-repository" ||
       !("scope" in delivery) ||
       delivery.scope !== "github-repository" ||
-      !isDeepStrictEqual(policy, admitRepositoryNetworkPolicy(policy.grants, policy.grants))
+      !isCanonicalRepositoryNetworkPolicy(policy)
     ) {
       throw new Error(
         "OpenShell repository network policy requires protected selected-repository Git.",
@@ -656,9 +657,10 @@ export class OpenShellGitRuntime {
 
   /** The prepared owner already caps material at both session and provider expiry. */
   private materialIsLive(revision: Readonly<AgentRevision>, expiresAt: string) {
-    const snapshot = revision.repositoryCredentials!;
+    const snapshot = revision.egressPlan?.repositoryGit;
     const now = Date.now();
     return (
+      snapshot !== undefined &&
       Date.parse(expiresAt) > now &&
       (snapshot.standingApprovalId !== undefined || snapshot.deadlineWallMs > now)
     );
@@ -689,10 +691,11 @@ export class OpenShellGitRuntime {
     ) {
       throw new Error("OpenShell Git requires an exact Sandbox workspace path.");
     }
+    const credentials = revision.repositoryCredentials;
     if (
-      !revision.repositoryCredentials ||
-      (revision.repositoryCredentials.deadlineWallMs <= Date.now() &&
-        !revision.repositoryCredentials.standingApprovalId)
+      !credentials ||
+      credentials.authorization === "credential_source" ||
+      (credentials.deadlineWallMs <= Date.now() && !credentials.standingApprovalId)
     ) {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
@@ -726,7 +729,6 @@ export class OpenShellGitRuntime {
     if (!pending) {
       pending = (async (): Promise<Entry> => {
         // Close a route this worker did not prepare; a failed store read can be retried.
-        const credentials = revision.repositoryCredentials!;
         const persisted = await read(() => routes.adopt(revision.id, this.instance), signal);
         if (persisted !== undefined) {
           // A restart cannot inherit this observation. Taking the fence also closed the route,
@@ -873,18 +875,20 @@ export class OpenShellGitRuntime {
     // `oce-github pr-create --draft` runs from the image's repository client; Landlock and
     // PATH must admit it only where the grant allows a draft.
     const draft = scope.repository?.draftPullRequest;
-    const resuming = revision.repositoryCredentials.deadlineWallMs <= Date.now();
-    if (
-      resuming &&
-      (!entry.opened || !entry.sandboxId || !revision.repositoryCredentials.standingApprovalId)
-    ) {
+    const resuming = credentials.deadlineWallMs <= Date.now();
+    if (resuming && (!entry.opened || !entry.sandboxId || !credentials.standingApprovalId)) {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
+    const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
+    // The Sandbox Driver and the Credential Proxy derive the same answer from this rule.
+    const scopedRoutes =
+      entry.preview.native &&
+      entry.provider.boundNetworkRule()?.endpoints.some(({ host }) => host === "api.github.com");
     return {
       ...(resuming && { existingSandboxId: entry.sandboxId }),
       provider: entry.binding.provider,
-      nativeBinaries: entry.preview.native
-        ? openShellGitNetworkDefaults(entry.authorization.delivery).binaries
+      nativePolicy: entry.preview.native
+        ? { binaries: openShellGitNetworkDefaults(scope.delivery).binaries, scopedRest }
         : undefined,
       readOnlyPaths: draft ? [dirname(REPOSITORY_CLIENT_BIN)] : [],
       environment: [
@@ -929,6 +933,7 @@ export class OpenShellGitRuntime {
         this.configuration.registrationName,
         entry.bindingId,
         entry.preview.native,
+        scopedRoutes,
       ),
     };
   }
@@ -1308,7 +1313,7 @@ export class OpenShellGitRuntime {
         observeUntil,
         Date.parse(material.expiresAt),
         Date.parse(entry.binding.expiresAt),
-        entry.revision.repositoryCredentials!.deadlineWallMs,
+        entry.revision.egressPlan!.repositoryGit!.deadlineWallMs,
       );
       expiresAt = deadline;
       policyCurrent = () =>
@@ -1480,7 +1485,12 @@ export class OpenShellGitRuntime {
     signal: AbortSignal,
   ): Promise<OpenShellGitExpiryResult> {
     const credentials = revision.repositoryCredentials;
-    if (!this.routes || !this.owner || !credentials) {
+    if (
+      !this.routes ||
+      !this.owner ||
+      !credentials ||
+      credentials.authorization === "credential_source"
+    ) {
       return "retire-runtime";
     }
     // An endpoint that binds this Provider prevents isolated detach.
@@ -2175,7 +2185,7 @@ export class OpenShellGitRuntime {
                     ? new Date(
                         Math.min(
                           Date.parse(current.expiresAt),
-                          entry.revision.repositoryCredentials!.deadlineWallMs,
+                          entry.revision.egressPlan!.repositoryGit!.deadlineWallMs,
                         ),
                       ).toISOString()
                     : current.expiresAt,
@@ -2672,6 +2682,7 @@ export function openShellGitMiddleware(
   registrationName: string,
   bindingId: string,
   native = false,
+  scopedRoutes = false,
 ) {
   return {
     "oce-prepared-git": {
@@ -2680,7 +2691,14 @@ export function openShellGitMiddleware(
       config: { fields: { binding_id: { stringValue: bindingId } } },
       on_error: "fail_closed",
       order: 2147483647,
-      endpoints: { include: native ? ["api.github.com"] : ["github.com", "api.github.com"] },
+      // Recipient verification pins the registered service. Stock selects middleware by host,
+      // so native delivery with any scoped API route selects no admitted GitHub host: OpenShell
+      // alone enforces issue reads, pull request reads and pull request creation.
+      endpoints: {
+        include: native
+          ? [scopedRoutes ? "deny-egress.invalid" : "api.github.com"]
+          : ["github.com", "api.github.com"],
+      },
     },
   };
 }

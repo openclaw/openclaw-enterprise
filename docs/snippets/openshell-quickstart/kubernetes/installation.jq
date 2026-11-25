@@ -17,8 +17,7 @@
         }
       },
       "drivers": {
-        "sandbox": "openshell-sandbox",
-        "credential_gateway": "openshell-credentials"
+        "sandbox": "openshell-sandbox"
       }
     }
   ],
@@ -500,15 +499,9 @@
         "sandboxNamePrefix": "os"
       }
     },
-    "credential_gateway": {
-      "id": "openshell-credentials",
-      "configuration": {
-        "binaries": [
-          "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
-          "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
-          "/usr/local/bin/node"
-        ]
-      }
+    "token_service": {
+      "id": "occ",
+      "configuration": {}
     }
   }
 }

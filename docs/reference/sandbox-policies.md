@@ -123,14 +123,13 @@ its failed application, and audit evidence commit in one transaction; interrupti
 rolls back all three so a later worker can retry recovery. Refresh, inspect, and
 retry explicitly. Failure never triggers automatic redeployment.
 
-A `failed` application carries a `reason` code. The console shows its meaning
-and next step. The worker repeats its checks on every pass, including passes
-after it sent the policy. A failure after a send can leave the Sandbox running
-that policy, and the worker does not send it again:
+For a `failed` application, the Console explains the `reason`.
+The worker checks on every pass. If a check fails after sending, the Sandbox
+may enforce the rules. The worker does not resend them.
 
 | `reason`                               | Cause and next step                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `SANDBOX_POLICY_REVISION_CHANGED`      | The current version changed or the Agent stopped. Apply again.                                         |
+| `SANDBOX_POLICY_REVISION_CHANGED`      | The Namespace or Agent changed state, or the revision changed. Refresh the Agent and policy.           |
 | `AUTHORIZATION_DENIED`                 | The requester lost Agent `manage_policy` or SandboxPolicy `update`. Ask an Installation administrator. |
 | `SANDBOX_POLICY_CEILING_CHANGED`       | The delegation ceiling no longer covers every rule. Remove those rules and save.                       |
 | `SANDBOX_POLICY_UNSUPPORTED`           | The version's Sandbox Driver cannot apply or refused the rules. Deploy instead.                        |
@@ -140,15 +139,19 @@ that policy, and the worker does not send it again:
 | `SANDBOX_POLICY_PROVIDER_FAILED`       | The provider reported failure or changed version. Refresh and apply again.                             |
 | `SANDBOX_POLICY_UNCONFIRMED`           | No confirmation in time; the provider may have applied part. Refresh and retry.                        |
 
-The last
-confirmed live version remains recorded separately when desired additions change.
-Policy GET returns the running revision as `defaultsRevisionId` and the saved
-policy version it was deployed with as `deployedPolicyVersion`. When that version
-is the saved version and no application targets that revision, the Sandbox
-enforces the saved rules without live application. The console shows **Deployed**.
-Revision snapshots and attributable audit evidence preserve the original admission.
-The console shows read-only defaults from the running revision, or the selected
-Driver before deployment, separately from the delegation ceiling and additions.
+Policy GET reports the stored active revision (`defaultsRevisionId`) and deployed policy
+version (`deployedPolicyVersion`). Check workload status separately.
+If the running replacement deployed with the saved version and no application
+targets it, skip the retry. An earlier failure can still show **Application
+unconfirmed** instead of **Deployed**.
+
+After `SANDBOX_POLICY_REVISION_CHANGED`, retry only with a ready Namespace,
+an active, running Agent and a revision that needs the rules. Deploy a stopped
+Agent only if you intend to start it.
+
+Changing additions preserves the last confirmed live version. Revision snapshots and
+attributable audit records preserve the original admission. The Console separates read-only revision
+or Driver defaults from the ceiling and additions.
 
 OpenShell changes network rules through `UpdateConfig`, using a fixed nonzero CAS
 version and request ID. It retains static filesystem/process policy and generated
@@ -164,43 +167,50 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 ## Repository network policy
 
-Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+Set `repositoryNetworkPolicyCeiling` on the Installation to delegate at most
+32 named repositories, each with `read` or `write` access. Use lowercase
+`owner/name` without `.git`. The TokenService Git profile also accepts short
+repository names. An absent or empty ceiling delegates no access. A policy read
+returns the subset approved for the Namespace.
 
-`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
+### Source-backed native Git
 
-PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
+Select the GitHub App Client and per-repository access in the Agent's
+`repositoryAccess`. OCC resolves a Git Source for the approved repositories
+and derives the Git-only policy when it admits the Agent revision. Deployment
+returns `409 RESOURCE_CONFLICT` if the Agent also has a separately saved
+`repositoryNetworkPolicy`, including an empty list. Omitting the field in a
+policy update retains the saved list. Use an Agent draft without that list.
+[Native Git access levels](repository-credentials/access-levels.md#native-git-delivery)
 
-A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+Native Git requires dedicated Codex with a supported TokenService model Source
+and the paired OpenShell Sandbox and Credential Proxy. Use the
+[inspected role images](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git).
+A dedicated Agent with only standalone TokenService model revisions can add
+native Git after Stop. An Agent with earlier unscoped Git needs a new Agent ID.
+Clear the Agent's repository selections to request withdrawal on its running
+revision. [GitHub App setup](../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
-When a Channel needs a bound Secret, the controller checks the saved repository
-policy and the caller's Secret access before handing the value to the Channel.
-The handoff shares the lock used by permission changes. The controller checks
-permissions committed before it acquires the lock. It releases the lock before
-waiting for the provider and checks deployment admission again before saving the
-revision.
+### Separately saved repository grants
 
-To opt into repository policy, an Agent must have an explicit list from its
-first deployment. Ordinary Agents can keep deploying without a list.
-A delayed write to its Gateway can outlive a Worker claim and a completed
-stop. Deployment returns 409 if any earlier revision has no list. The Worker
-checks the same history before preparing a queued scoped revision. For a
-previously deployed Agent with that history, create a new Agent and save
-the list before deploying it. An Agent that started with a list can
-deploy subsequent policy changes under the same Agent ID.
+The Sandbox policy API retains a separate grant list for legacy or qualified
+Driver paths that support it. A policy GET requires Agent and SandboxPolicy
+`read`. Its `repositoryNetworkPolicySaveSupported` field indicates whether the
+caller can submit a list for validation or withdraw an existing list. PUT
+requires editing enabled, Agent `manage_policy`, SandboxPolicy `update`, and
+the current `expectedVersion`.
 
-After refusing a scoped replacement before its first provider call, the Worker
-can maintain the serving predecessor if the deployment has no earlier attempt.
-If earlier work could have changed the Gateway, the Worker keeps that repair
-blocked. Stop the Agent and confirm its workload has retired.
+A first list or nonempty replacement requires empty ordinary additions,
+a readable Configuration and model credential, current Namespace authority,
+and a qualified Compute and Sandbox pair. An empty list denies all repositories
+and requires SandboxPolicy `read`. If Driver support is lost, send
+`additions: []` and `repositoryNetworkPolicy: []` to withdraw the desired grants.
+The list remains saved. Live apply refuses an explicit list. Stop and confirm
+the running workload has retired to end its current access.
 
-The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
-for a dedicated Codex Harness, an OpenAI credential source and the managed
-Gateway. The controller build must pin the inspected Gateway and Agent images
-by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both images together before
-selecting those build arguments. Leaving the arguments empty disables this
-placement. A first empty list can be saved. Deploying it is refused before
-launch. Stop the active revision to retire its access.
+When a Channel needs a bound Secret, OCC checks the saved repository policy
+and the caller's Secret access before handing the value to the Channel Driver.
+It rechecks deployment admission before creating the revision.
 
 ## Denials and recommendations
 

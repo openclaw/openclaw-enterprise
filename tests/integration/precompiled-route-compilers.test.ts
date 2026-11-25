@@ -154,7 +154,7 @@ function validate(validator: unknown, value: unknown) {
 }
 
 function sourceWithoutSchemaIds(serializer: Serializer) {
-  return serializer.toString().replaceAll(/__fjs_root_\d+/gu, "__fjs_root");
+  return serializer.toString().replaceAll(/__fjs_(root|merged)_\d+(?=#)/gu, "__fjs_$1");
 }
 
 function serialize(serializer: Serializer, value: unknown) {

@@ -1,6 +1,7 @@
 import {
   openShellGitEndpoints,
   type OpenShellGitNetworkTarget,
+  type OpenShellScopedRestGrant,
   compileOpenShellBoundGitRule,
 } from "../sandbox/openshell-git-network-policy.ts";
 import type { InspectedWorkspaceNodeRoute } from "../sandbox/openshell-workspace-node-policy.ts";
@@ -45,6 +46,7 @@ export type OpenShellPreparedGitScope = OpenShellGitNetworkTarget & {
   readonly workspace: string;
   readonly workspaceId: string;
   readonly nativeGit?: "v1";
+  readonly scopedRest?: readonly OpenShellScopedRestGrant[];
   /** Only the v6 operator-isolated preview requires a known, completed stock receipt. */
   readonly observedHookPreview?: true;
   readonly sandbox: string;
@@ -250,6 +252,9 @@ export class OpenShellPreparedGitProvider {
     if (scope.repositoryNetworkPolicy !== undefined && scope.nativeGit !== "v1") {
       refuse();
     }
+    if (scope.scopedRest !== undefined && scope.repositoryNetworkPolicy === undefined) {
+      refuse();
+    }
     this.client = client;
     this.scope = Object.freeze({
       ...structuredClone(scope),
@@ -270,6 +275,7 @@ export class OpenShellPreparedGitProvider {
             ? [["repository-network-policy", scope.repositoryNetworkPolicy]]
             : []),
           ...(scope.nativeGit ? [["sandbox-credential-binding", scope.nativeGit]] : []),
+          ...(scope.scopedRest ? [["scoped-issue-reads", scope.scopedRest]] : []),
         ]),
       )
       .digest("hex")
@@ -665,7 +671,15 @@ export class OpenShellPreparedGitProvider {
 
   boundNetworkRule() {
     const grants = this.scope.repositoryNetworkPolicy;
-    return grants && compileOpenShellBoundGitRule(grants, this.provider, this.scope.binaries);
+    return (
+      grants &&
+      compileOpenShellBoundGitRule(
+        grants,
+        this.provider,
+        this.scope.binaries,
+        this.scope.scopedRest,
+      )
+    );
   }
 
   private async verifyRepositoryPolicy(

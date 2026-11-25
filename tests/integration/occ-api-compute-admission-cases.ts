@@ -441,7 +441,6 @@ export function registerSshAdmissionCases(): void {
         undefined,
         undefined,
         undefined,
-        undefined,
         true,
       ),
     );

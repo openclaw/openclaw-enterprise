@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { IncomingMessage } from "node:http";
-import { createServer, get as httpsGet } from "node:https";
-import { checkServerIdentity } from "node:tls";
+import { createServer, get as httpsGet, request as httpsRequest } from "node:https";
+import { checkServerIdentity, createSecureContext } from "node:tls";
 import { isIP } from "node:net";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +18,32 @@ export const scopedRestFixturePermissions = Object.freeze({
   issues: "read",
   pull_requests: "write",
 });
+
+export const scopedRestIssueWriteFixturePermissions = Object.freeze({
+  ...scopedRestFixturePermissions,
+  issues: "write",
+});
+
+// Compare raw bytes, before URL parsing. Only the encoded read of A has
+// an equivalent canonical spelling (unreserved ASCII in the path and query).
+function readVariantWire(probe, method, target) {
+  const parts = (value) => {
+    const q = value.indexOf("?");
+    return q < 0 ? [value, ""] : [value.slice(0, q), value.slice(q)];
+  };
+  const [path, query] = parts(target);
+  const [literalPath, literalQuery] = parts(probe.target);
+  const encodedRead =
+    probe.method === "GET" &&
+    probe.target === "/fixture/%61.git/info/refs?%73ervice=git-%75pload-pack";
+  const classify = (actual, literal, canonical) =>
+    actual === literal ? "literal" : encodedRead && actual === canonical ? "canonical" : "other";
+  return {
+    method: method === probe.method ? "literal" : "other",
+    path: classify(path, literalPath, "/fixture/a.git/info/refs"),
+    query: classify(query, literalQuery, "?service=git-upload-pack"),
+  };
+}
 
 // Test-only origin. Callers own close(); no environment credentials or user Git
 // configuration are inherited. Only snapshot() is intended for logged evidence.
@@ -35,6 +61,7 @@ export async function startSkipperPrivateGitOrigin({
   witnessIssuedGit = false,
   networkAcl = /** @type {boolean | "issued"} */ (false),
   scopedRest = false,
+  writeIssues = false,
 } = {}) {
   if (!/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/.test(repository)) {
     throw new Error("repository must be owner/name");
@@ -66,6 +93,7 @@ export async function startSkipperPrivateGitOrigin({
   await run("git", ["check-ref-format", approvalRef]);
   const issuedNetwork = networkAcl === "issued";
   assert.ok(!scopedRest || issuedNetwork, "Scoped REST requires the controlled App issuer");
+  assert.ok(!writeIssues || scopedRest, "Issue Write requires the REST fixture");
   const repositoryScopes = [{ repository, repositoryRef, repositoryId }];
   if (networkAcl) {
     repositoryScopes.push(
@@ -89,8 +117,10 @@ export async function startSkipperPrivateGitOrigin({
   const broadAuthorization = broadToken
     ? `Basic ${Buffer.from(`x-access-token:${broadToken}`).toString("base64")}`
     : undefined;
-  /** @type {{ repository: string, operation: string, method: "GET" | "POST", authenticated: boolean, credentialIndex?: number }[]} */
+  /** @type {{ repository: string, operation: string, method: "GET" | "HEAD" | "POST", target?: string, wire?: ReturnType<typeof readVariantWire>, authenticated: boolean, credentialIndex?: number }[]} */
   const networkRequests = [];
+  /** @type {import("../helpers/openshell-git-denial.ts").GitAclVariant | undefined} */
+  let activeVariant;
   let unknownNetworkRequests = 0;
   const children = new Set();
   // HTTPS exposes a TLSSocket on the request and a net.Socket at TCP accept.
@@ -240,7 +270,9 @@ export async function startSkipperPrivateGitOrigin({
       }),
       additionalPermissions: [
         ...(teamReview ? [{ metadata: "read", contents: "write", pull_requests: "write" }] : []),
-        ...(scopedRest ? [scopedRestFixturePermissions] : []),
+        ...(scopedRest
+          ? [writeIssues ? scopedRestIssueWriteFixturePermissions : scopedRestFixturePermissions]
+          : []),
       ],
     });
     const reviewHead = approvalRef.slice("refs/heads/".length);
@@ -248,8 +280,29 @@ export async function startSkipperPrivateGitOrigin({
     let pullRequest;
     let pullCreateRequests = 0;
     /** @typedef {{ ref: string, sha: string, repo: { id: number, full_name: string } }} ScopedPullSide */
-    /** @type {Map<string, { number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }>} */
+    /** @typedef {{ number: number, title: string, state: string, draft: boolean, head: ScopedPullSide, base: ScopedPullSide }} ScopedPull */
+    /** @type {Map<string, ScopedPull[]>} */
     const scopedPulls = new Map();
+    /** @type {Map<string, unknown[]>} */
+    const scopedIssuePosts = new Map();
+    const scopedParents = new Map(
+      repositoryScopes.map((scope) => [Number(scope.repositoryId) * 1000 + 42, scope]),
+    );
+    /** @type {Map<number, { repository: string, number: number }[]>} */
+    const scopedIssueChildren = new Map();
+    const scopedIssueLists = new Map(
+      repositoryScopes.map(({ repository }) => [
+        repository,
+        [
+          {
+            number: 42,
+            title: `Fixture issue in ${repository}`,
+            state: "open",
+          },
+        ],
+      ]),
+    );
+    let redirectPullReadToC = false;
     const observePullRequest = async () => {
       if (!pullRequest) {
         return null;
@@ -262,7 +315,7 @@ export async function startSkipperPrivateGitOrigin({
       });
       return { ...pullRequest, head: side(reviewHead), base: side("main") };
     };
-    const readPullBody = async (request, reply) => {
+    const readRestBody = async (request, reply) => {
       const chunks = [];
       let size = 0;
       for await (const chunk of request) {
@@ -283,7 +336,7 @@ export async function startSkipperPrivateGitOrigin({
         reply(403);
         return;
       }
-      const fields = await readPullBody(request, reply);
+      const fields = await readRestBody(request, reply);
       if (fields === undefined) {
         return;
       }
@@ -325,11 +378,11 @@ export async function startSkipperPrivateGitOrigin({
       const name = scope.repository;
       const authorization = request.headers.authorization;
       const authenticated = authority.authorize(authorization);
-      const operation = {
-        issues: "rest-issue-list",
-        "issues/42": "rest-issue-read",
-        pulls: "rest-pull-create",
-      }[route];
+      const operation =
+        {
+          issues: request.method === "GET" ? "rest-issue-list" : "rest-issue-create",
+          pulls: request.method === "GET" ? "rest-pull-list" : "rest-pull-create",
+        }[route] ?? (route.startsWith("issues/") ? "rest-issue-read" : "rest-pull-read");
       networkRequests.push({
         repository: name,
         operation,
@@ -342,20 +395,105 @@ export async function startSkipperPrivateGitOrigin({
         return;
       }
       const permissions = authority.permissions(authorization);
-      if (route !== "pulls" && request.method === "GET" && permissions?.issues === "read") {
-        const issue = { number: 42, title: `Fixture issue in ${name}`, state: "open" };
-        reply(200, route === "issues" ? [issue] : issue);
+      if (route.startsWith("issues")) {
+        const issues = scopedIssueLists.get(name);
+        assert.ok(issues);
+        if (
+          request.method === "GET" &&
+          (permissions?.issues === "read" || permissions?.issues === "write")
+        ) {
+          if (route === "issues") {
+            reply(200, issues);
+          } else {
+            const issue = issues.find(({ number }) => route === `issues/${number}`);
+            reply(issue ? 200 : 404, issue);
+          }
+          return;
+        }
+        if (request.method !== "POST" || route !== "issues" || permissions?.issues !== "write") {
+          reply(403);
+          return;
+        }
+        const fields = await readRestBody(request, reply);
+        if (fields === undefined) {
+          return;
+        }
+        const { title, body = "", labels = [], parent_issue_id: parentId } = fields;
+        if (
+          typeof title !== "string" ||
+          !title ||
+          typeof body !== "string" ||
+          !Array.isArray(labels) ||
+          labels.some((label) => typeof label !== "string")
+        ) {
+          reply(422);
+          return;
+        }
+        // The issuer can retire the credential while the request body is read.
+        if (!authority.authorize(authorization)) {
+          reply(403);
+          return;
+        }
+        // The synthetic App's Issues Write grant models triage on its selected
+        // repositories. Model the link separately from either issue record.
+        if (parentId !== undefined) {
+          const parent = scopedParents.get(parentId);
+          if (!parent || !authority.permitsRepository(authorization, parent.repositoryId)) {
+            reply(403);
+            return;
+          }
+        }
+        const issue = {
+          number: 42 + issues.length,
+          title,
+          body,
+          state: "open",
+          labels: labels.map((name) => ({ name })),
+        };
+        issues.push(issue);
+        const posts = scopedIssuePosts.get(name) ?? [];
+        scopedIssuePosts.set(name, [...posts, fields]);
+        if (parentId !== undefined) {
+          const children = scopedIssueChildren.get(parentId) ?? [];
+          scopedIssueChildren.set(parentId, [
+            ...children,
+            { repository: name, number: issue.number },
+          ]);
+        }
+        reply(201, issue);
+        return;
+      }
+      const created = scopedPulls.get(name) ?? [];
+      if (
+        request.method === "GET" &&
+        (permissions?.pull_requests === "read" || permissions?.pull_requests === "write")
+      ) {
+        if (redirectPullReadToC && name === "fixture/b" && route === "pulls/42") {
+          redirectPullReadToC = false;
+          reply(302, {}, { location: "/repos/fixture/c/pulls/42" });
+          return;
+        }
+        const seeded = { number: 42, title: `Fixture pull in ${name}`, state: "open" };
+        if (route === "pulls") {
+          reply(200, [seeded, ...created]);
+        } else {
+          const pull =
+            route === "pulls/42"
+              ? seeded
+              : created.find(({ number }) => route === `pulls/${number}`);
+          reply(pull ? 200 : 404, pull);
+        }
         return;
       }
       if (
-        route !== "pulls" ||
         request.method !== "POST" ||
+        route !== "pulls" ||
         permissions?.pull_requests !== "write"
       ) {
         reply(403);
         return;
       }
-      const fields = await readPullBody(request, reply);
+      const fields = await readRestBody(request, reply);
       if (fields === undefined) {
         return;
       }
@@ -365,11 +503,11 @@ export async function startSkipperPrivateGitOrigin({
         typeof title !== "string" ||
         !title ||
         typeof draft !== "boolean" ||
-        head !== reviewHead ||
+        typeof head !== "string" ||
         base !== "main" ||
-        !refs[approvalRef] ||
-        refs[approvalRef] === refs["refs/heads/main"] ||
-        scopedPulls.has(name)
+        !refs[`refs/heads/${head}`] ||
+        refs[`refs/heads/${head}`] === refs["refs/heads/main"] ||
+        created.some((pull) => pull.head.ref === head && pull.base.ref === base)
       ) {
         reply(422);
         return;
@@ -380,16 +518,17 @@ export async function startSkipperPrivateGitOrigin({
       }
       const repo = { id: Number(scope.repositoryId), full_name: name };
       const pull = {
-        number: 1,
+        number: created.length + 1,
         title,
         state: "open",
         draft,
-        head: { ref: head, sha: refs[approvalRef], repo },
+        head: { ref: head, sha: refs[`refs/heads/${head}`], repo },
         base: { ref: base, sha: refs["refs/heads/main"], repo },
       };
-      scopedPulls.set(name, pull);
+      scopedPulls.set(name, [...created, pull]);
       reply(201, pull);
     };
+    /** @type {Record<string, number>} */
     const counts = {};
     const count = (endpoint, status) => {
       const key = `${endpoint}:${status}`;
@@ -410,17 +549,23 @@ export async function startSkipperPrivateGitOrigin({
       if (networkAcl) {
         unknownNetworkRequests++;
       }
-      const reply = (status, body = {}) => {
+      const reply = (status, body = {}, headers = {}) => {
         count(endpoint, status);
         response.writeHead(status, {
           "content-type": "application/json",
           ...(status === 401 ? { "www-authenticate": 'Basic realm="private fixture"' } : {}),
+          ...headers,
         });
         response.end(status === 204 ? undefined : JSON.stringify(body));
       };
       try {
         const url = new URL(request.url, "https://fixture.invalid");
-        if (request.url !== `${url.pathname}${url.search}`) {
+        // Only the current literal Git probe may use a noncanonical target.
+        const variant =
+          activeVariant?.target === request.url && activeVariant?.method === request.method
+            ? activeVariant
+            : undefined;
+        if (!variant && request.url !== `${url.pathname}${url.search}`) {
           reply(404);
           return;
         }
@@ -503,7 +648,7 @@ export async function startSkipperPrivateGitOrigin({
         const rest =
           scopedRest &&
           !url.search &&
-          /^\/repos\/([^/]+\/[^/]+)\/(issues(?:\/42)?|pulls)$/.exec(url.pathname);
+          /^\/repos\/([^/]+\/[^/]+)\/((?:issues|pulls)(?:\/[1-9][0-9]*)?)$/.exec(url.pathname);
         if (rest) {
           const scope = repositoryByName.get(rest[1]);
           if (!scope) {
@@ -515,22 +660,24 @@ export async function startSkipperPrivateGitOrigin({
           await serveScopedRest(request, scope, rest[2], reply);
           return;
         }
-        const gitPath = url.pathname;
+        const gitPath = variant ? decodeURIComponent(url.pathname) : url.pathname;
         const matchedRepository = networkRepositories.find((name) =>
           gitPath.startsWith(`/${name}.git/`),
         );
         const requestGitPrefix = `/${matchedRepository}.git`;
-        const service = url.searchParams.get("service");
+        const service = variant
+          ? url.searchParams.getAll("service").at(-1)
+          : url.searchParams.get("service");
         const gitServices = ["git-upload-pack", "git-receive-pack"];
         const discovery =
-          request.method === "GET" &&
+          (request.method === "GET" || (variant && request.method === "HEAD")) &&
           gitPath === `${requestGitPrefix}/info/refs` &&
           gitServices.includes(service) &&
-          [...url.searchParams].length === 1;
+          (variant || [...url.searchParams].length === 1);
         const rpc =
           request.method === "POST" &&
           gitServices.some((name) => gitPath === `${requestGitPrefix}/${name}`) &&
-          !url.search;
+          (variant || !url.search);
         if (!matchedRepository || (!discovery && !rpc)) {
           reply(404);
           return;
@@ -548,7 +695,11 @@ export async function startSkipperPrivateGitOrigin({
           networkRequests.push({
             repository: matchedRepository,
             operation: endpoint,
-            method: discovery ? "GET" : "POST",
+            method: request.method === "HEAD" ? "HEAD" : discovery ? "GET" : "POST",
+            ...(variant && { target: request.url }),
+            ...(activeVariant?.expected === "read" && {
+              wire: readVariantWire(activeVariant, request.method, request.url),
+            }),
             authenticated,
             ...(issuedNetwork &&
               authenticated && { credentialIndex: authority.tokenIndex(authorization) }),
@@ -571,7 +722,9 @@ export async function startSkipperPrivateGitOrigin({
           return;
         }
         const permissions = broad ? { contents: "write" } : authority.permissions(authorization);
-        if (!permissions.contents || (receive && permissions.contents !== "write")) {
+        const needsWrite =
+          receive || (variant && url.searchParams.getAll("service").includes("git-receive-pack"));
+        if (!permissions.contents || (needsWrite && permissions.contents !== "write")) {
           reply(403);
           return;
         }
@@ -736,6 +889,174 @@ export async function startSkipperPrivateGitOrigin({
       ...(networkAcl && {
         network: {
           token: broadToken,
+          repositories: networkRepositories,
+          scopes: repositoryScopes.map((scope) => ({ ...scope })),
+          /**
+           * @param {number} index
+           * @param {(variant: import("../helpers/openshell-git-denial.ts").GitAclVariant) => Promise<string>} replay
+           */
+          async checkGitVariants(index, replay) {
+            const { gitAclVariants } = await import("../helpers/openshell-git-denial.ts");
+            assert.ok(issuedNetwork && issuedGit?.has(index) && repository === "fixture/a");
+            assert.equal(activeVariant, undefined);
+            try {
+              const outcomes = [];
+              for (const probe of gitAclVariants(initialSha)) {
+                activeVariant = probe;
+                const { method, target, repository, operation, service } = probe;
+                const before = requests;
+                const start = networkRequests.length;
+                const recipient = {
+                  method,
+                  repository,
+                  operation: `${operation}-${method === "POST" ? "pack" : "advertise"}`,
+                  credentialIndex: index,
+                  authenticated: true,
+                };
+                // A denial is meaningful only after the exact same wire target succeeds.
+                assert.deepEqual(
+                  await this.probeIssued(index, repository, probe),
+                  {
+                    status: 200,
+                    type: `application/x-${service}-${method === "POST" ? "result" : "advertisement"}`,
+                  },
+                  "Git variant calibration failed",
+                );
+                assert.equal(requests, before + 1);
+                const literal = { method: "literal", path: "literal", query: "literal" };
+                assert.deepEqual(
+                  networkRequests.slice(start),
+                  [{ ...recipient, target, ...(probe.expected === "read" && { wire: literal }) }],
+                  "Git calibration recipient or target mismatch",
+                );
+
+                const allowedBefore = counts["upload-advertise:200"] ?? 0;
+                const decision = await replay(probe);
+                if (probe.expected === "read" && decision === "200 upload-advertisement\n") {
+                  assert.equal(requests, before + 2);
+                  assert.equal(counts["upload-advertise:200"], allowedBefore + 1);
+                  const reads = networkRequests.slice(start + 1);
+                  const wire = reads[0]?.wire;
+                  assert.ok(
+                    wire?.method === "literal" &&
+                      (wire.path === "literal" || wire.path === "canonical") &&
+                      (wire.query === "literal" || wire.query === "canonical"),
+                    `Unexpected Git read shape: ${JSON.stringify(wire)}`,
+                  );
+                  const exactLiteral = wire.path === "literal" && wire.query === "literal";
+                  assert.deepEqual(
+                    reads,
+                    [{ ...recipient, ...(exactLiteral && { target }), wire }],
+                    "Git read recipient or target mismatch",
+                  );
+                  // Preserve the literal mismatch even if a later probe fails.
+                  if (!exactLiteral) {
+                    process.stdout.write(
+                      JSON.stringify({ event: "saved-git-acl-variant-mismatch", wire }) + "\n",
+                    );
+                  }
+                  outcomes.push({ method, target, decision: decision.trim(), wire, exactLiteral });
+                } else {
+                  assert.equal(requests, before + 1, "Forbidden Git variant reached the origin");
+                  assert.ok(
+                    decision ===
+                      (method === "HEAD" ? "403 head-http\n" : "403 native-rest-policy\n"),
+                    "Missing Git variant refusal",
+                  );
+                  outcomes.push({ method, target, decision: decision.trim() });
+                }
+              }
+              assert.equal(outcomes.length, 15);
+              return outcomes;
+            } finally {
+              activeVariant = undefined;
+            }
+          },
+          /**
+           * @param {number | undefined} index
+           * @param {string} repository
+           * @param {{ service: string, method: "GET" | "HEAD" | "POST", body?: string, target?: string }} options
+           * @returns {Promise<{ status?: number, type?: string }>}
+           */
+          async probeIssued(index, repository, { service, method, body, target }) {
+            assert.ok(
+              issuedNetwork && (index === undefined || issuedGit?.has(index)),
+              "missing controlled issuer credential",
+            );
+            assert.ok(networkRepositories.includes(repository));
+            assert.ok(["git-upload-pack", "git-receive-pack"].includes(service));
+            if (target === undefined) {
+              assert.ok(["GET", "POST"].includes(method));
+            } else {
+              assert.ok(
+                activeVariant &&
+                  target === activeVariant.target &&
+                  method === activeVariant.method &&
+                  repository === activeVariant.repository &&
+                  service === activeVariant.service &&
+                  body === activeVariant.body,
+                "Git target is not the active calibration",
+              );
+            }
+            assert.ok(method === "POST" ? typeof body === "string" : body === undefined);
+
+            const path = method === "POST" ? service : `info/refs?service=${service}`;
+            const secureContext = createSecureContext({ ca: tls.ca ?? tls.cert });
+            return new Promise((resolve, reject) => {
+              const request = httpsRequest(
+                {
+                  hostname: listener.address,
+                  port: listener.port,
+                  path: target ?? `/${repository}.git/${path}`,
+                  method,
+                  agent: false,
+                  secureContext,
+                  servername: isIP(advertisedHost) ? "" : advertisedHost,
+                  checkServerIdentity: (_host, cert) => checkServerIdentity(advertisedHost, cert),
+                  signal: AbortSignal.timeout(5000),
+                  ...(index === undefined
+                    ? {}
+                    : { auth: "x-access-token:" + issuedGit.get(index) }),
+                  headers: {
+                    host: new URL(origin).host,
+                    ...(body === undefined
+                      ? {}
+                      : {
+                          "content-type": `application/x-${service}-request`,
+                          "content-length": Buffer.byteLength(body),
+                        }),
+                  },
+                },
+                (response) => {
+                  response.resume();
+                  response.once("error", reject);
+                  response.once("end", () => {
+                    if (!response.complete) {
+                      reject(new Error("incomplete Git origin response"));
+                      return;
+                    }
+                    resolve({
+                      status: response.statusCode,
+                      type: response.headers["content-type"],
+                    });
+                  });
+                },
+              );
+              request.once("error", reject);
+              request.end(body);
+            });
+          },
+
+          /** @param {Buffer} output */
+          containsIssuedCredential(output) {
+            assert.ok(issuedNetwork);
+            return [...issuedGit.values()].some(
+              (token) =>
+                output.includes(token) ||
+                output.includes(Buffer.from(`x-access-token:${token}`).toString("base64")),
+            );
+          },
+
           shortenNextTokenForRenewal() {
             assert.ok(issuedNetwork && !shortenNextToken);
             shortenNextToken = true;
@@ -748,7 +1069,19 @@ export async function startSkipperPrivateGitOrigin({
           },
           requests: () => networkRequests.map((entry) => ({ ...entry })),
           /** @param {string} name */
-          pullRequest: (name) => structuredClone(scopedPulls.get(name)),
+          issues: (name) => structuredClone(scopedIssueLists.get(name) ?? []),
+          /** @param {string} name */
+          issuePosts: (name) => structuredClone(scopedIssuePosts.get(name) ?? []),
+          /** @param {number} parentId */
+          issueChildren: (parentId) => structuredClone(scopedIssueChildren.get(parentId) ?? []),
+          /** @param {string} name */
+          pullRequest: (name) => structuredClone(scopedPulls.get(name)?.[0]),
+          /** @param {string} name */
+          pullRequests: (name) => structuredClone(scopedPulls.get(name) ?? []),
+          redirectNextPullReadToC() {
+            assert.ok(scopedRest && !redirectPullReadToC);
+            redirectPullReadToC = true;
+          },
           unknownRequests: () => unknownNetworkRequests,
           async ref(name, ref) {
             assert.ok(networkRepositories.includes(name));

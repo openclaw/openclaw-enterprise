@@ -1,14 +1,50 @@
 import { story } from "./story.ts";
 
 export const PluginsOAuthRevision = story("pluginsOAuthRevision");
+export const PluginsApiKeySource = story("pluginsApiKeySource");
 
 export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const Layout = story("agentDetailLayout");
+export const ChannelsAccessUnconfirmedOnRefocus = story("channelsAccessUnconfirmedOnRefocus", {
+  openInNewTab: true,
+});
 export const EmptyDeployment = story("deploymentEmpty");
 export const DeploymentSnapshotUnavailable = story("deploymentSnapshotUnavailable");
 export const NewVersion = story("newVersion");
+export const NetworkProxyEmpty = {
+  ...story("networkProxyEmpty"),
+  name: "Gateway Channel Proxy Empty",
+};
+export const NetworkProxySaved = {
+  ...story("networkProxySaved"),
+  name: "Gateway Channel Proxy Saved",
+};
+export const NetworkProxyValidation = {
+  ...story("networkProxyValidation"),
+  name: "Gateway Channel Proxy Validation",
+};
+export const NetworkProxySaveError = {
+  ...story("networkProxySaveError"),
+  name: "Gateway Channel Proxy Save Error",
+};
+export const NetworkProxyEnforcementUnavailable = {
+  ...story("networkProxyEnforcementUnavailable"),
+  name: "Gateway Channel Proxy Enforcement Unavailable",
+};
+export const NetworkProxyPermission = {
+  ...story("networkProxyPermission"),
+  name: "Gateway Channel Proxy Permission",
+};
+export const NetworkProxySecretLoading = {
+  ...story("networkProxySecretLoading"),
+  name: "Gateway Channel Proxy Secrets Loading",
+};
+export const NetworkProxySecretError = {
+  ...story("networkProxySecretError"),
+  name: "Gateway Channel Proxy Secrets Error",
+};
 export const FailedFirstVersion = story("failedFirstVersion");
 export const EditCurrentConfiguration = story("editCurrentConfiguration");
 export const CurrentConfigurationReader = story("currentConfigurationReader");
@@ -54,7 +90,15 @@ export const SlackMcpAccountRecovery = {
   ...story("slackMcpAccountRecovery"),
   name: "Recover a Slack account after access is restored",
 };
+export const SlackMcpBoundAgentDiscovery = story("slackMcpBoundAgentDiscovery");
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
+export const PluginAccountConsent = story("pluginAccountConsent");
+export const PluginAccountConsentNoClients = story("pluginAccountConsentNoClients");
+export const PluginAccountConsentClientsLoading = story("pluginAccountConsentClientsLoading");
+export const PluginAccountConsentClientsFailed = story("pluginAccountConsentClientsFailed");
+export const PluginAccountConsentStartFailed = story("pluginAccountConsentStartFailed");
+export const PluginAccountConsentStartDelayed = story("pluginAccountConsentStartDelayed");
+export const PluginAccountTemplateNeedsClient = story("pluginAccountTemplateNeedsClient");
 export const PluginsPrefetchReturn = story("pluginsPrefetchReturn");
 export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const DraftReader = story("draftReader");
@@ -116,6 +160,7 @@ export const DeploymentRecordRefused = {
 export const DeploymentActivityLoading = story("deploymentActivityLoading");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
+export const DeploymentFailedStatusOnly = story("deploymentFailedStatusOnly");
 export const SandboxLost = story("sandboxLost");
 export const SandboxRunning = story("sandboxRunning");
 export const SandboxStatusUnknown = story("sandboxStatusUnknown");
@@ -186,6 +231,10 @@ export const AgentReadInterrupted = {
   ...story("agentReadInterrupted", { openInNewTab: true }),
   name: "Retry a direct Agent link",
 };
+export const AgentReadUnavailableOnRefocus = {
+  ...story("agentReadUnavailableOnRefocus", { openInNewTab: true }),
+  name: "Retry an Agent read on tab return",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
@@ -246,6 +295,11 @@ export const DeployAgentPrincipalDenied = {
 };
 export const DeploySandboxPolicyReadDenied = story("deploySandboxPolicyReadDenied");
 
+export const RepositoryPermissionsDraft = story("repositoryPermissionsDraft");
+export const RepositoryPermissions = story("repositoryPermissions");
+export const RepositoryPermissionsLimited = story("repositoryPermissionsLimited");
+export const RepositoryPermissionsDenied = story("repositoryPermissionsDenied");
+export const RepositoryPermissionsLoading = story("repositoryPermissionsLoading");
 export const RepositoryEditor = story("repositoryEditor");
 export const RepositoryCollaborator = story("repositoryCollaborator");
 export const RepositoryCollaboratorSaved = story("repositoryCollaboratorSaved");

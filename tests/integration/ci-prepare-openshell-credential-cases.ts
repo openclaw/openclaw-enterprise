@@ -203,8 +203,6 @@ export function registerOpenShellCredentialCases() {
       "tests/integration/openshell-refresh-real.test.ts",
       "tests/integration/openshell-withdrawal-real.test.ts",
       "tests/integration/openshell-gateway-tool-policy-real.test.ts",
-      "tests/integration/openshell-git-retention-real.test.ts",
-      "tests/integration/openshell-git-finite-removal-real.test.ts",
     ]) {
       cases.push(
         ["codex", keyOnly, admitted, { file }],

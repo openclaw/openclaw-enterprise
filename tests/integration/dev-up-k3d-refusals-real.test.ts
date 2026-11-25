@@ -1,3 +1,3 @@
-import { registerInstallationRefusals } from "../helpers/dev-up-installation-workflows.mjs";
+import { registerInstallationRefusals } from "../helpers/dev-up-installation-workflows.ts";
 
 registerInstallationRefusals();

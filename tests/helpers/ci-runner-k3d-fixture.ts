@@ -62,6 +62,8 @@ function writeJson(path: string, value: object) {
 }
 
 export async function writeK3dKubectl(directory: string, scenario: K3dKubectlScenario) {
+  // Keep the generated command and its TypeScript import in an explicit ES module scope.
+  await writeFile(join(directory, "package.json"), '{"type":"module"}\n', { flag: "wx" });
   await copyFile(
     new URL("../fixtures/ci-runner-k3d-kubectl.ts", import.meta.url),
     join(directory, "ci-runner-k3d-kubectl.ts"),

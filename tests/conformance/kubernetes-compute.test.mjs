@@ -5,14 +5,12 @@ import {
   openShellPolicySandbox,
 } from "../helpers/kubernetes-openshell-network-policy.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
-import {
-  runOpenClawRuntimeHelper,
-  workspaceNodeBinding,
-  WORKSPACE_NODE_BINDING_PATH,
-} from "../helpers/plugin-runtime.mjs";
-import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -20,6 +18,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { inspect } from "node:util";
 import test from "node:test";
+import { inflateRawSync } from "node:zlib";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
@@ -39,9 +38,21 @@ import {
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { withYieldingComputeStop } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
+import {
+  decodeReplacementRuntime,
+  encodeReplacementRuntime,
+} from "../../apps/controller/src/drivers/compute/kubernetes/replacement-runtime.ts";
+import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
+import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
+import { buildSandboxInstallation } from "../integration/sandbox-driver-installation-fixture.ts";
+import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
+import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
+import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.ts";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.ts";
@@ -84,6 +95,7 @@ import {
   nativeSandboxRevision,
   readyNativeHarnessPod,
   recordingNativeSandbox,
+  refusingNativeSandbox,
 } from "./kubernetes-dedicated-deploy-fixture.ts";
 import {
   checkPendingScheduling,
@@ -121,23 +133,12 @@ import {
   checkActivationWithoutStatusProxy,
 } from "./kubernetes-workspace-node-activation-cases.ts";
 import { createEmbeddedReplacementKubernetesFixture } from "./kubernetes-embedded-replacement-fixture.ts";
+import { checkManagedReleaseDelivery } from "./kubernetes-managed-release-cases.ts";
 import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
-import {
-  checkAccountSecretInput,
-  checkAccountSecretRollback,
-  checkDirectPatPlacement,
-  checkIssuanceRollbackKeepsLaterSecret,
-  checkLeftoverAccountSecretReclaim,
-  checkManagedPatPreparation,
-  checkUnconfirmedAccountSecretCreate,
-} from "./kubernetes-account-secret-cases.ts";
 import {
   checkCanonicalGatewayChannelSecret,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
-  checkExactSandboxCredentialWithdrawal,
-  checkExternalChatgptCredentialDelivery,
-  checkPairedCredentialSourceAuthentication,
   checkPodModelCredentialPlacement,
   checkStoppedRevisionCredentialCleanup,
 } from "./kubernetes-credential-delivery-cases.ts";
@@ -503,6 +504,9 @@ function dedicatedFirstDeployFixture({
   openShellGit,
   credentialGatewayDriver,
   credentialDeliveryRegistration,
+  images,
+  servicePrincipalCredentials,
+  network,
   context,
   splitCluster = false,
   revision: revisionOverrides = {},
@@ -510,6 +514,8 @@ function dedicatedFirstDeployFixture({
   const { state, nodeEnrollment } = createDedicatedDeployEnrollmentFixture(clock);
   const driver = new KubernetesComputeDriver(
     routedOptions({
+      ...(images === undefined ? {} : { images }),
+      ...(servicePrincipalCredentials === undefined ? {} : { servicePrincipalCredentials }),
       ...(splitCluster ? { executionCluster: twoClusterOptions().executionCluster } : {}),
       runtime: {
         transportSecretPrefix: "transport",
@@ -528,7 +534,14 @@ function dedicatedFirstDeployFixture({
       },
       // The API server proxy can reach private status, so activation reads the
       // node OpenClaw applied.
-      ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
+      ...(statusProxy || network !== undefined
+        ? {
+            network: {
+              ...(statusProxy && { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] }),
+              ...network,
+            },
+          }
+        : {}),
     }),
     {
       sandboxDriver,
@@ -657,6 +670,811 @@ function dedicatedFirstDeployFixture({
     },
   };
 }
+
+test("staged Codex account and PAT authentication use fixed routing while static OpenAI retains provider settings", () => {
+  const driver = new KubernetesComputeDriver(routedOptions());
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {} };
+  const accountAuth = {
+    method: "credential_source",
+    sourceId: "cs_codex_account",
+    tokenServiceInstanceId: "tokens",
+    sourceType: "oauth2-refresh-token",
+  };
+  const staticAuth = { ...accountAuth, sourceType: "static" };
+  const configuration = { agents: { defaults: { model: "codex/model-fixture" } } };
+  const withProvider = {
+    ...harness,
+    overrides: {
+      modelProvider: {
+        protocol: "openai-responses",
+        baseUrl: "https://other.example.test/v1",
+      },
+    },
+  };
+  for (const [auth, preset] of [
+    [accountAuth, undefined],
+    [staticAuth, "codex-pat"],
+  ]) {
+    assert.deepEqual(driver.resolveHarnessConfiguration(harness, auth, configuration, preset), {});
+    assert.throws(
+      () => driver.resolveHarnessConfiguration(withProvider, auth, configuration, preset),
+      /explicit modelProvider override requires/,
+    );
+  }
+  const openAi = driver.resolveHarnessConfiguration(
+    withProvider,
+    staticAuth,
+    configuration,
+    "openai",
+  );
+  assert.equal(openAi.modelProvider.protocol, "openai-responses");
+  assert.equal(openAi.modelProvider.baseUrl, "https://other.example.test/v1");
+});
+
+async function verifyNativeCodexStartup(t, { sourceType, loginMode, providerPat }) {
+  // The admission snapshot has a Source type and TokenService owner, but no duplicated loginMode.
+  // Controlled Sandbox/Proxy transports capture Compute's launch; no native deployment is claimed.
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_codex_account",
+    tokenServiceInstanceId: "tokens",
+    sourceType,
+  };
+  const preset = resolveModelCredentialPreset({
+    presetId: providerPat ? "codex-pat" : "builtin_codex",
+    configuration: { agents: { defaults: { model: "codex/gpt-5" } } },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+  });
+  assert.ok(preset);
+  const accountDestinations = [
+    "POST chatgpt.com:443/backend-api/codex/responses",
+    "GET chatgpt.com:443/backend-api/wham/accounts/check",
+    "GET chatgpt.com:443/backend-api/wham/config/bundle",
+  ];
+  const expectedDestinations = providerPat
+    ? [
+        "GET auth.openai.com:443/api/accounts/v1/user-auth-credential/whoami",
+        "GET chatgpt.com:443/backend-api/codex/models",
+        ...accountDestinations,
+        "GET chatgpt.com:443/backend-api/wham/settings/user",
+        "GET chatgpt.com:443/backend-api/wham/usage",
+      ]
+    : accountDestinations;
+  assert.deepEqual(
+    preset.destinations
+      .map(({ method, host, port, path }) => `${method} ${host}:${port}${path}`)
+      .toSorted(),
+    expectedDestinations.toSorted(),
+  );
+  const binary = OPEN_SHELL_CODEX_BINARIES[0];
+  const grants = [...new Set(preset.destinations.map(({ host }) => host))].map((host, index) => ({
+    id: `codex-model-${index}`,
+    binary,
+    host,
+    ports: [{ from: 443, to: 443 }],
+  }));
+  const requests = preset.destinations.map(({ method, path, host, port }) => ({
+    binary,
+    host,
+    ports: [{ from: port, to: port }],
+    requestPolicy: { type: "http", method, path },
+  }));
+  const binding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
+    consumer: { kind: "model", providerId: "codex" },
+    projection: { environment: "CODEX_ACCESS_TOKEN", presentation: "bearer" },
+  };
+  const captured = new Error("captured staged Codex launch");
+  let requirements;
+  const sandbox = {
+    ...nativeSandboxIdentity(),
+    supportsHarnessExecutionMode: { codex: { dedicated: { supported: true } } },
+    async provisionHarness() {
+      assert.fail("staged credentials require the idle Sandbox path");
+    },
+    async provisionStagedHarness(context) {
+      requirements = context.requirements;
+      throw captured;
+    },
+    async prepareStagedHarness() {},
+    async activateStagedHarness() {},
+    async observeNetworkPolicy() {
+      return { state: "applied", matches: true };
+    },
+    async harnessStatus() {
+      return { state: "starting" };
+    },
+  };
+  const proxy = {
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      return {};
+    },
+    async configureDeployment() {
+      assert.fail("Worker configures the credential binding");
+    },
+    async getDeploymentStatus() {
+      return { state: "ready" };
+    },
+    async removeDeployment() {},
+  };
+  const owner = {
+    ref: {
+      id: sandbox.id,
+      implementation: sandbox.implementation,
+      configurationId: "a".repeat(64),
+    },
+    require(capability) {
+      return capability === "sandbox" ? sandbox : proxy;
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver: sandbox,
+    credentialDeliveryRegistration: owner,
+    context: {
+      harnessAuth: auth,
+      async configureCredentialDeployment() {
+        assert.fail("launch captured before binding configuration");
+      },
+    },
+    revision: {
+      sandboxDriverId: sandbox.id,
+      plugins: undefined,
+      harness: {
+        id: "codex",
+        version: "1.0.0",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
+      harnessAuth: auth,
+      credentialSources: [
+        {
+          sourceId: auth.sourceId,
+          sourceType: auth.sourceType,
+          tokenServiceInstanceId: auth.tokenServiceInstanceId,
+        },
+      ],
+      sandboxPolicy: {
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        version: 1,
+        defaults: {},
+        additions: grants,
+      },
+      executionAdmission: { version: 8, mode: "standalone" },
+      credentialDeployment: {
+        proxyDriverId: proxy.id,
+        driver: owner.ref,
+        networkAccessPolicy: {
+          allowed: grants.map(({ binary, host, ports }) => ({ binary, host, ports })),
+        },
+        bindings: [binding],
+        injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: requests }],
+      },
+    },
+  });
+  assert.equal((await fixture.prepare()).ready, false);
+  fixture.markReady(fixture.gatewayName);
+  await assert.rejects(fixture.prepare(), (error) => error === captured);
+  assert.equal(requirements.loginMode, loginMode);
+  assert.equal(
+    requirements.environment.some(
+      ({ name, value }) => name === "OCE_CODEX_CREDENTIAL_SOURCE" && value === "1",
+    ),
+    providerPat,
+  );
+  const { codex } = inspectOpenShellCodexCommand(t, requirements.command, { compact: true });
+  const runtime = createCodexStartup(t, {
+    loginMode,
+    providerPat,
+    native: [
+      ...(providerPat ? [login()] : []),
+      probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed" },
+      ]),
+    ],
+  });
+  runtime.start(codex);
+  runtime.assertNativeScriptConsumed();
+  assert.equal(runtime.appServerStarts, 1);
+  for (const { args } of [...runtime.probeSpawns, ...runtime.appServerSpawns]) {
+    const overrides = args.filter((_, index) => args[index - 1] === "-c");
+    if (!providerPat) {
+      assert.ok(overrides.includes('model_provider="oce-openai-https"'));
+      assert.ok(overrides.includes("model_providers.oce-openai-https.requires_openai_auth=true"));
+      assert.ok(overrides.includes("model_providers.oce-openai-https.supports_websockets=false"));
+    }
+    assert.equal(
+      overrides.some((value) => value.includes(".base_url=")),
+      false,
+    );
+  }
+  const authFile = JSON.parse(
+    await readFile(join(runtime.appServerSpawns[0].env.CODEX_HOME, "auth.json"), "utf8"),
+  );
+  if (providerPat) {
+    assert.deepEqual(Object.keys(authFile), ["personal_access_token"]);
+    assert.match(authFile.personal_access_token, /^openshell:resolve:env:/);
+    assert.equal(runtime.appServerSpawns[0].env.CODEX_ACCESS_TOKEN, undefined);
+  } else {
+    assert.equal(authFile.auth_mode, "chatgptAuthTokens");
+    assert.equal(authFile.tokens.account_id, "account-fixture");
+    assert.match(authFile.tokens.access_token, /^openshell:resolve:env:/);
+  }
+}
+
+for (const { name, ...auth } of [
+  {
+    name: "OAuth",
+    sourceType: "oauth2-refresh-token",
+    loginMode: "chatgptAuthTokens",
+    providerPat: false,
+  },
+  { name: "PAT", sourceType: "static", loginMode: "codex_pat", providerPat: true },
+]) {
+  test(`Compute selects native ${name} startup for an admitted Codex model`, (t) =>
+    verifyNativeCodexStartup(t, auth));
+}
+
+test("staged Repository Compute freezes and revalidates only inspected dedicated Harness releases", async (t) => {
+  for (const [harnessId, mode] of [
+    ["codex", "legacy"],
+    ["codex", "service"],
+    ["openclaw", "service"],
+  ]) {
+    await t.test(`${harnessId} ${mode}`, async (t) => {
+      const base = buildSandboxInstallation().drivers.sandbox.configuration;
+      const selection = {
+        id: "openshell-sandbox",
+        backend: backendFor({
+          async getSandbox() {
+            return undefined;
+          },
+        }),
+        stagedRepositoryPolicy: true,
+      };
+      const sandbox =
+        mode === "legacy"
+          ? new OpenShellSandboxDriver(base, selection)
+          : new ManagedOpenShellSandbox(
+              {
+                ...base,
+                integrationMode: "service",
+                gateway: {},
+                kubernetes: {
+                  ...base.kubernetes,
+                  sandboxDataMount: {
+                    ...base.kubernetes.sandboxDataMount,
+                    mountPath: "/sandbox/oce/workspace",
+                  },
+                },
+              },
+              selection,
+            );
+      const captured = new Error("captured fresh staged Harness requirements");
+      let requirements;
+      t.mock.method(sandbox, "provisionStagedHarness", async (context) => {
+        requirements = context.requirements;
+        throw captured;
+      });
+      const proxy = {
+        id: sandbox.id,
+        implementation: sandbox.implementation,
+        capability: "credential_proxy_delivery",
+        async deployProxy() {
+          return {};
+        },
+        async configureDeployment() {},
+        async getDeploymentStatus() {
+          return { state: "ready" };
+        },
+        async removeDeployment() {},
+      };
+      const registration = {
+        ref: {
+          id: sandbox.id,
+          implementation: sandbox.implementation,
+          configurationId: "a".repeat(64),
+        },
+        require(capability) {
+          return capability === "sandbox" ? sandbox : proxy;
+        },
+      };
+      const auth = {
+        method: "credential_source",
+        sourceId: "cs_model",
+        sourceType: harnessId === "codex" ? "oauth2-refresh-token" : "static",
+        tokenServiceInstanceId: "tokens",
+      };
+      const model = {
+        bindingRef: "model",
+        sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: auth.sourceId },
+        consumer: { kind: "model", providerId: harnessId === "codex" ? "codex" : "openai" },
+        projection: {
+          environment: harnessId === "codex" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY",
+          presentation: "bearer",
+        },
+      };
+      const repository = {
+        bindingRef: "repository",
+        sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: "cs_git" },
+        consumer: { kind: "repository" },
+        projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
+      };
+      const modelRequest = {
+        binary: harnessId === "codex" ? OPEN_SHELL_CODEX_BINARIES[0] : "/usr/local/bin/node",
+        host: harnessId === "codex" ? "chatgpt.com" : "api.openai.com",
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: {
+          type: "http",
+          method: "POST",
+          path: harnessId === "codex" ? "/backend-api/codex/responses" : "/v1/responses",
+        },
+      };
+      const grants = [
+        { repository: "octo/project", access: "read" },
+        { repository: "octo/second", access: "read" },
+      ];
+      const repositoryRequests = grants.map(({ repository }) => ({
+        binary: "/usr/bin/git",
+        host: "github.com",
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: { type: "http", method: "GET", path: `/${repository}.git/info/refs` },
+      }));
+      const makeFixture = () =>
+        dedicatedFirstDeployFixture({
+          images: { ...fixtureRelease, requireImmutableDigest: true },
+          servicePrincipalCredentials: { mode: "disabled" },
+          network: {
+            providerHarness: {
+              namespace: "openshell-system",
+              podLabels: { app: "openshell-gateway" },
+              address: "10.43.0.50",
+              port: 8080,
+            },
+          },
+          sandboxDriver: sandbox,
+          credentialDeliveryRegistration: registration,
+          context: { harnessAuth: auth, async configureCredentialDeployment() {} },
+          revision: {
+            ...nativeSandboxRevision(sandbox.id),
+            harness: { id: harnessId, version: "1.0.0", mode: "dedicated", overrides: {} },
+            configuration: createHarnessConfiguration(harnessId, "gpt-5"),
+            harnessAuth: auth,
+            credentialSources: [
+              {
+                sourceId: auth.sourceId,
+                sourceType: auth.sourceType,
+                tokenServiceInstanceId: "tokens",
+              },
+              {
+                sourceId: repository.sourceRef.id,
+                sourceType: "github-app-installation",
+                tokenServiceInstanceId: "tokens",
+              },
+            ],
+            executionAdmission: { version: 8, mode: "standalone" },
+            repositoryCredentials: {
+              authorization: "credential_source",
+              driver: { id: "repository", implementation: "github" },
+              bindings: grants.map(({ repository }, index) => ({
+                repositoryRef: repository.split("/")[1],
+                profile: "github-repository",
+                backendId: "github-primary",
+                grant: {
+                  providerInstanceId: "github",
+                  repositoryId: String(42 + index),
+                  grantId: repository,
+                },
+              })),
+            },
+            sandboxPolicy: {
+              driverId: sandbox.id,
+              implementation: sandbox.implementation,
+              version: 1,
+              defaults: {},
+              additions: [],
+              repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+            },
+            credentialDeployment: {
+              proxyDriverId: proxy.id,
+              driver: registration.ref,
+              bindings: [model, repository],
+              networkAccessPolicy: { allowed: [modelRequest, ...repositoryRequests] },
+              injectionPolicies: [
+                { bindingRef: model.bindingRef, allowedRequests: [modelRequest] },
+                { bindingRef: repository.bindingRef, allowedRequests: repositoryRequests },
+              ],
+            },
+          },
+        });
+      // This controlled release selection exercises Compute; it does not qualify an actual image.
+      assert.throws(makeFixture, /qualified inspected Workspace route and image/);
+      if (harnessId === "codex") {
+        selectFixtureRelease(t);
+      } else {
+        t.mock.getter(inspectedWorkspaceBuild, "openClawRelease", () => ({
+          gatewayDigest: "sha256:" + "a".repeat(64),
+        }));
+      }
+      const fixture = makeFixture();
+      const browserEnabled = harnessId === "codex" && mode === "legacy";
+      if (browserEnabled) {
+        fixture.revision.configuration = {
+          ...fixture.revision.configuration,
+          gateway: {
+            ...fixture.revision.configuration.gateway,
+            controlUi: { enabled: true, allowedOrigins: ["https://agent.example.test"] },
+            auth: {
+              mode: "trusted-proxy",
+              trustedProxy: {
+                userHeader: "x-occ-identity",
+                requiredHeaders: ["x-openclaw-scopes"],
+                allowUsers: ["occ-workspace-files"],
+              },
+              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+            },
+          },
+        };
+      }
+      fixture.revision.compute.admission = fixture.driver.admitRevision(fixture.revision);
+      fixture.revision.compute.runtimeInputs = fixture.driver.snapshotRuntimeInputs(
+        fixture.revision,
+      );
+      const frozen = decodeReplacementRuntime(fixture.revision.compute.runtimeInputs);
+      assert.equal(frozen.scope, "repository-policy");
+      assert.equal(frozen.workspace.mode, mode);
+      assert.match(frozen.workspace.url, /\/node$/);
+      fixture.driver.validateRepositoryCredentials(fixture.revision.harness, sandbox.id);
+      // Revision activation must recheck the frozen route before it provisions the Sandbox.
+      const originalInputs = fixture.revision.compute.runtimeInputs;
+      fixture.revision.compute.runtimeInputs = encodeReplacementRuntime({
+        ...frozen,
+        workspace: { ...frozen.workspace, url: frozen.workspace.url + "/other" },
+      });
+      await assert.rejects(
+        fixture.prepare(),
+        /admitted repository runtime images or policy no longer match/,
+      );
+      fixture.revision.compute.runtimeInputs = originalInputs;
+      assert.equal((await fixture.prepare()).ready, false);
+      if (browserEnabled) {
+        const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
+        const [gateway] = pod.containers;
+        const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
+        const baseConfig = JSON.parse(
+          fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
+        );
+        assert.equal(gateway.volumeMounts.find(({ name }) => name === config.name)?.readOnly, true);
+        assert.equal(
+          gateway.volumeMounts.find(({ name }) => name === config.name)?.mountPath,
+          "/etc/openclaw",
+        );
+        const browser = await fixture.driver.getGatewayBrowserRequest(
+          fixture.revision,
+          { installationId: "installation-a", principalId: "principal-a", mode: "chat" },
+          AbortSignal.timeout(1000),
+        );
+        assert.match(browser.endpoint, /\/native-browser\//);
+        assert.equal(browser.headers["x-openclaw-scopes"], "operator.sessions.write");
+        assert.equal(
+          baseConfig.gateway.auth.trustedProxy.delegation.credentialFile,
+          "/var/run/openclaw/browser-delegation/browser-key",
+        );
+
+        // Run the generated launcher with the Pod config and revision identity. This
+        // fixture has no status server or mounted image assets.
+        const [, ...programPieces] = gateway.args;
+        const pluginVolume = pod.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
+        const pluginConfig = fixture.read("ConfigMap", pluginVolume.configMap.name);
+        const manifest = gateway.env.find(
+          ({ name }) => name === "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+        );
+        const launched = await runOpenClawRuntimeHelper(undefined, [], {
+          baseConfig,
+          files: [[manifest.value, pluginConfig.data["runtime.json"]]],
+          env: Object.fromEntries(
+            gateway.env
+              .filter(
+                ({ name, value }) =>
+                  name !== "OPENCLAW_RUNTIME_STATUS_PORT" &&
+                  name !== "OPENCLAW_WORKSPACE_DIR" &&
+                  value !== undefined,
+              )
+              .map(({ name, value }) => [name, value]),
+          ),
+          gatewayEntrypoint: inflateRawSync(Buffer.from(programPieces.join(""), "base64")).toString(
+            "utf8",
+          ),
+          setTimeout: () => ({ unref() {} }),
+        });
+        const spawned = launched.calls.find(({ args }) => args?.[1] === "gateway");
+        assert.equal(spawned?.options?.env?.OPENCLAW_CONFIG_READONLY, "1");
+      }
+      fixture.markReady(fixture.gatewayName);
+      // Capture the real Compute-to-Sandbox request before any native runtime is launched.
+      await assert.rejects(fixture.prepare(), (error) => error === captured);
+      assert.equal(
+        requirements.image,
+        harnessId === "openclaw" ? fixtureRelease.gateway : fixtureRelease.agent,
+      );
+      assert.equal(
+        requirements.environment.find(({ name }) => name === "OCE_INSPECTED_WORKSPACE_NODE_URL")
+          ?.value,
+        frozen.workspace.url,
+      );
+    });
+  }
+});
+
+test("staged Compute prepares mixed model and HTTP Plugin credential projections", async () => {
+  // This exercises Compute with an admitted policy and controlled Drivers. It does not prove
+  // that the Agent API can admit a Plugin Source or that OpenShell enforces the request.
+  const google = managedGoogleInstall;
+  const slot = Object.keys(google.credentials)[0];
+  const pluginSource = {
+    id: "cs_staged_google",
+    namespaceId: tenant.id,
+    name: "Google credential",
+    ownerCapability: "token_service",
+    tokenServiceInstanceId: "tokens",
+    type: "oauth2-refresh-token",
+    config: {},
+    secrets: {},
+    state: "ready",
+    createdAt: tenant.createdAt,
+  };
+  const pluginGrant = {
+    id: "google-egress",
+    binary: google.binaryPath,
+    host: "www.googleapis.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const pluginRequest = {
+    binary: pluginGrant.binary,
+    host: pluginGrant.host,
+    ports: pluginGrant.ports,
+    requestPolicy: { type: "http", method: "GET", path: "/calendar/v3/colors" },
+  };
+  const pluginBinding = {
+    bindingRef: "google-default",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: pluginSource.id },
+    consumer: { kind: "plugin", pluginId: google.id, requirement: slot, connection: "default" },
+    projection: {
+      environment: google.credentials[slot].delivery.env,
+      presentation: "bearer",
+    },
+  };
+  const stagedAuth = {
+    method: "credential_source",
+    sourceId: "cs_staged_model",
+    tokenServiceInstanceId: "tokens",
+    sourceType: "static",
+  };
+  const modelGrant = {
+    id: "model-egress",
+    binary: "/usr/local/bin/node",
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const modelBinding = {
+    bindingRef: "model",
+    sourceRef: { kind: "credential_source", namespaceId: tenant.id, id: stagedAuth.sourceId },
+    consumer: { kind: "model", providerId: "openai" },
+    projection: { environment: "OPENAI_API_KEY", presentation: "bearer" },
+  };
+  let target;
+  let prepared;
+  const removals = [];
+  const bindings = [pluginBinding, modelBinding];
+  const projections = bindings.map((binding) => ({
+    bindingRef: binding.bindingRef,
+    environment: binding.projection.environment,
+    placeholder: { kind: "proxy", value: `controlled-${binding.bindingRef}` },
+  }));
+  let activeProjections = projections;
+  const sandbox = {
+    ...nativeSandboxIdentity(),
+    async provisionHarness() {
+      assert.fail("staged deployment must use the idle Sandbox path");
+    },
+    async provisionStagedHarness({ revision }) {
+      target = {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        sandboxId: "mixed-sandbox",
+      };
+      return target;
+    },
+    async workspaceNodePeerLabels({ revision }) {
+      return target ? supervisorPeerLabels(revision.id) : undefined;
+    },
+    async observeNetworkPolicy() {
+      return { state: "applied", matches: true };
+    },
+    async prepareStagedHarness(_context, received) {
+      prepared = received;
+    },
+    async activateStagedHarness() {},
+    async harnessStatus() {
+      return { state: "starting" };
+    },
+  };
+  const proxy = {
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    capability: "credential_proxy_delivery",
+    async deployProxy() {
+      return {};
+    },
+    async configureDeployment() {
+      assert.fail("Worker owns credential configuration");
+    },
+    async getDeploymentStatus() {
+      return { state: "ready" };
+    },
+    async removeDeployment(_context, removal) {
+      removals.push(removal);
+    },
+  };
+  const registration = {
+    ref: {
+      id: sandbox.id,
+      implementation: sandbox.implementation,
+      configurationId: "a".repeat(64),
+    },
+    require(capability) {
+      return capability === "sandbox" ? sandbox : proxy;
+    },
+  };
+  const harnessAuth = stagedAuth;
+  const modelSource = {
+    ...pluginSource,
+    id: stagedAuth.sourceId,
+    type: stagedAuth.sourceType,
+    config: { provider_preset: "openai" },
+  };
+  const context = {
+    harnessAuth,
+    credentialSources: [pluginSource, modelSource],
+    async configureCredentialDeployment(configuration) {
+      assert.deepEqual(configuration.targetRef, target);
+      return { credentialProjections: activeProjections };
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver: sandbox,
+    credentialDeliveryRegistration: registration,
+    context,
+    revision: {
+      ...nativeSandboxRevision(sandbox.id),
+      agentId: "agent-mixed",
+      harnessAuth,
+      credentialSources: [
+        {
+          sourceId: pluginSource.id,
+          sourceType: pluginSource.type,
+          tokenServiceInstanceId: "tokens",
+        },
+        {
+          sourceId: stagedAuth.sourceId,
+          sourceType: "static",
+          tokenServiceInstanceId: "tokens",
+        },
+      ],
+      plugins: {
+        driver: { id: "openclaw-plugin", implementation: "occ/openclaw-plugin" },
+        plugins: {
+          [google.id]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: google.releaseSha256,
+              credentials: { [slot]: pluginSource.id },
+            },
+          },
+        },
+      },
+      sandboxPolicy: {
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        version: 1,
+        defaults: {},
+        additions: [modelGrant],
+      },
+      executionAdmission: { version: 8, mode: "standalone" },
+      credentialDeployment: {
+        proxyDriverId: proxy.id,
+        driver: registration.ref,
+        networkAccessPolicy: {
+          allowed: [
+            { binary: modelGrant.binary, host: modelGrant.host, ports: modelGrant.ports },
+            pluginRequest,
+          ],
+        },
+        bindings,
+        injectionPolicies: [
+          { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
+          {
+            bindingRef: modelBinding.bindingRef,
+            allowedRequests: [
+              {
+                binary: modelGrant.binary,
+                host: modelGrant.host,
+                ports: modelGrant.ports,
+                requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+              },
+            ],
+          },
+        ],
+      },
+    },
+  });
+  // Plugin injection does not supply the model Secret used by separate API-key auth.
+  assert.throws(
+    () =>
+      fixture.driver.validateExecutionAdmission(
+        {
+          ...fixture.revision,
+          harnessAuth: {
+            method: "api_key",
+            source: { kind: "secret", namespaceId: tenant.id, id: "sec_model" },
+            secretDriverId: "kubernetes",
+          },
+          credentialDeployment: {
+            ...fixture.revision.credentialDeployment,
+            bindings: [pluginBinding],
+            injectionPolicies: [
+              { bindingRef: pluginBinding.bindingRef, allowedRequests: [pluginRequest] },
+            ],
+          },
+        },
+        registration,
+      ),
+    /OpenShell cannot deliver the selected Harness authentication with staged credentials/,
+  );
+  await fixture.prepare();
+  fixture.markReady(fixture.gatewayName);
+  const result = await fixture.prepare();
+  assert.equal(result.preparedForCredentialActivation, true);
+  assert.deepEqual(prepared, projections);
+
+  // A Source withdrawal and a replay both cover only that Source's admitted bindings.
+  const { driver, revision } = fixture;
+  const signal = AbortSignal.timeout(5_000);
+  await assert.rejects(
+    driver.withdrawCredentialSource(revision, { ...pluginSource, namespaceId: "other" }, signal),
+    { code: "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT" },
+  );
+  const withdrawn = { sourceId: pluginSource.id, state: "revoked" };
+  assert.deepEqual(
+    await driver.withdrawCredentialSource(revision, pluginSource, signal),
+    withdrawn,
+  );
+  assert.deepEqual(
+    await driver.withdrawCredentialSource(revision, pluginSource, signal, { recheck: true }),
+    withdrawn,
+  );
+  const removal = {
+    targetRef: target,
+    bindingRefs: [pluginBinding.bindingRef],
+  };
+  assert.deepEqual(removals, [removal, removal]);
+
+  // The trusted Worker omits the withdrawn optional binding on the next reconciliation.
+  activeProjections = projections.filter(
+    ({ bindingRef }) => bindingRef !== pluginBinding.bindingRef,
+  );
+  const continued = await fixture.prepare();
+  assert.equal(continued.preparedForCredentialActivation, true);
+  assert.deepEqual(prepared, activeProjections);
+});
 
 test("staged Compute prepares an idle target, activates the Harness, and publishes only after readiness", async () => {
   // The real Compute path uses controlled Sandbox and Proxy Drivers; these observations do not
@@ -796,7 +1614,11 @@ test("staged Compute prepares an idle target, activates the Harness, and publish
     async removeDeployment(_context, removal) {
       events.push("remove-bound");
       removedTarget = removal.targetRef;
-      assert.deepEqual(removal.bindingRefs, [binding.bindingRef]);
+      assert.equal(
+        removal.bindingRefs,
+        undefined,
+        "Stop removes the whole deployment after Sandbox cleanup",
+      );
       if (boundRemovalFailure !== undefined) {
         throw boundRemovalFailure;
       }
@@ -1350,253 +2172,13 @@ test(
 );
 
 test("dedicated OpenClaw delivers managed releases and selected MCP tools without a Sandbox provider file", async () => {
-  await verifyManagedRelease(managedGoogleInstall);
-  for (const install of managedMcpInstalls) {
-    await verifyManagedRelease({
-      ...install,
-      toolNames: ["slack_search_public", "slack_send_message"],
-    });
-  }
+  await checkManagedReleaseDelivery(dedicatedFirstDeployFixture);
 });
 
 test(
   "the dedicated Gateway exposes reviewed MCP tools subject to its admitted allowlist",
   enforceDedicatedGatewayToolAllowlist,
 );
-
-async function verifyManagedRelease({
-  id,
-  kind,
-  packageName,
-  releaseSha256,
-  credentials,
-  toolNames,
-}) {
-  const slotId = Object.keys(credentials)[0];
-  const selectionCases = [{ enabled: true }, { enabled: false }];
-  if (toolNames !== undefined) {
-    for (const selectedNames of [toolNames, [], undefined]) {
-      selectionCases.push({
-        enabled: true,
-        driverPolicy: {
-          releaseSha256,
-          credentials: { [slotId]: "cs_test_account" },
-          ...(selectedNames === undefined ? {} : { toolNames: selectedNames }),
-        },
-      });
-    }
-    selectionCases.push({
-      enabled: true,
-      driverPolicy: {
-        releaseSha256,
-        credentials: { [slotId]: "cs_test_account" },
-        toolNames,
-      },
-      tools: { [toolNames[1]]: { approval: "all_actions" } },
-    });
-  }
-  for (const selection of selectionCases) {
-    const { enabled, driverPolicy } = selection;
-    const selections = {
-      ...(kind === "mcp" && { [managedGoogleInstall.id]: { enabled: true } }),
-      [id]: selection,
-    };
-    let worker;
-    const sandboxDriver = {
-      ...nativeSandboxIdentity(),
-      async workspaceNodePeerLabels() {
-        return undefined;
-      },
-      async provisionHarness({ requirements, namespace, revision }) {
-        worker = requirements;
-        return nativeHarnessResource({ namespace, revision });
-      },
-    };
-    const fixture = dedicatedFirstDeployFixture({
-      sandboxDriver,
-      credentialGatewayDriver: {
-        id: "openshell-credentials",
-        implementation: "openshell",
-        capability: "credential_gateway",
-      },
-      revision: {
-        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        sandboxDriverId: sandboxDriver.id,
-        configuration: createHarnessConfiguration("openclaw", "gpt-5"),
-        plugins: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          plugins: selections,
-        },
-      },
-    });
-    await fixture.prepare();
-    fixture.markReady(fixture.gatewayName);
-    await fixture.prepare();
-    assert.deepEqual(worker.files, []);
-    const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
-    const gatewayEnv = gateway.containers[0].env;
-    const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
-    const google = {
-      kind: managedGoogleInstall.kind,
-      id: managedGoogleInstall.id,
-      packageName: managedGoogleInstall.packageName,
-      slotId: Object.keys(managedGoogleInstall.credentials)[0],
-      releaseSha256: managedGoogleInstall.releaseSha256,
-    };
-    const expected = [
-      ...(kind === "mcp" ? [google] : []),
-      {
-        id,
-        kind,
-        packageName,
-        slotId,
-        ...(enabled && { releaseSha256 }),
-        ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
-        ...(selection.tools && { approvalToolNames: [toolNames[1]] }),
-      },
-    ];
-    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
-    assert.deepEqual(
-      JSON.parse(workerSettings ?? "[]"),
-      expected.filter((pkg) => pkg.releaseSha256).map(({ id, approvalToolNames, ...pkg }) => pkg),
-    );
-    assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
-    if (selection.tools) {
-      // Execute the actual Gateway launcher with the revision inputs Compute just rendered.
-      // The VM supplies image files; a real-runtime test qualifies native registration.
-      const imageFiles = [];
-      for (const pkg of expected) {
-        const root = "/usr/local/lib/oce/plugin-catalog/" + pkg.packageName;
-        const release = await readFile(
-          new URL(
-            `../../apps/controller/plugins/${pkg.packageName}/ai.openclaw.oce/release.json`,
-            import.meta.url,
-          ),
-          "utf8",
-        );
-        imageFiles.push([root + "/ai.openclaw.oce/release.json", release]);
-        const reviewed = JSON.parse(release);
-        if (reviewed.skill) {
-          imageFiles.push([
-            root + "/skills/" + reviewed.skill + "/SKILL.md",
-            await readFile(
-              new URL(
-                `../../apps/controller/plugins/${pkg.packageName}/skills/${reviewed.skill}/SKILL.md`,
-                import.meta.url,
-              ),
-              "utf8",
-            ),
-          ]);
-        }
-      }
-      const policyRoot = "/usr/local/lib/oce/platform-plugins/oce-managed-mcp-policy";
-      for (const name of ["openclaw.plugin.json", "package.json", "index.mjs"]) {
-        imageFiles.push([
-          policyRoot + "/" + name,
-          await readFile(
-            new URL(`../../deploy/runtime/managed-mcp-policy/${name}`, import.meta.url),
-            "utf8",
-          ),
-        ]);
-      }
-      const env = {
-        OPENCLAW_MANAGED_PLUGIN_JSON: JSON.stringify(expected),
-        OPENCLAW_PLUGIN_RUNTIME_JSON: JSON.stringify({
-          manifest: pluginRuntimeSpecForRevision(fixture.revision),
-        }),
-      };
-      const launched = await runOpenClawRuntimeHelper(undefined, [], {
-        workspaceNodeId: "native-worker",
-        baseConfig: {
-          gateway: { port: 8080 },
-          plugins: { allow: [] },
-          approvals: { plugin: { slack: { plugins: { dormant: { approvers: [] } } } } },
-        },
-        files: imageFiles,
-        env,
-      });
-      const configured = JSON.parse(launched.files.get("/home/node/.openclaw/openclaw.json"));
-      assert.equal(configured.plugins.entries["oce-managed-mcp-policy"].enabled, true);
-      assert.deepEqual(configured.plugins.entries["oce-managed-mcp-policy"].config, {
-        servers: { oce_mcp_slack: { [toolNames[0]]: "allow", [toolNames[1]]: "ask" } },
-        nodeId: "native-worker",
-      });
-      assert.ok(configured.plugins.load.paths.includes(policyRoot));
-      assert.ok(configured.plugins.allow.includes("oce-managed-mcp-policy"));
-      assert.ok(configured.plugins.allow.includes("file-transfer"));
-      assert.ok(configured.gateway.nodes.commands.allow.includes("mcp.tools.call.v1"));
-      // First deployment starts before the node is paired. Pairing hot-applies only
-      // the policy's exact node identity alongside the existing file-transfer binding.
-      const intervals = [];
-      const staged = await runOpenClawRuntimeHelper(undefined, [], {
-        workspaceNodeBindingPath: true,
-        files: imageFiles,
-        env,
-        intervals,
-        setTimeout: () => ({ unref() {} }),
-        gatewayCall: (method) =>
-          method === "plugins.list"
-            ? { generation: 1, plugins: [{ id: "file-transfer", runtime: { state: "disabled" } }] }
-            : undefined,
-      });
-      assert.equal(
-        JSON.parse(staged.files.get("/home/node/.openclaw/openclaw.json")).plugins.entries[
-          "oce-managed-mcp-policy"
-        ].config.nodeId,
-        undefined,
-      );
-      staged.files.set(WORKSPACE_NODE_BINDING_PATH, workspaceNodeBinding("paired-node"));
-      await intervals.find(({ ms }) => ms === 1000).callback();
-      assert.equal(
-        JSON.parse(staged.files.get("/home/node/.openclaw/openclaw.json")).plugins.entries[
-          "oce-managed-mcp-policy"
-        ].config.nodeId,
-        "paired-node",
-      );
-      const missingPolicy = imageFiles.filter(([path]) => path !== policyRoot + "/index.mjs");
-      const rejectedCalls = [];
-      await assert.rejects(
-        runOpenClawRuntimeHelper(undefined, [], {
-          workspaceNodeId: "native-worker",
-          files: missingPolicy,
-          env,
-          calls: rejectedCalls,
-        }),
-        /managed MCP approval policy is missing/,
-      );
-      assert.equal(
-        rejectedCalls.some(({ args }) => args?.[1] === "gateway"),
-        false,
-      );
-      await assert.rejects(
-        runOpenClawRuntimeHelper(undefined, [], {
-          workspaceNodeId: "native-worker",
-          baseConfig: {
-            gateway: { port: 8080 },
-            channels: { slack: { enabled: true } },
-            approvals: { plugin: { slack: { plugins: { another: { approvers: [] } } } } },
-          },
-          files: imageFiles,
-          env,
-        }),
-        /native Slack per-plugin approver overrides/,
-      );
-    }
-    // An Agent editor cannot replace deployment inputs with Secret bindings.
-    for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
-      assert.throws(
-        () =>
-          normalizeSecretBindings({
-            [name]: { source: { kind: "secret", namespaceId: "ns", id: "secret" } },
-          }),
-        { destinationRule: "reserved_prefix" },
-      );
-    }
-    const volume = gateway.volumes.find(({ name }) => name === "openclaw-plugin-runtime");
-    const manifest = fixture.read("ConfigMap", volume.configMap.name).data["runtime.json"];
-    assert.deepEqual(JSON.parse(manifest).selections, selections);
-  }
-}
 
 test("provider-owned Harness preparation waits to renew expired setup until its Gateway is ready", async (t) => {
   const provisions = [];
@@ -1701,9 +2283,8 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const withdrawals = [];
   let withdrawalFailure;
   const nativeConfiguration = createHarnessConfiguration("openclaw", "team/model");
-  nativeConfiguration.models.providers.openai.baseUrl = "https://models.example.test/inference/v1";
-  nativeConfiguration.models.providers.openai.models[0].baseUrl =
-    "https://models.example.test:443/inference/v1/";
+  nativeConfiguration.models.providers.openai.baseUrl = "https://api.openai.com/v1";
+  nativeConfiguration.models.providers.openai.models[0].baseUrl = "https://api.openai.com:443/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-responses";
   const [selectedEntry] = nativeConfiguration.models.providers.openai.models;
   // The primary row names its own API; the worker and the startup probe use it, not the
@@ -1730,7 +2311,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     ...selectedEntry,
     id: "team/fallback",
     name: "team/fallback",
-    baseUrl: "https://models.example.test/inference/v1",
+    baseUrl: "https://api.openai.com/v1",
   };
   delete fallbackEntry.api;
   nativeConfiguration.models.providers.openai.models.unshift(fallbackEntry);
@@ -1738,60 +2319,12 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     id: "unselected",
     baseUrl: "https://other.example.test/v1",
   });
-  const sourceType = {
-    type: "openai",
-    config: [],
-    secrets: [{ name: "api_key", required: true }],
-    rotation: "none",
-    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-  };
-  const snapshot = {
-    method: "credential_source",
-    sourceId: "cs_native_custom",
-    credentialGatewayId: "native-credentials",
-    sourceType: "openai",
-    loginMode: "api_key",
-  };
-  const source = {
-    id: snapshot.sourceId,
-    name: "Native model",
-    createdAt: tenant.createdAt,
-    namespaceId: tenant.id,
-    ownerCapability: "credential_gateway",
-    driverId: snapshot.credentialGatewayId,
-    type: "openai",
-    config: { authorized_base_url: "https://models.example.test/inference/v1" },
-    secrets: {},
-    state: "ready",
-  };
   const fixture = dedicatedFirstDeployFixture({
-    modelEndpoint: "https://models.example.test/inference/v1",
     sandboxDriver,
-    credentialGatewayDriver: {
-      id: snapshot.credentialGatewayId,
-      capability: "credential_gateway",
-      async listSourceTypes() {
-        return [sourceType];
-      },
-      async attachForRevision() {
-        return [{ sourceId: source.id, ref: "native-provider" }];
-      },
-      async attachmentStatus() {
-        return [{ sourceId: source.id, state: "ready" }];
-      },
-    },
-    context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
       sandboxDriverId: sandboxDriver.id,
-      harnessAuth: snapshot,
-      credentialSources: [
-        {
-          sourceId: source.id,
-          credentialGatewayId: snapshot.credentialGatewayId,
-          sourceType: source.type,
-        },
-      ],
+      harnessAuth: apiKeyAuth,
       configuration: admitLoggingConfiguration(nativeConfiguration, "info"),
       plugins: undefined,
     },
@@ -1799,7 +2332,6 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const {
     driver,
     revision,
-    context,
     state,
     namespace,
     gatewayName,
@@ -1854,10 +2386,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
     ).value,
   );
-  assert.equal(
-    nativeConfig.models.providers.openai.baseUrl,
-    "https://models.example.test/inference/v1",
-  );
+  assert.equal(nativeConfig.models.providers.openai.baseUrl, "https://api.openai.com/v1");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
@@ -1867,8 +2396,8 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id, api, baseUrl }) => [id, api, baseUrl]),
     [
-      ["team/model", "openai-responses", "https://models.example.test/inference/v1"],
-      ["team/fallback", "openai-responses", "https://models.example.test/inference/v1"],
+      ["team/model", "openai-responses", "https://api.openai.com/v1"],
+      ["team/fallback", "openai-responses", "https://api.openai.com/v1"],
     ],
   );
   // The startup probe gets only the primary model's entry (OpenClaw merges entries whose ids
@@ -1884,7 +2413,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   );
   const { baseUrl: workerEndpoint, ...workerPrimary } =
     nativeConfig.models.providers.openai.models[0];
-  assert.equal(workerEndpoint, "https://models.example.test/inference/v1");
+  assert.equal(workerEndpoint, "https://api.openai.com/v1");
   assert.deepEqual(
     [workerPrimary.contextWindow, workerPrimary.maxTokens],
     [128000, 8192],
@@ -1961,10 +2490,13 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
   assert.deepEqual(deleted, []);
-  await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
+  await assert.rejects(
+    driver.activateRevision(revision, authContext(revision, namespace)),
+    /gateway is not ready/,
+  );
   markReady(gatewayName);
   assert.equal((await prepare()).ready, true);
-  await driver.activateRevision(revision, context);
+  await driver.activateRevision(revision, authContext(revision, namespace));
 
   assert.deepEqual(deleted, [stale.metadata.name]);
   assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
@@ -2195,28 +2727,13 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   let failure = new SandboxWorkspaceSetupRefusedError(
     "OpenShell workspace initialization refused.",
   );
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw failure;
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a refused setup is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(provisions, () => failure);
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const before = Date.now();
   const refused = await prepare();
@@ -2249,35 +2766,26 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
 // the Driver again, so a freed Pod resumes the deployment.
 test("Kubernetes Sandbox provisioning keeps a revision pending when preparation Pods hit a full quota", async () => {
   const provisions = [];
-  const sandboxDriver = {
-    ...nativeSandboxIdentity(),
-    async workspaceNodePeerLabels() {
-      return undefined;
-    },
-    async provisionHarness(context) {
-      provisions.push(context);
-      throw new SandboxPodQuotaExceededError("The Namespace Pod quota is full.");
-    },
-    async harnessEndpoint() {
-      assert.fail("native OpenClaw has no inbound Harness endpoint");
-    },
-    async harnessStatus() {
-      assert.fail("a pending quota is reported without a status read");
-    },
-    async withdrawHarnessExposure() {},
-  };
+  const sandboxDriver = refusingNativeSandbox(
+    provisions,
+    () => new SandboxPodQuotaExceededError("The Namespace Pod quota is full."),
+  );
   const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
     sandboxDriver,
-    revision: nativeSandboxRevision(sandboxDriver.id, "quota"),
+    revision: nativeSandboxRevision(sandboxDriver.id, "info"),
   });
   assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
   markReady(gatewayName);
   const pending = await prepare();
   assert.equal(provisions.length, 1);
   assert.equal(pending.ready, false);
   assert.equal(pending.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
   assert.equal(pending.runtimeFailure, undefined);
-  assert.equal((await prepare()).pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  const retried = await prepare();
+  assert.equal(retried.ready, false);
+  assert.equal(retried.pendingReason, "NAMESPACE_POD_QUOTA_EXCEEDED");
+  assert.equal(retried.runtimeFailure, undefined);
   assert.equal(provisions.length, 2);
 });
 
@@ -3843,131 +4351,6 @@ test(
 );
 
 test(
-  "account-owned Kubernetes Secrets reject invalid or foreign credentials before cluster access",
-  checkAccountSecretInput,
-);
-
-test("dedicated Codex projects the account-owned token through the common PAT login", () => {
-  const driver = createKubernetesComputeDriver(
-    options({
-      runtime: {
-        transportSecretPrefix: "transport",
-        gatewayStorageClassName: "local-path",
-        channelEgress: channelEgressOptions,
-      },
-    }),
-  );
-  const agentId = "agent-service-account";
-  const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
-  const secretName = `service-account-${createHash("sha256")
-    .update(serviceAccountId)
-    .digest("hex")
-    .slice(0, 32)}`;
-  const account = {
-    method: "codex_pat",
-    source: { kind: "service_account", namespaceId: tenant.id, id: serviceAccountId },
-    backendBinding: {
-      backendId: "provider-chatgpt",
-      driverId: "chatgpt",
-      workspaceId: "ws_1",
-      credentialIssued: true,
-    },
-    credential: { kind: "access_token", secretRef: { name: secretName, key: "token" } },
-  };
-  const namespace = kubernetesNamespaceName(tenant.id);
-  const ownership = { namespaceId: tenant.id, agentId, revisionId: "revision-render" };
-  const workload = driver.deployment({
-    name: "codex-agent",
-    ownership,
-    namespace: { name: namespace, plane: "execution" },
-    images: { runtime: "agent:local", workspaceSetup: driver.options.images.gateway },
-    serviceAccountName: "codex-agent",
-    role: "agent",
-    environment: {},
-    loggingLevel: "info",
-    harnessAuth: preparedAuth(driver, namespace, false, account),
-  });
-  const agentEnvironment = Object.fromEntries(
-    workload.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
-  );
-
-  // Account tokens use the same native PAT login; workspace ownership stays in the control plane.
-  assert.deepEqual(agentEnvironment.CODEX_ACCESS_TOKEN.valueFrom.secretKeyRef, {
-    name: secretName,
-    key: "token",
-  });
-  assert.equal(agentEnvironment.CODEX_CHATGPT_WORKSPACE_ID, undefined);
-  assert.equal(agentEnvironment.CODEX_LOGIN_MODE.value, "codex_pat");
-  assert.equal(agentEnvironment.OPENAI_API_KEY, undefined);
-  assert.equal(agentEnvironment.SLACK_APP_TOKEN, undefined);
-  assert.equal(agentEnvironment.SLACK_BOT_TOKEN, undefined);
-  assert.equal(agentEnvironment.MSTEAMS_APP_PASSWORD, undefined);
-
-  const gateway = driver.deployment({
-    name: "codex-gateway",
-    ownership,
-    namespace: { name: namespace, plane: "execution" },
-    images: { runtime: "gateway:local", workspaceSetup: driver.options.images.gateway },
-    serviceAccountName: "codex-gateway",
-    role: "gateway",
-    environment: {},
-    loggingLevel: "info",
-    configuration: driver.gatewayConfiguration(
-      routedRevision(driver, { agentId: ownership.agentId }),
-      undefined,
-      {
-        name: namespace,
-        plane: "execution",
-      },
-    ),
-  });
-  const gatewayEnvironment = new Set(
-    gateway.spec.template.spec.containers[0].env.map(({ name }) => name),
-  );
-  assert.equal(gatewayEnvironment.has("CODEX_ACCESS_TOKEN"), false);
-  assert.equal(gatewayEnvironment.has("CODEX_CHATGPT_WORKSPACE_ID"), false);
-  assert.equal(gatewayEnvironment.has("OPENAI_API_KEY"), false);
-  assert.equal(gatewayEnvironment.has("SLACK_APP_TOKEN"), false);
-  assert.equal(gatewayEnvironment.has("SLACK_BOT_TOKEN"), false);
-  assert.equal(gatewayEnvironment.has("MSTEAMS_APP_PASSWORD"), false);
-});
-
-test(
-  "a ServiceAccount credential Secret create that applied but answered an error retains its recovery receipt",
-  checkUnconfirmedAccountSecretCreate,
-);
-
-test(
-  "a failed issuance's Secret rollback after the lock is released keeps a later issuance's Secret",
-  checkIssuanceRollbackKeepsLaterSecret,
-);
-
-test(
-  "an issuance that never committed leaves nothing a re-issue or the account delete keeps",
-  checkLeftoverAccountSecretReclaim,
-);
-
-test(
-  "a ServiceAccount credential rollback deletes only the Secret holding its own token",
-  checkAccountSecretRollback,
-);
-
-test(
-  "managed PAT preparation projects the account-owned token and rejects a changed owner",
-  checkManagedPatPreparation,
-);
-
-test(
-  "direct service account token is confined to the model container and exact admitted Secret",
-  checkDirectPatPlacement,
-);
-
-test(
-  "credential withdrawal revokes through the revision's exact Sandbox",
-  checkExactSandboxCredentialWithdrawal,
-);
-
-test(
   "retired OAuth Harness authentication fails closed before workload preparation",
   rejectRetiredOAuthHarnessAuthentication,
 );
@@ -4005,11 +4388,6 @@ test(
 test(
   "preparation still refuses a gateway password Compute does not generate",
   rejectUnmanagedGatewayPasswordDuringPreparation,
-);
-
-test(
-  "credential-source authentication renders no model Secret and requires the paired gateway",
-  checkPairedCredentialSourceAuthentication,
 );
 
 test("non-model credential sources resolved at dispatch must match the revision's snapshots", () => {
@@ -4688,7 +5066,6 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { nodeEnrollment: {}, channelDrivers: slackChannelDrivers },
   );
-  const namespace = kubernetesNamespaceName(tenant.id);
   const agentId = "agent-a";
   const revision = {
     id: "revision-a-1",
@@ -4707,45 +5084,21 @@ test("native channel settings require readable Secret bindings", async () => {
   };
   revision.configuration = createHarnessConfiguration("codex", "gpt-5");
   admitRevisionHarness(driver, revision);
-  const secretEnvironment = [
-    {
-      name: "SLACK_APP_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000001",
-      backendRef: { namespaceName: namespace, name: "occ-slack-app", key: "value", uid: "app-uid" },
-    },
-    {
-      name: "SLACK_BOT_TOKEN",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000002",
-      backendRef: { namespaceName: namespace, name: "occ-slack-bot", key: "value", uid: "bot-uid" },
-    },
-    {
-      name: "MSTEAMS_APP_PASSWORD",
-      namespaceId: tenant.id,
-      agentId,
-      secretId: "sec_00000000-0000-4000-8000-000000000003",
-      backendRef: {
-        namespaceName: namespace,
-        name: "occ-teams-password",
-        key: "value",
-        uid: "teams-uid",
-      },
-    },
-  ];
   const secretBindings = Object.freeze({
     SLACK_APP_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[0].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000001",
+      },
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[1].secretId },
-      delivery: { type: "env" },
-    },
-    MSTEAMS_APP_PASSWORD: {
-      source: { kind: "secret", namespaceId: tenant.id, id: secretEnvironment[2].secretId },
+      source: {
+        kind: "secret",
+        namespaceId: tenant.id,
+        id: "sec_00000000-0000-4000-8000-000000000002",
+      },
       delivery: { type: "env" },
     },
   });
@@ -4768,21 +5121,25 @@ test("native channel settings require readable Secret bindings", async () => {
     }),
     { message: unsupportedChannelRefusal("channels.discord") },
   );
+
+  const slackToken = (botToken) => ({
+    agents: { defaults: { model: "codex/gpt-5" } },
+    channels: {
+      slack: {
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken,
+      },
+    },
+  });
+  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+
   assert.throws(
     () =>
       driver.validateHarnessAuth(
         revision.harness,
         revision.harnessAuth,
-        {
-          agents: { defaults: { model: "codex/gpt-5" } },
-          channels: {
-            slack: {
-              appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-            },
-          },
-        },
-        { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN },
+        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
+        { ...appBinding },
       ),
     // A row stored before Configuration save checked it: admission names the setting and the
     // missing binding, as save does.
@@ -4795,15 +5152,7 @@ test("native channel settings require readable Secret bindings", async () => {
   driver.validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
-    {
-      agents: { defaults: { model: "codex/gpt-5" } },
-      channels: {
-        slack: {
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-        },
-      },
-    },
+    slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
     null,
   );
   // A binding name is an own key (an inherited one such as "constructor" binds nothing), and an
@@ -4843,16 +5192,6 @@ test("native channel settings require readable Secret bindings", async () => {
   // Admission reads a string as the runtime substitutes it (finding 2475): a reference anywhere
   // in the text, or with a `:-fallback`, still needs a binding, since the fallback would replace
   // the unset name. The `$${NAME}` escape is literal text.
-  const slackToken = (botToken) => ({
-    agents: { defaults: { model: "codex/gpt-5" } },
-    channels: {
-      slack: {
-        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-        botToken,
-      },
-    },
-  });
-  const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
   // In a secret-input field such as botToken, a whole `$NAME` is an environment SecretRef too
   // (finding 2476).
   for (const botToken of [
@@ -5863,7 +6202,7 @@ test(
   checkKubernetesRetryOwnerCancellation,
 );
 
-test("revision lifecycle rejects invalid ownership and unsupported workloads before cluster access", async () => {
+test("revision lifecycle rejects invalid ownership and unsupported workloads before cluster access", async (t) => {
   const driver = createKubernetesComputeDriver(options());
   const revision = {
     id: "revision-a-1",
@@ -5916,7 +6255,23 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
   }
 
   const anotherCompute = { id: "another-driver", implementation: "another-implementation" };
+  // Vary each pin independently: two mismatches would hide a missing ownership check.
+  const mismatchedPins = [
+    { ...revision.compute, id: anotherCompute.id },
+    { ...revision.compute, implementation: anotherCompute.implementation },
+  ].map((compute) => ({ ...revision, compute }));
+  const clients = t.mock.method(driver, "clients", () => {
+    assert.fail("Invalid revision reached the Kubernetes client");
+  });
+  for (const invalid of mismatchedPins) {
+    await assert.rejects(driver.stopRevision(invalid), /Refusing to stop .*another Compute Driver/);
+    await assert.rejects(
+      driver.retireRevision(invalid),
+      /Refusing to retire .*another Compute Driver/,
+    );
+  }
   for (const invalid of [
+    ...mismatchedPins,
     { ...revision, compute: { ...revision.compute, ...anotherCompute } },
     { ...revision, servicePrincipalId: undefined },
     { ...revision, servicePrincipalId: " " },
@@ -5928,6 +6283,9 @@ test("revision lifecycle rejects invalid ownership and unsupported workloads bef
       ready: false,
     });
   }
+
+  assert.equal(clients.mock.callCount(), 0);
+  clients.mock.restore();
 
   for (const invalid of [
     { ...revision, configurationId: " " },
@@ -6863,11 +7221,6 @@ test(
 test(
   "retirement preserves active storage and node routing and deletes exact owned UIDs",
   checkGatewayRetirement,
-);
-
-test(
-  "external ChatGPT source preparation delivers the exact placeholder and account only to its Harness",
-  checkExternalChatgptCredentialDelivery,
 );
 
 test(

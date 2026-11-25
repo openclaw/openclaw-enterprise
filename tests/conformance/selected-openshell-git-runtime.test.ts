@@ -1,3 +1,4 @@
+import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -12,7 +13,15 @@ import {
   HARNESS_EGRESS_ENROLLMENT_PATH,
   HARNESS_NATIVE_GIT_ENROLLMENT_HELPER,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import {
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  OpenShellGateway,
+  openShellProviderName,
+} from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -28,11 +37,18 @@ import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  compileOpenShellBoundGitRule,
+  openShellGitNetworkDefaults,
+} from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import {
   admitRepositoryNetworkPolicy,
   type AgentRevision,
   type EgressInstallation,
+  type Namespace,
+  type ProxyPlan,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -54,6 +70,7 @@ import type {
   OpenShellGitExpiry,
   OpenShellGitRouteStore,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import { protocol } from "./postgres-transaction-protocol-fixture.ts";
 
 // These are fixture-to-production port assertions, not alternative runtime implementations.
 type Fixture = ReturnType<typeof bootstrappingOpenShellGitRuntimeFixture>;
@@ -77,7 +94,24 @@ function resolverPort(runtime: Runtime): {
 const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
 const modelEndpoint = { host: "api.openai.com", port: 443, protocol: "rest" };
 
-async function selectedV5(t: TestContext, native = false, deadlineWallMs?: number) {
+type ApiLimits = NonNullable<
+  (typeof registry.repositories)[number]["namespaces"][number]["apiLimits"]
+>;
+
+// example/outside is bound without a saved grant unless `outside` says otherwise.
+type ScopedRest = {
+  limits?: Record<string, ApiLimits>;
+  agentLimits?: Record<string, ApiLimits>;
+  permissions: Record<string, string>;
+  outside?: "read" | "unbound";
+};
+
+async function selectedV5(
+  t: TestContext,
+  native = false,
+  deadlineWallMs?: number,
+  rest?: ScopedRest,
+) {
   const repository = registry.repositories[0]!;
   const repositories = [
     repository,
@@ -88,14 +122,16 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
       repository: "example/delivery",
     },
   ];
-  repositories.push({
-    ...repository,
-    repositoryRef: "outside",
-    repositoryId: "34569",
-    repository: "example/outside",
-  });
+  if (rest?.outside !== "unbound") {
+    repositories.push({
+      ...repository,
+      repositoryRef: "outside",
+      repositoryId: "34569",
+      repository: "example/outside",
+    });
+  }
   const selectedRegistry =
-    native &&
+    (native || rest !== undefined) &&
     validateGitHubRepositoryRegistry(
       {
         ...registry,
@@ -105,11 +141,15 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
             {
               namespaceId: "namespace-a",
               profiles: ["github-repository"],
-              ...(native && { nativeGit: "v1" }),
+              nativeGit: "v1",
               permissions: {
                 metadata: "read",
                 contents: "write",
+                ...rest?.permissions,
               },
+              ...(rest?.limits?.[repo.repository] && {
+                apiLimits: rest.limits[repo.repository],
+              }),
             },
           ],
         })),
@@ -169,7 +209,7 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
       boundGitRule: f.runtime.boundGitRule.bind(f.runtime),
     },
   );
-  const profile = native ? "github_repository" : "repository_git";
+  const profile = selectedRegistry ? "github_repository" : "repository_git";
   const admitted = await proxy.sourceControl.assertAvailable(
     t.signal,
     profile,
@@ -195,10 +235,15 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
     bindings,
     ...(deadlineWallMs !== undefined && { deadlineWallMs }),
   };
-  const grants = [
+  const ceiling = [
     { repository: repositories[0]!.repository, access: "read" },
     { repository: repositories[1]!.repository, access: "write" },
+    ...(rest?.outside === "read" ? [{ repository: "example/outside", access: "read" }] : []),
   ] as const;
+  const grants = ceiling.map((grant) => {
+    const apiLimits = rest?.agentLimits?.[grant.repository];
+    return apiLimits ? { ...grant, apiLimits } : grant;
+  });
   if (selectedRegistry) {
     f.owner.readOpenShellMaterial = async (_revisionId, _signal, _route, scope) => {
       assert.equal(scope, native ? "network-policy" : "github-repository");
@@ -225,7 +270,7 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
         version: 1,
         defaults: {},
         additions: [],
-        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants),
+        repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, ceiling),
       },
     }),
     executionAdmission: { version: native ? 9 : 5, mode: "protected" },
@@ -235,11 +280,14 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
       repositoryGitAuthorization: admitted.authorization,
       repositoryGit: repositoryCredentials,
     },
-  } as unknown as AgentRevision;
-  assert.equal(revision.repositoryCredentials!.bindings.length, native ? repositories.length : 1);
+  } as unknown as typeof f.revision;
+  assert.equal(
+    revision.repositoryCredentials!.bindings.length,
+    selectedRegistry ? repositories.length : 1,
+  );
   assert.equal(
     revision.repositoryCredentials!.bindings[0]!.profile,
-    native ? "github-repository" : "git-write",
+    selectedRegistry ? "github-repository" : "git-write",
   );
   const prepare = (
     runtime = f.runtime,
@@ -294,8 +342,8 @@ async function selectedV5(t: TestContext, native = false, deadlineWallMs?: numbe
 const updateReceipt = (version: string) => `git-update-${version}`;
 const updateMutation = (version: string) => `git-mutation-${version}`;
 
-async function heldGit(t: TestContext, native = false, deadlineWallMs?: number) {
-  const selected = await selectedV5(t, native, deadlineWallMs);
+async function heldGit(t: TestContext, native = false, deadlineWallMs?: number, rest?: ScopedRest) {
+  const selected = await selectedV5(t, native, deadlineWallMs, rest);
   const { f, store, revision, executionId, prepare } = selected;
   const activity = { updates: 0, releases: 0, probes: 0 };
   const prepared = await prepare();
@@ -578,7 +626,11 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number) 
     await f.runtime.observeHeldPreview(revision.id, startupId, t.signal, async (path) => {
       activity.probes += 1;
       assert.equal(native, false);
-      assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      if (revision.repositoryCredentials!.bindings[0]!.profile === "github-repository") {
+        assert.ok(path.startsWith("/oce-observe-request/"));
+      } else {
+        assert.ok(path.startsWith(String(aclOrLegacyEndpoint.path).slice(0, -2)));
+      }
       assert.match(path, /\/oce-observe-request\/[a-f0-9]{32}\.git\/info\/refs$/);
       assert.equal(f.calls.material, 0);
       const request: OpenShellOnlineHttpRequest = {
@@ -649,6 +701,8 @@ async function heldGit(t: TestContext, native = false, deadlineWallMs?: number) 
         },
       });
     },
+    removeLoadedGitRule: () =>
+      Reflect.deleteProperty(effectivePolicy.network_policies, gitRule.name),
     resetLoadedGitRule: () => {
       Object.assign(effectivePolicy.network_policies, { [gitRule.name]: loadedGitRule });
     },
@@ -3555,6 +3609,653 @@ test("a second Worker withdrawing Git during signing prevents the launcher POST"
   assert.equal(posts, 0);
 });
 
+test("native scoped REST intersects the selected permissions, API limits and frozen Git ACL", async (t) => {
+  const apiRules = async (rest?: ScopedRest, hasAdmittedRoute = false) => {
+    const held = await heldGit(t, true, undefined, rest);
+    // Any admitted API route, reads or creation, leaves the host to the stock policy alone.
+    assert.deepEqual(held.prepared.middlewares["oce-prepared-git"].endpoints, {
+      include: [hasAdmittedRoute ? "deny-egress.invalid" : "api.github.com"],
+    });
+    await held.reconcile();
+    assert.equal(held.activity.updates, 1, "provider passed complete policy readback");
+    return held.gitRule.endpoints.flatMap((endpoint) => {
+      if (endpoint.host !== "api.github.com" || !("rules" in endpoint)) {
+        return [];
+      }
+      return endpoint.rules.map(({ allow }) => {
+        const repo = allow.path?.split("/").slice(0, 4).join("/");
+        assert.equal(endpoint.path, `${repo}/**`);
+        return allow;
+      });
+    });
+  };
+  assert.deepEqual(await apiRules({ permissions: {} }), []);
+  const issues = await apiRules({ permissions: { issues: "read" } }, true);
+  for (const repo of ["application", "delivery"]) {
+    const path = `/repos/example/${repo}/issues`;
+    assert.ok(issues.some((r) => r.path === path));
+    assert.ok(issues.some((r) => r.path === path + "/[1-9][0-9]"));
+  }
+  assert.ok(
+    issues.every(
+      (r) =>
+        r.method === "GET" &&
+        /^\/repos\/example\/(application|delivery)\/issues(?:\/\[1-9\](?:\[0-9\])*)?$/.test(
+          r.path ?? "",
+        ),
+    ),
+  );
+  assert.deepEqual(await apiRules(), []);
+  const pullReads = issues.map((rule) => ({
+    ...rule,
+    path: rule.path!.replace("/issues", "/pulls"),
+  }));
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "read" } }, true), pullReads);
+  // Creation needs the write permission and the saved Write grant, which only delivery has.
+  const create = [{ method: "POST", path: "/repos/example/delivery/pulls" }];
+  const pulls = await apiRules(
+    { permissions: { pull_requests: "write" }, outside: "unbound" },
+    true,
+  );
+  assert.deepEqual(
+    pulls.filter((r) => r.method === "GET"),
+    pullReads,
+  );
+  assert.deepEqual(
+    pulls.filter((r) => r.method !== "GET"),
+    create,
+  );
+  // The credential also covers example/outside, bound without a saved grant. A pull request
+  // into delivery could name it as the head, so creation is withheld and the reads stay.
+  assert.deepEqual(await apiRules({ permissions: { pull_requests: "write" } }, true), pullReads);
+  // A Read grant on every bound repository restores creation; Read alone creates nowhere.
+  const allGranted = await apiRules(
+    { permissions: { pull_requests: "write" }, outside: "read" },
+    true,
+  );
+  assert.deepEqual(
+    allGranted.filter((r) => r.method !== "GET"),
+    create,
+  );
+  assert.deepEqual(
+    allGranted.filter((r) => r.method === "GET" && !r.path?.startsWith("/repos/example/outside/")),
+    pullReads,
+  );
+  assert.ok(
+    allGranted.some((r) => r.method === "GET" && r.path === "/repos/example/outside/pulls"),
+  );
+  const mixed = await apiRules(
+    { permissions: { issues: "read", pull_requests: "write" }, outside: "unbound" },
+    true,
+  );
+  assert.deepEqual(
+    mixed.filter((r) => r.path?.includes("/issues")),
+    issues,
+  );
+  assert.deepEqual(
+    mixed.filter((r) => r.path?.includes("/pulls")),
+    [
+      ...pullReads.slice(0, pullReads.length / 2),
+      ...create,
+      ...pullReads.slice(pullReads.length / 2),
+    ],
+  );
+  const permissions = { issues: "write", pull_requests: "write" };
+  const createIssue = { method: "POST", path: "/repos/example/delivery/issues" };
+  // Outside is bound but ungranted, so #7135 withholds PR creation. Only B has Write.
+  const bound = await apiRules(
+    { permissions, limits: { "example/outside": { default: "none" } } },
+    true,
+  );
+  assert.deepEqual(
+    bound.filter(({ method }) => method !== "GET"),
+    [createIssue],
+  );
+  assert.deepEqual(
+    bound.filter(({ method }) => method === "GET"),
+    mixed.filter(({ method }) => method === "GET"),
+  );
+  // Disabling B's issue creation leaves its independently granted PR creation intact.
+  assert.deepEqual(
+    await apiRules(
+      {
+        permissions,
+        outside: "unbound",
+        limits: { "example/delivery": { issues: "read" } },
+      },
+      true,
+    ),
+    mixed,
+  );
+  const both = await apiRules({ permissions, outside: "unbound" }, true);
+  assert.deepEqual(
+    both.filter(({ method }) => method !== "GET"),
+    [...create, createIssue],
+  );
+  // Denying all API routes on A keeps B's eligible PR routes. B cannot exceed
+  // its Namespace's Issues Read or bypass the ungranted-head safeguard.
+  const limited: ScopedRest = {
+    permissions,
+    limits: { "example/delivery": { issues: "read" } },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "write" },
+    },
+  };
+  const deliveryRules = mixed.filter(({ path }) => path?.startsWith("/repos/example/delivery/"));
+  assert.deepEqual(await apiRules({ ...limited, outside: "unbound" }, true), deliveryRules);
+  assert.deepEqual(
+    await apiRules(limited, true),
+    deliveryRules.filter(({ method }) => method === "GET"),
+  );
+  const limitBoth = (limits: ApiLimits) => ({
+    "example/application": limits,
+    "example/delivery": limits,
+  });
+  assert.deepEqual(
+    await apiRules(
+      { permissions, outside: "unbound", limits: limitBoth({ issues: "none" }) },
+      true,
+    ),
+    pulls,
+  );
+  assert.deepEqual(
+    await apiRules(
+      {
+        permissions,
+        outside: "unbound",
+        limits: limitBoth({ default: "none", pull_requests: "read" }),
+      },
+      true,
+    ),
+    pullReads,
+  );
+  assert.deepEqual(await apiRules({ permissions, limits: limitBoth({ default: "none" }) }), []);
+  // Explicit Write includes reads, but cannot raise a saved Read grant or the token permissions.
+  const limits = limitBoth({ default: "none", issues: "write", pull_requests: "write" });
+  assert.deepEqual(await apiRules({ permissions, limits, outside: "unbound" }, true), both);
+  assert.deepEqual(await apiRules({ permissions: { issues: "read" }, limits }, true), issues);
+});
+
+test("a persisted v9 Git-only binding cannot inherit issue network access", async () => {
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+  const namespace = {
+    namespaceId,
+    profiles: ["github-repository"],
+    nativeGit: "v1",
+    permissions: { metadata: "read", contents: "write", issues: "read" },
+  } as const;
+  const registration = { ...registry.repositories[0]!, namespaces: [namespace] };
+  const { installationAccess: _installationAccess, ...registryInput } = registry;
+  const enabled = validateGitHubRepositoryRegistry({
+    ...registryInput,
+    repositories: [registration],
+  });
+  const gitOnly = validateGitHubRepositoryRegistry({
+    ...registryInput,
+    repositories: [
+      {
+        ...registration,
+        namespaces: [{ ...namespace, permissions: { metadata: "read", contents: "write" } }],
+      },
+    ],
+  });
+  const execution = {
+    installationId: "ins_00000000-0000-4000-8000-000000000003",
+    namespaceId,
+    agentId: "agt_00000000-0000-4000-8000-000000000004",
+    revisionId: "rev_00000000-0000-4000-8000-000000000005",
+    executionId: "compat-execution",
+    servicePrincipalId: "compat-principal",
+  };
+  const driver = { id: "openshell", implementation: "openshell", configurationId: "a".repeat(64) };
+  // The predecessor's registry produced this grant with Issues permission and
+  // no REST opt-in. Keep its identity independent of the current resolver.
+  const repositoryCredentials = {
+    driver: { id: "github-primary", implementation: "github" },
+    deadlineWallMs: Date.parse("2026-11-20T00:10:00.000Z"),
+    bindings: [
+      {
+        repositoryRef: "application",
+        profile: "github-repository",
+        backendId: "github-primary",
+        grant: {
+          providerInstanceId: "github-com-primary",
+          repositoryId: "34567",
+          grantId: "sha256:7a2763a5b61132eaf79fc3a21fab5e85332ccf4a379adbb87d632b41fd1c7114",
+        },
+      },
+    ],
+  };
+  const saved = JSON.stringify({
+    configuration_id: "cfg_00000000-0000-4000-8000-000000000006",
+    configuration_kind: "agent",
+    configuration_generation: 1,
+    draft_spec: {},
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated", overrides: {}, configuration: {} },
+    compute: {
+      id: "compute",
+      implementation: "kubernetes",
+      admission: `driver-state:v1:${"b".repeat(64)}`,
+      runtimeInputs: "fixture-runtime-inputs:v1",
+    },
+    harness_auth: {
+      method: "api_key",
+      source: { kind: "secret", id: "sec_00000000-0000-4000-8000-000000000002", namespaceId },
+      secretDriverId: "fixture-secret",
+      protectedExecutionVersion: 9,
+    },
+    execution_admission: { version: 9, mode: "protected", repositoryNetworkPolicyVersion: 1 },
+    sandbox_driver_id: driver.id,
+    sandbox_policy: {
+      driverId: driver.id,
+      implementation: driver.implementation,
+      version: 1,
+      defaults: {},
+      additions: [],
+      repositoryNetworkPolicy: {
+        version: 1,
+        grants: [{ repository: "example/application", access: "read" }],
+        identity: '{"version":1,"grants":[{"repository":"example/application","access":"read"}]}',
+      },
+    },
+    egress_plan: {
+      id: "compat-plan",
+      generation: 1,
+      execution,
+      driver,
+      sandboxDriverId: driver.id,
+      egressDriverId: driver.id,
+      routes: [],
+      repositoryGitAuthorization: "network-policy",
+      repositoryGit: repositoryCredentials,
+    },
+    repository_credentials: repositoryCredentials,
+  });
+  // Replay one serialized result row through the production State reader.
+  const { state } = protocol({
+    query(statement) {
+      assert.match(statement, /FROM occ\.agent_revisions AS r/);
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            id: execution.revisionId,
+            agent_id: execution.agentId,
+            namespace_id: namespaceId,
+            revision_number: 1,
+            backend_id: null,
+            admitted_at: "2026-11-20T00:00:00.000Z",
+            gateway_managed_mode: true,
+            service_principal_id: execution.servicePrincipalId,
+            admitted_spec: saved,
+          },
+        ],
+      };
+    },
+  });
+  const revision = await state.read((view) =>
+    view.revisions.findRevision(namespaceId, execution.agentId, execution.revisionId),
+  );
+  assert.ok(revision?.sandboxPolicy?.repositoryNetworkPolicy);
+  assert.deepEqual(revision.repositoryCredentials, repositoryCredentials);
+  assert.deepEqual(revision.executionAdmission, { version: 9, mode: "protected" });
+
+  const gitBinding = resolveGitHubRepositoryBinding(gitOnly, {
+    namespaceId,
+    repositoryRef: "application",
+    profile: "github-repository",
+  });
+  const { delivery } = createGitHubRepositoryDeliveryResolver(gitOnly)({
+    ...revision,
+    repositoryCredentials: { ...repositoryCredentials, bindings: [gitBinding] },
+  });
+  assert.ok("scope" in delivery && delivery.scope === "github-repository");
+  assert.equal(delivery.permissions.issues, undefined);
+  assert.equal(Object.hasOwn(delivery, "scopedRest"), false);
+  const rule = compileOpenShellBoundGitRule(
+    revision.sandboxPolicy.repositoryNetworkPolicy.grants,
+    "oce-github-installation-" + "a".repeat(32),
+    openShellGitNetworkDefaults(delivery).binaries,
+    delivery.scopedRest,
+  );
+  assert.equal(rule.endpoints.length, 1);
+  const [endpoint] = rule.endpoints;
+  assert.ok(endpoint && "rules" in endpoint);
+  assert.equal(endpoint.host, "github.com");
+  assert.equal(endpoint.path, "/example/application.git/**");
+  assert.deepEqual(endpoint.rules, [
+    {
+      allow: {
+        method: "GET",
+        path: "/example/application.git/info/refs",
+        query: { service: { glob: "git-upload-pack" } },
+      },
+    },
+    { allow: { method: "POST", path: "/example/application.git/git-upload-pack" } },
+  ]);
+  assert.throws(() => createGitHubRepositoryDeliveryResolver(enabled)(revision), {
+    message: "selected-repository-grant-changed",
+  });
+});
+
+test("native issue policy survives Sandbox creation and independent Credential Proxy readback", async (t) => {
+  await verifyScopedRestReadback(t, { issues: "read" });
+});
+
+test("native pull request creation selects no hook through Sandbox creation and readback", async (t) => {
+  const permissions = { issues: "read", pull_requests: "write" };
+  const bound = await verifyScopedRestReadback(t, permissions, "unbound");
+  const path = "/repos/example/delivery/pulls";
+  const [readOnly, writable] = bound.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.ok(readOnly && writable && "rules" in writable);
+  assert.ok(writable.rules.some(({ allow }) => allow.method === "POST" && allow.path === path));
+  assert.equal("deny_rules" in writable, false);
+  // Bound without a saved grant, example/outside withholds creation from the loaded policy too.
+  const withheld = await verifyScopedRestReadback(t, permissions);
+  const api = withheld.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(api.length, 2);
+  for (const endpoint of api) {
+    assert.ok("rules" in endpoint);
+    assert.ok(endpoint.rules.length > 0);
+    assert.ok(endpoint.rules.every(({ allow }) => allow.method === "GET"));
+  }
+});
+
+async function verifyScopedRestReadback(
+  t: TestContext,
+  permissions: Record<string, string>,
+  outside?: ScopedRest["outside"],
+) {
+  const {
+    f,
+    revision: admitted,
+    executionId,
+  } = await selectedV5(t, true, undefined, { permissions, ...(outside && { outside }) });
+  const client = fixtureClient(f);
+  let created: Awaited<ReturnType<RuntimeClient["createSandbox"]>> | undefined;
+  const getSandbox = client.getSandbox.bind(client);
+  client.getSandbox = async (...args) => created ?? getSandbox(...args);
+  client.getWorkspace = async (name) => ({ id: "workspace-id-one", name, labels: {} });
+  const getProvider = client.getProvider.bind(client);
+  client.getProvider = async (workspace, name, signal) =>
+    name.startsWith("oce-runtime-") ? undefined : getProvider(workspace, name, signal);
+  const getProfile = client.getProviderProfile.bind(client);
+  client.getProviderProfile = async (workspace, name, signal) =>
+    name === "oce-codex-runtime" ? undefined : getProfile(workspace, name, signal);
+  const createProvider = client.createProvider.bind(client);
+  client.createProvider = async (request, signal) => ({
+    ...(await createProvider(request, signal)),
+    config: request.config ?? {},
+  });
+  let observedSource = false;
+  client.getSandboxPolicyStatus = async () => {
+    assert.ok(created?.spec?.policy);
+    observedSource = true;
+    return {
+      active_version: 1,
+      revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: created.spec.policy },
+    };
+  };
+  client.createSandbox = async (request) => {
+    created = {
+      ...request,
+      id: f.sandbox.id,
+      phase: "SANDBOX_PHASE_READY",
+      serviceUrls: { "": "http://192.0.2.2:8090" },
+    };
+    return created;
+  };
+  const options = {
+    middlewareName: "oce-prepared-git",
+    repositoryMiddlewareName: "oce-prepared-git",
+    authorityScope: "execution",
+  } as const;
+  const backend = {
+    id: "openshell",
+    drivers: { sandbox: "openshell" },
+    client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
+  };
+  const sandbox = new OpenShellSandboxDriver(
+    {
+      integrationMode: "legacy",
+      gateway: {},
+      kubernetes: {
+        userNamespaces: false,
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model",
+            binaries: [{ path: "/usr/bin/node" }],
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+          },
+        ],
+      },
+      egress: options,
+    },
+    { id: "openshell", backend, openShellGit: f.runtime },
+  );
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
+    id: "proxy",
+    backend,
+    sandbox,
+    boundGitRule: f.runtime.boundGitRule.bind(f.runtime),
+    mandatoryEnforcement: f.runtime.mandatoryEnforcement.bind(f.runtime),
+  });
+  const auth = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    sourceType: "openai",
+    credentialGatewayId: "openshell-credentials",
+    loginMode: "api_key",
+  } as const;
+  const namespace: Namespace = {
+    id: admitted.namespaceId,
+    name: "synthetic-issues",
+    status: "ready",
+    createdAt: "2026-08-18T00:00:00.000Z",
+  };
+  const revisionId = `rev_${randomUUID()}`;
+  const repository = admitted.repositoryCredentials;
+  assert.ok(repository && repository.authorization !== "credential_source");
+  const plan: ProxyPlan = {
+    id: "synthetic-issues",
+    generation: 1,
+    execution: {
+      installationId: "synthetic",
+      namespaceId: namespace.id,
+      agentId: admitted.agentId,
+      servicePrincipalId: "synthetic",
+      revisionId,
+      executionId,
+    },
+    sandboxDriverId: sandbox.id,
+    egressDriverId: proxy.id,
+    driver: admitted.egressPlan!.driver!,
+    harnessCredentialSource: auth,
+    repositoryGit: repository,
+    repositoryGitAuthorization: "network-policy",
+    routes: [],
+  };
+  const revision: AgentRevision = {
+    ...admitted,
+    id: revisionId,
+    compute: { ...admitted.compute },
+    harnessAuth: auth,
+    sandboxDriverId: sandbox.id,
+    egressPlan: plan,
+  };
+  const context = { namespace, revision, plan, signal: t.signal };
+  const proxyWiring = await proxy.configureRevision(context);
+  const prepared = await sandbox.provisionHarness({
+    ...context,
+    kubernetes: undefined,
+    requirements: {
+      loginMode: "api_key",
+      image: "sandbox.example.test/codex:fixture",
+      command: [
+        ...RUNTIME_WRAPPER_COMMAND,
+        ...nodeProgramArguments(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT),
+      ],
+      labels: { "openclaw.dev/agent": revision.agentId },
+      environment: [
+        { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+        { name: "APP_SERVER_PORT", value: "8090" },
+      ],
+      credentialAttachments: [
+        { sourceId: auth.sourceId, ref: openShellProviderName(auth.sourceId) },
+      ],
+      files: [
+        {
+          name: "runtime.json",
+          environmentVariable: "OPENCLAW_PLUGIN_RUNTIME_MANIFEST",
+          content: JSON.stringify({
+            kind: "codex",
+            egressEnrollment: harnessEgressEnrollment(plan),
+            providerTools: "none",
+            selections: {},
+          }),
+        },
+        {
+          name: "config.toml",
+          environmentVariable: "OPENCLAW_PLUGIN_CODEX_CONFIG_TOML",
+          content: 'model = "synthetic"',
+        },
+      ],
+      workspaceMounts: [
+        {
+          claimName: "workspace-codex",
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      ],
+      retainedDirectories: [],
+      proxyWiring,
+    },
+  });
+  assert.ok(created && prepared.proxyWiring);
+  const bound = f.runtime.boundGitRule(revision);
+  assert.ok(bound);
+  assert.deepEqual(created.spec?.policy, prepared.proxyWiring.configuration);
+  assert.deepEqual(prepared.proxyWiring.configuration.network_policies, { [bound.name]: bound });
+  assert.deepEqual(
+    asRecord(
+      asRecord(
+        asRecord(prepared.proxyWiring.configuration.network_middlewares)?.["oce-prepared-git"],
+      )?.endpoints,
+    )?.include,
+    ["deny-egress.invalid"],
+    "the approved API routes must bypass the host-wide callback",
+  );
+  assert.deepEqual(
+    bound.endpoints.filter(({ host }) => host === "api.github.com").map(({ path }) => path),
+    ["/repos/example/application/**", "/repos/example/delivery/**"],
+  );
+  assert.ok(
+    bound.endpoints.every(({ credential_binding }) =>
+      (created?.spec?.providers as string[]).includes(credential_binding.provider),
+    ),
+  );
+  assert.equal(await proxy.wiringStatus(context, prepared.proxyWiring), undefined);
+  assert.equal(observedSource, true);
+  await assert.rejects(
+    proxy.wiringStatus(context, {
+      ...prepared.proxyWiring,
+      configuration: {
+        ...prepared.proxyWiring.configuration,
+        network_middlewares: proxyWiring.configuration.network_middlewares,
+      },
+    }),
+    /changed protected egress routes/,
+  );
+  assert.equal(
+    f.calls.material,
+    0,
+    "readback must not select usable material for an unobserved launcher",
+  );
+  return bound;
+}
+
+test("a Worker refuses prior REST grants and a loaded policy missing newly authorized routes", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write", pull_requests: "write" },
+  });
+  // These identities were issued for the same configured permissions with the old REST selector.
+  const prior = [
+    "sha256:1373e0773c7511721ef345b008db21b53559f92b71b291a1c4b9bd5a54d39925",
+    "sha256:292d3fddbc9c9dfb93300157fd1f90a4f146ccfe40de1a595caeb377b7f818ee",
+    "sha256:daeb7d280763db55e3a36d7dc4693c7a1f8cfb8ddcfc7c23436e66a8a200fd8c",
+  ];
+  for (const binding of held.revision.repositoryCredentials!.bindings) {
+    assert.ok(!prior.includes(binding.grant.grantId));
+  }
+  // The predecessor loaded issue routes only. This Worker expects the pull request routes too:
+  // the loaded policy differs, so the Sandbox keeps what it has and receives no material.
+  const loaded = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  const current = structuredClone(loaded);
+  for (const endpoint of loaded) {
+    assert.ok("rules" in endpoint);
+    Object.assign(endpoint, {
+      rules: endpoint.rules.filter(({ allow }) => !allow.path?.includes("/pulls")),
+    });
+  }
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  // A deployment by this Worker loads the current rule, and the same binding is released.
+  loaded.forEach((endpoint, index) => Object.assign(endpoint, current[index]));
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+});
+
+test("a Sandbox loaded with a creation route that an ungranted binding withholds receives no material", async (t) => {
+  // An earlier Worker compiled creation on delivery although example/outside is bound without a
+  // saved grant. This Worker withholds it, so the loaded policy differs until a redeploy.
+  const held = await heldGit(t, true, undefined, { permissions: { pull_requests: "write" } });
+  const writable = held.loadedGitRule.endpoints.find(
+    ({ path }) => path === "/repos/example/delivery/**",
+  );
+  assert.ok(writable && "rules" in writable);
+  assert.ok(writable.rules.every(({ allow }) => allow.method === "GET"));
+  const current = structuredClone(writable.rules);
+  Object.assign(writable, {
+    rules: [{ allow: { method: "POST", path: "/repos/example/delivery/pulls" } }, ...current],
+  });
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  Object.assign(writable, { rules: current });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+});
+
+test("native issue reads refuse a loaded API write before material selection", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write" },
+  });
+  const endpoint = held.loadedGitRule.endpoints.find(({ host }) => host === "api.github.com");
+  assert.ok(endpoint && "rules" in endpoint);
+  const { rules } = endpoint;
+  Object.assign(endpoint, {
+    rules: [...rules, { allow: { method: "POST", path: "/repos/example/delivery/pulls" } }],
+  });
+  await held.reconcile();
+  assert.equal(held.f.calls.material, 0);
+  assert.equal(held.activity.updates, 0);
+  Object.assign(endpoint, { rules });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+});
+
 test("native Git stages material for the verified launcher without a Git request hook", async (t) => {
   const {
     f,
@@ -3931,6 +4632,91 @@ test("native Git refuses obsolete or standalone admissions before Provider work"
   assert.deepEqual(f.calls, calls);
   assert.equal(store.rows.size, rows);
   noCredentials();
+});
+
+test("API limits require native delivery at first issuance and renewal even without REST permissions", async (t) => {
+  for (const limit of [{ default: "none" }, { issues: "write" }] as const) {
+    const rest = { permissions: {}, limits: { "example/delivery": limit } };
+    // No saved policy selects online authorization. Refuse before even reserving a Provider.
+    const online = await selectedV5(t, false, undefined, rest);
+    await assert.rejects(online.prepare(), /API limits require a native repository network policy/);
+    assert.equal(online.store.rows.size, 0);
+    online.noCredentials();
+
+    const held = await heldGit(t, true, undefined, rest);
+    for (const updates of [0, 1]) {
+      // The second pass offers fresh material to the same installed Provider.
+      held.f.owner.material = {
+        ...held.f.owner.material,
+        materialVersion: randomUUID(),
+        preparationAttemptId: randomUUID(),
+        value: `controlled-version-${updates}`,
+      };
+      const reads = held.f.calls.material;
+      held.removeLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.f.calls.material, reads);
+      assert.equal(held.activity.updates, updates);
+      held.resetLoadedGitRule();
+      await held.reconcile();
+      assert.equal(held.activity.updates, updates + 1);
+      assert.equal(held.activity.probes, 0);
+    }
+  }
+});
+
+test("Agent API restrictions block issuance and renewal if a forbidden route is loaded", async (t) => {
+  const held = await heldGit(t, true, undefined, {
+    permissions: { issues: "write" },
+    agentLimits: {
+      "example/application": { default: "none" },
+      "example/delivery": { issues: "read" },
+    },
+  });
+  // A has no API access. B remains writable over Git but cannot POST.
+  const endpoints = held.loadedGitRule.endpoints.filter(({ host }) => host === "api.github.com");
+  assert.equal(endpoints.length, 1);
+  const [endpoint] = endpoints;
+  assert.ok(endpoint && "rules" in endpoint && endpoint.path === "/repos/example/delivery/**");
+  const { rules } = endpoint;
+  assert.ok(rules.some(({ allow }) => allow.path === "/repos/example/delivery/issues"));
+  assert.ok(rules.every(({ allow }) => allow.method === "GET"));
+  for (const updates of [0, 1]) {
+    held.f.owner.material = {
+      ...held.f.owner.material,
+      materialVersion: randomUUID(),
+      preparationAttemptId: randomUUID(),
+      value: `controlled-version-${updates}`,
+    };
+    // A stale supervisor policy with the Namespace's broader authority must
+    // never receive material, including a new token for the same execution.
+    const reads = held.f.calls.material;
+    Object.assign(endpoint, {
+      rules: [...rules, { allow: { method: "POST", path: "/repos/example/delivery/issues" } }],
+    });
+    await held.reconcile();
+    assert.equal(held.f.calls.material, reads);
+    assert.equal(held.activity.updates, updates);
+    Object.assign(endpoint, { rules });
+    await held.reconcile();
+    assert.equal(held.activity.updates, updates + 1);
+    assert.equal(held.activity.probes, 0);
+  }
+});
+
+test("omitted API limits preserve online delivery without a saved native policy", async (t) => {
+  const held = await heldGit(t, false, undefined, { permissions: {} });
+  await held.reconcile();
+  assert.equal(held.activity.updates, 1);
+  held.f.owner.material = {
+    ...held.f.owner.material,
+    materialVersion: randomUUID(),
+    preparationAttemptId: randomUUID(),
+    value: "controlled-renewed-token",
+  };
+  await held.reconcile();
+  assert.equal(held.activity.updates, 2);
+  assert.equal(held.activity.probes, 1);
 });
 
 test("native Git registration refuses an online authorization plan before Provider work", async (t) => {

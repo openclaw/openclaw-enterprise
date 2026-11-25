@@ -210,6 +210,7 @@ export function openShellEgressConfiguration(
   plan: ProxyPlan,
   options: OpenShellProxyOptions,
   revision?: Readonly<AgentRevision>,
+  nativeIssueReads = false,
 ): Readonly<Record<string, unknown>> {
   const artifacts = openShellProtectedCodexArtifacts(revision);
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
@@ -239,6 +240,7 @@ export function openShellEgressConfiguration(
         options.repositoryMiddlewareName,
         plan.execution.executionId,
         plan.repositoryGitAuthorization === "network-policy",
+        nativeIssueReads,
       ),
     });
   }
@@ -518,11 +520,6 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     if (!isDeepStrictEqual(prepared.plan, context.plan)) {
       throw new Error("The prepared Sandbox policy has a different admitted plan.");
     }
-    const protectedConfiguration = openShellEgressConfiguration(
-      context.plan,
-      this.options,
-      context.revision,
-    );
     const expected = prepared.configuration;
     const expectedPolicies = asRecord(expected.network_policies);
     if (expectedPolicies && Object.hasOwn(expectedPolicies, "workspace-node-enrollment")) {
@@ -540,6 +537,12 @@ export class OpenShellLegacyEgressProxyDriver implements LegacyEgressProxyDriver
     if (native && !bound) {
       return;
     }
+    const protectedConfiguration = openShellEgressConfiguration(
+      context.plan,
+      this.options,
+      context.revision,
+      bound?.endpoints.some(({ host }) => host === "api.github.com"),
+    );
     const canonicalPolicies = {
       ...asRecord(protectedConfiguration.network_policies),
       ...(bound && { [bound.name]: bound }),

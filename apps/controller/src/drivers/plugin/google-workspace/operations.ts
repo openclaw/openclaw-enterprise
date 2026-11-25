@@ -56,35 +56,6 @@ if (createHash("sha256").update(bytes).digest("hex") !== googleRelease?.operatio
 }
 export const googleCatalog: Catalog = JSON.parse(bytes.toString("utf8"));
 
-/** Express a reviewed route using an exact path or its narrowest literal subtree. */
-export function googleActionPath({ path, pathParameters }: GoogleOperation): string {
-  const parameter = /\{(\+?)(\w+)\}/.exec(path);
-  if (!parameter) {
-    return path;
-  }
-  const base = path.slice(0, path.lastIndexOf("/", parameter.index));
-  if (!base) {
-    throw new Error("Google action endpoints require a literal service path.");
-  }
-  if (!parameter[1]) {
-    return `${base}/**`;
-  }
-  // Expanded resource names can carry the collection in their pattern, e.g.
-  // ^spaces/[^/]+/messages/[^/]+$. Keep every literal segment before the first ID.
-  const pattern = pathParameters?.[parameter[2]!]?.pattern ?? "";
-  const segments = pattern.slice(1, -1).replaceAll("[^/]+", "{}").split("/");
-  const firstId = segments.indexOf("{}");
-  if (
-    !pattern.startsWith("^") ||
-    !pattern.endsWith("$") ||
-    firstId < 0 ||
-    !segments.every((segment) => segment === "{}" || /^[A-Za-z0-9_-]+$/.test(segment))
-  ) {
-    throw new Error("Unsupported Google resource name pattern for static HTTP policy.");
-  }
-  return [base, ...segments.slice(0, firstId), "**"].join("/");
-}
-
 /** Service roots represented by the verified Google Workspace release, before account-specific grants. */
 export const googleWorkspaceDestinations = normalizeConnectionDestinations(
   Object.values(googleCatalog.operations).map((operation) => {

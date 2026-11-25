@@ -1,7 +1,8 @@
 # Enterprise container publication
 
-The [OCC CLI release](cli-publication.md) publishes matching versioned command
-line binaries through a separate protected workflow.
+For images, a Helm chart, and matching OCC CLI binaries in one run, use
+[Release OCE](README.md). Use the standalone workflow below for image
+preparation or independent image publication.
 
 [`container-publish.yml`](../../.github/workflows/container-publish.yml) prepares the existing
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
@@ -172,12 +173,14 @@ use their own evidence. For local use, follow the
 
 ## Prepare and publish
 
-1. Merge the reviewed workflow and source changes to `main`. Wait for that exact
-   main **push** run of `.github/workflows/ci.yml` to finish successfully, including
-   its `CI Required` job. A PR merge SHA or a matching check name is insufficient.
-2. Manually dispatch **Enterprise Containers**, selecting branch `main`, its full
-   current `source_sha`, and that `ci_run_id`. Leave `publish` false for no-push
-   preparation. If main moved, select the new SHA and its own completed CI run.
+1. Merge reviewed changes to `main`. Wait for that commit’s
+   `.github/workflows/ci.yml` **push** run and its `CI Required` job to succeed.
+   A PR check is insufficient. To look up the inputs with Node 24 and `gh`, run
+   `node scripts/ci/container-source.ts "$REVIEWED_SHA"` with the full commit ID.
+   This read-only command prints `source_sha` and `ci_run_id` as JSON.
+2. Manually dispatch **Enterprise Containers** on `main` with those inputs.
+   Leave `publish` false for no-push preparation. The workflow rechecks both
+   inputs. If `main` moved, review the new commit and select its own CI run.
 3. To publish, dispatch with `publish` true after reviewing the SHA, CI run,
    and [package setup](#confirm-package-linkage). Leave `image_tag` blank to
    update `latest` for both images, or enter a custom alias such as `candidate`.
@@ -202,10 +205,8 @@ use their own evidence. For local use, follow the
    `container-publication-<run-id>-<attempt>` receipt for deployment. Each image
    receives an immutable `sha-<source-sha>` tag, the selected mutable alias,
    and, only with `publish_chart: true`, an OCE version tag matching the chart.
-   The image-only `container-publication` receipt records the source tags and alias for
-   promotion and recovery. Existing source and version tags cannot be replaced
-   by different bytes. Publication does not create a Git tag, GitHub release,
-   or deployment.
+   The image receipt records source tags and the alias for
+   promotion and recovery. Conflicting source or version tags stop publication.
 
 Image publication defaults to `publish_chart: false` and needs no chart package.
 For a versioned chart release, also select `publish_chart: true` and follow
@@ -248,6 +249,10 @@ a later successful publication updates the selected alias for both images.
 Recovery restores source tags only and does not move aliases.
 
 ## Recover a partial publication
+
+For **Release OCE**, [recover an image-only publication](README.md#recover-an-image-only-publication)
+or [recover the full release](README.md#recover-a-partial-release).
+The procedure below covers **Enterprise Containers**.
 
 Preserve the original seven-day OCI artifacts. Do not rerun their producer: its
 attempt identity must remain unchanged. If those archives have expired, this

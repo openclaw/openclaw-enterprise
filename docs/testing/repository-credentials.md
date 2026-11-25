@@ -90,14 +90,11 @@ with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.ts`,
 `postgres-repository-broker-receipts.test.ts`, and the relevant restart and
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
-`postgres-openshell-standing-selected-repository.test.ts` case follows one
-`github-repository` binding through approval, deployment, its original session
-deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
-issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
-and credential owner with controlled OpenShell and GitHub protocol peers.
-These checks do not prove a running Kubernetes Pod or model turn.
-The final custody check moves only stored provider timestamps past verified expiry
-and clock skew; it asserts material erasure without a revocation request.
+`postgres-standing-expiry-authority.test.ts` cases verify the Worker stops an
+unauthorized Git-only execution without issuing another token. The
+`postgres-staged-github-source-admission.test.ts` case verifies that two Agents
+freeze their own approved grants, reuse one TokenService Source, and keep
+that Source's installed token current. OpenShell and GitHub peers are controlled.
 
 ## Qualify emitted artifacts
 
@@ -224,80 +221,19 @@ same session, within the existing 170-second chat deadline. It never replays the
 command. Acceptance still requires terminal success, the exact completion marker,
 and the independent native and Git observations. A completion mismatch reports
 only status, exit code, session presence and poll count; raw command output stays
-private. Offline model-adapter cases in `skipper-private-git-origin.test.mjs` check
+private. Offline model-adapter cases in `skipper-private-git-model-adapter.test.ts` check
 the pinned Codex function-tool envelopes; they do not prove installed execution.
 
 Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
 offline checks through the actual aggregate CLI. They do not execute an installed journey.
 
-## Verify OpenShell Git expiry and restart
+## Verify a model turn and Git on one Agent
 
-The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
-uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
-and an `openai` CredentialSource. Its native startup probe uses the authorized
-`OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; model responses are not simulated.
-Git and App issuance use a private HTTPS fixture with real `git-http-backend`.
-No live GitHub repository or ambient GitHub credential is used.
-
-The case selects a finite 600-second repository grant and requires successful
-authenticated Git and a real model response before the API's returned deadline.
-After the grant expires and the worker withdraws access, the same
-revision, Sandbox and runtime containers must complete a file operation and
-another model response while a fresh Git request fails without reaching the
-origin. The case restarts the installed worker with persisted PostgreSQL state
-and custody material, then repeats those observations. It does not adjust clocks
-or queue schedules.
-
-The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
-trust image adds only the private origin's public CA; the executable must match
-the pinned stock image. Record the tested source, image digests and each
-observation. The lane's result artifact retains these receipts under
-`files[].measurements`, bound to its `sourceSha` and the selected test file.
-Receipts contain digests, Kubernetes UIDs, counters and fixed outcomes; opaque
-runtime identifiers use SHA-256 fingerprints. The final `cleanup` receipt is
-emitted only after all owned resources are removed. This proves the selected installation and controlled Git boundary,
-not live GitHub access or a different published image set.
-An unsuccessful expiry wait retains bounded worker outcomes and polling counters;
-these diagnostics do not establish successful withdrawal or runtime retention.
-
-A failed retained-execution check records before/after origin counters and whether
-the origin snapshot changed. Its managed-Exec exit code identifies the failed
-check without retaining Git output:
-
-| Code | Failed check                        |
-| ---- | ----------------------------------- |
-| 41   | Original identity file contents     |
-| 42   | File write                          |
-| 43   | File readback                       |
-| 44   | Git executable availability         |
-| 45   | Git unexpectedly succeeded          |
-| 46   | Git could not execute (126 or 127)  |
-| 47   | Failed Git returned nonempty stdout |
-
-Stock mediates workload connections before HTTP. The test requires a supervisor
-`transparent_tcp_policy_denied` event for `github.com:443` and the measured Git
-executable, immediately preceded by the warning that the endpoint is not allowed
-by any policy. After Git exits, a normal filtered DNS lookup of a fresh absolute
-`.invalid.` name supplies an ordered end marker; lookup status is not proof.
-The reader waits through that exact marker, checks log continuity through every
-poll, and rejects observed competing or unpaired staged denials in the Git window.
-Unchanged supervisor identity excludes foreign events. No other client calls
-`github.com:443` during the isolated attempt.
-
-These observations accompany failed Git, successful file operations and unchanged
-origin counters. The event has no Exec request ID or process ID. Missing markers,
-pairs or retained history fail qualification, but stock producer drops are
-undetectable: this is bounded observed evidence, not a lossless record of every
-connection’s cause. Raw logs and Git output are not retained in result receipts.
-
-The diagnostic receipts do not replace successful shell operations, the explicit
-policy denial and unchanged-origin assertions.
-
-The case is registered in the `openshell` lane. For a reviewed same-repository PR,
-a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-qa`.
-The existing environment supplies credentials inside the job. The narrower
-`qa-openshell-compose` label does not run this case. A complete, non-skipped pass
-and successful cleanup are required; registration alone is not qualification.
+Select the [prepared TokenService Git Agent lane](manual-tests.md) for live
+native delivery. It exercises Source-backed model and Git on one revision with
+stock OpenShell. The [PostgreSQL staged Git test](../../tests/integration/postgres-staged-github-source-admission.test.ts)
+separately verifies Agent admission, Source reuse, and scheduled renewal and
+Provider update with a controlled issuer.
 
 ## Controller and broker image compatibility probe
 

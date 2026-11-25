@@ -11,16 +11,16 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
-import { jsonLineDestination } from "./json-lines.mjs";
+import { jsonLineDestination } from "./json-lines.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {
   privateBootstrapDirectory,
   productionBootstrapEnvironment,
   runBootstrapInstallation,
 } from "./bootstrap-installation.mjs";
-import { cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "./auth-session.ts";
 import { createReadyComputeDriver } from "./development.mjs";
-import { createOidcProvider } from "./oidc-provider.mjs";
+import { createOidcProvider } from "./oidc-provider.ts";
 import { composeProduction } from "./password-hasher.ts";
 
 // Only Compute is passive: no Agent is deployed, so sign-in proofs need no cluster.
@@ -415,7 +415,7 @@ export function clientAddresses(prefix = "198.18") {
 /**
  * Installs the shared synthetic OIDC protocol on this test's fetch transport.
  * @param {import("node:test").TestContext} t
- * @param {Omit<import("./oidc-provider.mjs").OidcProviderOptions, "issuer"> & {issuer?: typeof fixtureOidcIssuer}} options
+ * @param {Omit<import("./oidc-provider.ts").OidcProviderOptions, "issuer"> & { issuer?: typeof fixtureOidcIssuer }} options
  */
 export function fakeOidc(t, { issuer = fixtureOidcIssuer, ...options } = {}) {
   const fixture = createOidcProvider({ issuer, ...options });

@@ -10,7 +10,7 @@ import {
   type GoogleLoginConfiguration,
 } from "../../apps/controller/src/auth/google.ts";
 import type { ProviderFailure } from "../../apps/controller/src/auth/provider-transport.ts";
-import { idTokenSigner, rsaSigningKey } from "../helpers/id-token.mjs";
+import { idTokenSigner, rsaSigningKey } from "../helpers/id-token.ts";
 
 // verifyGoogleIdToken delegates every generic ID-token check to verifyIdToken, which
 // oidc-id-token.test.ts pins. This file covers only what Google adds: its issuer

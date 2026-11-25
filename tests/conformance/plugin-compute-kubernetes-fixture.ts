@@ -13,7 +13,7 @@ import type { PluginRuntimeSpec } from "../../apps/controller/src/drivers/comput
 import type {
   AgentRevision,
   ComputeRevisionContext,
-  CredentialSource,
+  LegacyCredentialSource,
   HarnessWorkloadRequirements,
   LoggingLevel,
   PluginDeploymentWarning,
@@ -51,7 +51,7 @@ type GatewayConfiguration = {
 type PreparedAuth = {
   loginMode: HarnessWorkloadRequirements["loginMode"];
   environment: readonly V1EnvVar[];
-  credentialSource?: Readonly<CredentialSource>;
+  credentialSource?: Readonly<LegacyCredentialSource>;
 };
 type PluginStatus = {
   revisionId: string;

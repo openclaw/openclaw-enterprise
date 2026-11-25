@@ -27,7 +27,7 @@ import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
   signInWithEmailPassword,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d, attachKeycloakToK3d } from "./k3d-postgres-network.ts";
 import { buildControllerTopologyManifests } from "./topology-controller-manifests.ts";
@@ -38,6 +38,7 @@ import {
 import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 import { withBoundedTeardown } from "../helpers/bounded-teardown.ts";
+import { protectedText } from "./qa-secrets.ts";
 import {
   assertGatewayModelTurn,
   createKubernetesInstallationConfiguration,
@@ -61,7 +62,7 @@ import { waitForWorkspaceReconnect } from "./gateway-workspace-readiness.ts";
 import { installedGatewayRpc } from "./installed-gateway-rpc.ts";
 import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 import { defaultUsersIAM } from "./default-users-iam.ts";
-import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.mjs";
+import { initializeNativeUpgradeInstallation } from "./native-profile-upgrade-installation.ts";
 import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -145,11 +146,45 @@ const {
   databaseUrl,
 });
 
-async function validatePrerequisites() {
+/**
+ * Resolve the exact model credential before creating Kubernetes resources. The credential
+ * remains in a closure so fixture diagnostics and object inspection cannot enumerate it.
+ * @param {"embedded" | "dedicated"} mode
+ * @param {string} harnessId
+ * @param {{method: "codex_pat", tokenFile: string} | undefined} selection
+ * @param {NodeJS.ProcessEnv} [env]
+ */
+async function resolveTopologyModelAuthentication(mode, harnessId, selection, env = process.env) {
+  if (selection !== undefined) {
+    assert.ok(selection?.method === "codex_pat", "Unsupported topology model authentication.");
+    assert.ok(
+      mode === "dedicated" && harnessId === "codex",
+      "Codex PAT authentication requires a dedicated Codex Harness.",
+    );
+    assert.ok(
+      env.OCC_TEST_CODEX_OPENAI_BASE_URL === undefined,
+      "Codex PAT authentication cannot select an OpenAI API-key endpoint.",
+    );
+    const value = await protectedText(selection.tokenFile, "Codex service-account PAT");
+    return Object.freeze({
+      method: "codex_pat",
+      environmentName: "CODEX_ACCESS_TOKEN",
+      credential: () => value,
+    });
+  }
+  const value = env.OPENAI_API_KEY;
   assert.ok(
-    process.env.OPENAI_API_KEY,
+    value,
     "OPENAI_API_KEY is required: an actual production provider turn cannot be mocked or skipped.",
   );
+  return Object.freeze({
+    method: "api_key",
+    environmentName: "OPENAI_API_KEY",
+    credential: () => value,
+  });
+}
+
+async function validatePrerequisites() {
   if (process.env.OCC_TEST_GATEWAY_ROUTING_REAL === "1") {
     assert.match(
       controllerImage ?? "",
@@ -447,6 +482,7 @@ async function startInClusterControllers(
     authBaseURL,
     controller,
     controllerImage: selectedControllerImage = controllerImage,
+    controlPlaneAuditEnabled,
     databaseUrl: selectedDatabaseUrl = databaseUrl,
     controllerPort,
     databaseAddress,
@@ -482,6 +518,7 @@ async function startInClusterControllers(
       authSecret,
       controller,
       controllerImage: selectedControllerImage,
+      controlPlaneAuditEnabled,
       databaseAddress,
       databaseServiceName,
       inClusterDatabaseUrl,
@@ -782,8 +819,9 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     configuration.drivers.compute.configuration.gatewayRouting = options.gatewayRouting;
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
-  if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channelEgress = slack.channelEgress;
+  const channelEgress = slack?.channelEgress ?? options.channelEgress;
+  if (channelEgress !== undefined) {
+    configuration.drivers.compute.configuration.runtime.channelEgress = channelEgress;
   }
   return configuration;
 }
@@ -826,7 +864,7 @@ function assertNoSecretMaterial(value, secrets, description) {
 
 function secretApiProtectedValues(topology, extra = []) {
   return [
-    process.env.OPENAI_API_KEY,
+    topology.protectedModelCredential(),
     topology.secretApi?.initialProbeValue,
     topology.secretApi?.initialPeerProbeValue,
     topology.secretApi?.initialSharedProbeValue,
@@ -1289,6 +1327,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const databaseUrl = options.databaseUrl ?? process.env.OCC_TEST_DATABASE_URL;
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
+  const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
   if (mode === "dedicated") {
     assert.match(
       controllerImage ?? "",
@@ -1296,6 +1335,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       "Dedicated storage requires the imported controller image for node enrollment through routing.",
     );
   }
+  const modelAuthentication = await resolveTopologyModelAuthentication(
+    mode,
+    harnessId,
+    options.modelAuthentication,
+  );
+  const modelCredential = modelAuthentication.credential();
   const kubeconfig = await validatePrerequisites();
   const identifier = randomUUID();
   let credentials =
@@ -1413,23 +1458,31 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
-  if (slack !== undefined) {
-    assert.ok(workspaceGateway, "Slack topology requires the production Gateway");
-    Object.assign(
-      slack,
-      await installManagedChannelEgressFixture({
-        ...(options.channelEgressCapacity === undefined
-          ? {}
-          : { listenerCapacity: options.channelEgressCapacity }),
-        controller,
-        namespace: platformNamespace,
-        controllerImage,
-        workspaceGateway,
-        resource,
-        kubectl,
-        applyManifest,
-      }),
-    );
+  let managedChannelEgress;
+  if (slack !== undefined || options.channelEgress !== undefined) {
+    assert.ok(workspaceGateway, "Channel egress topology requires the production Gateway");
+    const installed = await installManagedChannelEgressFixture({
+      ...(options.channelEgressCapacity === undefined
+        ? {}
+        : { listenerCapacity: options.channelEgressCapacity }),
+      ...(options.channelEgress?.upstreamProxies === undefined
+        ? {}
+        : { upstreamProxies: options.channelEgress.upstreamProxies }),
+      ...(options.channelEgress?.proxyTrust === undefined
+        ? {}
+        : { proxyTrust: options.channelEgress.proxyTrust }),
+      controller,
+      namespace: platformNamespace,
+      controllerImage,
+      workspaceGateway,
+      resource,
+      kubectl,
+      applyManifest,
+    });
+    managedChannelEgress = installed.channelEgress;
+    if (slack !== undefined) {
+      Object.assign(slack, installed);
+    }
   }
   const directory = await mkdtemp(join(tmpdir(), `oce-k3d-production-${mode}-`));
   const startupPath = join(directory, "api-installation.yaml");
@@ -1445,6 +1498,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           namespaceQuota: options.namespaceQuota,
           gatewayRouting: workspaceGateway.routing,
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
+          ...(managedChannelEgress === undefined ? {} : { channelEgress: managedChannelEgress }),
         },
   );
   // Cases share an Installation, so keep its policy after the Default user case
@@ -1679,6 +1733,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       databaseUrl,
       databaseAddress,
       controllerPort: options.controllerPort,
+      controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
       events,
       nativeAdminDomain: nativeAdmin.domain,
       nativeAdminEnabled: nativeAdmin.enabled,
@@ -1728,7 +1783,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       const response = await controllerRequest(...args);
       assertNoSecretMaterial(
         response,
-        [process.env.OPENAI_API_KEY, workspaceGateway.apiKey],
+        [modelCredential, workspaceGateway.apiKey],
         "workspace-files controller response must not expose credentials",
       );
       return response;
@@ -1886,12 +1941,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     secretAssignmentPrincipalId = secretAssignmentCaller.principalId;
 
     // Namespace-scoped Secrets are provisioned once the Namespace is ready, before any Agent exists.
-    const modelSecret = await createApiSecret(
-      request,
-      namespaceId,
-      "model-key",
-      process.env.OPENAI_API_KEY,
-    );
+    const modelSecret = await createApiSecret(request, namespaceId, "model-key", modelCredential);
     secretApi = { assignmentPrincipalId: secretAssignmentPrincipalId, model: modelSecret };
     if (slack !== undefined) {
       const slackAppValue = slack.appToken;
@@ -1990,9 +2040,9 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         `/namespaces/${namespaceId}/agents/${ungranted.agent.id}`,
         {
           configurationId: ungranted.agent.configurationId,
-          harnessAuth: { method: "api_key", source: unownedSecret.ref },
+          harnessAuth: { method: modelAuthentication.method, source: unownedSecret.ref },
         },
-        [process.env.OPENAI_API_KEY, unownedValue],
+        [modelCredential, unownedValue],
         "Harness auth assignment without exact actor Secret operate",
       );
       assert.equal(actorDenied.status, 403);
@@ -2017,7 +2067,6 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     }
   }
 
-  const harnessId = options.harnessId ?? (mode === "dedicated" ? "codex" : "openclaw");
   const secretBindings = {
     ...(includeSecretProbes
       ? {
@@ -2081,6 +2130,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     mode,
     secretApi.model.ref,
     secretBindings,
+    modelAuthentication.method,
   );
   const modelReference = template.variables.model.default;
   const presetsPath = `/namespaces/${namespaceId}/presets`;
@@ -2092,6 +2142,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   const presetPath = `${presetsPath}/${preset.data.id}`;
   const selectedPreset = await adminRequest("GET", presetPath);
   assert.equal(selectedPreset.status, 200, JSON.stringify(selectedPreset.error));
+  assert.equal(selectedPreset.data.template.agent.harnessAuth.method, modelAuthentication.method);
   const launch = renderPresetTemplate(selectedPreset.data.template, {
     name: `production-${mode}-${randomUUID()}`,
     secretId: secretApi.model.ref.id,
@@ -2172,7 +2223,10 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       configurationId: configuration.data.id,
     });
     assert.equal(agent.status, 201, JSON.stringify(agent.error));
-    assert.deepEqual(agent.data.harnessAuth, { method: "api_key", source: secretApi.model.ref });
+    assert.deepEqual(agent.data.harnessAuth, {
+      method: modelAuthentication.method,
+      source: secretApi.model.ref,
+    });
     await assertPresetIndependent(configuration);
     const provisionedGatewayPassword = await provisionAgentTransportSecret(
       directory,
@@ -2208,13 +2262,16 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       version: "1.0.0",
       mode,
       overrides: {},
-      configuration: {
-        modelProvider: {
-          protocol: fixtureProvider.protocol,
-          baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
-          supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
-        },
-      },
+      configuration:
+        modelAuthentication.method === "codex_pat"
+          ? {}
+          : {
+              modelProvider: {
+                protocol: fixtureProvider.protocol,
+                baseUrl: normalizeOpenAiBaseUrl(fixtureProvider.baseUrl),
+                supportsStandaloneWebSearch: fixtureProvider.supportsStandaloneWebSearch === true,
+              },
+            },
     }),
     "deployed Harness descriptor must match the fixture's configured or default model provider",
   );
@@ -2225,7 +2282,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     ["AgentRevision", deployed],
   ]) {
     assert.equal(
-      JSON.stringify(response).includes(process.env.OPENAI_API_KEY),
+      JSON.stringify(response).includes(modelCredential),
       false,
       `the production ${description} response must never contain provider credential bytes`,
     );
@@ -2274,12 +2331,12 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     assert.deepEqual(observedRevision.data.secretBindings, secretApi.configuration.secretBindings);
   }
   assert.equal(
-    JSON.stringify(events).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(events).includes(modelCredential),
     false,
     "production worker evidence must never contain provider credential bytes",
   );
   assert.equal(
-    JSON.stringify(await resources("configmaps", placement)).includes(process.env.OPENAI_API_KEY),
+    JSON.stringify(await resources("configmaps", placement)).includes(modelCredential),
     false,
     "production ConfigMaps must never contain provider credential bytes",
   );
@@ -2327,13 +2384,36 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   assert.ok(gatewayPod, "production execution must start the exact Agent-owned real gateway");
   const harnessPod = pods.find((pod) => workloadRole(pod) === "agent");
   const modelStorage = await storedSecret(observerPool, namespaceId, secretApi.model.id);
-  await assertModelRuntimeProjection(harnessPod ?? gatewayPod, modelStorage);
-  if (mode === "dedicated") {
+  await assertModelRuntimeProjection(
+    harnessPod ?? gatewayPod,
+    modelStorage,
+    modelAuthentication.environmentName,
+  );
+  if (modelAuthentication.method === "codex_pat") {
+    assert.ok(harnessPod, "A Codex PAT deployment requires its dedicated Harness Pod.");
+    const harnessEnvironment =
+      harnessPod.spec.containers.find(({ name }) => name === "agent")?.env ?? [];
+    assert.equal(harnessEnvironment.filter(({ name }) => name === "CODEX_ACCESS_TOKEN").length, 1);
     assert.equal(
-      gatewayPod.spec.containers
-        .find(({ name }) => name === "gateway")
-        ?.env?.some(({ name }) => name === "OPENAI_API_KEY") ?? false,
-      false,
+      harnessEnvironment.find(({ name }) => name === "CODEX_LOGIN_MODE")?.value,
+      "codex_pat",
+    );
+    assert.ok(
+      ![...(harnessPod.spec.containers ?? []), ...(harnessPod.spec.initContainers ?? [])].some(
+        (container) => (container.env ?? []).some(({ name }) => name === "OPENAI_API_KEY"),
+      ),
+      "A Codex PAT Harness must not receive an OpenAI API key.",
+    );
+  }
+  if (mode === "dedicated") {
+    assert.ok(
+      ![...(gatewayPod.spec.containers ?? []), ...(gatewayPod.spec.initContainers ?? [])].some(
+        (container) =>
+          (container.env ?? []).some(({ name }) =>
+            ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name),
+          ),
+      ),
+      "The Gateway must not receive a Harness model credential.",
     );
   }
   if (slack !== undefined) {
@@ -2400,7 +2480,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
     "the admitted revision must retain its original model reference",
   );
   const expectedGatewayModel =
-    mode === "dedicated" && harnessId === "codex"
+    mode === "dedicated" && harnessId === "codex" && modelAuthentication.method === "api_key"
       ? `codex/openai-compatible/${providerModel}`
       : modelReference;
   await assertGatewayEffectiveDefaultModel(
@@ -2469,11 +2549,14 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
   return {
     mode,
     harnessId: topologyHarnessId,
+    modelAuthenticationMethod: modelAuthentication.method,
+    protectedModelCredential: modelAuthentication.credential,
     placement,
     gatewayPlacement,
     namespaceId,
     installation: activeInstallation,
     platformNamespace,
+    channelEgress: managedChannelEgress,
     gatewayImage,
     workspaceGateway,
     get controllerApiPod() {
@@ -2530,6 +2613,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
         databaseUrl,
         databaseAddress,
         controllerPort: port,
+        controlPlaneAuditEnabled: options.controlPlaneAuditEnabled,
         events,
         nativeAdminDomain: nativeAdmin.domain,
         nativeAdminEnabled: nativeAdmin.enabled,
@@ -2732,7 +2816,7 @@ async function assertActualModelTurn(topology) {
       gatewayUrl: topology.gatewayUrl,
       gatewayPassword: topology.gatewayPassword,
       nonce,
-      secrets: [process.env.OPENAI_API_KEY],
+      secrets: [topology.protectedModelCredential()],
     });
     if (topology.mode === "dedicated" && process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
       // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
@@ -5354,14 +5438,14 @@ function assertRequiredSecretKeyRef(actual, expected, message) {
   assert.equal(optional ?? false, false, message);
 }
 
-async function assertModelRuntimeProjection(pod, storage) {
-  const ref = pod.spec.containers[0].env.find(({ name }) => name === "OPENAI_API_KEY")?.valueFrom
+async function assertModelRuntimeProjection(pod, storage, environmentName = "OPENAI_API_KEY") {
+  const ref = pod.spec.containers[0].env.find(({ name }) => name === environmentName)?.valueFrom
     ?.secretKeyRef;
   const agentId = pod.metadata.labels["openclaw.dev/agent"];
   const revisionId = pod.metadata.labels["openclaw.dev/revision"];
   assertRequiredSecretKeyRef(ref, {
     name: `harness-secrets-${hash(agentId)}-${hash(revisionId)}`,
-    key: "OPENAI_API_KEY",
+    key: environmentName,
   });
   const [runtime, source] = await Promise.all([
     resource("secret", ref.name, pod.metadata.namespace),
@@ -7004,13 +7088,18 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
   const turn = await connection.requestModelTurn(marker);
   assertNoSecretMaterial(
     turn.content,
-    [topology.gatewayPassword, topology.workspaceGateway.apiKey, process.env.OPENAI_API_KEY],
+    [
+      topology.gatewayPassword,
+      topology.workspaceGateway.apiKey,
+      topology.protectedModelCredential(),
+    ],
     "workspace-file model proof must not expose credentials",
   );
 }
 
 export {
   arrangeProductionTopology,
+  resolveTopologyModelAuthentication,
   productionTopologyCleanupOrder,
   registerProductionTopologyCleanups,
   assertActualModelTurn,

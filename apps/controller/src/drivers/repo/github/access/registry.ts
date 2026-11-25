@@ -4,12 +4,18 @@ import {
   parseGitHubNumericId,
   type GitHubRepositoryGrant,
 } from "./repository-grant.ts";
-import type { RepositoryGitDeliveryResolver } from "../../access/delivery.ts";
+import {
+  limitRepositoryApi,
+  type RepositoryGitDeliveryResolver,
+  type RepositoryGitRestAuthority,
+} from "../../access/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   githubInstallationProfile as installationProfile,
+  RepositoryApiLevel,
+  RepositoryApiLimits,
   RepositoryApprovalScope,
   RepositoryBindingRequest,
   RepositoryNetworkGrant,
@@ -33,7 +39,7 @@ export const githubInstallationProfile: typeof installationProfile = "github-ins
 
 export interface GitHubRepositoryRegistration {
   readonly repositoryRef: string;
-  readonly repositoryId: string;
+  readonly repositoryId?: string;
   readonly repository: string;
   readonly namespaces: readonly Readonly<{
     namespaceId: string;
@@ -41,6 +47,8 @@ export interface GitHubRepositoryRegistration {
     permissions?: Readonly<Record<string, string>>;
     /** Select deployment-scoped native Git for this repository registration. */
     nativeGit?: "v1";
+    /** Narrow the eligible REST routes for this native registration. */
+    apiLimits?: RepositoryApiLimits;
     allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
@@ -76,6 +84,7 @@ export interface GitHubRepositoryRegistry {
 const selectorPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendPattern = /^(?!\s)(?!.*\s$).{1,200}$/;
 const repositoryPattern = createRepositorySlugPattern();
+const repositoryNamePattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 function invalid(): never {
   throw new Error("invalid-repository-registry");
@@ -162,6 +171,7 @@ function validateInstallationAccess(value: unknown): GitHubInstallationAccess {
 export function validateGitHubRepositoryRegistry(
   value: unknown,
   expectedBackendId?: string,
+  options: { readonly allowNameOnlyNativeRepositories?: boolean } = {},
 ): GitHubRepositoryRegistry {
   const root = object(value, [
     "version",
@@ -203,6 +213,7 @@ export function validateGitHubRepositoryRegistry(
         "profiles",
         "permissions",
         "nativeGit",
+        "apiLimits",
         "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
@@ -221,6 +232,12 @@ export function validateGitHubRepositoryRegistry(
             )
           : Object.hasOwn(policy, "permissions")
       ) {
+        return invalid();
+      }
+      const apiLimits = Object.hasOwn(policy, "apiLimits")
+        ? parseApiLimits(policy.apiLimits)
+        : undefined;
+      if (apiLimits && policy.nativeGit !== "v1") {
         return invalid();
       }
       if (
@@ -287,6 +304,7 @@ export function validateGitHubRepositoryRegistry(
         profiles: Object.freeze(profiles),
         ...(permissions && { permissions }),
         ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
+        ...(apiLimits && { apiLimits }),
         ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
@@ -296,13 +314,33 @@ export function validateGitHubRepositoryRegistry(
     });
     unique(namespaces.map((policy) => policy.namespaceId));
     namespaces.sort((a, b) => a.namespaceId.localeCompare(b.namespaceId, "en"));
-    const repository = text(entry.repository, repositoryPattern).toLowerCase();
+    const repositoryId = Object.hasOwn(entry, "repositoryId")
+      ? numericId(entry.repositoryId)
+      : undefined;
+    if (
+      repositoryId === undefined &&
+      (!options.allowNameOnlyNativeRepositories ||
+        namespaces.some(
+          (policy) =>
+            policy.profiles.length !== 1 ||
+            policy.profiles[0] !== "github-repository" ||
+            policy.nativeGit !== "v1",
+        ))
+    ) {
+      return invalid();
+    }
+    const repository =
+      repositoryId === undefined &&
+      typeof entry.repository === "string" &&
+      !entry.repository.includes("/")
+        ? text(entry.repository, repositoryNamePattern).toLowerCase()
+        : text(entry.repository, repositoryPattern).toLowerCase();
     if (repository.includes("..")) {
       return invalid();
     }
     return Object.freeze({
       repositoryRef: text(entry.repositoryRef),
-      repositoryId: numericId(entry.repositoryId),
+      ...(repositoryId === undefined ? {} : { repositoryId }),
       repository,
       namespaces: Object.freeze(namespaces),
     });
@@ -314,8 +352,24 @@ export function validateGitHubRepositoryRegistry(
     ...repositories.map((entry) => entry.repositoryRef),
     ...(installationAccess ? [installationAccess.repositoryRef] : []),
   ]);
-  unique(repositories.map((entry) => entry.repositoryId));
+  unique(
+    repositories.flatMap((entry) => (entry.repositoryId === undefined ? [] : [entry.repositoryId])),
+  );
   unique(repositories.map((entry) => entry.repository));
+  const shortNames = new Set(
+    repositories
+      .filter((entry) => !entry.repository.includes("/"))
+      .map((entry) => entry.repository),
+  );
+  if (
+    repositories.some(
+      (entry) =>
+        entry.repository.includes("/") &&
+        shortNames.has(entry.repository.slice(entry.repository.indexOf("/") + 1)),
+    )
+  ) {
+    return invalid();
+  }
   repositories.sort((a, b) => a.repositoryRef.localeCompare(b.repositoryRef, "en"));
   return Object.freeze({
     version: 1,
@@ -328,6 +382,24 @@ export function validateGitHubRepositoryRegistry(
     repositories: Object.freeze(repositories),
     ...(installationAccess && { installationAccess }),
   });
+}
+
+/** Match only against a full repository name already verified by the selected GitHub Source. */
+export function matchesConfiguredGitHubRepository(
+  configured: Pick<GitHubRepositoryRegistration, "repository" | "repositoryId">,
+  verified: Readonly<{ repository: string; repositoryId?: string }>,
+): boolean {
+  if (
+    !repositoryPattern.test(verified.repository) ||
+    verified.repository.includes("..") ||
+    (configured.repositoryId !== undefined && configured.repositoryId !== verified.repositoryId)
+  ) {
+    return false;
+  }
+  const fullName = verified.repository.toLowerCase();
+  return configured.repository.includes("/")
+    ? configured.repository === fullName
+    : configured.repository === fullName.slice(fullName.indexOf("/") + 1);
 }
 
 function repositoryTransportPermissions(
@@ -368,6 +440,9 @@ export function allowsGitHubRepositoryNetworkGrant(
     return false;
   }
   const { policy } = resolved;
+  if (grant.apiLimits !== undefined && policy.nativeGit !== "v1") {
+    return false;
+  }
   return policy.profiles.some((profile) => {
     const contents = repositoryTransportPermissions(policy, profile)?.contents;
     // The network policy cannot preserve an existing push-ref restriction.
@@ -384,6 +459,50 @@ const installationGrantPolicy = Object.freeze({
   apiPermissions: "inherited-from-github-app-installation",
   deliveryPolicy: "github-installation-git-basic-api-bearer-online-authorization-v1",
 } as const);
+
+// The standalone credential service cannot load workspace code at runtime.
+function parseApiLimits(input: unknown): RepositoryApiLimits {
+  const limits = object(input, ["default", "issues", "pull_requests"]);
+  if (
+    !Object.keys(limits).length ||
+    (Object.hasOwn(limits, "default") && limits.default !== "none")
+  ) {
+    return invalid();
+  }
+  function level(value: unknown): RepositoryApiLevel {
+    return value === "none" || value === "read" || value === "write" ? value : invalid();
+  }
+  // Fix key order so the same limits always produce the same grant ID.
+  return Object.freeze({
+    ...(Object.hasOwn(limits, "default") && { default: "none" as const }),
+    ...(Object.hasOwn(limits, "issues") && { issues: level(limits.issues) }),
+    ...(Object.hasOwn(limits, "pull_requests") && { pull_requests: level(limits.pull_requests) }),
+  });
+}
+
+function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"][number]) {
+  const { permissions, apiLimits } = policy;
+  if (policy.nativeGit !== "v1" || (!permissions?.issues && !permissions?.pull_requests)) {
+    return undefined;
+  }
+  const access = (resource: "issues" | "pull_requests"): RepositoryApiLevel => {
+    const permission = permissions[resource];
+    return limitRepositoryApi(
+      apiLimits,
+      resource,
+      permission === "read" || permission === "write",
+      permission === "write",
+    );
+  };
+  const issues = access("issues");
+  const pulls = access("pull_requests");
+  return {
+    readIssues: issues !== "none",
+    ...(issues === "write" && { createIssues: true as const }),
+    ...(pulls !== "none" && { readPullRequests: true as const }),
+    ...(pulls === "write" && { createPullRequests: true as const }),
+  };
+}
 
 function registryGrantId(
   registry: GitHubRepositoryRegistry,
@@ -452,9 +571,10 @@ export function resolveGitHubRepositoryBinding(
     throw new Error("repository-binding-not-authorized");
   }
   // Policy changes cannot preserve an earlier grant merely by retaining an operator label.
+  const repositoryId = repository.repositoryId ?? `github-repository:${repository.repository}`;
   const grantId = registryGrantId(registry, {
     repositoryRef,
-    repositoryId: repository.repositoryId,
+    repositoryId,
     repository: repository.repository,
     namespaceId,
     allowedProfiles: policy.profiles,
@@ -463,6 +583,9 @@ export function resolveGitHubRepositoryBinding(
     ...(policy.pullRequestBase === undefined ? {} : { pullRequestBase: policy.pullRequestBase }),
     ...(policy.draftPullLimit === undefined ? {} : { draftPullLimit: policy.draftPullLimit }),
     permissions: repositoryTransportPermissions(policy, selectedProfile),
+    scopedRest: scopedRestPermissions(policy),
+    // Bind restrictions even if they currently permit no routes.
+    ...(policy.apiLimits && { apiLimits: policy.apiLimits }),
     ...(policy.nativeGit === "v1" && { nativeGit: "v1" as const }),
     capabilityPolicy:
       policy.transport === "git-only"
@@ -477,7 +600,7 @@ export function resolveGitHubRepositoryBinding(
     backendId: registry.backendId,
     grant: Object.freeze({
       providerInstanceId: registry.providerInstanceId,
-      repositoryId: repository.repositoryId,
+      repositoryId,
       grantId,
     }),
   });
@@ -545,7 +668,7 @@ function standingApprovalScope(
       namespacePolicyAllowsStanding: true,
     });
   }
-  if (!repository || "accessMode" in policy) {
+  if (!repository || repository.repositoryId === undefined || "accessMode" in policy) {
     return;
   }
   return Object.freeze({
@@ -590,28 +713,46 @@ export function createGitHubRepositoryDeliveryResolver(
     ) {
       throw new Error("Standing repository policy is unavailable.");
     }
+    const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+    const agentLimited = savedPolicy?.grants.some((grant) => grant.apiLimits !== undefined);
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
-      const savedPolicy = revision.sandboxPolicy?.repositoryNetworkPolicy;
+      const repositories = requireRepositoryIds(scope.repositories);
       if (savedPolicy !== undefined && scope.mixedNativeGit) {
         throw new Error("selected-repository-native-git-differs");
       }
       const nativeGit = savedPolicy !== undefined && scope.nativeGit === "v1";
+      if (
+        (scope.requiresNetworkPolicy || agentLimited) &&
+        (!nativeGit || revision.egressPlan?.repositoryGitAuthorization !== "network-policy")
+      ) {
+        throw new Error("API limits require a native repository network policy.");
+      }
       if (nativeGit && (state.standingApprovalId !== undefined || !savedPolicy.grants.length)) {
         throw new Error(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
+      // The credential covers every bound repository, and a pull request can name any of them
+      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
+      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
+      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
+        ? scope.scopedRest
+        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
           installationId: registry.githubInstallationId,
-          repositories: scope.repositories,
+          repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
+          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
         }),
       });
+    }
+    if (agentLimited) {
+      throw new Error("API limits require a native repository network policy.");
     }
     if (!state || state.bindings.length !== 1 || !binding) {
       throw new Error("Repository Git delivery requires one admitted binding.");
@@ -663,9 +804,24 @@ export function resolveSelectedRepositoryGrant(
     appId: registry.appId,
     installationId: registry.githubInstallationId,
     profile: "github-repository",
-    repositories: scope.repositories,
+    repositories: requireRepositoryIds(scope.repositories),
     permissions: scope.permissions,
   });
+}
+
+function requireRepositoryIds(
+  repositories: readonly Readonly<{ repositoryId?: string; repository: string }>[],
+): readonly Readonly<{ repositoryId: string; repository: string }>[] {
+  return Object.freeze(
+    repositories.map(({ repositoryId, repository }) => {
+      if (repositoryId === undefined) {
+        throw new Error(
+          "Repository credential delivery requires registered numeric repository IDs.",
+        );
+      }
+      return Object.freeze({ repositoryId, repository });
+    }),
+  );
 }
 
 /** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
@@ -681,33 +837,79 @@ export function resolveSelectedRepositoryScope(
   ) {
     throw new Error("invalid-selected-repository-set");
   }
-  const nativeGitModes = new Set<"v1" | undefined>();
-  let permissions: Readonly<Record<string, string>> | undefined;
-  const repositories = bindings
-    .map((binding) => {
-      if (
-        binding.profile !== "github-repository" ||
-        !resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding)
-      ) {
-        throw new Error("selected-repository-grant-changed");
-      }
-      const repo = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef)!;
-      const policy = repo.namespaces.find((p) => p.namespaceId === namespaceId)!;
-      if (
-        !policy.permissions ||
-        (permissions && !isDeepStrictEqual(permissions, policy.permissions))
-      ) {
-        throw new Error("selected-repository-permissions-differ");
-      }
-      nativeGitModes.add(policy.nativeGit);
-      permissions = policy.permissions;
-      return Object.freeze({ repositoryId: repo.repositoryId, repository: repo.repository });
-    })
-    .sort((a, b) => Number(a.repositoryId) - Number(b.repositoryId));
+  const selected = bindings.map((binding) => {
+    if (
+      binding.profile !== "github-repository" ||
+      !resolveCurrentGitHubRepositoryBinding(registry, namespaceId, binding)
+    ) {
+      throw new Error("selected-repository-grant-changed");
+    }
+    const repo = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef)!;
+    const policy = repo.namespaces.find((p) => p.namespaceId === namespaceId)!;
+    return { repo, policy };
+  });
+  const { permissions, repositories } = repositoryCredentialScope(
+    selected.map(({ repo, policy }) => ({ repository: repo, policy })),
+  );
+  const scopedRest: RepositoryGitRestAuthority[number][] = selected.flatMap(({ repo, policy }) => {
+    const rest = scopedRestPermissions(policy);
+    return rest ? [Object.freeze({ repository: repo.repository, ...rest })] : [];
+  });
+  const nativeGitModes = new Set(selected.map(({ policy }) => policy.nativeGit));
   return Object.freeze({
-    repositories: Object.freeze(repositories),
-    permissions: permissions!,
+    repositories,
+    permissions,
+    requiresNetworkPolicy: selected.some(({ policy }) => policy.apiLimits !== undefined),
     ...(nativeGitModes.size > 1 && { mixedNativeGit: true }),
     ...(nativeGitModes.size === 1 && nativeGitModes.has("v1") && { nativeGit: "v1" as const }),
+    scopedRest: Object.freeze(scopedRest.sort((a, b) => a.repository.localeCompare(b.repository))),
   });
+}
+
+/** Resolve prospective Source scope from approved refs before any Agent grant is issued. */
+export function resolveGitHubRepositorySourceScope(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  repositoryRefs: readonly string[],
+) {
+  if (
+    !repositoryRefs.length ||
+    repositoryRefs.length > 16 ||
+    new Set(repositoryRefs).size !== repositoryRefs.length
+  ) {
+    throw new Error("invalid-selected-repository-set");
+  }
+  return repositoryCredentialScope(
+    repositoryRefs.map((ref) => {
+      const resolved = resolveRepositoryNamespacePolicy(
+        registry.repositories.find(({ repositoryRef }) => repositoryRef === ref),
+        namespaceId,
+      );
+      if (!resolved?.policy.profiles.includes("github-repository")) {
+        throw new Error("repository-binding-not-authorized");
+      }
+      return resolved;
+    }),
+  );
+}
+
+function repositoryCredentialScope(
+  selected: readonly NonNullable<ReturnType<typeof resolveRepositoryNamespacePolicy>>[],
+) {
+  const permissions = selected[0]?.policy.permissions;
+  if (
+    !permissions ||
+    selected.some(({ policy }) => !isDeepStrictEqual(policy.permissions, permissions))
+  ) {
+    throw new Error("selected-repository-permissions-differ");
+  }
+  const repositories = selected.map(({ repository: { repositoryId, repository } }) =>
+    Object.freeze({ ...(repositoryId === undefined ? {} : { repositoryId }), repository }),
+  );
+  repositories.sort(
+    repositories.every((entry) => entry.repositoryId !== undefined)
+      ? (a, b) => Number(a.repositoryId) - Number(b.repositoryId)
+      : (a, b) => a.repository.localeCompare(b.repository, "en"),
+  );
+  return { repositories: Object.freeze(repositories), permissions };
 }

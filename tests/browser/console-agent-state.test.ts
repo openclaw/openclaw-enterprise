@@ -12,7 +12,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
   persistedDeploymentError,
@@ -28,6 +28,7 @@ import {
   grantMember,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   loginThroughForm,
   nativeValues,
@@ -113,6 +114,16 @@ function deniedActionsSince(fixture: ConsoleFixture, audited: number): AuditEven
 function requiredText(value: string | null): string {
   assert.ok(typeof value === "string");
   return value;
+}
+
+async function expectConfirmationAgentId(dialog: Locator, agentId: string) {
+  const label = `Agent ID: ${agentId}`;
+  await dialog.getByText(label, { exact: true }).waitFor();
+  assert.equal(
+    (await accessibleDescription(dialog)).split(label).length - 1,
+    1,
+    `expected one "${label}" in the dialog description`,
+  );
 }
 
 function lookupSecretId(body: unknown): string {
@@ -754,33 +765,132 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   assert.equal(await observations.getByText(DIAGNOSTICS_RUNTIME_UNAVAILABLE).count(), 0);
 });
 
-test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
+test("A missing deletion status returns to the Agents list with a notice and drops a queued repeat", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Delete finish", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Finish Candidate", nativeValues("go"));
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("go"));
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
   const { page } = await newPage(t, fixture);
-  let gone = false;
-  await page.route(`${fixture.origin}${agentPath}`, async (route, request) => {
-    if (gone && request.method() === "GET") {
-      await route.fulfill(apiErrorResponse(404, "NOT_FOUND", "Agent not found."));
-      return;
-    }
-    await route.continue();
-  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Finish Candidate" }).waitFor();
+  await page.getByRole("heading", { name: "Retiring Agent" }).waitFor();
 
   await page.getByRole("button", { name: "Delete Agent" }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
+  const dialog = page.getByRole("dialog", { name: "Delete Retiring Agent?" });
+  await expectConfirmationAgentId(dialog, agent.id);
+  const accepted = responseTo(page, "DELETE", agentUrl);
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  assert.equal((await accepted).status(), 202);
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  // The background cleanup finishes; no reader action follows.
-  gone = true;
-  await page.waitForURL((current) => current.pathname === "/console/agents", { timeout: 10_000 });
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
+  // A missing status response may arrive while a repeat waits for the quiet poll to finish.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  const repeat = page.getByRole("dialog", { name: "Request deletion again for Retiring Agent?" });
+  await repeat.getByRole("button", { name: "Request deletion again", exact: true }).click();
+  assert.equal(await repeat.getByRole("button", { name: "Deleting…" }).isDisabled(), true);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const text =
+    "Deletion requested. The Agent’s status is no longer available, so cleanup is unconfirmed.";
+  const notice = page.getByRole("status").and(page.getByText(text, { exact: true }));
+  await notice.waitFor();
+  assert.equal(await notice.getAttribute("data-tone"), "info");
+  // The list still has the Agent because only the browser's status read reported it missing.
+  const row = page.getByRole("row").filter({ hasText: "Retiring Agent" });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await repeat.isVisible(), false);
+  const statusReads = () =>
+    requests.filter(({ method, path }) => method === "GET" && path === agentPath).length;
+  const readsAtLanding = statusReads();
+  await page.clock.runFor(DELETION_POLL_MS * 2);
+  assert.equal(statusReads(), readsAtLanding, "the detail poll stopped");
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+  await page.goBack();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await page.getByText(text, { exact: true }).count(), 0);
+});
+
+test("A missing deletion status brings the notice into view on return to a scrolled phone list", async (t) => {
+  const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  for (let number = 1; number <= 6; number++) {
+    await fixture.createAgent(
+      namespace.id,
+      `Draft Agent ${number}`,
+      nativeValues(`draft-${number}`),
+    );
+  }
+  const agent = await fixture.createAgent(namespace.id, "Retiring Agent", nativeValues("retire"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = fixture.origin + agentPath;
+  // A deletion accepted outside this browser leaves the previously opened list reusable.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 664 } },
+  });
+  await page.clock.install();
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, listUrl(namespace.id));
+  const listHeading = page.getByRole("heading", { name: "Agents", exact: true });
+  const row = page.getByRole("row").filter({ hasText: agent.name });
+  const link = row.getByRole("link", { name: agent.name, exact: true });
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await inViewport(link), false, "the Agent starts below the fold");
+  await link.scrollIntoViewIfNeeded();
+  assert.equal(await inViewport(listHeading), false, "the list is scrolled past its heading");
+  await link.click();
+  await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+
+  // Only the detail poll misses. The revalidated list still includes the deleting Agent.
+  const missingStatus = await holdRequests(t, page, agentUrl, {
+    method: "GET",
+    once: true,
+    fulfill: apiErrorResponse(404, "NOT_FOUND", "Agent not found."),
+  });
+  await Promise.all([missingStatus.requested, page.clock.runFor(DELETION_POLL_MS)]);
+  const statusResponse = responseTo(page, "GET", agentUrl);
+  missingStatus.release();
+  assert.equal((await statusResponse).status(), 404);
+  await page.waitForURL(
+    (current) =>
+      current.pathname === "/console/agents" &&
+      current.searchParams.get("namespace") === namespace.id,
+  );
+  const notice = page.getByRole("status").filter({ hasText: "cleanup is unconfirmed" });
+  await notice.waitFor();
+  await row.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(
+    await inViewport(notice),
+    true,
+    "the returned list shows the notice without scrolling",
+  );
+  assert.equal(await inViewport(listHeading), true);
+  assert.equal(await hasFocus(listHeading), true);
+  assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 0);
 });
 
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
@@ -923,11 +1033,11 @@ test("A member's Agent detail reads no bound Secret her Secret list leaves out",
   assert.deepEqual(secretDenials(), []);
 });
 
-// Finding D757. A bound Secret's links open the console's Secrets page with that Secret's metadata
+// Finding D757. A bound Secret's links open the Console Credentials page with that Secret's metadata
 // and consumers, not the API path's raw JSON. A member whose Secret list leaves the Secret out
 // gets no link, which would only open a refusal the API audits; the Credentials field says why
 // its name is unavailable, as the Configuration tab does.
-test("Credentials links a readable bound Secret to the Secrets page and explains an unreadable one", async (t) => {
+test("Credentials links a readable bound Secret to the Credentials page and explains an unreadable one", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret links");
   const secret = await fixture.createSecret(namespace.id, "Linked model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Linked Agent", nativeValues("x"), {
@@ -985,7 +1095,7 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   const named = admin.getByRole("link", { name: "Linked model key", exact: true });
   await named.waitFor();
   assert.equal(await named.getAttribute("href"), secretPage);
-  // The Secrets page opens that Secret's metadata and consumers, Agent included.
+  // The Credentials page opens that Secret's metadata and consumers, Agent included.
   const [opened] = await Promise.all([admin.waitForEvent("popup"), named.click()]);
   const dialog = opened.getByRole("dialog", { name: "Linked model key" });
   await dialog.getByText(secret.id, { exact: true }).waitFor();
@@ -1001,13 +1111,13 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
   await opened.getByRole("button", { name: "Refresh", exact: true }).click();
   await opened.waitForFunction((row) => !row.isConnected, oldRow);
   await opened.getByRole("button", { name: "Linked model key", exact: true }).waitFor();
-  // The Secrets page opens a linked Secret in the same task that draws the list.
+  // The Credentials page opens a linked Secret in the same task that draws the list.
   assert.equal(await opened.getByRole("dialog").count(), 0);
   assert.equal(new URL(opened.url()).search, `?namespace=${namespace.id}`);
 
-  // Finding 2645. The link keeps its Secret until the Secrets page shows it: through sign-in when
-  // it opens signed out, through a failed first load's Retry, and through a session that expires
-  // during the load. Each time the dialog opens and the parameter leaves the URL.
+  // Finding 2645. The link keeps its Secret until Credentials shows it: through sign-in when
+  // it opens signed out, Refresh after a failed Secret inventory, and session expiry during
+  // the load. Each time the dialog opens and the parameter leaves the URL.
   const expectLinkedDialog = async (page: Page) => {
     const linked = page.getByRole("dialog", { name: "Linked model key" });
     await linked.getByText(secret.id, { exact: true }).waitFor();
@@ -1025,7 +1135,10 @@ test("Credentials links a readable bound Secret to the Secrets page and explains
     { times: 1 },
   );
   await member.goto(`${fixture.origin}${secretPage}`);
-  await member.getByRole("button", { name: "Retry", exact: true }).click();
+  await member
+    .getByText("The Secret inventory could not be loaded. Select Refresh to check again.")
+    .waitFor();
+  await member.getByRole("button", { name: "Refresh", exact: true }).click();
   await expectLinkedDialog(member);
 
   const expiring = await holdRequests(t, member, secretList, { once: true });
@@ -1515,13 +1628,13 @@ test("Installation-administration reads after a revoke are refused and audited o
       assert.equal(await page.getByRole("alert").count(), 0);
     },
     templates: async () => {
-      const before = reads("/connection-templates") + reads("/oauth-clients");
+      const before = reads("/connection-templates") + reads("/credential-clients");
       await page.goto(`${fixture.origin}/console/credentials/connection-templates`);
       await page
         .getByRole("heading", { name: "Installation administrator access required" })
         .waitFor();
       assert.equal(await page.getByRole("link", { name: "Connection templates" }).count(), 0);
-      assert.equal(reads("/connection-templates") + reads("/oauth-clients"), before);
+      assert.equal(reads("/connection-templates") + reads("/credential-clients"), before);
     },
     backends: async () => {
       const refused = reads("/backends");
@@ -3419,6 +3532,8 @@ test("Agent detail says an Agent's versions are hidden, not missing, when none i
   await waitForEnabled(stop);
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
+  await dialog.getByText("Agent: Pending history", { exact: true }).waitFor();
+  await expectConfirmationAgentId(dialog, pending.id);
   await dialog.getByText(STOP_UNKNOWN_DEPLOYMENT_CONFIRMATION, { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
@@ -3522,6 +3637,8 @@ test("Agent detail reports a failed selected version as probably not serving", a
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model check");
   const { page } = await newPage(t, fixture);
+  const probeNextStep =
+    /^The startup model check failed\. No credential rejection was reported\..*rate limits and account\. With Codex, check that the provider is reachable\. After the fix, someone with deploy access can deploy a new version\.$/;
   const cases: {
     error: DeploymentError | null;
     nextStep: RegExp;
@@ -3538,11 +3655,10 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
         },
       }),
-      nextStep:
-        /^The startup model check failed, but not for a rejected credential: .*, or, with Codex, an unreachable provider\. Check these and the provider account, then deploy a new version\.$/,
+      nextStep: probeNextStep,
       // The runtime's classified cause names why this check failed.
       cause:
-        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota.",
     },
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
@@ -3554,7 +3670,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
         },
       }),
-      nextStep: /^The startup model check failed/,
+      nextStep: probeNextStep,
       cause: "The model provider check reported a failure (model_not_found)",
       // The banner reads the failed version, even when the operator is viewing the draft.
       recoveryMessage:
@@ -3571,7 +3687,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "error-event" },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause: "The model provider check reported a failure (error-event)",
     },
     {
@@ -3585,9 +3701,9 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail: "billing" },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause:
-        "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
+        "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits.",
     },
     // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
     // follows the token without the suffix, and the text says the retry also failed.
@@ -3595,7 +3711,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       [
         [
           "rate_limit-attempt2",
-          "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
+          "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota. The check was retried once and failed again.",
         ],
         [
           "turn-failed-attempt2",
@@ -3612,7 +3728,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
           cause: { kind: "PROBE_STATUS", detail },
         },
       }),
-      nextStep: /^The startup model check failed, but not for a rejected credential: /,
+      nextStep: probeNextStep,
       cause,
     })),
     {
@@ -3644,7 +3760,12 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     if (recoveryMessage) {
       await recovery.getByText(recoveryMessage, { exact: false }).waitFor();
-      assert.equal(await recovery.getByRole("link").first().textContent(), "Open Configuration");
+      assert.equal(
+        await recovery.getByRole("link").first().textContent(),
+        "Open Configuration draft",
+      );
+    } else if (error.code === "RUNTIME_MODEL_PROBE_FAILED") {
+      await recovery.getByText(error.message, { exact: false }).waitFor();
     }
     // A failed or timed-out model check leads as one; a refused gateway CLI does not.
     const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
@@ -3665,7 +3786,9 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     }
     assert.match(
       requiredText(
-        await recovery.getByRole("link", { name: "Open Configuration" }).getAttribute("href"),
+        await recovery
+          .getByRole("link", { name: "Open Configuration draft", exact: true })
+          .getAttribute("href"),
       ),
       new RegExp(`agents/${agent.id}\\?revision=draft&tab=configuration`),
     );
@@ -4074,6 +4197,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Cancelling the confirmation sends nothing and returns focus to the row's icon.
   await stop.click();
   let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/)
     .waitFor();
@@ -4139,6 +4264,8 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // Deletion names the kept Configuration and model Secret, then queues cleanup.
   await remove.click();
   dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
+  await expectConfirmationAgentId(dialog, running.id);
+  assert.equal(await dialog.getByText(draft.id, { exact: true }).count(), 0);
   await dialog
     .getByText("The Configuration and model credential Secret stay in this Namespace.")
     .waitFor();
@@ -4414,6 +4541,7 @@ test("Agents list row actions explain missing access and still report a refused 
   await dialog.waitFor();
   advice.release();
   await dialog.getByText(AGENT_STOP_DENIED).waitFor();
+  await expectConfirmationAgentId(dialog, agent.id);
   const confirm = dialog.getByRole("button", { name: "Stop Agent" });
   assert.equal(await confirm.isDisabled(), true);
   const cancel = dialog.getByRole("button", { name: "Cancel" });

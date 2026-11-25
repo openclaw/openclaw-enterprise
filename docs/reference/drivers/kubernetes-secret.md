@@ -9,10 +9,10 @@ Configuration `secretBindings` entry for gateway-only credentials.
 The [SecretDriver base contract](secret.md) defines the shared interface, IAM, and
 lifecycle. This page owns Kubernetes setup and operator procedures.
 
-The Driver stores values for environment delivery, transient server-side
-hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. OCC stores [Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md)
-in PostgreSQL.
+The Driver delivers Namespace Secrets to approved workloads and supports
+transient reads for Channel credential validation and directory lookup.
+OCC TokenService uses the Driver's [private custody](#tokenservice-private-custody). OCC stores
+[Codex device-login sessions](kubernetes-compute/codex-oauth-storage.md) in PostgreSQL.
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.
@@ -34,7 +34,6 @@ Namespace workload managers are trusted with both Gateway and Harness roles.
   also requires the deploying actor and the consuming Agent's service principal
   to have `operate` on every bound Secret; see
   [binding and deployment requirements](#bind-a-secret-to-gateway-environment).
-  Plugin discovery requires Agent `create` and exact Secret `operate` by the caller.
 - Secret values must be nonempty UTF-8 strings without NUL bytes, at most
   65,536 UTF-8 bytes, and fit the OCC request-body limit.
 
@@ -75,11 +74,13 @@ ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
 
-## Installation-private OAuth client secrets
+<a id="installation-private-oauth-client-secrets"></a>
 
-Helm provisions a separate Kubernetes namespace for confidential registrations and configures both the API and worker to use it. Outside Helm, use `OCC_INSTALLATION_SECRET_NAMESPACE` to select a dedicated namespace. The driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the worker get and delete. Keep workloads and tenant RoleBindings out of this namespace.
+## TokenService private custody
 
-The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
+Helm provisions a Kubernetes namespace for private Source and credential Client material. Outside Helm, select a dedicated namespace with `OCC_INSTALLATION_SECRET_NAMESPACE`. The Driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the Worker get and delete. Keep tenant workloads and tenant RoleBindings out of this namespace.
+
+The Driver creates one Opaque Secret per private address. A Source address identifies the owning Namespace and Source. A Client address identifies the Client in its registered scope. The Kubernetes namespace is the shared physical store. Before using or deleting the Secret, the Driver checks the Installation ID, private address, and Driver identity. Kubernetes resource versions fence replacements and deletes.
 
 If Kubernetes confirms creation but returns an object that fails these checks, the Driver attempts to delete the requested object with the returned UID and resourceVersion. A replacement or changed object is preserved. Confirmed removal keeps the original refusal; missing preconditions or an unconfirmed delete report an unknown outcome. OCC retains its hidden registration until the cleanup worker confirms that the private object is absent.
 
@@ -139,9 +140,9 @@ A successful create returns HTTP `201` with metadata only:
 
 OCC stores the Secret ID, Namespace ID, selected driver ID, and opaque
 Kubernetes backend reference. The value is stored only by the driver and is
-never returned by OCC. When a credential source is registered, the API reads the
-value with the same labels, annotations, UID, and key checks as `resolve` and
-passes it only to the Credential Gateway.
+never returned by OCC. To enroll a managed model credential, use the
+[Credential Source API](../credential-sources/managed-static.md#register-a-source).
+Its custody is separate from Namespace Secret registration.
 
 List readable metadata with `GET /namespaces/:namespaceId/secrets`; see the
 [SecretDriver IAM contract](secret.md#iam) for collection and exact-Secret checks.
@@ -220,15 +221,8 @@ reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
 does not remove the need to deploy again.
 
-If a [credential source](../credential-sources.md) holds the key as a Gateway
-copy, also run `occ credential-source update ID` after updating the Secret and
-before deploying. A deployment alone starts the new version with the old copy.
-See [Update a source](../credential-sources.md#update-a-source).
-
-With OpenShell, that source update briefly disconnects the workspace node of
-every running Agent that uses the source, even when nothing changed. A turn that
-starts meanwhile can fail with HTTP 500, and so can a native OpenClaw turn
-already in progress. Update the source while those Agents are idle.
+For an OCC TokenService-managed model key, update the Source and verify delivery
+using the [managed model key replacement procedure](../../guides/deploy/credential-lifecycle.md#replace-an-occ-tokenservice-managed-model-key).
 
 Recreating a Harness Pod or running `kubectl rollout restart` only reads its
 existing revision projection; neither is a credential-delivery operation.
