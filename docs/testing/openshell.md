@@ -142,9 +142,11 @@ separately requires screenshots and video.
 
 ## OpenShell Sandbox
 
-The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
-filesystem/network restrictions, replacement and cleanup. Local fixtures alone
-are insufficient; see [OpenShell coverage](openshell-coverage.md).
+This legacy suite checks Gateway access, model/tool turns, credentials, and
+Sandbox lifecycle. Run it only on a matching pre-cutover release: current
+startup rejects its Credential Gateway fixture. Use [Model and Git on the same
+Agent](#model-and-git-on-the-same-agent) for current Source-backed verification.
+See [historical coverage](openshell-coverage.md) for the older assertions.
 
 If the credential-route check's allowed endpoint fails, the suite captures one
 bounded tail from the Harness's exact supervisor before cleanup: source type,

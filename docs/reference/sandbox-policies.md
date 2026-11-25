@@ -167,51 +167,50 @@ on its OIDC gateway; these permissions are separate from OCE resource authority.
 
 ## Repository network policy
 
-Set `repositoryNetworkPolicyCeiling` on the Installation to bound repository delegation. It accepts up to 32 unique repositories in lowercase `owner/name` form without `.git`, each with `read` or `write` access. Startup rejects invalid entries. An absent or empty ceiling delegates nothing. The policy GET returns the subset approved for this Namespace.
+Set `repositoryNetworkPolicyCeiling` on the Installation to delegate at most
+32 named repositories, each with `read` or `write` access. Use lowercase
+`owner/name` without `.git`. The TokenService Git profile also accepts short
+repository names. An absent or empty ceiling delegates no access. A policy read
+returns the subset approved for the Namespace.
 
-`GET /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/networking` requires Agent and SandboxPolicy read access. GET returns the saved policy and tells an editor whether they can submit a list for validation. An editor can withdraw an existing list. For a first save, the hint is available when the selected Git scope overlaps the delegated Namespace scope on a qualified Driver pair, or when the pair accepts an empty list. When the scopes overlap, GET uses the Compute Driver's placement check if it provides one. PUT validates the whole list because a Driver can require multiple grants together.
+### Source-backed native Git
 
-GET `repositoryApiMaxima` shows eligible native Git and API levels before Agent grants apply.
+Select the GitHub App Client and per-repository access in the Agent's
+`repositoryAccess`. OCC resolves a Git Source for the approved repositories
+and derives the Git-only policy when it admits the Agent revision. Deployment
+returns `409 RESOURCE_CONFLICT` if the Agent also has a separately saved
+`repositoryNetworkPolicy`, including an empty list. Omitting the field in a
+policy update retains the saved list. Use an Agent draft without that list.
+[Native Git access levels](repository-credentials/access-levels.md#native-git-delivery)
 
-To keep Git Write and disable PR creation, send
-`{"repository":"owner/name","access":"write","apiLimits":{"pull_requests":"read"}}`
-in the policy PUT. Preserve the other grants, then deploy again. The initial
-grant and ceiling exclude API limits. See [API limits](repository-credentials/access-levels.md#api-limits).
+Native Git requires dedicated Codex with a supported TokenService model Source
+and the paired OpenShell Sandbox and Credential Proxy. Use the
+[inspected role images](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git).
+A dedicated Agent with only standalone TokenService model revisions can add
+native Git after Stop. An Agent with earlier unscoped Git needs a new Agent ID.
+Clear the Agent's repository selections to request withdrawal on its running
+revision. [GitHub App setup](../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
-PUT with editing enabled requires Agent `manage_policy`, SandboxPolicy `update` and the current `expectedVersion`. Omit `repositoryNetworkPolicy` to retain its saved value. A first list or a nonempty replacement requires empty ordinary additions, readable Configuration and Harness credential source, current Namespace authority, and a Compute and Sandbox pair that accepts the selected repository bindings and grants. An explicit empty list requests denial of all repositories and requires SandboxPolicy `read` even on the first save. This check prevents a caller from learning whether a list already exists. A pair lacking support refuses the first list. To withdraw an existing list after Driver support is lost, send `additions: []` and `repositoryNetworkPolicy: []`.
+### Separately saved repository grants
 
-A save updates desired policy. Deployment checks the current grants and selected Drivers, validates the frozen revision, and rechecks authority before credential operations. The Worker refuses stale or unsupported policy before dispatch. Live apply refuses an explicit list. To end current access, use a controller and Worker that support the active revision to stop the Agent and confirm its workload has stopped.
+The Sandbox policy API retains a separate grant list for legacy or qualified
+Driver paths that support it. A policy GET requires Agent and SandboxPolicy
+`read`. Its `repositoryNetworkPolicySaveSupported` field indicates whether the
+caller can submit a list for validation or withdraw an existing list. PUT
+requires editing enabled, Agent `manage_policy`, SandboxPolicy `update`, and
+the current `expectedVersion`.
 
-When a Channel needs a bound Secret, the controller checks the saved repository
-policy and the caller's Secret access before handing the value to the Channel.
-The handoff shares the lock used by permission changes. The controller checks
-permissions committed before it acquires the lock. It releases the lock before
-waiting for the provider and checks deployment admission again before saving the
-revision.
+A first list or nonempty replacement requires empty ordinary additions,
+a readable Configuration and model credential, current Namespace authority,
+and a qualified Compute and Sandbox pair. An empty list denies all repositories
+and requires SandboxPolicy `read`. If Driver support is lost, send
+`additions: []` and `repositoryNetworkPolicy: []` to withdraw the desired grants.
+The list remains saved. Live apply refuses an explicit list. Stop and confirm
+the running workload has retired to end its current access.
 
-Save a repository list before first deployment to opt in. A Dedicated Agent with
-only standalone TokenService model revisions can opt in later. Save the list,
-complete Stop, then deploy. The Worker rechecks revision history before preparation.
-
-With earlier unscoped Git, scoped deployment returns 409 even after Stop. A
-delayed Gateway write can outlive Stop. Create a draft for scoped access and
-save its list before deploying. Keep the original Agent and its storage for
-existing chats and files. Reusing a [conversation label](agent-http-chat.md#conversations-and-execution)
-does not transfer history.
-
-After refusing a scoped replacement before its first provider call, the Worker
-can maintain the serving predecessor if the deployment has no earlier attempt.
-If earlier work could have changed the Gateway, the Worker keeps that repair
-blocked. Stop the Agent and confirm its workload has retired.
-
-The Kubernetes and OpenShell pair can admit [native Git](repository-credentials/access-levels.md#native-git-delivery)
-for a dedicated Codex Harness, an OpenAI credential source and the managed
-Gateway. The controller build must pin the inspected Gateway and Agent images
-by manifest digest using `OCC_INSPECTED_WORKSPACE_GATEWAY_DIGEST` and
-`OCC_INSPECTED_WORKSPACE_AGENT_DIGEST`. Qualify both role images together, then use the
-[runtime-first controller build](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git). Leaving the arguments empty disables this
-placement. A first empty list can be saved. Deploying it is refused before
-launch. Stop the active revision to retire its access.
+When a Channel needs a bound Secret, OCC checks the saved repository policy
+and the caller's Secret access before handing the value to the Channel Driver.
+It rechecks deployment admission before creating the revision.
 
 ## Denials and recommendations
 

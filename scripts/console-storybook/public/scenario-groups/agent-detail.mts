@@ -2388,6 +2388,7 @@ export function createAgentDetailScenarios({
         path: currentVersion,
         deployed: true,
         candidateDeploymentStatus: "failed",
+        candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit" },
         agentPermissionSummary: {
           update: false,
           deploy: false,
@@ -2397,8 +2398,9 @@ export function createAgentDetailScenarios({
           administer: false,
         },
         description:
-          "The viewer can inspect failed v7’s runtime status but cannot read log text. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
+          "The viewer can inspect failed v7’s runtime status but cannot read log text or deploy. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
         steps: [
+          "Check that the startup failure says who can deploy a new version after the fix.",
           "At 1440 and 390 wide, check that View v7 runtime status in Logs and the advice about checking logs are both visible.",
           "Press Tab to reach the action and Enter to open it. Viewing version changes from v6 to v7 and the Logs tab receives focus.",
           "Inspect the simulated runtime status. Log text, Follow and Download remain unavailable.",

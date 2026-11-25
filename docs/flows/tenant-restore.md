@@ -36,6 +36,7 @@ graph TD
     G --> H["Remap and create Preset templates"]
     H --> I["Restore Roles, Agents and access bindings"]
     I --> J["Attempt selected deployments"]
+    I -->|Agent create refused| P["Stop and preserve map<br/>Exit 1"]
     I -->|Ambiguous write response| O["Stop; preserve map and reconcile write"]
     J -->|Ambiguous write response| O
     J --> K{"Deployments failed or bindings reported<br/>for manual recovery?"}
@@ -95,7 +96,9 @@ accounts follow Configurations and precede Presets, so their new IDs exist when
 `remap` rewrites a Preset's Harness authentication source. A released
 `chatgpt_service_account` selection first becomes `codex_pat` with a
 `service_account` source. Both its Namespace and account ID are remapped.
-A service-account record is restored without issued provider credentials.
+This preserves a legacy direct account selection in the Preset. The importer
+restores the ServiceAccount without issued provider credentials and does not
+enroll a PAT Source for it.
 
 Saved IDs skip completed creates. An existing named resource can be adopted and
 is left unchanged; moving this order does not rewrite a Preset already created
@@ -110,6 +113,11 @@ principal IDs enter the map before access bindings are restored. The helper logs
 and omits bindings to old Agent revisions for every subject, even when the import
 exits 0. It reports other unsupported bindings, including group, Installation-wide,
 and resource-less bindings, for manual recovery without creating grants.
+
+The current controller returns `409 RESOURCE_CONFLICT` when the importer tries
+to create an Agent with a direct ServiceAccount PAT binding. Import exits `1`
+before it restores that Namespace's access bindings or attempts deployment.
+`--no-deploy` still sends the create request. See [manual restore for legacy ServiceAccount PATs](../guides/deploy/split-layout-upgrade.md#restore-agents-with-legacy-serviceaccount-pats).
 
 Running source Agents are deployed unless `--no-deploy` was selected. Failed
 deployments or bindings reported for manual recovery cause `main` to exit 4.
@@ -130,13 +138,12 @@ operator steps in the migration guide.
 
 ## Debugging and Verification
 
-Compare a restored Preset's `template.agent.harnessAuth.source` with the saved
-Namespace and service-account IDs. Read that account in the destination Namespace;
-a stale source ID returns 404 even when the import command completed successfully.
-The conformance workflow exercises real controller HTTP handlers with in-memory
-state, including current and released authentication spellings, resumed imports,
-and the `import` command's exit codes over loopback HTTP.
-It does not establish PostgreSQL persistence, issued credentials, or live deployment.
+To inspect a legacy Preset, compare `template.agent.harnessAuth.source` with the
+saved Namespace and ServiceAccount IDs. A mapped account ID can identify the
+restored ServiceAccount even though it cannot serve as the Agent's model binding.
+Earlier conformance coverage exercised the import spellings, resumed imports,
+and exit codes over loopback HTTP with in-memory OCC state. It did not verify
+PostgreSQL persistence, provider-issued credentials, or live deployment.
 
 ## Related docs
 

@@ -9,8 +9,9 @@ current behavior from remaining design work.
 Secret storage, exact binding authorization, delivery for one Agent revision, and
 transactional mutation audit are implemented. With Kubernetes, canonical Secrets
 live in the tenant storage namespace; the worker materializes admitted
-runtime Secrets for the exact consumer. Model credentials still reach the executing Harness.
-Brokered model access, OAG audit, universal pre-execution policy enforcement, and
+runtime Secrets for the exact consumer of direct delivery. Managed Proxy
+delivery keeps the real model credential outside the Harness. General model
+mediation, OAG audit, universal pre-execution policy enforcement, and
 mutually authenticated workload transport remain broader design requirements.
 See [Secret storage](../reference/drivers/secret.md),
 [runtime isolation](../reference/security/runtime-isolation.md), and
@@ -42,7 +43,7 @@ Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
 
 The selected TokenService owns the canonical Namespace-scoped CredentialSource
-and its static credential or OAuth grant. OCC authorizes Source operations and
+and its static credential, OAuth grant, or GitHub installation token. OCC authorizes Source operations and
 can query nonsecret metadata directly; usable token access goes through
 TokenService. Credential Proxy prepares delivery for an admitted binding, while
 Sandbox enforces the admitted network policy. A Template ID associates a Source
@@ -83,12 +84,11 @@ A trusted dedicated gateway may receive its existing Agent-scoped gateway and
 Channel credentials and Secrets explicitly bound by its approved Configuration.
 Its [identity boundary](access.md#runtime-trust-across-targets) excludes dedicated
 Harness identity and model credentials as well as broad controller credentials.
-Direct model-credential delivery to the tenant data-plane Harness is a temporary
-implementation exception. Target model-credential mediation keeps real upstream
-credentials outside Harness execution; the Harness receives only scoped substitutes.
-Each target must restrict workload-write authority to the resources required
-for the deployment, since that authority can indirectly expose Secrets there. Cross-target materialization does not establish brokered
-model access or workload-bound transport authentication; those guarantees remain deferred.
+The managed Proxy path keeps upstream credentials outside Harness execution
+and supplies scoped placeholders. Each target must restrict workload-write
+authority to the resources required for the deployment, since that authority
+can indirectly expose Secrets there. Workload-bound transport authentication
+remains a design requirement.
 
 ## Failure behavior
 
@@ -124,7 +124,7 @@ independently verified and restored.
 Rollback and cleanup cover both selected runtime targets and preserve exact
 ownership; a failed or unreachable target cannot be treated as successful
 recovery or deletion. OCC never substitutes another runtime target, Namespace,
-identity, `IAMDriver`, `CredentialGatewayDriver`, `SecretDriver`, gateway,
+identity, IAM, TokenService, Credential Proxy, Secret Driver, gateway,
 provider, or runtime implementation.
 
 ## Audit

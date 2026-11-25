@@ -63,9 +63,9 @@ const RUNTIME_FAILURE_CAUSE_LABELS = {
 // Provider refusals the operator fixes at the provider account, not in the Configuration.
 const PROBE_STATUS_DETAIL_TEXT = {
   rate_limit:
-    "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
+    "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota.",
   billing:
-    "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
+    "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits.",
 };
 
 // A Codex check retried once, after a timeout or a reliability failure, holds its second
