@@ -37,8 +37,10 @@ function supported(check: () => boolean | undefined): boolean {
   }
 }
 
-/** A selected Sandbox offering these capabilities enforces executable, destination and port. */
+/** A selected Sandbox offering these capabilities enforces the subject, destination and port. */
 export interface NetworkPolicyCapabilities {
+  /** The Sandbox isolates each Agent execution and can enforce grants to all its processes. */
+  readonly supportsAgentSubject?: boolean;
   readonly wildcards: boolean;
   readonly portRanges: boolean;
   /** Qualifies the complete allowlist, including default routes, request restrictions and executable/port isolation. */
@@ -64,6 +66,12 @@ export function networkGrantAdmissionDetails(
   const details: ErrorDetail[] = [];
   grants.forEach((grant, index) => {
     const path = `${pointer}/${index}`;
+    if (
+      grant.subject === "agent" &&
+      (capabilities.supportsAgentSubject !== true || !capabilities.supportsNetworkPolicy)
+    ) {
+      details.push(invalid(path, "The Sandbox cannot enforce an Agent-wide grant."));
+    }
     if (!requestCovered(grant, ceiling)) {
       details.push({
         path,
@@ -126,6 +134,8 @@ function deploymentNetworkAccessDetails(
 
 /** From the selected enforcing implementation. Source, Plugin and workload input cannot declare capabilities. */
 export interface CredentialInjectionCapabilities {
+  /** Injection can be bound to one Agent execution for all its processes. */
+  readonly supportsAgentSubject?: boolean;
   readonly distinguishesExecutable: boolean;
   readonly distinguishesPort: boolean;
   readonly rejectsStaleAndMisplacedPlaceholders: boolean;
@@ -170,8 +180,7 @@ function safelyComposed(
       !ports.length ||
       requestCovered(
         {
-          ...rule,
-          binary: reachable.binary,
+          ...reachable,
           host: ruleCoversReachableHost ? reachable.host : rule.host,
           ports,
           ...(requestPolicy && { requestPolicy }),
@@ -237,7 +246,7 @@ export interface DeploymentPolicy {
 
 /** OCC supplies the current authority and enforcement capabilities for this deployment. */
 export interface DeploymentPolicyValidationContext {
-  readonly ceiling: readonly SandboxNetworkGrant[];
+  readonly ceiling: readonly (SandboxNetworkGrant | DeploymentRequestMatch)[];
   readonly sandbox: NetworkPolicyCapabilities;
   /** OCC resolves source and consumer authority. Plugin authority includes only the named connection's reviewed request rules. */
   readonly authorityForBinding?: (
@@ -330,7 +339,9 @@ export function validateDeploymentPolicy(
   if (
     context.targetMayHoldPlaceholders !== false &&
     networkAccessPolicy.allowed.length &&
-    proxy?.rejectsStaleAndMisplacedPlaceholders !== true
+    (proxy?.rejectsStaleAndMisplacedPlaceholders !== true ||
+      (networkAccessPolicy.allowed.some((rule) => rule.subject === "agent") &&
+        proxy.supportsAgentSubject !== true))
   ) {
     return [
       invalid(
@@ -387,6 +398,7 @@ export function validateDeploymentPolicy(
         ];
       }
       if (
+        (rule.subject === "agent" && proxy.supportsAgentSubject !== true) ||
         !supported(() => proxy.supportsBindingRequest(binding, rule, policy)) ||
         !safelyComposed(rule, allowedRequests, networkAccessPolicy, proxy)
       ) {

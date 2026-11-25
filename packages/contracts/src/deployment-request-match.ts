@@ -32,15 +32,30 @@ const requestSchema = Type.Union([
 ]);
 
 const { binary, host, ports } = SandboxNetworkGrantSchema.properties;
-const matchSchema = Type.Object(
-  {
-    binary,
-    host,
-    ports,
-    requestPolicy: Type.Optional(requestSchema),
-  },
-  strict,
-);
+const route = { host, ports, requestPolicy: Type.Optional(requestSchema) };
+const matchSchema = Type.Union([
+  Type.Object({ binary, ...route }, strict),
+  Type.Object({ subject: Type.Literal("agent"), ...route }, strict),
+]);
+
+// Coverage requires an explicit grant to the same principal. Missing executable paths
+// cannot establish Agent authority, even when neither side has a path.
+function sameSubject(match: DeploymentRequestMatch, limit: DeploymentRequestMatch): boolean {
+  if (match.subject === "agent" && limit.subject === "agent") {
+    return (
+      Object.hasOwn(match, "subject") &&
+      Object.hasOwn(limit, "subject") &&
+      !("binary" in match) &&
+      !("binary" in limit)
+    );
+  }
+  return (
+    !("subject" in match) &&
+    !("subject" in limit) &&
+    typeof match.binary === "string" &&
+    match.binary === limit.binary
+  );
+}
 
 export function hostCovered(host: string, ceiling: string): boolean {
   if (host === ceiling) {
@@ -118,7 +133,7 @@ export function requestCovered(
   const allowedPorts = allowed
     .filter(
       (limit) =>
-        match.binary === limit.binary &&
+        sameSubject(match, limit) &&
         hostCovered(match.host, limit.host) &&
         requestPolicyCovered(match.requestPolicy, limit.requestPolicy),
     )
@@ -239,6 +254,17 @@ export function validateMatches(
   });
   if (details.length) {
     return details;
+  }
+  // An Agent includes every executable. Refuse even disjoint routes with mixed
+  // subjects until the selected pair can qualify that combination.
+  if (matches.some((rule) => rule.subject !== matches[0]?.subject)) {
+    return [
+      {
+        path: pointer,
+        code: "INVALID_VALUE",
+        message: "Agent and executable grants cannot be combined.",
+      },
+    ];
   }
   matches.forEach((grant, index) => {
     if (matches.slice(0, index).some((other) => conflictingAllowances(grant, other))) {

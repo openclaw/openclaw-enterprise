@@ -68,6 +68,66 @@ function policyRefusals(policy: DeploymentPolicy, context: DeploymentPolicyValid
 }
 
 export function registerDeploymentPolicyCases(): void {
+  test("Agent-wide injection needs independent network and consumer authority and both Drivers", () => {
+    const { context, authority, binding, request } = credentialPolicyFixture({
+      type: "http",
+      method: "POST",
+      path: "/v1/responses",
+    });
+    const { binary, ...route } = request;
+    const agent = { subject: "agent", ...route } as const;
+    const model = { ...binding, consumer: { kind: "model", providerId: "example" } } as const;
+    const policy = {
+      bindings: [model],
+      networkAccessPolicy: { allowed: [agent] },
+      injectionPolicies: [{ bindingRef: binding.bindingRef, allowedRequests: [agent] }],
+    };
+    const qualified = {
+      ...context,
+      ceiling: [agent],
+      sandbox: { ...context.sandbox, supportsAgentSubject: true },
+      proxy: { ...context.proxy, supportsAgentSubject: true },
+      authorityForBinding: () => ({ ...authority, allowedRequests: [agent] }),
+    };
+    assert.deepEqual(validateDeploymentPolicy(policy, qualified), []);
+    for (const missing of [
+      { ceiling: context.ceiling },
+      { authorityForBinding: () => authority },
+      { sandbox: context.sandbox },
+      { proxy: context.proxy },
+    ]) {
+      assert.ok(validateDeploymentPolicy(policy, { ...qualified, ...missing }).length);
+    }
+    assert.ok(
+      validateDeploymentPolicy(
+        { ...policy, bindings: [], injectionPolicies: [] },
+        { ...qualified, targetMayHoldPlaceholders: true, proxy: context.proxy },
+      ).length,
+    );
+    const read = (allowed: readonly DeploymentRequestMatch[]) =>
+      assertExecutionAdmission({
+        executionAdmission: { version: 8, mode: "standalone" },
+        credentialDeployment: {
+          ...policy,
+          networkAccessPolicy: { allowed },
+          driver: { id: "sandbox", implementation: "sandbox", configurationId: "a".repeat(64) },
+          proxyDriverId: "proxy",
+        },
+      });
+    assert.doesNotThrow(() => read([agent]));
+    // Persisted rows can bypass the typed inputs. Even unrelated executable
+    // allowances must fail closed, and a missing path cannot imply Agent scope.
+    for (const allowed of [
+      [request],
+      [agent, { ...request, host: "other.example.org" }],
+      [route],
+      [{ ...agent, binary }],
+      [{ ...route, subject: "unknown" }],
+    ]) {
+      assert.throws(() => read(allowed as DeploymentRequestMatch[]), /Invalid staged/);
+    }
+  });
+
   test("staged source snapshots stay bound to the selected TokenService instance", () => {
     const source = {
       id: "cs_work",
@@ -530,10 +590,7 @@ export function registerDeploymentPolicyCases(): void {
       method: "GET",
       path: "/calendar/**",
     });
-    const additionalRoutes: [
-      DeploymentRequestMatch,
-      "distinguishesExecutable" | "distinguishesPort",
-    ][] = [
+    const additionalRoutes: [typeof request, "distinguishesExecutable" | "distinguishesPort"][] = [
       [
         {
           ...request,

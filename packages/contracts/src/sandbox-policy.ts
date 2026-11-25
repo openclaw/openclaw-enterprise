@@ -13,6 +13,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
 import type { ErrorDetail } from "./api/common.ts";
+import type { DeploymentRequestMatch } from "./credential-deployment.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
 export const SandboxNetworkGrantSchema = Type.Object(
@@ -301,12 +302,10 @@ export function validDnsHost(host: string): boolean {
   );
 }
 
-export function networkMatchDetails(
-  grant: Pick<SandboxNetworkGrant, "binary" | "host" | "ports">,
-  path: string,
-): ErrorDetail[] {
+export function networkMatchDetails(grant: DeploymentRequestMatch, path: string): ErrorDetail[] {
   const details: ErrorDetail[] = [];
   if (
+    grant.subject !== "agent" &&
     grant.binary
       .split("/")
       .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
