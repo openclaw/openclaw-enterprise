@@ -1,3 +1,5 @@
+import { Check } from "typebox/value";
+
 import {
   WORKSPACE_DEFAULTS_ID,
   harnessAuthBindingFromSnapshot,
@@ -10,7 +12,7 @@ import {
   type AgentStopQuery,
   type FirstDeploymentIntent,
   type RepositoryNetworkGrant,
-  isCanonicalRepositoryGrantList,
+  RepositoryOptionSchema,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -61,7 +63,6 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     networkProxy: agent.networkProxy,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
-    repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     harnessAuth: agent.harnessAuth,
     ...(agent.credentialSources === undefined || agent.credentialSources.length === 0
@@ -126,7 +127,9 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
       : {
           repositoryCredentials: {
             driver: revision.repositoryCredentials.driver,
-            deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
+            ...(revision.repositoryCredentials.deadlineWallMs === undefined
+              ? {}
+              : { deadlineWallMs: revision.repositoryCredentials.deadlineWallMs }),
             bindings: revision.repositoryCredentials.bindings.map(({ repositoryRef, profile }) => ({
               repositoryRef,
               profile,
@@ -164,7 +167,8 @@ async function listRepositoryOptions({
   reply.send({
     data: result.options.map(
       ({ repositoryRef, displayName, allowedProfiles, description, ...catalog }) => ({
-        ...("githubAccess" in catalog && isCanonicalRepositoryGrantList([catalog.githubAccess])
+        ...("githubAccess" in catalog &&
+        Check(RepositoryOptionSchema.properties.githubAccess, catalog.githubAccess)
           ? { githubAccess: catalog.githubAccess }
           : {}),
         repositoryRef,

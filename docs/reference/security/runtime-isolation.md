@@ -99,8 +99,8 @@ final destination resolution and address enforcement.
 The upstream ChatGPT admin key is read only by the API-side `ChatGPTClient`
 owned by its configured [Backend](../backends.md); it
 never appears in startup YAML, persistence, public account data, workload Pods,
-or the worker. Restrict provider TLS egress to the API Pod and an explicitly
-approved provider/proxy CIDR. The worker receives no provider egress exception.
+or the worker. The chart permits unrestricted egress from both API and worker
+Pods; credential ownership still limits the administrator key to the API.
 Managed account bindings carry exact Backend, Driver, and workspace identity.
 Issuance/deletion, deployment, and worker reconciliation reject conflicting
 ownership; the worker validates binding metadata and confirms issuance. Its Compute Driver

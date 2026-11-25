@@ -12,15 +12,12 @@ import type {
   Namespace,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import type { InstalledDriver } from "../../packages/occ/src/index.ts";
+import type { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
 
 type AdmissionCallback = (input: {
   app: {
-    request(
-      method: "POST",
-      path: string,
-      options: { body: object },
-    ): Promise<{ status: number; data: unknown }>;
+    controller: OpenClawController;
+    principal: { id: string };
     updateAgent(
       namespaceId: string,
       agentId: string,
@@ -33,7 +30,6 @@ type AdmissionCallback = (input: {
   };
   agent: Agent;
   namespace: Namespace;
-  path: string;
   origin: string;
 }) => Promise<{ agent: Agent; source: { id: string } }>;
 
@@ -52,30 +48,21 @@ const admitProtectedMetadata = staticEgressFixture as (
   options: { admitSource: AdmissionCallback },
 ) => Promise<ProtectedFixture>;
 
-function hasSourceId(value: unknown): value is { id: string } {
-  return (
-    typeof value === "object" && value !== null && "id" in value && typeof value.id === "string"
-  );
-}
-
-test("API-admitted protected credential-free metadata projects no inference tools or anonymous reader", async (t) => {
+test("a historical protected credential-free Source projects no inference tools or anonymous reader", async (t) => {
   const f = await admitProtectedMetadata(t, {
-    async admitSource({ app, agent, namespace, path, origin }) {
-      const { status, data: source } = await app.request("POST", path, {
-        body: {
-          name: "identity-only",
-          type: "credential-free-repository-metadata",
-          config: {
-            origin,
-            repository_id: "7311",
-            repository: "fixture/credential-free",
-            agent_id: agent.id,
-            authority: "execution",
-          },
+    async admitSource({ app, agent, namespace, origin }) {
+      const source = await app.controller.createCredentialSource(app.principal.id, {
+        namespaceId: namespace.id,
+        name: "identity-only",
+        type: "credential-free-repository-metadata",
+        config: {
+          origin,
+          repository_id: "7311",
+          repository: "fixture/credential-free",
+          agent_id: agent.id,
+          authority: "execution",
         },
       });
-      assert.equal(status, 201);
-      assert.ok(hasSourceId(source));
       const bound = await app.updateAgent(namespace.id, agent.id, {
         configurationId: agent.configurationId,
         harnessAuth: { method: "runtime" },

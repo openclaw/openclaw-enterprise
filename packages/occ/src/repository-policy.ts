@@ -4,19 +4,27 @@ import {
   type ResourceRef,
   type RepositoryNetworkPolicyCeiling,
   isInstallationRepositoryProfile,
+  repositoryAccessSelections,
   type Agent,
+  type AdmittedRepositoryBinding,
   type BackendDefinition,
   type ComputeDriver,
+  type CredentialProxyDriver,
+  type DeploymentRequestMatch,
+  type GitHubAppInstallationCredentialSource,
   type RepositoryAccess,
   type RepositoryBindingRequest,
   type RepositoryBindingSelection,
   type RepositoryCredentialResolution,
   type RepositoryOption,
   type RepositoryOptions,
+  type RepositoryNetworkGrant,
   type RepositoryPolicyDriver,
   type RepositoryRevisionState,
+  type SourceBackedRepositoryRevisionState,
   type RevisionHarnessDescriptor,
   type SandboxDriver,
+  type SandboxNetworkGrant,
   codexProxiesRepositoryBroker,
   codexRepositoryBrokerNetworkProxy,
   type OpenClawConfigurationDocument,
@@ -32,7 +40,9 @@ import {
   type RepositoryPolicyResolution,
   delegatedRepositoryCeiling,
   repositoryGrantAuthority,
+  repositoryNetworkLimitForSelection,
   type RepositoryGrantPolicy,
+  assertSelectedRepositoryGrants,
 } from "./repository-network-policy.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -76,6 +86,35 @@ interface SelectedRepositoryPolicyOwner {
   readonly unchanged: () => boolean;
 }
 
+export type SupportsStagedRepositoryRecipient = (input: {
+  readonly compute: ComputeDriver;
+  readonly sandbox: SandboxDriver;
+  readonly proxy: CredentialProxyDriver;
+  readonly harness: RevisionHarnessDescriptor;
+}) => boolean;
+
+export type StagedRepositoryCeiling = (input: {
+  readonly namespaceId: string;
+  readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+  readonly ceiling: RepositoryNetworkPolicyCeiling;
+}) => RepositoryNetworkPolicyCeiling;
+
+export type PrepareStagedRepositorySource = (input: {
+  readonly namespaceId: string;
+  readonly access: RepositoryAccess;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+  readonly ceiling: RepositoryNetworkPolicyCeiling;
+}) =>
+  | {
+      readonly appId: string;
+      readonly installationId: string;
+      readonly resolveGrants: (
+        source: Readonly<GitHubAppInstallationCredentialSource>,
+      ) => readonly RepositoryNetworkGrant[] | undefined;
+    }
+  | undefined;
+
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
   readonly configurationDriver: () => ConfigurationDriver;
@@ -83,6 +122,24 @@ interface RepositoryPolicyDependencies {
     typeof createCredentialSourceDrivers
   >["credentialSourceOwner"];
   readonly selectedProxyOwner: () => InstalledDriver;
+  readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
+  readonly supportsStagedRepositoryRecipient: SupportsStagedRepositoryRecipient | undefined;
+  readonly repositoryCredentialAdmission:
+    | ((input: {
+        readonly namespaceId: string;
+        readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+        readonly bindings: readonly AdmittedRepositoryBinding[];
+        readonly grants: readonly RepositoryNetworkGrant[];
+      }) => readonly DeploymentRequestMatch[] | undefined)
+    | undefined;
+  readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
+  readonly prepareStagedRepositorySource: PrepareStagedRepositorySource | undefined;
+  readonly validateDeploymentGitHubAppClient: (
+    namespaceId: string,
+    clientId: string,
+    appId: string | undefined,
+    draftState: PlatformUnitOfWork,
+  ) => Promise<void>;
   readonly repositoryNetworkPolicyCeiling: RepositoryNetworkPolicyCeiling;
   readonly drivers: Pick<DriverRegistry, "hasSelection" | "selection">;
   readonly selectedRepository: () => RepositoryPolicyDriver;
@@ -391,11 +448,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         "The selected repository credential Driver returned invalid repository options.",
       );
     }
-    // The create picker has no Agent yet. Only an administrator with Namespace-wide
-    // read access to Agents and their policies may see delegated policy limits here.
+    // Both pickers disclose limits only to an Installation administrator with Namespace-wide
+    // read access to Agents and their policies. The exact-Agent route also requires Agent update.
     const { authority } = dependencies;
     const showLimits =
-      agentId === undefined &&
       admission !== undefined &&
       result.options.some((option) => "githubRepository" in option) &&
       (
@@ -410,11 +466,28 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         namespaceId,
         id: namespaceId,
       }));
-    const limits = new Map(
-      (showLimits ? namespaceRepositoryNetworkPolicyCeiling(namespaceId) : []).map(
-        (grant) => [grant.repository, grant] as const,
-      ),
-    );
+    const grantAuthority = showLimits
+      ? repositoryGrantAuthority(namespaceId, admission?.policy, owner.unchanged)
+      : undefined;
+    const optionLimit = (repository: string) => {
+      if (!grantAuthority) {
+        return undefined;
+      }
+      const limit = repositoryNetworkLimitForSelection(
+        dependencies.repositoryNetworkPolicyCeiling,
+        repository,
+        dependencies.stagedRepositoryCeiling !== undefined,
+      );
+      if (!limit) {
+        return undefined;
+      }
+      // An owner supplied by the configured limit is provisional until Deploy verifies the Source.
+      const [allowed] = delegatedRepositoryCeiling(
+        [{ repository, access: limit.access }],
+        grantAuthority,
+      );
+      return allowed && { ...allowed, repository: limit.repository };
+    };
     if (!owner.unchanged()) {
       throw new DependencyUnavailableError("The repository policy changed while listing options.");
     }
@@ -426,7 +499,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
             "githubRepository" in provider &&
             typeof provider.githubRepository === "string" &&
             allowedProfiles.includes("github-repository")
-              ? limits.get(provider.githubRepository)
+              ? optionLimit(provider.githubRepository)
               : undefined;
           return {
             repositoryRef,
@@ -488,12 +561,12 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       }
       // TODO: support multiple independently approved bindings when session admission supports them.
       // Without a repository Driver nothing can be approved (finding 2362).
-      if (agent.repositoryBindings?.length !== 1 || !repositoryConfigured()) {
+      if (agent.repositoryAccess?.repositories.length !== 1 || !repositoryConfigured()) {
         return [];
       }
       const resolved = resolveRepositoryBindings(
         namespaceId,
-        agent.repositoryBindings,
+        repositoryAccessSelections(agent.repositoryAccess),
         "saved",
         selectedStandingRepositoryAdmission(),
       );
@@ -543,33 +616,31 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
 
   function repositorySettings(
     namespaceId: string,
-    input: {
-      readonly repositoryBindings?: readonly RepositoryBindingRequest[];
-      readonly repositoryAccess?: RepositoryAccess;
-    },
-  ): {
-    repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
-    repositoryAccess?: RepositoryAccess;
-  } {
-    const resolve = (bindings: readonly RepositoryBindingRequest[] | undefined) =>
-      repositoryBindingSelections(namespaceId, bindings, "request");
-    if (input.repositoryAccess === undefined) {
-      return {
-        repositoryBindings: resolve(input.repositoryBindings),
-      };
+    access: unknown,
+    origin: "request" | "saved" = "request",
+  ): RepositoryAccess | undefined {
+    if (access === undefined) {
+      return undefined;
     }
-    if (input.repositoryBindings !== undefined || !validRepositoryAccess(input.repositoryAccess)) {
-      throw new RepositoryBindingSelectionError(RepositoryBindingSelectionError.accessOrBindings);
+    if (!validRepositoryAccess(access)) {
+      throw origin === "request"
+        ? new RepositoryBindingSelectionError(RepositoryBindingSelectionError.notApproved)
+        : new SavedRepositorySelectionError();
     }
-    const requested = input.repositoryAccess.repositories.map((entry) => ({
-      repositoryRef: entry.repositoryRef,
-      profile: entry.profile ?? input.repositoryAccess!.defaultProfile,
-    }));
-    const repositoryBindings = resolve(requested);
-    return {
-      repositoryBindings,
-      repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
-    };
+    const resolved = resolveRepositoryBindings(
+      namespaceId,
+      repositoryAccessSelections(access),
+      origin,
+      installationRepositoryAdmission,
+    );
+    if (resolved?.resolution.nativeGit === "v1" && !access.githubAppClientId) {
+      throw origin === "request"
+        ? new RepositoryBindingSelectionError(
+            "Select a GitHub App Client for native Repository access.",
+          )
+        : new SavedRepositorySelectionError();
+    }
+    return normalizedRepositoryAccess(access);
   }
 
   // A provider refusal for a submitted binding is a request error. The same
@@ -664,27 +735,104 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     return { driver, resolution: immutableCopy(resolution), unchanged: owner.unchanged };
   }
 
-  function repositoryBindingSelections(
+  function supportsStagedRecipient(compute: ComputeDriver, harness: RevisionHarnessDescriptor) {
+    try {
+      const sandbox = dependencies.sandboxDriver();
+      const owner = dependencies.selectedCredentialDeliveryOwner();
+      const proxy = owner.require("credential_proxy_delivery");
+      return (
+        sandbox !== undefined &&
+        owner.require("sandbox") === sandbox &&
+        dependencies.repositoryCredentialAdmission !== undefined &&
+        dependencies.supportsStagedRepositoryRecipient?.({ compute, sandbox, proxy, harness }) ===
+          true
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function stagedRepositoryAuthority(
     namespaceId: string,
-    bindings: readonly RepositoryBindingRequest[] | undefined,
-    origin: "request" | "saved",
-  ): readonly RepositoryBindingSelection[] | undefined {
-    const resolved = resolveRepositoryBindings(
-      namespaceId,
-      bindings,
-      origin,
-      installationRepositoryAdmission,
-    );
-    if (resolved === undefined || bindings === undefined) {
+    source: Readonly<GitHubAppInstallationCredentialSource>,
+    repository: NonNullable<ReturnType<typeof resolveRepositoryBindings>>,
+  ) {
+    const approve = dependencies.repositoryCredentialAdmission;
+    if (!approve) {
       return undefined;
     }
-    const selections = new Map(
-      resolved.resolution.bindings.map(({ repositoryRef, profile }) => [
-        repositoryRef,
-        { repositoryRef, profile },
-      ]),
+    const selection = { namespaceId, source, bindings: repository.resolution.bindings };
+    const configured = dependencies.repositoryNetworkPolicyCeiling;
+    const projectCeiling = dependencies.stagedRepositoryCeiling;
+    const requests = (grants: readonly RepositoryNetworkGrant[]) =>
+      approve({ ...selection, grants });
+    const approvesAll = (grants: readonly RepositoryNetworkGrant[]) =>
+      (requests(grants)?.length ?? 0) > 0;
+    return {
+      ceiling: projectCeiling ? projectCeiling({ ...selection, ceiling: configured }) : configured,
+      requests,
+      authority: projectCeiling
+        ? {
+            allows: (grant: RepositoryNetworkGrant) => approvesAll([grant]),
+            approvesAll,
+            unchanged: () =>
+              repository.unchanged() && dependencies.repositoryCredentialAdmission === approve,
+          }
+        : readGrantAuthority(namespaceId),
+    };
+  }
+
+  function prepareRepositorySource(agent: Pick<Agent, "namespaceId" | "repositoryAccess">) {
+    const access = agent.repositoryAccess;
+    if (!access?.githubAppClientId || access.repositories.length === 0) {
+      return undefined;
+    }
+    const resolved = resolveRepositoryBindings(
+      agent.namespaceId,
+      repositoryAccessSelections(agent.repositoryAccess),
+      "saved",
+      installationRepositoryAdmission,
     );
-    return immutableCopy(bindings.map(({ repositoryRef }) => selections.get(repositoryRef)!));
+    const prepared =
+      resolved?.resolution.nativeGit === "v1" &&
+      dependencies.prepareStagedRepositorySource?.({
+        namespaceId: agent.namespaceId,
+        access,
+        bindings: resolved.resolution.bindings,
+        ceiling: dependencies.repositoryNetworkPolicyCeiling,
+      });
+    if (!prepared || !resolved?.unchanged()) {
+      throw new ResourceStateConflictError(
+        "The selected GitHub App and repository access are unavailable. Review the approved repositories and access levels before deploying.",
+      );
+    }
+    return prepared;
+  }
+
+  async function validateRepositoryClientSelection(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Pick<Agent, "namespaceId" | "repositoryAccess">,
+    previousClientId?: string,
+  ) {
+    const clientId = agent.repositoryAccess?.githubAppClientId;
+    if (!clientId) {
+      return;
+    }
+    if (clientId !== previousClientId) {
+      await dependencies.authority.authorize(principalId, "administer", {
+        kind: "installation",
+        id: dependencies.installationId,
+      });
+    }
+    const registration = prepareRepositorySource(agent);
+    // Serialize a new or retained reference with Client retirement.
+    await dependencies.validateDeploymentGitHubAppClient(
+      agent.namespaceId,
+      clientId,
+      registration?.appId,
+      state,
+    );
   }
 
   function admitRepositoryCredentials(
@@ -693,22 +841,56 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     harness: RevisionHarnessDescriptor,
     sandboxDriverId: string | undefined,
     admittedAtWallMs: number,
+    staged?: {
+      readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+      readonly grants: readonly RepositoryNetworkGrant[];
+    },
   ) {
     const resolved = resolveRepositoryBindings(
       agent.namespaceId,
-      agent.repositoryBindings,
+      repositoryAccessSelections(agent.repositoryAccess),
       "saved",
       installationRepositoryAdmission,
     );
     if (resolved === undefined) {
       return undefined;
     }
-    validateRepositoryTopology(compute, harness, sandboxDriverId);
-    const snapshot: RepositoryRevisionState = {
+    let requests: readonly DeploymentRequestMatch[] | undefined;
+    const stagedPolicy =
+      staged && stagedRepositoryAuthority(agent.namespaceId, staged.source, resolved);
+    if (staged) {
+      if (
+        staged.source.namespaceId !== agent.namespaceId ||
+        staged.source.state !== "ready" ||
+        sandboxDriverId !== dependencies.sandboxDriver()?.id ||
+        !supportsStagedRecipient(compute, harness) ||
+        resolved.resolution.nativeGit !== "v1"
+      ) {
+        throw new ResourceStateConflictError("The staged repository recipient is unavailable.");
+      }
+      if (dependencies.stagedRepositoryCeiling === undefined) {
+        assertSelectedRepositoryGrants(staged.grants, resolved.resolution);
+      }
+      requests = stagedPolicy?.requests(staged.grants);
+      if (!requests?.length || !resolved.unchanged()) {
+        throw new ResourceStateConflictError(
+          "The staged repository Source and saved grants cannot be admitted.",
+        );
+      }
+    } else {
+      validateRepositoryTopology(compute, harness, sandboxDriverId);
+    }
+    const identity = {
       driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
-      deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
       bindings: resolved.resolution.bindings,
     };
+    const snapshot: RepositoryRevisionState | SourceBackedRepositoryRevisionState =
+      staged === undefined
+        ? {
+            ...identity,
+            deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
+          }
+        : { ...identity, authorization: "credential_source" };
     if (!validRepositoryRevisionState(snapshot)) {
       throw new DependencyUnavailableError(
         "The selected repository credential Driver returned an invalid admission snapshot.",
@@ -719,6 +901,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       resolution: resolved.resolution,
       nativeGit: resolved.resolution.nativeGit,
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
+      requests,
+      stagedPolicy,
     };
   }
 
@@ -768,6 +952,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     bindingsChanged: boolean,
     requested: RepositoryStandingApprovalChange | undefined,
   ): Promise<void> {
+    const updatedBindings = repositoryAccessSelections(updated.repositoryAccess);
     // Stop intent can be superseded before the active runtime is retired.
     // Removing a finite grant must remain irreversible throughout that interval.
     if (bindingsChanged && agent.activeRevisionId) {
@@ -783,8 +968,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         !admitted.standingApprovalId &&
         admitted.bindings.some(
           (member) =>
-            includesBinding(agent.repositoryBindings, member) &&
-            !includesBinding(updated.repositoryBindings, member),
+            includesBinding(repositoryAccessSelections(agent.repositoryAccess), member) &&
+            !includesBinding(updatedBindings, member),
         )
       ) {
         await state.repositorySessions.withdrawFinite(
@@ -799,8 +984,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     ).filter((a) => !a.revokedAt);
     if (
       activeApprovals.length > 0 &&
-      (updated.repositoryBindings?.length !== 1 ||
-        activeApprovals.some((a) => !includesBinding(updated.repositoryBindings, a.binding)))
+      (updatedBindings.length !== 1 ||
+        activeApprovals.some((a) => !includesBinding(updatedBindings, a.binding)))
     ) {
       // The caller holds update on the Agent. Like SecretReferencedError, the text says what
       // blocks without naming it: no approval ID, which only Agent administer reads.
@@ -813,12 +998,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       await holdStandingApprovalAuthority(state, principalId, agent);
       if (requested.approved) {
         // TODO: admit independent sessions before enabling approval for multiple bindings.
-        if (updated.repositoryBindings?.length !== 1) {
+        if (updatedBindings.length !== 1) {
           throw new ResourceStateConflictError(STANDING_APPROVAL_REFUSALS.oneBinding);
         }
-        const selected = updated.repositoryBindings?.find(
-          (b) => b.repositoryRef === requested.repositoryRef,
-        );
+        const selected = updatedBindings.find((b) => b.repositoryRef === requested.repositoryRef);
         // The request's own selections resolved above, so only saved ones can fail here.
         const resolved =
           selected &&
@@ -873,8 +1056,17 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     state: PlatformUnitOfWork,
     namespaceId: string,
     agentId: string,
-    credentials: RepositoryRevisionState | undefined,
-  ): Promise<RepositoryRevisionState | undefined> {
+    credentials: RepositoryRevisionState | SourceBackedRepositoryRevisionState | undefined,
+  ): Promise<RepositoryRevisionState | SourceBackedRepositoryRevisionState | undefined> {
+    if (credentials?.authorization === "credential_source") {
+      const approvals = await state.repositorySessions.listStandingApprovals(namespaceId, agentId);
+      if (approvals.some((approval) => !approval.revokedAt)) {
+        throw new ResourceStateConflictError(
+          "Remove this Agent's standing Repository approval before deploying with a Repository Source.",
+        );
+      }
+      return credentials;
+    }
     if (credentials?.bindings.length !== 1) {
       const approvals = await state.repositorySessions.listStandingApprovals(namespaceId, agentId);
       if (approvals.some((approval) => !approval.revokedAt)) {
@@ -918,7 +1110,10 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   function namespaceRepositoryNetworkPolicyCeiling(
     namespaceId: string,
   ): RepositoryNetworkPolicyCeiling {
-    const ceiling = dependencies.repositoryNetworkPolicyCeiling;
+    // Only the repository picker can expose installation-relative names.
+    const ceiling = dependencies.repositoryNetworkPolicyCeiling.filter(({ repository }) =>
+      repository.includes("/"),
+    );
     if (ceiling.length === 0) {
       return [];
     }
@@ -950,10 +1145,18 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     version: number,
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
+    additions: readonly SandboxNetworkGrant[] = [],
   ) {
-    const { namespaceId, repositoryBindings: bindings } = agent;
+    const { namespaceId } = agent;
+    const bindings = repositoryAccessSelections(agent.repositoryAccess);
     const admission = installationRepositoryAdmission;
-    if (!admission || !resolveHarness || !bindings?.length) {
+    if (
+      !admission ||
+      !resolveHarness ||
+      !bindings?.length ||
+      agent.repositoryAccess?.githubAppClientId ||
+      additions.length > 0
+    ) {
       return undefined;
     }
     try {
@@ -990,7 +1193,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         return undefined;
       }
       const { harness, source } = topology;
-      const sourceDriver = dependencies.credentialSourceOwner(source).driver;
+      const sourceDriver = dependencies.credentialSourceOwner(source);
       const resolve = () => resolveRepositoryBindings(namespaceId, bindings, "saved", admission);
       const repository = resolve();
       if (!repository) {
@@ -1005,7 +1208,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
         dependencies.selectedCompute() === compute &&
         dependencies.selectedProxyOwner() === owner &&
         dependencies.configurationDriver() === configuration &&
-        dependencies.credentialSourceOwner(source).driver === sourceDriver;
+        dependencies.credentialSourceOwner(source) === sourceDriver;
       return validate(
         topology.placement,
         harness,
@@ -1023,6 +1226,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
   }
 
   return {
+    prepareRepositorySource,
+    validateRepositoryClientSelection,
     namespaceRepositoryNetworkPolicyCeiling,
     qualifyRepositoryEdit,
     repositoryNetworkPolicyCeiling: dependencies.repositoryNetworkPolicyCeiling,
@@ -1035,7 +1240,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     listAgentStandingApprovalScopes,
     removeAgentStandingApproval,
     repositorySettings,
-    repositoryBindingSelections,
     admitRepositoryCredentials,
     reconcileAgentBindings,
     applyRepositoryStandingApproval,

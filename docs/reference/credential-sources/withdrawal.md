@@ -9,12 +9,10 @@ Withdrawal revokes a source from an Agent's selected version while the version
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
 The caller needs `agent:operate`, and the selected version must have been
-saved with that source, as its Harness authentication or in
-`credentialSources`. A supported request returns `202` with the withdrawal in state `pending`. OCC records that denial before the Worker starts, so the Agent cannot use the Source for another admitted or routed operation.
+saved with that Source as Harness authentication, an explicit Source, or a selected Plugin credential. A Plugin selection requires no separate Agent attachment. A supported request returns `202` with the withdrawal in state `pending`. OCC records that denial before the Worker starts, so the Agent cannot use the Source for another admitted or routed operation.
 A saved version with the source that is not yet selected gets its own
-withdrawal, so it never attaches the source. A withdrawn Harness source fails
-that deployment with `CREDENTIAL_WITHDRAWN`; otherwise it becomes selected without the
-source, and the read below then returns its withdrawal. An earlier version
+withdrawal, so it never attaches the Source. A withdrawn required model fails
+that deployment with `CREDENTIAL_WITHDRAWN`. A pending optional Plugin withdrawal blocks activation; after confirmed revocation, retry or maintenance can configure the remaining bindings. The frozen Agent revision does not change. An earlier version
 that still runs because the selected version's deployment has not finished
 replacing it gets its own withdrawal too. A replay returns the
 same withdrawal and makes the caller its `requestedBy`. It queues another
@@ -22,8 +20,7 @@ attempt only if none is queued or running; a queued attempt runs at once.
 
 For a staged TokenService Source, the Worker rechecks the requester's exact `agent:operate`
 authority. Compute asks the selected native Credential Proxy to remove the binding from the saved
-Sandbox target. The paired Sandbox Driver applies the reduced policy and verifies that the loaded
-and effective policies no longer permit the credential destination. Proxy detaches the Provider and checks its native receipt. The Worker
+Sandbox target. Sandbox removes the binding's injection rule and exclusive network access while preserving independently approved credential-free access. Proxy detaches the Provider and checks its native receipt. The Worker
 records `revoked` after that receipt reaches `REVOKED`, or after Proxy independently confirms that the Sandbox is absent. An unconfirmed policy, receipt, or absence leaves
 the withdrawal `pending` with `DEPENDENCY_UNAVAILABLE` for retry. Proxy retains an OpenShell Provider
 still attached to another Agent and retires its owned Provider and profile after the last binding is

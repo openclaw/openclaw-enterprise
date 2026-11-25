@@ -22,7 +22,7 @@ Before you add plugins to an Agent, make sure your environment meets these requi
 1. **Dedicated OpenClaw on Kubernetes**: The Agent must use the dedicated OpenClaw Harness on Kubernetes Compute. Embedded OpenClaw supports only the bundled Diffs plugin.
 2. **Plugin Driver enabled**: The Installation profile must select the bundled OpenClaw Plugin Driver (`occ-plugin` under `drivers.plugin`). See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 3. **Operator permissions**: You need `agent:read`, `agent:update`, and `agent:deploy` on the target Agent, plus `credential_source:operate` on any attached account source.
-4. **Network connectivity**: For hosted MCP discovery, the OCC API must be able to reach the MCP HTTPS endpoint on port 443. Configure `api.pluginDiscoveryCidrs` in your Helm values to allow egress to the server IP addresses.
+4. **Network connectivity**: For hosted MCP discovery, verify OCC API DNS and HTTPS connectivity to the MCP endpoint. The chart gives the API unrestricted egress.
 
 ---
 

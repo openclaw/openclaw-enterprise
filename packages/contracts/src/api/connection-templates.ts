@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 import { oauthScopeTokenPattern, staticKeyHttpMethodPattern } from "../connection-templates.ts";
-import { RequestId, NamespaceId, ConnectionTemplateId } from "./common.ts";
+import { RequestId, NamespaceId, ConnectionTemplateId, CredentialClientId } from "./common.ts";
 
-export { ConnectionTemplateId } from "./common.ts";
+export { ConnectionTemplateId, CredentialClientId } from "./common.ts";
 
 const HttpsUrl = Type.String({ maxLength: 2048, pattern: "^https://[^\\s/]" });
 export const OAuthScope = Type.String({
@@ -49,9 +49,6 @@ const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
   { additionalProperties: false },
 );
-const OAuthClientId = Type.String({
-  pattern: "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-});
 const DisplayName = Type.String({ minLength: 1, maxLength: 200 });
 const ClientSecret = Type.String({ minLength: 1, maxLength: 4096, writeOnly: true });
 const AuthMethod = Type.Union([
@@ -72,7 +69,6 @@ const Parameters = Type.Record(
 const fields = {
   scopes: Scopes,
   authorizationParameters: Type.Optional(Parameters),
-  oauthClientId: Type.Optional(OAuthClientId),
 };
 const staticBearer = {
   mode: Type.Literal("static_bearer"),
@@ -117,22 +113,44 @@ export const ConnectionTemplateParams = Type.Object(
   { connectionTemplateId: ConnectionTemplateId },
   strict,
 );
-export const OAuthClientParams = Type.Object({ oauthClientId: OAuthClientId }, strict);
-const registration = {
+export const CredentialClientParams = Type.Object(
+  { credentialClientId: CredentialClientId },
+  strict,
+);
+const clientRegistration = {
   displayName: DisplayName,
+  namespaceId: Type.Optional(NamespaceId),
+};
+const oauthRegistration = {
+  ...clientRegistration,
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
-export const CreateOAuthClientBody = Type.Object(
+const createCredentialClient = Type.Object(
   {
-    ...registration,
-    connectionTemplateId: ConnectionTemplateId,
-    connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+    kind: Type.Literal("oauth2"),
+    ...oauthRegistration,
+    issuer: HttpsUrl,
+    tokenUrl: HttpsUrl,
+    revocationUrl: Type.Optional(HttpsUrl),
     clientSecret: Type.Optional(ClientSecret),
   },
   strict,
 );
-export const RotateOAuthClientSecretBody = Type.Object({ clientSecret: ClientSecret }, strict);
+const appId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
+const privateKey = Type.String({ minLength: 1, maxLength: 20000, writeOnly: true });
+const createGitHubAppClient = Type.Object(
+  { kind: Type.Literal("github-app"), ...clientRegistration, appId, privateKey },
+  strict,
+);
+export const CreateCredentialClientBody = Type.Union([
+  createCredentialClient,
+  createGitHubAppClient,
+]);
+export const RotateCredentialClientBody = Type.Union([
+  Type.Object({ kind: Type.Literal("oauth2"), clientSecret: ClientSecret }, strict),
+  Type.Object({ kind: Type.Literal("github-app"), privateKey }, strict),
+]);
 export const DiscoverTemplateBody = Type.Object(
   { serverUrl: HttpsUrl, issuer: Type.Optional(HttpsUrl) },
   strict,
@@ -154,18 +172,29 @@ const Observed = Type.Object(
   },
   strict,
 );
-const publicClient = Type.Object(
+export const OAuthClientSchema = Type.Object(
   {
-    ...registration,
-    namespaceId: Type.Optional(NamespaceId),
+    kind: Type.Literal("oauth2"),
+    ...oauthRegistration,
     issuer: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
-    id: OAuthClientId,
+    id: CredentialClientId,
     createdAt: Type.String(),
   },
   strict,
 );
+const publicGitHubAppClient = Type.Object(
+  {
+    kind: Type.Literal("github-app"),
+    id: CredentialClientId,
+    ...clientRegistration,
+    appId,
+    createdAt: Type.String(),
+  },
+  strict,
+);
+const publicClient = Type.Union([OAuthClientSchema, publicGitHubAppClient]);
 export const OAuthConnectionTemplateVersionSchema = Type.Object(
   {
     templateId: ConnectionTemplateId,
@@ -179,7 +208,6 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     destinations: ConnectionDestinationsSchema,
     scopes: Scopes,
     authorizationParameters: Parameters,
-    oauthClientId: Type.Optional(OAuthClientId),
     mcp: Type.Optional(Type.Object({ serverUrl: HttpsUrl, resource: HttpsUrl }, strict)),
     observed: Type.Optional(Observed),
   },
@@ -216,8 +244,8 @@ export const ConnectionTemplateListResponse = Type.Object(
   { data: Type.Array(template), meta: Meta },
   strict,
 );
-export const OAuthClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);
-export const OAuthClientListResponse = Type.Object(
+export const CredentialClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);
+export const CredentialClientListResponse = Type.Object(
   { data: Type.Array(publicClient), meta: Meta },
   strict,
 );

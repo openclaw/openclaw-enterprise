@@ -91,7 +91,11 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
+import {
+  createRepositoryFields,
+  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+  repositorySelections,
+} from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -999,7 +1003,9 @@ export async function renderAgentDetail(
     agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
   const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
     isDedicatedCodex(values) &&
-    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    repositorySelections(agent.repositoryAccess).some(
+      ({ profile }) => profile === "github-repository",
+    );
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -3590,10 +3596,19 @@ export async function renderAgentDetail(
     );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
+    const automaticGit = Boolean(
+      agent.repositoryAccess?.githubAppClientId && agent.repositoryAccess.repositories.length,
+    );
+    if (automaticGit) {
+      reviewRepositories = false;
+    }
     const firstGitHubDraft =
+      !automaticGit &&
       revisionResult.status === "fulfilled" &&
       revisionResult.value.revisions.length === 0 &&
-      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+      repositorySelections(agent.repositoryAccess).some(
+        ({ profile }) => profile === "github-repository",
+      );
     async function hasRepositoryPolicy() {
       const permissions = await latestPermissionsRead;
       // OCC requires policy read for scoped deployments. Legacy deployers can
@@ -4352,6 +4367,7 @@ export async function renderAgentDetail(
       const showRepositoryWarning =
         !deployUnavailable &&
         !reviewRepositories &&
+        !automaticGit &&
         callerPermissions?.deploy === true &&
         callerPermissions.sandboxPolicyRead &&
         isDedicatedCodex(values) &&
@@ -4685,12 +4701,7 @@ export async function renderAgentDetail(
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
             return;
           }
-          if (
-            JSON.stringify(freshAgent.repositoryAccess) !==
-              JSON.stringify(agent.repositoryAccess) ||
-            JSON.stringify(freshAgent.repositoryBindings) !==
-              JSON.stringify(agent.repositoryBindings)
-          ) {
+          if (!sameValue(freshAgent.repositoryAccess, agent.repositoryAccess)) {
             deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
             return;
           }
@@ -4923,7 +4934,7 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
-      !reviewRepositories && hasRepositoryPermissions(values)
+      !reviewRepositories && !automaticGit && hasRepositoryPermissions(values)
         ? element(
             "p",
             { className: "hint" },
@@ -6545,7 +6556,7 @@ export async function renderAgentDetail(
       }
     } else {
       const repositoryBindings = draft
-        ? agent.repositoryBindings
+        ? repositorySelections(agent.repositoryAccess)
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
@@ -6559,7 +6570,7 @@ export async function renderAgentDetail(
           repositoryBindings
             ?.map(
               (binding) =>
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+                `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
             .join(", ") ?? "None",
         ],
@@ -6647,7 +6658,7 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          !(draft && reviewRepositories) &&
+          !(draft && (reviewRepositories || agent.repositoryAccess?.githubAppClientId)) &&
             repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
@@ -6724,8 +6735,23 @@ export async function renderAgentDetail(
     return holder;
   }
 
+  function draftRepositoryLabel(binding: { repositoryRef: string; profile: string }) {
+    const selected = agent.repositoryAccess?.githubAppClientId
+      ? agent.repositoryAccess.repositories.find(
+          ({ repositoryRef }) => repositoryRef === binding.repositoryRef,
+        )
+      : undefined;
+    if (selected?.access === "write") {
+      return "Read/write Git";
+    }
+    if (selected?.access === "read") {
+      return "Read-only Git";
+    }
+    return repositoryProfile(binding.profile)?.label ?? "Unknown access level";
+  }
+
   function repositoryAccessSummary(reason: string) {
-    const bindings = agent.repositoryBindings ?? [];
+    const bindings = repositorySelections(agent.repositoryAccess);
     return element(
       "section",
       { className: "agent-card" },
@@ -6742,15 +6768,12 @@ export async function renderAgentDetail(
             "ul",
             { className: "repository-access-summary" },
             ...bindings.map((binding) =>
-              element(
-                "li",
-                {},
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
-              ),
+              element("li", {}, `${binding.repositoryRef} · ${draftRepositoryLabel(binding)}`),
             ),
           )
         : null,
-      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+      !agent.repositoryAccess?.githubAppClientId &&
+        bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
         ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
         : null,
       element("p", { className: "muted", role: "status" }, reason),
@@ -6801,7 +6824,7 @@ export async function renderAgentDetail(
         fields?.setDisabled(true);
         return;
       }
-      const dirty = fields?.isDirty() ?? false;
+      const dirty = Boolean(fields?.isDirty());
       const pending = saveState === "saving";
       const outcomeUnknown = saveState === "uncertain";
       const reloadRequired = saveState === "conflict";
@@ -6880,8 +6903,7 @@ export async function renderAgentDetail(
         }
         if (
           fresh.configurationId !== agent.configurationId ||
-          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
+          !sameValue(fresh.repositoryAccess, agent.repositoryAccess)
         ) {
           saveState = "conflict";
           refuse(
@@ -6891,8 +6913,8 @@ export async function renderAgentDetail(
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
-        mutationStarted = true;
         const repositoryAccess = fields.access();
+        mutationStarted = true;
         const savedAgent = agentForPage(
           await request(path, {
             method: "PATCH",
