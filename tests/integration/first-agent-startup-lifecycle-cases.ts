@@ -86,6 +86,7 @@ export function registerFirstAgentFailureAdviceCases({
         let savedGrants: unknown[] | undefined;
         let editingEnabled = false;
         let deploymentReads = 0;
+        const pendingReads = code === "RUNTIME_AUTHENTICATION_FAILED" ? 2 : 0;
         const unexpected: string[] = [];
         // Run the real helper and HTTP client against supported API envelopes. The
         // fixture supplies deployment evidence, not policy or credential decisions;
@@ -259,21 +260,33 @@ export function registerFirstAgentFailureAdviceCases({
               case `GET ${agentPath}/revisions/${revisionId}`:
                 data = revision;
                 break;
-              case `GET ${agentPath}/deployments/${revisionId}`:
+              case `GET ${agentPath}/deployments/${revisionId}`: {
                 deploymentReads++;
                 assert.ok(agent);
                 assert.ok(revision);
+                // Two attempts report the same wait before the terminal failure.
+                const pending = deploymentReads <= pendingReads;
                 data = {
                   namespaceId: namespaceId,
                   agentId: agent.id,
                   deploymentId: revision.id,
-                  status: "failed",
+                  status: pending ? "running" : "failed",
                   cleanup: null,
-                  progress: null,
+                  progress: pending
+                    ? {
+                        lastAttempt: {
+                          at: new Date().toISOString(),
+                          code: "WORKSPACE_NODE_PENDING",
+                          message: "private-progress-message",
+                        },
+                        nextAttemptAt: null,
+                      }
+                    : null,
                   warnings: [],
-                  error: { code, message: "private-provider-message" },
+                  error: pending ? null : { code, message: "private-provider-message" },
                 };
                 break;
+              }
               default:
                 unexpected.push(`${request.method} ${request.url}`);
             }
@@ -353,9 +366,17 @@ export function registerFirstAgentFailureAdviceCases({
         }
         const output = await runFirstAgentAsync(env, "--harness", "codex");
         assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
-        assert.doesNotMatch(output, /private-provider-message/);
+        assert.doesNotMatch(
+          output,
+          /private-provider-message|private-progress-message|WORKSPACE_NODE_PENDING/,
+        );
         if (code === "RUNTIME_AUTHENTICATION_FAILED") {
           assert.match(output, /Check the model key.*--replace-key/);
+          assert.equal(
+            output.match(/last deployment attempt was waiting for the workspace node/g)?.length,
+            1,
+            "repeated attempts with the same reason produce one progress update",
+          );
         } else {
           assert.doesNotMatch(output, /Check the model key|--replace-key/);
           if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
@@ -368,7 +389,11 @@ export function registerFirstAgentFailureAdviceCases({
             );
           }
         }
-        assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+        assert.equal(
+          deploymentReads,
+          pendingReads + 1,
+          "terminal failure stops polling immediately",
+        );
         // A later controller outage must not hide the saved revision's own failure.
         // This is the repeat path; it reads the existing deployment without provisioning.
         const repeated = await runFirstAgentAsync(
@@ -378,7 +403,7 @@ export function registerFirstAgentFailureAdviceCases({
         );
         assert.ok(repeated.includes(`The Agent deployment failed (${code})`), repeated);
         assert.doesNotMatch(repeated, /Checking the managed Agent Sandbox controller/);
-        assert.equal(deploymentReads, 2);
+        assert.equal(deploymentReads, pendingReads + 2);
         assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
         await assert.rejects(readFile(engineLog), { code: "ENOENT" });
       });
