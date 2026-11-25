@@ -16,7 +16,7 @@ They have no supported in-place upgrade command.
       templates, Installation schema, bundled Presets, Driver settings, runtime
       dependencies, and required Kubernetes assets.
 - [ ] Check candidate access to `presets.files` paths. Restore required files.
-      Flag obsolete entries. Image upgrades support only Plugin Driver Installation edits.
+      Flag obsolete entries. Ordinary image upgrades support only Plugin Driver Installation edits.
 - [ ] With [preprovisioning](../../reference/drivers/kubernetes-compute/preprovisioned-namespace.md),
       verify the bound Namespace. Stop here. No initialization Jobs run. Independent
       database migration and Installation bootstrap are prerequisites.
@@ -29,9 +29,10 @@ They have no supported in-place upgrade command.
       [correct refused values](production-upgrade-recovery.md#correct-values-the-candidate-refuses)
       before maintenance. Preflight rejects missing Preset files and single-cluster
       [split layouts](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations) before stopping writers.
-- [ ] Classify controller, broker and runtime image changes. Controller-only upgrades
-      request no deployments. Workers can restart Agent Pods once, interrupting
-      repository-bound versions. Runtime upgrades create versions from current Agent
+- [ ] Classify controller, broker and runtime image changes. Ordinary controller-only upgrades
+      request no deployments. [One-time channel transitions](one-off-upgrades.md)
+      may deploy Agents with unchanged runtime images. Workers can restart Agent Pods once,
+      interrupting repository-bound versions. Runtime upgrades create versions from current Agent
       and Configuration drafts. Trace inputs to the final `runtime` stage through
       `COPY --from=`. Use `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile`.
       Rebuild for changed inputs, pinned OpenClaw commit or Codex version. Inputs include
@@ -267,8 +268,7 @@ Follow the [operator instructions for each surface](upgrade-dispositions.md).
    and [resume](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade)
    with original evidence and dispatch journal. Reconcile uncertain sends before retry.
    Never retry unjournaled. Manually [replace recorded failed revisions](production-upgrade-recovery.md#resume-an-unfinished-prepared-upgrade)
-   only as authorized. Separate broker recovery. [Channel transitions](one-off-upgrades.md)
-   may require redeployment without runtime image changes.
+   only as authorized. Separate broker recovery.
 6. Reconcile external integrations and cluster-owned supporting services.
 7. Run the acceptance checks below before ending the interruption window.
 
