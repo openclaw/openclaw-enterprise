@@ -10,7 +10,7 @@ author: freeqaz-openai
 - **Created:** 2026-11-25
 - **Last updated:** 2026-11-25
 - **RFC PR:** [#7370](https://github.com/openclaw/openclaw-enterprise/pull/7370)
-- **Implementation:** [#7373](https://github.com/openclaw/openclaw-enterprise/pull/7373)
+- **Implementation:** [Dedicated key #7373](https://github.com/openclaw/openclaw-enterprise/pull/7373) · [Managed Source #7382](https://github.com/openclaw/openclaw-enterprise/pull/7382)
 - **Related:** [Strands Box protected execution](https://github.com/openclaw/openclaw-enterprise/pull/6505) and [pluggable credential delivery](https://github.com/openclaw/openclaw-enterprise/pull/7209)
 
 ## Summary
@@ -77,9 +77,12 @@ Authenticate the idle Pod before resolving the approved Source. The trusted laun
 reports its fresh challenge, policy and credential version over the pinned
 diagnostic channel. Worker rechecks the deployer and Agent before Compute
 releases that launch. A replacement cannot reuse the release or request a
-new copy. To rotate, stop the execution and redeploy. The delivery owner
+new copy. Its trusted launcher can mount the existing Secret until retirement.
+To rotate, stop the execution, replace the key and redeploy. The delivery owner
 must account for all remaining copies before reporting success. Preserve
 peer bindings and leave withdrawal pending until retirement is confirmed.
+Pending withdrawal of a required model blocks new OCC HTTP chats. An
+already-running process may use the key until Stop.
 
 ### Kubernetes admission
 
@@ -112,7 +115,9 @@ No changes.
 
 ### Database entities
 
-No changes.
+No new entities. The managed Source needs [migration 0097](https://github.com/openclaw/openclaw-enterprise/pull/7382)
+to validate the Agent subject in saved policies. Existing executable rules
+keep their meaning. Upgrade all readers before admitting the new subject.
 
 ### Driver contracts
 
@@ -150,7 +155,13 @@ and the user deploys a saved Agent. Each goal requires runtime evidence.
 In [#7373](https://github.com/openclaw/openclaw-enterprise/pull/7373), a saved
 Agent with a dedicated key answered through a controlled TLS origin while the Worker was stopped.
 A replacement could not start Box. The operator must qualify each node image
-and separately verify live provider access. AC-4 remains unverified.
+and separately verify live provider access.
+
+In [#7382](https://github.com/openclaw/openclaw-enterprise/pull/7382), a
+saved Agent used a managed Source, stopped, then answered two more turns
+with a replacement key. Withdrawal denied new HTTP chat and Stop removed
+the copy. Stale release and replacement checks used simulated Kubernetes
+objects. Both installed trials used a controlled provider.
 
 Qualify this preview independently of the broader #6505 proposal. Keep Git
 disabled until OCE can deliver scoped installation tokens, verify credential
