@@ -84,7 +84,9 @@ function callerLabel(request) {
   if (credentialLabels === undefined) {
     return undefined;
   }
-  const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
+  const token =
+    /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1] ??
+    request.headers["x-api-key"];
   return token === undefined
     ? null
     : (credentialLabels.get(createHash("sha256").update(token).digest("hex")) ?? null);
@@ -100,6 +102,75 @@ function sseResponse(response, events) {
     response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
   }
   response.end();
+}
+
+function completionsResponse(response, model, text, stream) {
+  const base = {
+    id: `chatcmpl_${randomUUID().replaceAll("-", "")}`,
+    created: Math.floor(Date.now() / 1000),
+    model,
+  };
+  if (!stream) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        ...base,
+        object: "chat.completion",
+        choices: [
+          { index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" },
+        ],
+      }),
+    );
+    return;
+  }
+  response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+  for (const choice of [
+    { index: 0, delta: { role: "assistant", content: text }, finish_reason: null },
+    { index: 0, delta: {}, finish_reason: "stop" },
+  ]) {
+    response.write(
+      `data: ${JSON.stringify({ ...base, object: "chat.completion.chunk", choices: [choice] })}\n\n`,
+    );
+  }
+  response.end("data: [DONE]\n\n");
+}
+
+function messagesResponse(response, model, text, stream) {
+  const message = {
+    id: `msg_${randomUUID().replaceAll("-", "")}`,
+    type: "message",
+    role: "assistant",
+    model,
+    content: [{ type: "text", text }],
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  if (!stream) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(message));
+    return;
+  }
+  sseResponse(response, [
+    {
+      type: "message_start",
+      message: {
+        ...message,
+        content: [],
+        stop_reason: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn", stop_sequence: null },
+      usage: { output_tokens: 1 },
+    },
+    { type: "message_stop" },
+  ]);
 }
 
 function answerText(request) {
@@ -120,10 +191,10 @@ function auditScenario(caller, text) {
     return;
   }
   if (caller === "codex") {
-    return /^OCE_SMOKE_(retry|cancel|restart)-[0-9a-f-]{36}$/u.exec(text)?.[1];
+    return /^OCE_SMOKE_(retry|cancel|restart|transport)-[0-9a-f-]{36}$/u.exec(text)?.[1];
   }
   if (caller === "embedded") {
-    return /^OCE_SMOKE_(retry|repair)-[0-9a-f]{20}$/u.exec(text)?.[1];
+    return /^OCE_SMOKE_(retry|repair|transport)-[0-9a-f]{20}$/u.exec(text)?.[1];
   }
 }
 
@@ -133,7 +204,7 @@ function auditFault(transport, model, request, caller) {
   if (fault === undefined) {
     return undefined;
   }
-  if (fault === "retry" || fault === "repair") {
+  if (fault === "retry" || fault === "repair" || fault === "transport") {
     const expected = auditToolResults.get(text);
     if (!expected) {
       return undefined;
@@ -153,6 +224,10 @@ function auditFault(transport, model, request, caller) {
       return undefined;
     }
     failedAuditNonces.add(text);
+    if (fault === "transport") {
+      emit({ event: "audit-provider-transport", transport, caller, text });
+      return { fault };
+    }
     const status = fault === "repair" ? 400 : 503;
     emit({
       event: "audit-provider-retry",
@@ -249,7 +324,10 @@ function answerEvents(model, text) {
 // that echoes the command cannot pass this check. Never log the tool output.
 function auditToolEvents(model, text, caller) {
   const scenario = auditScenario(caller, text);
-  if ((scenario !== "retry" && scenario !== "repair") || auditToolResults.has(text)) {
+  if (
+    (scenario !== "retry" && scenario !== "repair" && scenario !== "transport") ||
+    auditToolResults.has(text)
+  ) {
     return undefined;
   }
   const expected = randomUUID();
@@ -523,6 +601,42 @@ const server = createServer(
     });
     request.on("end", () => {
       const path = new URL(request.url, "https://api.openai.com").pathname;
+      if (
+        auditFailures &&
+        caller === "embedded" &&
+        request.method === "POST" &&
+        path.endsWith("/chat/completions")
+      ) {
+        const payload = JSON.parse(body);
+        const text = answerText(body);
+        emit({ event: "request", transport: "https", path, turn: true, caller, text });
+        setTimeout(() => {
+          if (response.destroyed) {
+            return;
+          }
+          completionsResponse(response, payload.model, text, payload.stream);
+          emit({ event: "turn-answered", transport: "https", status: 200, caller, text });
+        }, delayMs);
+        return;
+      }
+      if (
+        auditFailures &&
+        caller === "embedded" &&
+        request.method === "POST" &&
+        path === "/v1/messages"
+      ) {
+        const payload = JSON.parse(body);
+        const text = answerText(body);
+        emit({ event: "request", transport: "https", path, turn: true, caller, text });
+        setTimeout(() => {
+          if (response.destroyed) {
+            return;
+          }
+          messagesResponse(response, payload.model, text, payload.stream);
+          emit({ event: "turn-answered", transport: "https", status: 200, caller, text });
+        }, delayMs);
+        return;
+      }
       if (!(request.method === "POST" && path.endsWith("/responses"))) {
         emit({ event: "request", method: request.method, path, turn: false });
         response.writeHead(404, { "content-type": "application/json" });
@@ -561,6 +675,11 @@ const server = createServer(
       }
       const audit = auditFault("https", model, body, caller);
       if (audit !== undefined) {
+        if (audit.fault === "transport") {
+          // Close the actual TLS connection before sending response headers.
+          request.socket.destroy();
+          return;
+        }
         if (audit.fault === "retry") {
           const error =
             audit.status === 400
@@ -682,7 +801,7 @@ server.on("upgrade", (request, socket, head) => {
       }
       const audit = auditFault("websocket", message.model ?? "unknown", String(data), caller);
       if (audit !== undefined) {
-        if (audit.fault === "retry") {
+        if (audit.fault === "retry" || audit.fault === "transport") {
           // Fail an actual Responses request after the upgrade and before a result.
           webSocket.terminate();
         } else {

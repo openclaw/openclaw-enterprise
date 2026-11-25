@@ -876,7 +876,7 @@ async function checkModelRetry(
     runId: string;
     events: () => Promise<AgentAuditPage["events"]>;
   },
-  status: 400 | 503 = 503,
+  status: 400 | 503 | "TRANSPORT_ERROR" = 503,
 ) {
   // Count actual provider requests independently of the Gateway observations.
   // The failed request and its retry must both contain the real tool result.
@@ -884,7 +884,10 @@ async function checkModelRetry(
     (event) => event.caller === label && event.text === nonce,
   );
   const requests = provider.filter(
-    (event) => event.event === "request" || event.event === "audit-provider-retry",
+    (event) =>
+      event.event === "request" ||
+      event.event === "audit-provider-retry" ||
+      event.event === "audit-provider-transport",
   );
   assert.deepEqual(
     requests.map((e) => e.transport),
@@ -892,7 +895,7 @@ async function checkModelRetry(
   );
   assert.deepEqual(
     provider.flatMap((e) => (e.status === undefined ? [] : [e.status])),
-    [200, status, 200],
+    status === "TRANSPORT_ERROR" ? [200, 200] : [200, status, 200],
   );
   assert.deepEqual(
     provider.filter((e) => e.event === "audit-tool-result").map((e) => wireField(e, "verified")),
@@ -902,26 +905,31 @@ async function checkModelRetry(
   // OpenClaw starts another call on 503. Its continuation repair and
   // Codex's HTTP retry each send a second request within the same call.
   const codex = label === "codex";
-  const callCount = !codex && status === 503 ? 3 : 2;
+  let expectedCallCount: number | undefined;
+  if (status !== "TRANSPORT_ERROR") {
+    expectedCallCount = !codex && status === 503 ? 3 : 2;
+  }
   const recorded = await waitFor(
     `${label} model attempts after HTTP ${status}`,
     async () => {
       const turn = (await events())
         .filter((event) => event.event === "runtime_activity")
         .filter(({ details }) => "turnId" in details && details.turnId === runId);
-      const attempts = turn
-        .filter((e) => e.action === "openclaw.runtime.model_attempt.observed")
-        .map((e) => e.details);
+      const attemptEvents = turn.filter(
+        (e) => e.action === "openclaw.runtime.model_attempt.observed",
+      );
+      const attempts = attemptEvents.map((e) => e.details);
       const responses = turn
         .filter((e) => e.action === "openclaw.runtime.model_response.observed")
         .map((e) => e.details);
       const starts = turn.filter((e) => e.action === "openclaw.runtime.model_call.started");
       const results = turn.filter((e) => e.action === "openclaw.runtime.model_call.completed");
+      const callCount = expectedCallCount ?? new Set(attempts.map((e) => e.modelCallId)).size;
       return {
         done:
           attempts.length >= 3 &&
           (codex
-            ? responses.length >= 2
+            ? responses.length >= 2 && starts.length >= 2
             : starts.length >= callCount && results.length >= callCount),
         state: {
           attempts: attempts.length,
@@ -929,13 +937,13 @@ async function checkModelRetry(
           starts: starts.length,
           results: results.length,
         },
-        value: { attempts, responses, starts, results },
+        value: { attempts, attemptEvents, responses, starts, results },
       };
     },
     minute,
   );
   assert.ok(recorded);
-  const { attempts, responses, starts, results } = recorded;
+  const { attempts, attemptEvents, responses, starts, results } = recorded;
   assert.equal(attempts.length, 3);
   assert.equal(new Set(attempts.map((e) => e.modelAttemptId)).size, 3);
   assert.ok(
@@ -944,9 +952,23 @@ async function checkModelRetry(
     ),
   );
   const ids = [...new Set(attempts.map((e) => e.modelCallId))].sort();
-  assert.equal(ids.length, callCount);
-  const refused = attempts.find((e) => e.httpStatus === status);
+  if (expectedCallCount === undefined) {
+    assert.ok(ids.length === 2 || ids.length === 3);
+  } else {
+    assert.equal(ids.length, expectedCallCount);
+  }
+  const refusedEvent = attemptEvents.find((e) =>
+    status === "TRANSPORT_ERROR"
+      ? e.details.failureCode === status
+      : e.details.httpStatus === status,
+  );
+  assert.ok(refusedEvent);
+  assert.equal(refusedEvent.outcome, "failure");
+  const refused = refusedEvent.details;
   assert.ok(refused);
+  if (status === "TRANSPORT_ERROR") {
+    assert.equal(refused.httpStatus, undefined);
+  }
   assert.equal(refused.attempt, 1);
   const accepted = attempts.filter((e) => e.httpStatus === 200);
   assert.equal(new Set(accepted.map((e) => e.modelCallId)).size, 2);
@@ -957,12 +979,16 @@ async function checkModelRetry(
     assert.deepEqual(starts.map((e) => e.details.modelCallId).sort(), ids);
     assert.deepEqual(results.map((e) => e.details.modelCallId).sort(), ids);
     for (const { details } of results) {
-      const failed: boolean = status === 503 && details.modelCallId === refused.modelCallId;
+      const retryWithinCall = accepted.some((e) => e.modelCallId === refused.modelCallId);
+      const failed: boolean = !retryWithinCall && details.modelCallId === refused.modelCallId;
       assert.equal(details.outcome, failed ? "failed" : "succeeded");
     }
-    log(`${label}: three HTTP attempts matched ${callCount} calls after ${status}`);
+    log(`${label}: three model attempts matched ${ids.length} calls after ${status}`);
     return;
   }
+  assert.equal(starts.length, 2);
+  assert.deepEqual(starts.map((e) => e.details.modelCallId).sort(), ids);
+  assert.equal(results.length, 0, "Codex did not report a model call end");
   const first = codexResponse(nonce);
   assert.ok(responses.every((e) => e.provider === "codex" && e.model === first.model));
   assert.deepEqual(
@@ -978,9 +1004,12 @@ export async function proveEmbeddedRetries(
   revisionId: string,
   readAudit: () => Promise<AgentAuditPage>,
 ) {
-  for (const status of [503, 400] as const) {
+  for (const { status, scenario } of [
+    { status: 503, scenario: "retry" },
+    { status: 400, scenario: "repair" },
+    { status: "TRANSPORT_ERROR", scenario: "transport" },
+  ] as const) {
     // The nonce also identifies the tool result. OpenClaw limits function call ID length.
-    const scenario = status === 503 ? "retry" : "repair";
     const nonce = `OCE_SMOKE_${scenario}-${randomUUID().replaceAll("-", "").slice(0, 20)}`;
     const chat = openHttpChat(stack, agent, nonce);
     // PostgreSQL rejects the start until the caller receives the successful reply.
@@ -1008,6 +1037,255 @@ export async function proveEmbeddedRetries(
   }
 }
 
+export async function proveRuntimeAuditQueueFull(
+  stack: SmokeStack & KubernetesAccess,
+  agent: SmokeAgent,
+  revisionId: string,
+) {
+  const gateway = await readyGateway(stack, agent.id, revisionId);
+  const queueStatus = async () => {
+    const { stdout } = await kubectl(stack, [
+      "exec",
+      "-n",
+      gateway.namespace,
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "/app/oce-plugins/oce-runtime-audit/sink.mjs",
+      "status",
+    ]);
+    const status = JSON.parse(stdout);
+    const pending = wireField(status, "pending");
+    const held = wireField(status, "held");
+    assert.ok(Number.isSafeInteger(pending) && Number(pending) >= 0);
+    assert.ok(Array.isArray(held));
+    return Number(pending) + held.length;
+  };
+  await waitFor(
+    "the embedded runtime audit queue to drain",
+    async () => ({
+      done: (await queueStatus()) === 0,
+    }),
+    minute,
+  );
+
+  let rowsBeforeRecovery = 0;
+  const bounded = AbortSignal.timeout(2 * minute);
+  const signal = stack.commandOptions?.signal
+    ? AbortSignal.any([stack.commandOptions.signal, bounded])
+    : bounded;
+  const exercise = { ...stack, commandOptions: { ...stack.commandOptions, signal } };
+  // The real PostgreSQL refusal blocks the first queued turn event. Later turns
+  // must still run while their own runtime events fill the Gateway's disk queue.
+  await withRefusedTurnWrite(stack, revisionId, async () => {
+    let queued = 0;
+    for (let turns = 0; queued < 256 && turns < 80; turns += 8) {
+      for (let pair = 0; pair < 4; pair++) {
+        await Promise.all([
+          openHttpChat(exercise, agent).send(),
+          openHttpChat(exercise, agent).send(),
+        ]);
+      }
+      queued = await queueStatus();
+    }
+    assert.equal(queued, 256, "real chat events did not fill the revision queue");
+    rowsBeforeRecovery = Number(await runtimeAuditRowCount(stack, revisionId));
+
+    const since = new Date().toISOString();
+    const last = openHttpChat(exercise, agent);
+    const turn = await last.send();
+    assert.equal(await queueStatus(), 256, "the full queue exceeded its limit");
+    const requests = (await modelEvents()).filter(
+      (event) =>
+        event.event === "request" && event.caller === agent.label && event.text === last.nonce,
+    );
+    assert.equal(requests.length, 1, "the chat was repeated while the runtime queue was full");
+    const { stdout } = await kubectl(stack, [
+      "logs",
+      "-n",
+      gateway.namespace,
+      gateway.pod,
+      "-c",
+      "gateway",
+      `--since-time=${since}`,
+    ]);
+    assert.match(
+      stdout,
+      /The Gateway could not queue a runtime audit event\. The record is missing\./,
+    );
+    return turn;
+  });
+
+  await waitFor(
+    "the full runtime audit queue to recover",
+    async () => {
+      const queued = await queueStatus();
+      return { done: queued === 0, state: { queued } };
+    },
+    2 * minute,
+  );
+  const rowsAfterRecovery = Number(await runtimeAuditRowCount(stack, revisionId));
+  assert.equal(
+    rowsAfterRecovery - rowsBeforeRecovery,
+    256,
+    "recovery did not save each queued event once",
+  );
+  log(`${agent.label}: a full runtime queue preserved chat and recovered 256 events`);
+}
+
+export async function proveEmbeddedProtocols(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  readAudit: () => Promise<AgentAuditPage>,
+) {
+  const base = `/namespaces/${stack.namespaceId}`;
+  const current = await stack.api("GET", `${base}/agents/${agent.id}`);
+  const configurationId = wireField(current, "configurationId");
+  assert.ok(typeof configurationId === "string");
+  const configuration = await stack.api("GET", `${base}/configurations/${configurationId}`);
+  const values = wireField(configuration, "values");
+  const models = wireField(values, "models");
+  const providers = wireField(models, "providers");
+  const openai = wireField(providers, "openai");
+  assert.ok(values && typeof values === "object" && !Array.isArray(values));
+  assert.ok(models && typeof models === "object" && !Array.isArray(models));
+  assert.ok(providers && typeof providers === "object" && !Array.isArray(providers));
+  assert.ok(openai && typeof openai === "object" && !Array.isArray(openai));
+  assert.equal(wireField(openai, "api"), "openai-responses");
+  const agents = wireField(values, "agents");
+  const defaults = wireField(agents, "defaults");
+  const selectedModels = wireField(defaults, "models");
+  const selected = wireField(selectedModels, `openai/${defaultAgentModel}`);
+  assert.ok(agents && typeof agents === "object" && !Array.isArray(agents));
+  assert.ok(defaults && typeof defaults === "object" && !Array.isArray(defaults));
+  assert.ok(selected && typeof selected === "object" && !Array.isArray(selected));
+  const compatible = `compatible/${defaultAgentModel}`;
+
+  // Change the actual Agent Configuration and deploy a revision. A synthetic
+  // diagnostic event would not prove that OpenClaw propagates the trace.
+  await stack.api("PATCH", `${base}/configurations/${configurationId}`, {
+    expectedGeneration: wireField(configuration, "generation"),
+    values: {
+      ...values,
+      agents: {
+        ...agents,
+        defaults: { ...defaults, model: compatible, models: { [compatible]: selected } },
+      },
+      models: {
+        ...models,
+        providers: {
+          compatible: {
+            ...openai,
+            api: "openai-completions",
+            apiKey: { source: "env", provider: "default", id: "OCE_MODEL_API_KEY" },
+          },
+        },
+      },
+      secrets: {},
+    },
+  });
+  const revisionId = await deployAgent(stack, agent);
+  await assertEmbeddedProtocolAttempt(stack, agent, readAudit, {
+    revisionId,
+    model: defaultAgentModel,
+    provider: "compatible",
+    path: "/v1/chat/completions",
+  });
+
+  const latest = await stack.api("GET", `${base}/configurations/${configurationId}`);
+  const anthropicModel = "claude-sonnet-4-5";
+  const reference = `anthropic/${anthropicModel}`;
+  // The controlled provider also serves the Messages protocol. No request
+  // goes to the public Anthropic endpoint during this test.
+  await stack.api("PATCH", `${base}/configurations/${configurationId}`, {
+    expectedGeneration: wireField(latest, "generation"),
+    values: {
+      ...values,
+      agents: {
+        ...agents,
+        defaults: { ...defaults, model: reference, models: { [reference]: selected } },
+      },
+      models: {
+        ...models,
+        providers: {
+          anthropic: {
+            baseUrl: "https://api.openai.com",
+            api: "anthropic-messages",
+            apiKey: { source: "env", provider: "model", id: "ANTHROPIC_API_KEY" },
+            models: [{ id: anthropicModel, name: anthropicModel }],
+          },
+        },
+      },
+      secrets: { providers: { model: { source: "env", allowlist: ["ANTHROPIC_API_KEY"] } } },
+    },
+  });
+  const messagesRevisionId = await deployAgent(stack, agent);
+  await assertEmbeddedProtocolAttempt(stack, agent, readAudit, {
+    revisionId: messagesRevisionId,
+    model: anthropicModel,
+    provider: "anthropic",
+    path: "/v1/messages",
+  });
+}
+
+async function assertEmbeddedProtocolAttempt(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  readAudit: () => Promise<AgentAuditPage>,
+  {
+    revisionId,
+    model,
+    provider,
+    path,
+  }: { revisionId: string; model: string; provider: string; path: string },
+) {
+  const nonce = `OCE_SMOKE_${randomUUID()}`;
+  const runId = await openHttpChat(stack, agent, nonce).send();
+  await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource: "openclaw",
+    turnId: runId,
+    model,
+  });
+  const attempts = await waitFor(
+    `the embedded ${provider} attempt for ${path}`,
+    async () => {
+      const turn = (await readAudit()).events
+        .filter((event) => event.event === "runtime_activity")
+        .filter(
+          (event) =>
+            event.details.agentRevisionId === revisionId &&
+            "turnId" in event.details &&
+            event.details.turnId === runId,
+        );
+      const attempt = turn.filter(
+        (event) => event.action === "openclaw.runtime.model_attempt.observed",
+      );
+      const start = turn.filter((event) => event.action === "openclaw.runtime.model_call.started");
+      return { done: attempt.length > 0 && start.length > 0, value: { attempt, start } };
+    },
+    minute,
+  );
+  assert.ok(attempts);
+  assert.equal(attempts.attempt.length, 1);
+  assert.equal(attempts.start.length, 1);
+  assert.equal(attempts.attempt[0]!.details.modelCallId, attempts.start[0]!.details.modelCallId);
+  assert.equal(attempts.attempt[0]!.details.httpStatus, 200);
+  assert.equal(attempts.attempt[0]!.details.attempt, 1);
+  assert.equal(attempts.attempt[0]!.details.provider, provider);
+  assert.equal(attempts.attempt[0]!.details.model, model);
+  assert.equal(attempts.attempt[0]!.outcome, "success");
+  const providerRequests = (await modelEvents()).filter(
+    (event) => event.event === "request" && event.caller === agent.label && event.text === nonce,
+  );
+  assert.equal(providerRequests.length, 1);
+  assert.equal(wireField(providerRequests[0], "path"), path);
+  log(`${agent.label}: ${provider} ${path} request matched its turn and model call`);
+}
+
 export async function proveCodexAuditInterruptions(
   stack: SmokeStack,
   agent: SmokeAgent,
@@ -1018,7 +1296,7 @@ export async function proveCodexAuditInterruptions(
   const rpc = (method: string, params: Record<string, unknown>) =>
     gatewayRpc(stack, gateway, method, params);
 
-  async function start(fault: "retry" | "cancel" | "restart") {
+  async function start(fault: "retry" | "cancel" | "restart" | "transport") {
     const sessionKey = `agent:main:audit-${randomUUID()}`;
     const nonce = `OCE_SMOKE_${fault}-${randomUUID()}`;
     // A chat on a fresh key emits the native session-start hook.
@@ -1026,7 +1304,7 @@ export async function proveCodexAuditInterruptions(
       sessionKey,
       idempotencyKey: randomUUID(),
       message:
-        fault === "retry"
+        fault === "retry" || fault === "transport"
           ? `Run the requested printf once, then reply with exactly ${nonce}.`
           : `Reply with exactly ${nonce} and no other text. Do not use tools.`,
     });
@@ -1069,6 +1347,19 @@ export async function proveCodexAuditInterruptions(
     ...codexResponse(retried.nonce, 2),
   });
   await checkModelRetry(agent.label, retried);
+
+  // A closed provider connection has no HTTP status. Codex must retry the
+  // request, and audit must identify the failed attempt on the same turn.
+  const transport = await start("transport");
+  await assertAgentTurnAudit(readAudit, {
+    label: agent.label,
+    revisionId,
+    runtimeSource: "codex",
+    sessionId: transport.sessionId,
+    turnId: transport.runId,
+    ...codexResponse(transport.nonce, 2),
+  });
+  await checkModelRetry(agent.label, transport, "TRANSPORT_ERROR");
 
   // Match both explicit session hooks to the ID returned by chat.history.
   await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });

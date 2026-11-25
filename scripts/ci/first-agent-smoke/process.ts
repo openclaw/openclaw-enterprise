@@ -162,6 +162,8 @@ type Phase =
   | "codex-audit-interruptions"
   | "audit-switch"
   | "http-chat-audit-recovery"
+  | "runtime-audit-queue-full"
+  | "embedded-model-protocol-audit"
   | "controlled-channel-proxy"
   | "channel-proxy-helm-wait"
   | "channel-proxy-envoy-trust-rollout"
@@ -219,6 +221,8 @@ export function createStepRecorder(now = () => performance.now()) {
     ["chat-after-start", "chat turns after start"],
     ["codex-audit-interruptions", "Codex provider retry, cancellation, and Gateway recovery"],
     ["http-chat-audit-recovery", "recover an HTTP audit record after a PostgreSQL outage"],
+    ["runtime-audit-queue-full", "continue chat with a full runtime audit queue"],
+    ["embedded-model-protocol-audit", "embedded model protocol audit"],
     ["audit-switch", "change the audit setting on active revisions"],
     ["controlled-channel-proxy", "controlled two-Agent channel proxy workflow"],
     ["channel-proxy-helm-wait", "channel proxy Helm upgrade wait"],

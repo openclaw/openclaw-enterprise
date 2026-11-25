@@ -21,6 +21,7 @@ import {
   expectPersistedRuntimeAudit,
   setLocalSetupAudit,
 } from "../../scripts/ci/first-agent-smoke/setup.ts";
+import { waitFor } from "../../scripts/ci/first-agent-smoke/process.ts";
 import {
   RUNTIME_AUDIT_ACTIONS,
   WORKSPACE_DEFAULTS,
@@ -1052,14 +1053,34 @@ test(
         );
         if (proof) {
           await nativeContext.test(
-            `dedicated OpenClaw answers chat on the ${stage} revision`,
-            () => {
+            `dedicated OpenClaw answers chat and records its model response on the ${stage} revision`,
+            async () => {
               assert.equal(
                 proof.replied,
                 true,
                 "the dedicated worker did not return the requested reply",
               );
               assert.equal(turn?.details.outcome, "succeeded");
+              // The worker's committed assistant message must produce an observation for
+              // this exact turn, including after a revision replaces the first worker.
+              const response = await waitFor(
+                `dedicated OpenClaw model response on ${revisionId}`,
+                async () => {
+                  const page = await readAudit();
+                  const event = page.events.find(
+                    ({ action, details }) =>
+                      action === "openclaw.runtime.model_response.observed" &&
+                      details.agentRevisionId === revisionId &&
+                      details.sessionId === proof.session.sessionId &&
+                      details.turnId === proof.runId,
+                  );
+                  return { done: event !== undefined, value: event };
+                },
+                60_000,
+              );
+              assert.equal(response.details.provider, "openai");
+              assert.equal(response.details.model, expectedModel);
+              assert.match(response.details.responseIdHash, /^sha256:[0-9a-f]{16}$/u);
             },
           );
         }

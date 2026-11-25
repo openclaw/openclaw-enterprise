@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 16:32"
-last_updated_session: "authoring-run/952e24f7-42a2-4586-9b70-95b040806b9e"
+updated: "2026-11-24 17:02"
+last_updated_session: "authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0"
 ---
 
 # Audit ledger flow
@@ -71,7 +71,8 @@ graph TD
   Lookup -->|Recheck access| Disclose["Commit the disclosure"]
   Disclose -->|Confirmed| Text["Return message text"]
   Codex["Worker filters Codex traces"] -->|Gateway matches turn| Gateway
-  Embedded["OpenClaw receives HTTP headers"] -->|Trace matches call| Gateway
+  Embedded["OpenClaw receives headers or error"] -->|Trace matches call| Gateway
+  Dedicated["Worker saves response or error"] -->|Session and turn match| Gateway
   Gateway["Gateway reports runtime activity"] --> Local{"Queue event on disk?"}
   Local -->|Yes| Continue["Continue chat"]
   Local -->|Yes| Deliver["Send to OCC in background"]
@@ -129,12 +130,10 @@ the Installation.
 
 `apps/controller/src/index.ts:event` and `packages/audit/src/index.ts:AuditEventFactory.create`
 
-For example, the controller creates an event for a Namespace mutation and
-appends it in the mutation's transaction. The factory supplies an ID, timestamp,
-kind and outcome defaults, validates required fields and matching Namespace
-scope, sanitizes details and actor fields, and freezes the event. The PostgreSQL
-repository does not invoke the factory or sanitize an event passed directly to
-append; callers of that repository must supply appropriate evidence.
+The controller appends Namespace mutation evidence in the mutation's transaction.
+The factory supplies ID, time, kind and outcome defaults. It checks required
+fields and Namespace scope, sanitizes details and actors, and freezes the event.
+Direct repository callers must sanitize their own evidence.
 
 ### 3. State appends a row in the caller's transaction
 
@@ -189,29 +188,19 @@ PostgreSQL binds the read projection directly to the transaction lifetime.
 A write binds the unit of work and registers it for audit and Native IAM
 operations on the same client.
 
-After the callback returns, State closes admission to repository operations and
-waits for already admitted operations to settle before committing. On failure it
-attempts rollback if the transaction remains marked started, COMMIT is not
-uncertain, and no client error has been observed. It closes the lifetime and
-releases or discards the client.
-An acknowledged COMMIT persists the transaction, but the unit returns only
-after client cleanup. A lost or ambiguous COMMIT response can leave the outcome
-unknown: the transaction may have committed or rolled back. A cleanup failure
-after acknowledged COMMIT is also reported as unknown, not proof of rollback.
-Neither case authorizes an automatic replay. An append or list result within a
-unit does not by itself prove that the transaction committed.
-For a covered API operation, OCC logs `http.commit_outcome_unknown` and attempts
-to save the response with reason code `COMMIT_OUTCOME_UNKNOWN`.
+After the callback, State stops admitting repository operations and waits for
+admitted work before COMMIT. It attempts rollback only if the transaction
+started, COMMIT is not uncertain, and no client error occurred. State then
+closes the lifetime and releases or discards the client. A lost COMMIT reply or
+failed cleanup after acknowledged COMMIT reports an unknown outcome. Neither
+permits automatic replay. An append or list result does not prove commit.
+OCC logs `http.commit_outcome_unknown` and attempts to record reason code
+`COMMIT_OUTCOME_UNKNOWN` for covered API operations.
 
-When the checked-out client reports a transport error before callback admission,
-State refuses to start the callback. It refuses further repository queries and
-their results after an observed error, and requests client discard when that
-error is known before release. A transaction that fails on an observed client
-error reports the persistence dependency as unavailable, whatever code the error
-carries. If an error is observed during cleanup after an
-acknowledged COMMIT, State reports an unknown outcome. A caller that catches a
-repository error can still perform its own external effects; this guard does not
-control those effects or establish the outcome of an unobserved transport failure.
+An observed client transport error prevents callback admission or further
+repository results. State discards the client when possible and reports
+persistence unavailable, except for uncertain cleanup after COMMIT. These guards
+cannot stop external effects by callers or establish unobserved failures.
 
 ### 5. Internal list decodes the ledger
 
@@ -263,12 +252,17 @@ The plugin records new sessions on `session_start`.
 turn starts and results with session and run IDs. It needs no prior
 session record or OCC confirmation.
 
-For embedded OpenClaw, `model_call_started` supplies a trace and call ID.
+For embedded OpenClaw, `model_call_started` supplies a trace, model API and call ID.
 `deploy/runtime/managed-runtime-audit/openclaw.mjs:subscribeOpenClawAttempts`
-observes Undici POST requests to paths ending in `/responses`. The
+observes Undici POST requests to `/responses`, `/chat/completions` or `/messages`,
+as selected by the model API. The
 `traceparent` header must match one active OpenAI Responses call.
-The plugin numbers requests at creation. It queues an attempt after
-response headers arrive. It retains neither the URL nor the body.
+The plugin numbers requests at creation. It queues the HTTP status or
+`TRANSPORT_ERROR` if the request fails before headers. It retains no URL or body.
+
+`deploy/runtime/managed-runtime-audit/dedicated.mjs:recordDedicatedModel` accepts a saved assistant row with a worker
+commit key and matching session and turn. It reports the response ID hash or
+error code, without the text. The saved message ID provides a stable event ID.
 
 In a managed dedicated Codex Pod on the control cluster,
 `deploy/runtime/managed-runtime-audit/codex-worker.mjs:startAttemptAudit`
@@ -280,7 +274,9 @@ polls the worker's private status port.
 derived from the App Server token and revision ID. The OCC token stays
 on the Gateway. The Gateway holds up to 512 pending attempts in memory.
 It queues an attempt only when a saved prompt uniquely links the Codex
-turn ID to a Gateway session and run.
+turn ID to a Gateway session and run. The native endpoint span supplies the
+start time and call ID. For a request without headers, the decoder checks that
+Codex reported an error and keeps only `TRANSPORT_ERROR`.
 
 `deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink` keeps queued
 events in `/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite`
@@ -350,6 +346,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 17:02: Trace worker responses and model transport failures. (authoring-run/5f4255c4-b1d1-4890-b127-2882657adce0 - 47b6265e9ecbc11ec4d13b4309166836af2bba1d)
 
 - 2026-11-24 16:32: Trace embedded OpenClaw HTTP attempts. (authoring-run/952e24f7-42a2-4586-9b70-95b040806b9e - f3feee183fc2ab1b78e398371df27c41d77d6a3b)
 

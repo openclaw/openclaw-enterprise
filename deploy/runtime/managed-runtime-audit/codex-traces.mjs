@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { runtimeAuditReference } from "./runtime-reference.ts";
+
 // Codex 0.164.0 can export the HTTP request before its enclosing sampling span closes.
 const path = [
   "endpoint_session.stream_encoded_json_with",
@@ -52,6 +54,12 @@ function integer(value) {
   return Number.isSafeInteger(scalar) ? scalar : NaN;
 }
 
+function timestamp(value) {
+  return typeof value === "string" && /^[1-9]\d{18}$/.test(value)
+    ? new Date(Number(value.slice(0, -6))).toISOString()
+    : undefined;
+}
+
 function requestAttempt(event) {
   if (!event || attribute(event, "event.name")?.stringValue !== "codex.api_request") {
     return;
@@ -59,19 +67,22 @@ function requestAttempt(event) {
   const index = integer(attribute(event, "attempt"));
   const status = attribute(event, "http.response.status_code");
   const httpStatus = integer(status);
-  const time = event.timeUnixNano;
+  const error = attribute(event, "error.message");
+  const transportError =
+    status === undefined && typeof error?.stringValue === "string" && error.stringValue.length > 0;
+  const occurredAt = timestamp(event.timeUnixNano);
   if (
     !(index >= 0 && index < 1000) ||
     (status !== undefined && !(httpStatus >= 100 && httpStatus <= 599)) ||
-    typeof time !== "string" ||
-    !/^[1-9]\d{18}$/.test(time)
+    (status === undefined && !transportError) ||
+    occurredAt === undefined
   ) {
     return;
   }
   return {
     attempt: index + 1,
-    ...(status === undefined ? {} : { httpStatus }),
-    occurredAt: new Date(Number(time.slice(0, -6))).toISOString(),
+    ...(transportError ? { failureCode: "TRANSPORT_ERROR" } : { httpStatus }),
+    occurredAt,
   };
 }
 
@@ -95,7 +106,8 @@ export function createCodexTraceDecoder(emit) {
           nativeTurnId,
         ) &&
         typeof model === "string" &&
-        /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(model)
+        model.length > 0 &&
+        runtimeAuditReference(model) === model
       ) {
         remember(links, key, { depth, nativeTurnId, model });
       }
@@ -111,12 +123,13 @@ export function createCodexTraceDecoder(emit) {
     }
     // Codex restarts its HTTP attempt counter for each endpoint span.
     const modelCallId = hash(key);
+    const callStartedAt = timestamp(span.startTimeUnixNano);
     for (const event of array(span.events)) {
       const attempt = requestAttempt(event);
       if (attempt) {
         const modelAttemptId = hash(`${key}:${attempt.attempt}`);
         if (!delivered.has(modelAttemptId)) {
-          remember(pending, modelAttemptId, { parent, modelCallId, ...attempt });
+          remember(pending, modelAttemptId, { parent, modelCallId, callStartedAt, ...attempt });
         }
       }
     }

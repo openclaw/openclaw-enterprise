@@ -7,17 +7,12 @@ The [OpenTelemetry Collector](../observability.md) exports operational logs.
 
 ## What is recorded
 
-An event identifies when it occurred, the Installation, actor, action, affected
-resource, and outcome. It can also include a Namespace, request ID, or
-authorization decision when available. A denial's decision names the exact
-permission and resource that was refused, which can differ from the action. An
-Agent update refused for a missing `operate` on the Agent's Secret records
-`openclaw.agents.update` with a decision for `operate` on that Secret. When the
-Agent's own service principal is refused, the event has reason code
-`AGENT_PRINCIPAL_NOT_AUTHORIZED` and its details name that principal and the
-refused grant. Service API key issuance and revocation record the caller, the
-principal ID, and the key's ID and name, not the credential. An API route's
-event for a request made with a
+An event identifies its time, Installation, actor, action, resource, and outcome.
+It can include a Namespace, request ID, and authorization decision. A denial
+names the exact refused permission and resource. For example, an Agent update
+can report `operate` denied on its Secret. `AGENT_PRINCIPAL_NOT_AUTHORIZED`
+identifies a refused Agent principal and grant. Service key changes record the
+caller, principal, and key ID and name, not the credential. A request with a
 [service API key](../../reference/authentication/service-api-keys.md#revocation-and-audit)
 records that key's ID in `actorServiceKeyId` on the resource event.
 
@@ -104,16 +99,17 @@ correct the cause and deploy the Agent.
 
 The API returns these `runtime_activity` records.
 
-| Action                                     | What the Gateway observed                                                              |
-| ------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`         | New session. Empty chats and sessions created by a first message can lack this record. |
-| `openclaw.runtime.session.ended`           | Session deletion.                                                                      |
-| `openclaw.runtime.turn.started`            | Start of a turn.                                                                       |
-| `openclaw.runtime.turn.completed`          | Final turn result in `details.outcome`.                                                |
-| `openclaw.runtime.model_call.started`      | Start of an embedded OpenClaw model call.                                              |
-| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw result for the same `modelCallId`.                                   |
-| `openclaw.runtime.model_attempt.observed`  | Embedded OpenClaw or dedicated Codex HTTP attempt.                                     |
-| `openclaw.runtime.model_response.observed` | Codex provider response. `responseIdHash` identifies it without storing its text.      |
+| Action                                     | What the Gateway observed                                                                 |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `openclaw.runtime.session.started`         | New session. Empty chats and sessions created by a first message can lack this record.    |
+| `openclaw.runtime.session.ended`           | Session deletion.                                                                         |
+| `openclaw.runtime.turn.started`            | Start of a turn.                                                                          |
+| `openclaw.runtime.turn.completed`          | Final turn result in `details.outcome`.                                                   |
+| `openclaw.runtime.model_call.started`      | Start of an embedded OpenClaw or dedicated Codex model call.                              |
+| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw result for the same `modelCallId`.                                      |
+| `openclaw.runtime.model_attempt.observed`  | Embedded OpenClaw or dedicated Codex HTTP attempt.                                        |
+| `openclaw.runtime.model_response.observed` | Dedicated OpenClaw or Codex response. `responseIdHash` identifies the provider response.  |
+| `openclaw.runtime.model_error.observed`    | Dedicated OpenClaw worker saved an assistant error. `errorCode` can give the HTTP status. |
 
 Each turn includes `sessionId` and `turnId`, even without a session start.
 Recovery can reuse a turn ID. Without a result, the outcome is unknown.
@@ -123,17 +119,20 @@ original session and message IDs but allow hashed turn IDs.
 
 Group HTTP attempts within a revision and turn by `modelCallId`. Each
 identifies the `model`, `provider` and a distinct `modelAttemptId`.
-`attempt` starts at 1 per call. Optional `httpStatus` comes from response headers.
+`attempt` starts at 1 per call. `httpStatus` comes from response headers.
+`failureCode: TRANSPORT_ERROR` means the request failed before headers arrived.
 HTTP 200 cannot confirm stream completion. With different call IDs,
 the records alone cannot identify a retry.
 
-- Embedded OpenClaw reports OpenAI Responses POST requests only after
-  response headers arrive. The request’s `traceparent` must match one
+- Embedded OpenClaw reports OpenAI Responses, OpenAI Chat Completions and
+  Anthropic Messages POST requests after headers or a transport failure.
+  The request's `traceparent` must match one
   model call. A trace exporter can change the header and prevent that match.
-- Dedicated OpenClaw omits individual calls and attempts.
+- Dedicated OpenClaw reports saved provider responses and errors, but omits request attempts and retries.
 - Dedicated Codex requires a managed Pod on the control cluster with a
   direct Gateway connection. An HTTP 503 retry can share the call ID.
-  A stream retry starts a new call. Check Gateway logs for reporting warnings.
+  A stream retry starts a new call. Call starts can appear after the request.
+  Check Gateway logs for reporting warnings.
 
 Attempts can arrive after the result. WebSockets, failures before sending,
 missing traces and ambiguous matches can leave gaps. Restart or overflow

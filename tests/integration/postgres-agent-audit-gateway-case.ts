@@ -7,6 +7,7 @@ import type { AgentAuditPage, AgentRevision } from "@openclaw-enterprise/contrac
 import type pg from "pg";
 
 import { startGatewayRuntimeAuditListener } from "../../apps/controller/src/http/runtime-audit.ts";
+import { recordDedicatedModel } from "../../deploy/runtime/managed-runtime-audit/dedicated.mjs";
 import {
   ResourceConflictError,
   ScopeViolationError,
@@ -101,7 +102,10 @@ export async function checkGatewayAudit(
   const session = { sessionId: randomUUID() };
   const turn = { ...session, turnId: randomUUID(), messageId: randomUUID() };
   const attempt = { ...turn, modelCallId: randomUUID(), provider: "openai", model: "gpt-4.1" };
-  const envelope = () => ({ eventId: randomUUID(), occurredAt: new Date().toISOString() });
+  const envelope = (): { eventId: string; occurredAt: string } => ({
+    eventId: randomUUID(),
+    occurredAt: new Date().toISOString(),
+  });
   const started = { ...envelope(), action: "openclaw.runtime.turn.started", ...turn };
 
   // A retry after worker restart can reuse the credential for this revision only.
@@ -174,9 +178,17 @@ export async function checkGatewayAudit(
     provider: "codex",
     model: "gpt-4.1",
   };
+  const codexCallDetails = { ...model, modelCallId: randomBytes(32).toString("hex") };
+  const codexCallStarted = {
+    ...envelope(),
+    action: "openclaw.runtime.model_call.started",
+    ...codexCallDetails,
+  };
+  assert.equal(await post(codexCallStarted, token), 403);
+  assert.equal(await post({ ...codexCallStarted, provider: "openai" }, codex.token, "codex"), 403);
+  assert.equal(await post(codexCallStarted, codex.token, "codex"), 204);
   const attemptDetails = {
-    ...model,
-    modelCallId: randomBytes(32).toString("hex"),
+    ...codexCallDetails,
     modelAttemptId: randomBytes(32).toString("hex"),
     attempt: 1,
     httpStatus: 503,
@@ -202,6 +214,79 @@ export async function checkGatewayAudit(
   assert.equal(await post(completed, codex.token, "codex"), 403);
   assert.equal(await post(observed, token), 403);
   assert.equal(await post(observed, codex.token, "codex"), 204);
+  const openclawModel = {
+    sessionId: turn.sessionId,
+    turnId: turn.turnId,
+    provider: "custom+proxy",
+    model: "team/claude:4.5",
+  };
+  const responseId = "response-fixture";
+  const openclawResponseDetails = {
+    ...openclawModel,
+    responseIdHash: "sha256:" + createHash("sha256").update(responseId).digest("hex").slice(0, 16),
+  };
+  const openclawResponse = {
+    ...envelope(),
+    action: "openclaw.runtime.model_response.observed",
+    ...openclawResponseDetails,
+  };
+  // A valid model ID can contain slashes and colons. Exercise the real
+  // committed-worker recorder before sending its result to the audit API.
+  const recorded: Record<string, unknown>[] = [];
+  const timestamp = Date.now();
+  recordDedicatedModel((event: Record<string, unknown>) => recorded.push(event), {
+    target: { sessionId: turn.sessionId },
+    messageId: randomUUID(),
+    runId: turn.turnId,
+    message: {
+      role: "assistant",
+      idempotencyKey: "worker-commit-" + randomBytes(32).toString("base64url"),
+      __openclaw: { runId: turn.turnId },
+      provider: openclawModel.provider,
+      model: openclawModel.model,
+      responseId,
+      timestamp,
+    },
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(recorded.length, 1);
+  openclawResponse.eventId = String(recorded[0]!.eventId);
+  openclawResponse.occurredAt = new Date(timestamp).toISOString();
+  assert.deepEqual(recorded[0], openclawResponse);
+  const openclawErrorDetails = { ...openclawModel, errorCode: "503" };
+  const openclawError = {
+    ...envelope(),
+    action: "openclaw.runtime.model_error.observed",
+    ...openclawErrorDetails,
+  };
+  const transportDetails = {
+    ...openclawModel,
+    modelCallId: randomUUID(),
+    modelAttemptId: randomBytes(32).toString("hex"),
+    attempt: 1,
+    failureCode: "TRANSPORT_ERROR",
+  };
+  const transport = {
+    ...envelope(),
+    action: "openclaw.runtime.model_attempt.observed",
+    ...transportDetails,
+  };
+  // A saved worker response can be reported only by its OpenClaw revision.
+  // Repeated transcript notifications use one delivery ID and create one row.
+  assert.equal(await post(openclawResponse, codex.token, "codex"), 403);
+  assert.equal(await post(openclawError, codex.token, "codex"), 403);
+  assert.equal(await post({ ...openclawError, provider: "codex" }, token), 403);
+  assert.equal(await post({ ...openclawError, errorCode: "private error text" }, token), 400);
+  assert.equal(await post({ ...openclawError, errorMessage: "private error text" }, token), 400);
+  // A model request has either response headers or a transport failure, not both.
+  assert.equal(await post({ ...transport, failureCode: undefined }, token), 400);
+  assert.equal(await post({ ...transport, httpStatus: 200 }, token), 400);
+  assert.deepEqual(
+    await Promise.all([post(openclawResponse, token), post(openclawResponse, token)]),
+    [204, 204],
+  );
+  assert.equal(await post(openclawError, token), 204);
+  assert.equal(await post(transport, token), 204);
   // A later response in this turn must not hide the earlier HTTP failure.
   const codexPage = await input.readPage(input.codex.agentId);
   assert.deepEqual(
@@ -218,6 +303,11 @@ export async function checkGatewayAudit(
         codexAttempt.action,
         "failure",
         { ...attemptDetails, agentRevisionId: input.codex.id, runtimeSource: "codex" },
+      ],
+      [
+        codexCallStarted.action,
+        "success",
+        { ...codexCallDetails, agentRevisionId: input.codex.id, runtimeSource: "codex" },
       ],
     ],
   );
@@ -261,8 +351,33 @@ export async function checkGatewayAudit(
   // The reader can trace both revisions of this Agent. The peer's event is private.
   const page = await input.readPage(revision.agentId);
   const events = page.events.filter((entry) => entry.event === "runtime_activity");
+  const addedActions = new Set([openclawResponse.action, openclawError.action, transport.action]);
+  const observations = events.filter((entry) => addedActions.has(entry.action));
+  assert.equal(observations.length, 3);
   assert.deepEqual(
-    events.map((entry) => [entry.action, entry.details]),
+    observations.map((entry) => [entry.action, entry.outcome, entry.details]).sort(),
+    [
+      [
+        openclawResponse.action,
+        "success",
+        { ...openclawResponseDetails, agentRevisionId: revision.id, runtimeSource: "openclaw" },
+      ],
+      [
+        openclawError.action,
+        "failure",
+        { ...openclawErrorDetails, agentRevisionId: revision.id, runtimeSource: "openclaw" },
+      ],
+      [
+        transport.action,
+        "failure",
+        { ...transportDetails, agentRevisionId: revision.id, runtimeSource: "openclaw" },
+      ],
+    ].sort(),
+  );
+  assert.deepEqual(
+    events
+      .filter((entry) => !addedActions.has(entry.action))
+      .map((entry) => [entry.action, entry.details]),
     [
       [
         "openclaw.runtime.session.started",

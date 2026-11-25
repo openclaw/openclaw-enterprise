@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/agent-lifecycle";
 
 import { subscribeCodexAttempts, subscribeCodexResponses } from "./codex.mjs";
+import { recordDedicatedModel } from "./dedicated.mjs";
 import { subscribeOpenClawAttempts } from "./openclaw.mjs";
 import { createAuditSink } from "./sink.mjs";
 
@@ -128,8 +129,8 @@ function recordModel(
     return;
   }
   const fields = { sessionId, turnId: runId, modelCallId: callId, model, provider };
-  if (api === "openai-responses") {
-    active.embedded?.model(fields, context?.trace, outcome === undefined);
+  if (["openai-responses", "openai-completions", "anthropic-messages"].includes(api)) {
+    active.embedded?.model(fields, context?.trace, outcome === undefined, api);
   }
   if (outcome === undefined) {
     return active.sink.emit({ action: "openclaw.runtime.model_call.started", ...fields });
@@ -164,7 +165,14 @@ function createService(runtime) {
       setup.defer(sink.close);
       const inputs = new Map();
       const owner = { sink, turns: new Map(), inputs };
-      setup.defer(runtime.events.onSessionTranscriptUpdate((update) => recordInput(owner, update)));
+      setup.defer(
+        runtime.events.onSessionTranscriptUpdate((update) => {
+          recordInput(owner, update);
+          if (sink.source === "openclaw" && process.env.OPENCLAW_NATIVE_WORKER_PROFILE) {
+            recordDedicatedModel(sink.emit, update);
+          }
+        }),
+      );
       if (sink.source === "openclaw" && !process.env.OPENCLAW_NATIVE_WORKER_PROFILE) {
         owner.embedded = subscribeOpenClawAttempts(sink.emit);
         setup.defer(owner.embedded.close);

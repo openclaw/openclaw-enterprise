@@ -27,6 +27,7 @@ const digest = Type.String({ pattern: "^[a-f0-9]{64}$" });
 function runtimeEvent<const Action extends string, Fields extends TProperties>(
   action: Action,
   fields: Fields,
+  constraints: Record<string, unknown> = {},
 ) {
   const closed = { additionalProperties: false };
   const observation = Type.Object(
@@ -38,11 +39,11 @@ function runtimeEvent<const Action extends string, Fields extends TProperties>(
       occurredAt: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" }),
       ...fields,
     },
-    closed,
+    { ...closed, ...constraints },
   );
   const details = Type.Object(
     { agentRevisionId: RevisionId, runtimeSource: source, ...fields },
-    closed,
+    { ...closed, ...constraints },
   );
   const projection = Type.Object(
     {
@@ -83,21 +84,38 @@ const schemas = [
   ...turnSchemas(turn),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
-  runtimeEvent("openclaw.runtime.model_attempt.observed", {
-    sessionId: reference,
-    turnId: reference,
-    model: reference,
-    provider: Type.Enum(["codex", "openai"]),
-    modelCallId: reference,
-    modelAttemptId: digest,
-    attempt: Type.Integer({ minimum: 1, maximum: 1000 }),
-    httpStatus: Type.Optional(Type.Integer({ minimum: 100, maximum: 599 })),
-  }),
+  runtimeEvent(
+    "openclaw.runtime.model_attempt.observed",
+    {
+      sessionId: reference,
+      turnId: reference,
+      model: reference,
+      provider: reference,
+      modelCallId: reference,
+      modelAttemptId: digest,
+      attempt: Type.Integer({ minimum: 1, maximum: 1000 }),
+      httpStatus: Type.Optional(Type.Integer({ minimum: 100, maximum: 599 })),
+      failureCode: Type.Optional(Type.Literal("TRANSPORT_ERROR")),
+    },
+    {
+      oneOf: [
+        { type: "object", required: ["httpStatus"] },
+        { type: "object", required: ["failureCode"] },
+      ],
+    },
+  ),
   runtimeEvent("openclaw.runtime.model_response.observed", {
     ...turn,
     model: reference,
     provider: reference,
     responseIdHash: Type.String({ pattern: "^sha256:[0-9a-f]{16}$" }),
+  }),
+  runtimeEvent("openclaw.runtime.model_error.observed", {
+    sessionId: reference,
+    turnId: reference,
+    model: reference,
+    provider: reference,
+    errorCode: Type.Optional(Type.String({ pattern: "^[45][0-9]{2}$" })),
   }),
 ];
 

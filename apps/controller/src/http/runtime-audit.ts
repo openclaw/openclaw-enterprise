@@ -42,7 +42,10 @@ function auditId(installationId: string, grant: GatewayRuntimeAuditGrant, eventI
 function eventOutcome(event: RuntimeAuditObservation) {
   if (event.action === "openclaw.runtime.model_attempt.observed") {
     // HTTP headers describe this request only. The turn has its own result.
-    return event.httpStatus !== undefined && event.httpStatus >= 400 ? "failure" : "success";
+    return event.failureCode !== undefined || event.httpStatus! >= 400 ? "failure" : "success";
+  }
+  if (event.action === "openclaw.runtime.model_error.observed") {
+    return "failure";
   }
   if (!("outcome" in event) || event.outcome === "succeeded") {
     return "success";
@@ -171,18 +174,20 @@ export function registerGatewayRuntimeAudit(
           );
         }
         if (
-          (event.action === "openclaw.runtime.model_response.observed" &&
-            grant.runtimeSource !== "codex") ||
-          (event.action === "openclaw.runtime.model_attempt.observed" &&
+          ((event.action === "openclaw.runtime.model_response.observed" ||
+            event.action === "openclaw.runtime.model_attempt.observed" ||
+            event.action === "openclaw.runtime.model_call.started") &&
             (grant.runtimeSource === "codex") !== (event.provider === "codex")) ||
-          ((event.action === "openclaw.runtime.model_call.started" ||
-            event.action === "openclaw.runtime.model_call.completed") &&
-            grant.runtimeSource !== "openclaw")
+          (event.action === "openclaw.runtime.model_error.observed" &&
+            (grant.runtimeSource !== "openclaw" || event.provider === "codex")) ||
+          (event.action === "openclaw.runtime.model_call.completed" &&
+            (grant.runtimeSource !== "openclaw" || event.provider === "codex"))
         ) {
           throw failure(403, "FORBIDDEN", "The runtime source cannot report this model event.");
         }
         if (
-          event.action === "openclaw.runtime.model_attempt.observed" &&
+          (event.action === "openclaw.runtime.model_attempt.observed" ||
+            event.action === "openclaw.runtime.model_call.started") &&
           event.provider === "codex" &&
           !/^[0-9a-f]{64}$/.test(event.modelCallId)
         ) {

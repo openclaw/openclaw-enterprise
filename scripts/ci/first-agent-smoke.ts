@@ -49,7 +49,9 @@ import {
   createCodexAgent,
   deployAgent,
   proveCodexAuditInterruptions,
+  proveEmbeddedProtocols,
   proveEmbeddedRetries,
+  proveRuntimeAuditQueueFull,
   readLogs,
   runFirstAgent,
   startAuditSwitchChat,
@@ -313,6 +315,12 @@ async function smoke() {
     });
     await smokeStep("http-chat-audit-recovery", () =>
       checkPostgresOutage(stack, embedded.agent, embeddedRevision),
+    );
+    await smokeStep("runtime-audit-queue-full", () =>
+      proveRuntimeAuditQueueFull(stack, embedded.agent, embeddedRevision),
+    );
+    await smokeStep("embedded-model-protocol-audit", () =>
+      proveEmbeddedProtocols(stack, embedded.agent, readEmbeddedAudit),
     );
     assert.equal(auditFailures.length, 0, auditFailures.join("\n"));
     assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");

@@ -28,7 +28,7 @@ function encode(event) {
     turnId: event.turnId && runtimeAuditReference(event.turnId),
     modelCallId: event.modelCallId && runtimeAuditReference(event.modelCallId),
     messageId: canLink ? event.messageId : undefined,
-    eventId: randomUUID(),
+    eventId: event.eventId ?? randomUUID(),
     occurredAt: event.occurredAt ?? new Date().toISOString(),
   });
 }

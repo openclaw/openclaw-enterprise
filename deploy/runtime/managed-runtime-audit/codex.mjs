@@ -1,8 +1,17 @@
+import { createHash } from "node:crypto";
 import { setImmediate as yieldToChat } from "node:timers/promises";
 
 import { onInternalDiagnosticEvent } from "openclaw/plugin-sdk/diagnostic-runtime";
 
 import { createAttemptReader } from "./codex-transport.mjs";
+
+function modelStartId(modelCallId) {
+  const digest = createHash("sha256")
+    .update("codex-model-start:" + modelCallId)
+    .digest("hex");
+  const variant = ((Number.parseInt(digest[16], 16) & 3) | 8).toString(16);
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
 
 // Codex reports each distinct response received by the Gateway. The timestamp
 // and response ID hash belong to that observation, including during a tool loop.
@@ -32,6 +41,7 @@ export function subscribeCodexAttempts(emit) {
   const read = createAttemptReader();
   const links = new Map();
   const pending = new Map();
+  const started = new Map();
   const shutdown = new AbortController();
   let until = 0;
   let reading = false;
@@ -65,6 +75,22 @@ export function subscribeCodexAttempts(emit) {
           continue;
         }
         const [sessionId, turnId] = JSON.parse(link);
+        if (row.callStartedAt && !started.has(row.modelCallId)) {
+          if (started.size === 4096) {
+            started.delete(started.keys().next().value);
+          }
+          started.set(row.modelCallId, true);
+          emit({
+            action: "openclaw.runtime.model_call.started",
+            eventId: modelStartId(row.modelCallId),
+            sessionId,
+            turnId,
+            provider: "codex",
+            model: row.model,
+            modelCallId: row.modelCallId,
+            occurredAt: row.callStartedAt,
+          });
+        }
         emit({
           action: "openclaw.runtime.model_attempt.observed",
           sessionId,
@@ -75,6 +101,7 @@ export function subscribeCodexAttempts(emit) {
           modelAttemptId: id,
           attempt: row.attempt,
           httpStatus: row.httpStatus,
+          failureCode: row.failureCode,
           occurredAt: row.occurredAt,
         });
         pending.delete(id);
