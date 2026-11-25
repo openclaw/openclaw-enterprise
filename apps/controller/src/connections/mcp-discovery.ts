@@ -103,6 +103,7 @@ export async function withOAuthTransport<T>(
   }: OAuthTransportOptions = {},
 ): Promise<T> {
   const timeout = AbortSignal.timeout(purpose === "metadata" ? 10_000 : 15_000);
+  const maxResponseSize = (purpose === "metadata" ? 256 : 64) * 1024;
   const deadline = signal ? AbortSignal.any([signal, timeout]) : timeout;
   if (deadline.aborted) {
     throw oauthUnavailable(mode);
@@ -145,7 +146,7 @@ export async function withOAuthTransport<T>(
   // operation, even if the authoritative DNS server changes its answer between requests.
   const dispatcher = new Agent({
     allowH2: false,
-    maxResponseSize: (purpose === "metadata" ? 256 : 64) * 1024,
+    maxResponseSize,
     connect: {
       lookup(host, options, callback) {
         const addresses = approved.get(host);
@@ -204,7 +205,7 @@ export async function withOAuthTransport<T>(
     const body =
       headersOnly || (!response.ok && purpose === "metadata") || !response.body
         ? null
-        : await boundedBody(response, (purpose === "metadata" ? 256 : 64) * 1024);
+        : await response.arrayBuffer();
     return new Response(body, {
       status: response.status,
       headers: Object.fromEntries(response.headers),
@@ -237,19 +238,6 @@ export async function withOAuthTransport<T>(
   } finally {
     await dispatcher.destroy();
   }
-}
-
-async function boundedBody(
-  response: { arrayBuffer(): Promise<ArrayBuffer> },
-  limit: number,
-): Promise<ArrayBuffer> {
-  // The production Agent enforces maxResponseSize while reading from the socket. Check again
-  // here because controlled test fetches do not use that Agent.
-  const body = await response.arrayBuffer();
-  if (body.byteLength > limit) {
-    throw new Error("OAuth response exceeded its size limit.");
-  }
-  return body;
 }
 
 export async function discoverMcpAuthorization(

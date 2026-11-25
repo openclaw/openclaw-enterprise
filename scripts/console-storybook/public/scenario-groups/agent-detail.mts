@@ -1562,35 +1562,8 @@ export function createAgentDetailScenarios({
       },
       pluginAccountConsentMultipleClients: {
         ...accountConsent,
+        oauthCatalog: "plugin-consent-multiple-clients",
         name: "Choose an eligible OAuth Client",
-        rules: [
-          {
-            suffix: "/connections/oauth-clients",
-            method: "GET",
-            data: [
-              {
-                kind: "oauth2",
-                id: "ccr_00000000-0000-4000-8000-000000000006",
-                displayName: "Support service",
-                issuer: "https://identity.example.com",
-                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-                clientId: "support-demo",
-                tokenEndpointAuthMethod: "none",
-                createdAt: "2026-01-01T00:00:00.000Z",
-              },
-              {
-                kind: "oauth2",
-                id: "ccr_00000000-0000-4000-8000-000000000011",
-                displayName: "Support alternate",
-                issuer: "https://identity.example.com",
-                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-                clientId: "support-alternate",
-                tokenEndpointAuthMethod: "client_secret_basic",
-                createdAt: "2026-01-01T00:00:00.000Z",
-              },
-            ],
-          },
-        ],
         description:
           "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
         steps: ["Choose Support alternate and confirm it remains selected."],

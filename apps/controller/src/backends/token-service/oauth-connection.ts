@@ -275,16 +275,14 @@ export class OAuthGrantStore {
     // is safe to retry because the issuer has received nothing.
     let clientSecret: string | undefined;
     let registration: OAuthConnectionRegistration;
-    let refreshGrant: OAuthGrantRefresh = this.refreshGrant;
+    let refreshGrant: OAuthGrantRefresh;
     try {
       const client = await resolveClient();
       registration = client.registration;
       refreshGrant =
         client.refreshGrant ??
-        (client.fetchToken
-          ? (grant, tokenSignal, secret) =>
-              this.refreshGrant(grant, tokenSignal, secret, client.fetchToken)
-          : refreshGrant);
+        ((grant, tokenSignal, secret) =>
+          this.refreshGrant(grant, tokenSignal, secret, client.fetchToken));
       const { readSecret } = client;
       clientSecret =
         registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);

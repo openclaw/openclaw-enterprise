@@ -294,11 +294,7 @@ export function createConnectionAdministration({
         throw new ScopeViolationError("The connection template does not exist.");
       }
       const version =
-        values &&
-        (connectionValuesChanged(current.current, values) ||
-          (current.current.mode !== "static_bearer" &&
-            values.mode !== "static_bearer" &&
-            !isDeepStrictEqual(current.current.issuerVerification, values.issuerVerification)))
+        values && connectionValuesChanged(current.current, values)
           ? {
               ...values,
               templateId: id,
@@ -387,13 +383,16 @@ export function createConnectionAdministration({
     return { ...values, issuerVerification };
   }
 
-  function checkedOAuthUrl(field: "issuer", value: string) {
+  function checkedOAuthIssuer(value: string) {
     if (
       !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
       !URL.canParse(value) ||
-      (field === "issuer" && value.includes("?"))
+      value.includes("?")
     ) {
-      throw new ConnectionTemplateValidationError(field, `${field} must be an approved HTTPS URL.`);
+      throw new ConnectionTemplateValidationError(
+        "issuer",
+        "issuer must be an approved HTTPS URL.",
+      );
     }
   }
 
@@ -436,7 +435,7 @@ export function createConnectionAdministration({
       material = input.privateKey;
     } else {
       const oauth = input;
-      checkedOAuthUrl("issuer", oauth.issuer);
+      checkedOAuthIssuer(oauth.issuer);
       if (
         !/^[!-~]{1,256}$/.test(oauth.clientId) ||
         !["none", "client_secret_basic", "client_secret_post"].includes(

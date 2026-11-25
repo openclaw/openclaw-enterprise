@@ -341,6 +341,8 @@ export function connectionValuesChanged(
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
     current.revocationUrl !== next.revocationUrl ||
+    current.issuerVerification?.tokenEndpointAuthMethods.join(",") !==
+      next.issuerVerification?.tokenEndpointAuthMethods.join(",") ||
     !sameDestinations(current.destinations, next.destinations) ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||

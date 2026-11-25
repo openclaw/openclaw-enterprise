@@ -2,7 +2,6 @@ import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   ConnectionTemplate,
   ConnectionTemplateVersion,
-  OAuthClientAuthMethod,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
@@ -33,31 +32,9 @@ function integer(row: Row, key: string): number {
   return Number.isSafeInteger(value) ? value : invalid();
 }
 
-function issuerVerification(value: unknown): OAuthConnectionTemplateVersion["issuerVerification"] {
-  if (value === null) {
-    return undefined;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return invalid();
-  }
-  const methods = (value as Row).tokenEndpointAuthMethods;
-  if (
-    !Array.isArray(methods) ||
-    !methods.every(
-      (method) =>
-        typeof method === "string" &&
-        ["none", "client_secret_basic", "client_secret_post"].includes(method),
-    )
-  ) {
-    return invalid();
-  }
-  return { tokenEndpointAuthMethods: methods as OAuthClientAuthMethod[] };
-}
-
 function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
   const scopes = row.scopes;
   const parameters = row.authorization_parameters;
-  const verification = issuerVerification(row.issuer_verification);
   if (
     !Array.isArray(scopes) ||
     !scopes.every((scope) => typeof scope === "string") ||
@@ -72,7 +49,13 @@ function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
     templateId: text(row, "template_id"),
     version: integer(row, "version"),
     mode: row.mode === "manual" || row.mode === "mcp_discovery" ? row.mode : invalid(),
-    ...(verification && { issuerVerification: verification }),
+    ...(row.issuer_verification === null
+      ? {}
+      : {
+          issuerVerification: row.issuer_verification as NonNullable<
+            OAuthConnectionTemplateVersion["issuerVerification"]
+          >,
+        }),
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     ...(row.observed_metadata === null
       ? {}

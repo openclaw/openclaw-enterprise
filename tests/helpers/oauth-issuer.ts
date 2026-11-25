@@ -60,8 +60,6 @@ export function fixtureOAuthIssuer(
 }
 
 export interface ControlledTokenRequest {
-  readonly host: string;
-  readonly path: string;
   readonly authorization: string | undefined;
   readonly parameters: URLSearchParams;
 }
@@ -117,8 +115,6 @@ export async function controlledOAuthIssuer(t: TestContext) {
         body += chunk.toString();
       }
       const entry = {
-        host,
-        path: request.url ?? "",
         authorization: request.headers.authorization,
         parameters: new URLSearchParams(body),
       };

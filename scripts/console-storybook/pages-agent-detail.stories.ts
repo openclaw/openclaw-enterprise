@@ -93,6 +93,7 @@ export const SlackMcpAccountRecovery = {
 export const SlackMcpBoundAgentDiscovery = story("slackMcpBoundAgentDiscovery");
 export const SlackMcpSavedToolsUnavailable = story("slackMcpSavedToolsUnavailable");
 export const PluginAccountConsent = story("pluginAccountConsent");
+export const PluginAccountConsentMultipleClients = story("pluginAccountConsentMultipleClients");
 export const PluginAccountConsentNoClients = story("pluginAccountConsentNoClients");
 export const PluginAccountConsentClientsLoading = story("pluginAccountConsentClientsLoading");
 export const PluginAccountConsentClientsFailed = story("pluginAccountConsentClientsFailed");

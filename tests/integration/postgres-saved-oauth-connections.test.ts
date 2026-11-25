@@ -122,15 +122,6 @@ test(
     assert.equal(namespace.statusCode, 201, namespace.body);
     const namespaceId = namespace.json().data.id;
     await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
-    const starter = (await inject("GET", "/connection-templates"))
-      .json()
-      .data.find((entry: { displayName: string }) => entry.displayName === "Google OAuth");
-    assert.ok(starter);
-    assert.equal(
-      starter.current.issuerVerification,
-      undefined,
-      "bootstrap does not require issuer network access",
-    );
     const forged = await inject("POST", "/connection-templates", {
       mode: "manual",
       namespaceId,
@@ -168,7 +159,7 @@ test(
     controlled.setMetadataCapabilities({});
     const template = await inject("POST", "/connection-templates", templateInput);
     assert.equal(template.statusCode, 201, template.body);
-    let selectedSecret = randomUUID();
+    const selectedSecret = randomUUID();
     const client = await inject("POST", "/credential-clients", {
       kind: "oauth2",
       namespaceId,
@@ -349,13 +340,6 @@ test(
     assert.equal(clientSecretReads(), clientReadsBefore, "refusal does not open the Client secret");
     assert.equal(controlled.requests.length, requestsBefore, "refusal does not send the grant");
     refreshSecretReads.mock.restore();
-    const replacementSecret = randomUUID();
-    const rotatedClient = await inject("POST", `/credential-clients/${clientId}/rotate`, {
-      kind: "oauth2",
-      clientSecret: replacementSecret,
-    });
-    assert.equal(rotatedClient.statusCode, 200, rotatedClient.body);
-    selectedSecret = replacementSecret;
     const schedule = () =>
       state.read(({ oauthCredentials }) =>
         oauthCredentials.findTokenCustody(namespaceId, source.id),

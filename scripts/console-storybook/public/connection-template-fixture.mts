@@ -11,9 +11,10 @@ export function createConnectionTemplateFixture(
   nextId: (prefix: string) => string,
 ) {
   const issuer = "https://identity.example.com";
+  const pluginConsent = mode === "plugin-consent" || mode === "plugin-consent-multiple-clients";
   const populated =
     mode === "ready" ||
-    mode === "plugin-consent" ||
+    pluginConsent ||
     mode === "github-app-verification-failed" ||
     mode === "github-app-namespaces";
   const templateId = "ctp_00000000-0000-4000-8000-000000000004";
@@ -32,7 +33,7 @@ export function createConnectionTemplateFixture(
             authorizationUrl: issuer + "/authorize",
             tokenUrl: issuer + "/token",
             issuerVerification: { tokenEndpointAuthMethods: ["none", "client_secret_basic"] },
-            scopes: mode === "plugin-consent" ? [] : ["messages.read"],
+            scopes: pluginConsent ? [] : ["messages.read"],
             authorizationParameters: {},
             destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
             mcp: {
@@ -45,7 +46,7 @@ export function createConnectionTemplateFixture(
               authorizationUrl: issuer + "/authorize",
               tokenUrl: issuer + "/token",
               requestedScopes: ["messages.read"],
-              ...(mode === "plugin-consent" && {
+              ...(pluginConsent && {
                 supportedScopes: ["messages.read", "messages.write"],
               }),
               serverUrl: "https://mcp.example.com/mcp",
@@ -124,6 +125,15 @@ export function createConnectionTemplateFixture(
         },
       ]
     : [];
+  if (mode === "plugin-consent-multiple-clients") {
+    oauthClients.push({
+      ...oauthClients[0],
+      id: "ccr_00000000-0000-4000-8000-000000000011",
+      displayName: "Support alternate",
+      clientId: "support-alternate",
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
+  }
   if (mode === "github-app-namespaces") {
     oauthClients.push(
       {

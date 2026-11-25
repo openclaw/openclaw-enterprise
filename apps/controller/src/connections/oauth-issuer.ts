@@ -1,7 +1,7 @@
 import { buildDiscoveryUrls } from "@modelcontextprotocol/client";
 import {
   ConnectionTemplateValidationError,
-  type McpAuthorizationMetadata,
+  type ConnectionTemplateValues,
   type OAuthClientAuthMethod,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -11,11 +11,7 @@ import {
   type OAuthTransportOptions,
 } from "./mcp-discovery.ts";
 
-export interface OAuthIssuerEndpoint {
-  readonly mode: "manual" | "mcp_discovery";
-  readonly issuer: string;
-  readonly tokenUrl: string;
-}
+type OAuthIssuerEndpoint = Pick<ConnectionTemplateValues, "mode" | "issuer" | "tokenUrl">;
 
 function transportMode(mode: OAuthIssuerEndpoint["mode"]): OAuthTransportMode {
   if (mode === "mcp_discovery") {
@@ -25,17 +21,6 @@ function transportMode(mode: OAuthIssuerEndpoint["mode"]): OAuthTransportMode {
     return "manual";
   }
   return invalidIssuer();
-}
-
-export interface OAuthTemplateIssuer extends OAuthIssuerEndpoint {
-  readonly authorizationUrl: string;
-  readonly revocationUrl?: string;
-  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
-  readonly observed?: McpAuthorizationMetadata;
-}
-
-export interface OAuthIssuerVerification {
-  readonly tokenEndpointAuthMethods: readonly OAuthClientAuthMethod[];
 }
 
 const supportedMethods = new Set<OAuthClientAuthMethod>([
@@ -107,25 +92,15 @@ async function issuerMetadata(input: OAuthIssuerEndpoint, transport: OAuthTransp
 
 /** Call only after installation administration has authorized the proposed Template. */
 export async function verifyOAuthTemplateIssuer(
-  input: OAuthTemplateIssuer,
+  input: ConnectionTemplateValues,
   signal?: AbortSignal,
   options?: OAuthTransportOptions,
-): Promise<OAuthIssuerVerification> {
+): Promise<NonNullable<ConnectionTemplateValues["issuerVerification"]>> {
   if (input.mode === "mcp_discovery") {
     // The Template owner obtains this observation from production MCP discovery, not API input.
     signal?.throwIfAborted();
-    const { observed, mcp } = input;
-    if (
-      !observed ||
-      !mcp ||
-      observed.serverUrl !== mcp.serverUrl ||
-      observed.resource !== mcp.resource ||
-      !observed.issuers.includes(input.issuer) ||
-      observed.issuer !== input.issuer ||
-      observed.authorizationUrl !== input.authorizationUrl ||
-      observed.tokenUrl !== input.tokenUrl ||
-      observed.revocationUrl !== input.revocationUrl
-    ) {
+    const { observed } = input;
+    if (!observed) {
       invalidIssuer();
     }
     return {
