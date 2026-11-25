@@ -16,6 +16,8 @@ export interface AdmissionRequest {
   readonly requestId: string;
   readonly method: string;
   readonly routeId: string;
+  /** The route pattern (`/agents/:agentId/chat`), for log lines; never the request's path. */
+  readonly route?: string;
   readonly requestedScope: AdmissionScope;
   readonly transport: TrustedTransportEvidence;
   readonly authorizationHeader?: string;

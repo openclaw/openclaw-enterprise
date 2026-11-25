@@ -8,6 +8,18 @@ This record preserves the dated changes to the Compose development startup page.
 
 ## Changelog
 
+- 2026-11-10 17:50: Prepare private browser TLS file ownership for Compose without OpenShell. (authoring-run/8d183761-a61e-4f89-b6fa-aaf112a75fc6 - c40baead7e51977b832d0036518b4f613a68935d)
+
+- 2026-11-10 14:26: Classify image-import failures. (authoring-run/b1516512-8ce3-4006-b41c-0989435694a2 - 68319de0899f5de7fe1ed5e9ef800e2dadb88571)
+
+- 2026-11-09 08:16: Identify routing failures. (authoring-run/fc7f0ea3-8581-478c-a11e-63c531a3cd5e - 1b07c3792424a033befb8c97b74fb399daf61af0)
+
+- 2026-11-08 10:46: Retain sibling cleanup failures. (authoring-run/sibling-cleanup - 2dfb98210779ba2be413f4ddf7beaa71dbc2374f)
+
+- 2026-11-08 09:54: Attribute startup failures separately from cleanup. (authoring-run/aa2519c0-24d1-44b0-9725-9bde7e4c2501 - 7db5638975981ec1400f1a4ba52da77d5fd33dce)
+
+- 2026-11-04 23:00: Overlap routing controllers and runtime preparation; preserve rollback. (authoring-run/f21567be-bf0f-4e4e-be99-a937b8cab69b - 381845c12d3694fc19f836786831bb98cbe2c3e1)
+
 - 2026-11-04 20:46: Overlap selected-image setup; preserve readiness and rollback. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
 
 - 2026-10-29 18:57: Resolved the manifest-list platform child before saving images. (authoring-run/88c984db-3b18-420c-acfc-7e329a46af89 - 5a61a08eec78fbae99e21b858af5c8dd5911ba03)

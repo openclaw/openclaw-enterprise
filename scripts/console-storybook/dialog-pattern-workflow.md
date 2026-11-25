@@ -10,10 +10,13 @@ simulated data.
    and **Create Secret**. Each is a centred box with the same corners, edge,
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
+   Create Secret). In Stop and Delete, check the Agent name and ID before
+   confirming.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Copying it keeps the
-   confirmation open and runs nothing.
+   commands**. Each command includes the Namespace ID. Press Enter on **Copy
+   Configuration command**, then on **Copy Secret command** if it appears. Only
+   the latest row shows feedback. If copying fails, its full command is selected.
+   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.
@@ -45,6 +48,9 @@ simulated data.
 5. Open each **(phone)** story. The dialog is a full-width sheet on the bottom
    edge with rounded top corners. Stop, Delete and Create Secret are only as tall
    as their content. The drawer header keeps Close beside its title.
+   At short desktop and phone heights, open **Pages / Secrets / Create** and
+   **Replace value** and use Tab and Shift+Tab to check that the focused control
+   and its outline are fully visible.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.
@@ -86,20 +92,6 @@ staying on Loading plugins. Calendar's saved selection and policy stay unchanged
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
 
-## Choose OpenClaw plugins on a new Agent
+## Recover an unconfirmed template save
 
-Open **Pages / Create Agent / OpenClaw Plugin Catalog** over HTTPS. Add **Google Workspace**. Select **Choose a connection template** to open **Connect an account**. Choose **Workspace OAuth**, review the template’s fixed **gmail.readonly** scope, then click **Connect account**. Approve the simulated provider in the separate tab. The original editor selects **New Workspace account** and explains when the Agent receives access. Close the picker and verify the Agent name still reads **Research assistant**. The Agent and its grant are created only when the operator submits the form.
-
-For the admin setup preview, add **Slack** in the same story and choose a connection template. The empty chooser offers **Create connection template** and **Refresh templates**. In **Components / Plugins / Template Needs OAuth Client**, the chooser instead links to the existing **Google OAuth** template. **Components / Plugins / No Compatible Template** shows the message a member sees when an administrator needs to finish setup. The previews simulate template availability. Use the live Console walkthrough to check the separate editor tab and return to the draft.
-
-In **Components / Plugins / Unrestricted Connection Scopes**, select **Support MCP** in **Connect an account**. Both permissions start checked. **Unselect all** clears **messages.write** and keeps the required **messages.read** permission. **Select all** restores the optional scope. Type a scope in **Additional scopes**, then **Cancel** to return to the plugin editor.
-
-## Recover when a connection template changes
-
-Open **Components / Plugins / Template changed before consent**. The first simulated consent attempt returns `409`, and the chooser asks you to refresh the template. Select **Refresh templates**. Confirm that **Workspace OAuth (version 2)** replaces version 1 and shows **gmail.modify**. Review the new permission, then select **Connect account** to see the simulated provider handoff. This fixture does not contact an OAuth provider.
-
-## Preview tools from an Agent-authorized account
-
-Open **Components / Plugins / Preview tools with an Agent-authorized account**. The account cannot be selected for a new binding, but its tool preview is available without editable switches. Previewing does not change the plugin draft.
-
-Open **Components / Plugins / Edit bound tools while previewing another Agent-authorized account**. Confirm that **Search tickets** remains checked for the bound Support account while **View reports** appears in the read-only Reporting account preview. Reload either tool list; both results stay visible, and the draft policy does not change. The inventories and reload responses are simulated.
+Open **Pages / Credentials / Unconfirmed template save**. The preview edits Google OAuth and saves version 2, then omits the version from the response. Check that the warning and focused **Close** action are visible together, including at phone width. **Save new version** should be disabled. Press Enter to close the editor and confirm that the catalog shows one Google OAuth row at version 2.

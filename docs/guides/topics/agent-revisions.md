@@ -38,19 +38,40 @@ The commands below also use `jq`.
    Never put credential values in the file. Use
    [Secret references and bindings](../../reference/configuration/secrets.md).
 
-3. Save the Configuration and review its new generation. Then deploy:
+3. Save the Configuration and review its new generation.
 
    ```bash
    occ configuration update "$CONFIGURATION_ID" --file configuration-update.json
+   ```
+
+   To use current Installation defaults, run the command below. To retain or
+   change a provider override, run one command from
+   [Choose a Harness destination](#choose-a-harness-destination) instead.
+   If the Agent uses a provider override, using current Installation defaults
+   can change its model endpoint.
+
+   When replacing an active revision, if either revision uses managed credential
+   delivery, [complete Stop](../../reference/agents/deployment.md#stop-and-resume)
+   first. Stop requires `operate` on the Agent. The OpenShell Proxy removes its
+   delivery copy after the last binding is removed; the Source remains available
+   for redeployment. Source credential rotation does not require Stop. See
+   [credential implementation status](../../reference/credential-sources.md#implementation-status)
+   for delivery recovery limits.
+
+   ```bash
    occ agent deploy "$AGENT_ID" --output json
    ```
 
    Save the returned Agent revision `id`, version number, and
    `configurationGeneration`. An accepted request means the control plane stored
    the version and queued deployment; it does not mean the Agent is running.
-   If the response is lost, check version history before retrying: a second
-   accepted request creates another version. An empty history can mean you
-   lack `read` on the new Agent revision; ask an administrator before retrying.
+   If you lose the response, run `occ agent revisions "$AGENT_ID"`. If you
+   identify your revision, check its deployment status as described in step 4.
+   Older versions can remain visible even if you lack `read` on the new Agent
+   revision. Your request may still be in progress, and another caller may
+   deploy concurrently. If you cannot identify your revision, ask an
+   administrator to inspect the result. Do not retry while the outcome is
+   uncertain. A second accepted request creates another version.
 
 4. Check the deployment until it reports `succeeded` or `failed`:
 
@@ -69,6 +90,54 @@ The commands below also use `jq`.
    ([details](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment)).
    A succeeded deployment does not prove that the model responds; use the
    [runtime verification guide](../deploy/production-agents.md#verify-production-workloads).
+
+## Choose a Harness destination
+
+Open **Harness destination** to choose the Installation default, retain the previous
+requested overrides, or enter a provider override. The checklist shows the
+requested URL or an inherited-default label. Select **Deploy new version** to
+validate and admit the request. If admission refuses it, correct the settings or
+source permissions and retry. The admitted version shows the actual resolved
+settings; the default is selected at admission.
+
+To supply a new override with the CLI, create `harness-overrides.json` with the
+following contents.
+
+```json
+{
+  "modelProvider": {
+    "protocol": "openai-responses",
+    "baseUrl": "https://evaluation.example.com/v1"
+  }
+}
+```
+
+Choose one deployment command. Each accepted request creates a new version.
+
+To deploy with the override file, run the following command.
+
+```sh
+occ agent deploy "$AGENT_ID" --harness-overrides harness-overrides.json --output json
+```
+
+To retain the requested overrides from an earlier Agent revision, use its ID.
+
+```sh
+occ agent deploy "$AGENT_ID" --retain-harness-overrides '<revision-id>' --output json
+```
+
+The flags are mutually exclusive. With neither flag, deployment uses current
+Installation defaults. If OCC cannot read the revision's saved settings, the CLI
+retains the overrides that the revision list records for it. A revision saved
+before OCC recorded overrides has none, so the CLI prints a notice and uses
+current Installation defaults. The CLI sends one deployment request; inspect the
+returned revision's settings for the resolved destination. Explicit provider overrides require an authorized
+API-key Credential Source. The [provider reference](../../reference/drivers/kubernetes-compute/model-provider.md)
+defines replacement semantics and authentication and network limits.
+
+For `deploy-first`, use the same `--harness-overrides` file on
+`recover-first-deployment`. Normalized overrides are part of the intent identity;
+a changed endpoint cannot recover or reuse a receipt for another destination.
 
 ## Guarded first deployment and receipt recovery
 
@@ -166,3 +235,10 @@ wholesale. The new deployment uses current permissions and dependencies; Secret
 references do not restore earlier credential values. See the
 [Agent revision contract](../../reference/agents/deployment.md#revisions-and-deployment)
 for what it captures.
+
+If a revision removes a model, a saved OpenClaw chat may still show it.
+Run `/model default -s` in that chat to clear the saved selection. Even if
+the reset names the Agent's default, a matching `channels.modelByChannel`
+rule can select a different model. Check the rule and confirm which model
+handled a harmless turn in the same chat before sending more work.
+If you need the removed model, wait until it's available again.

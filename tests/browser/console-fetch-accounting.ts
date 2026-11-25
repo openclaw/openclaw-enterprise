@@ -5,6 +5,7 @@ import type { Page } from "playwright";
 declare global {
   var settledFetchCount: ((path: string) => number) | undefined;
   var inFlightFetchCount: ((except?: string) => number) | undefined;
+  var startedFetchCount: ((path: string) => number) | undefined;
 }
 
 // Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
@@ -13,10 +14,12 @@ declare global {
 // body ends its fetch at once. Install it before the page loads. A count observed by
 // waitForSettledFetches() or waitForIdleFetches() is read in a later task, so the page's own
 // continuation of that fetch (for example dropping a stale response, or finishing the view's
-// read bookkeeping) has already run.
+// read bookkeeping) has already run. It also counts the fetches started per path, which is exact
+// as soon as the page calls fetch.
 export async function trackSettledFetches(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const settled = new Map<string, number>();
+    const started = new Map<string, number>();
     const pending = new Map<string, number>();
     let inFlight = 0;
     const pathOf = (input: RequestInfo | URL): string =>
@@ -26,6 +29,7 @@ export async function trackSettledFetches(page: Page): Promise<void> {
     globalThis.fetch = async (input, init) => {
       const path = pathOf(input);
       inFlight += 1;
+      started.set(path, (started.get(path) ?? 0) + 1);
       pending.set(path, (pending.get(path) ?? 0) + 1);
       let open = true;
       const finish = () => {
@@ -71,6 +75,7 @@ export async function trackSettledFetches(page: Page): Promise<void> {
       return response;
     };
     globalThis.settledFetchCount = (path) => settled.get(path) ?? 0;
+    globalThis.startedFetchCount = (path) => started.get(path) ?? 0;
     // With `except`, fetches to that path (one a test holds, say) are not counted.
     globalThis.inFlightFetchCount = (except) =>
       inFlight - (except === undefined ? 0 : (pending.get(except) ?? 0));
@@ -87,6 +92,19 @@ export async function settledFetches(page: Page, path: string): Promise<number> 
     return globalThis.settledFetchCount(target);
   }, path);
   assert.ok(typeof count === "number", "Settled fetch instrumentation returns a numeric count");
+  return count;
+}
+
+export async function startedFetches(page: Page, path: string): Promise<number> {
+  const count: unknown = await page.evaluate((target) => {
+    if (typeof globalThis.startedFetchCount !== "function") {
+      throw new Error(
+        "Missing fetch accounting setup: call trackSettledFetches before loading the page",
+      );
+    }
+    return globalThis.startedFetchCount(target);
+  }, path);
+  assert.ok(typeof count === "number", "Started fetch instrumentation returns a numeric count");
   return count;
 }
 
@@ -126,4 +144,28 @@ export async function waitForIdleFetches(
     }
     return globalThis.inFlightFetchCount(path) === 0;
   }, except);
+}
+
+// One tick of a page's poll on Playwright's installed clock: lets any read of `path` already in
+// flight settle, advances the clock by `ms`, waits for the response to the read that tick started
+// and returns once the page has handled it. A Console poll arms its next timer only after it has
+// handled the previous answer, which is after Playwright reports that response. A tick advanced in
+// between finds no timer and fires nothing; the installed clock's own flow then reaches the late
+// timer a whole cadence of real time later, past a 10 s wait (finding 3269). Returning only once
+// the read has settled makes every later tick start from an armed timer. Needs
+// trackSettledFetches.
+export async function runPollTick(page: Page, path: string, ms: number): Promise<void> {
+  await page.waitForFunction((target) => {
+    if (typeof globalThis.inFlightFetchCount !== "function") {
+      throw new Error(
+        "Missing fetch accounting setup: call trackSettledFetches before loading the page",
+      );
+    }
+    return globalThis.inFlightFetchCount() === globalThis.inFlightFetchCount(target);
+  }, path);
+  const before = await settledFetches(page, path);
+  const read = page.waitForResponse((response) => new URL(response.url()).pathname === path);
+  await page.clock.runFor(ms);
+  await read;
+  await waitForSettledFetches(page, path, before + 1);
 }

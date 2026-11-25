@@ -53,6 +53,14 @@ export class AuthorizationDeniedError extends Error {
   }
 }
 
+/** Keep IAM evidence while concealing a resource the caller cannot read or operate. */
+export class HiddenResourceAuthorizationDeniedError extends AuthorizationDeniedError {
+  constructor(denial: AuthorizationDeniedError) {
+    super(denial.message, denial.evidence, denial.authorization, denial.checkedPrincipalId);
+    this.name = "HiddenResourceAuthorizationDeniedError";
+  }
+}
+
 /**
  * The caller's own denial where the named grant needs a reason to make sense: an Agent update
  * checks the grant on the Agent's current Harness authentication even when it replaces it
@@ -160,7 +168,14 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
   readonly requestDiagnostic?: {
     readonly method: string;
     readonly grpcStatus: number;
-    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+    readonly validationCategory:
+      | "POLICY_SAFETY"
+      | "POLICY_MIDDLEWARE_VALIDATION"
+      | "PVC_ADMISSION_LABELS"
+      | "CLASS_ADMISSION_LABELS"
+      | "CALLER_DRIVER_CONFIG_DISABLED"
+      | "RESOURCE_METADATA_FORBIDDEN"
+      | "UNKNOWN";
   };
 
   constructor(
@@ -172,6 +187,54 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
     if (requestDiagnostic !== undefined) {
       this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
     }
+  }
+}
+
+/** Credential custody committed, but the selected Proxy did not acknowledge delivery. */
+export class CredentialDeliveryFailedError extends DependencyUnavailableError {
+  readonly credentialUpdated: boolean;
+
+  constructor(credentialUpdated = true) {
+    super(
+      credentialUpdated
+        ? "The credential source was updated, but credential delivery failed."
+        : "Delivery failed for the credential already held by the source.",
+    );
+    this.name = "CredentialDeliveryFailedError";
+    this.credentialUpdated = credentialUpdated;
+  }
+}
+
+/** The caller cannot determine whether the storage transaction committed. */
+export class PostgresCommitOutcomeUnknownError extends DependencyUnavailableError {
+  constructor() {
+    super("The PostgreSQL transaction commit outcome is unknown.");
+    this.name = "PostgresCommitOutcomeUnknownError";
+  }
+}
+
+export class AgentAuditDisclosureUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super("The Agent audit disclosure record is unavailable.");
+  }
+}
+
+/** The database did not accept required audit evidence in the current transaction. */
+export class AuditAppendUnavailableError extends DependencyUnavailableError {
+  readonly reasonCode: "AUDIT_CAPACITY_EXCEEDED" | undefined;
+
+  constructor(reasonCode?: "AUDIT_CAPACITY_EXCEEDED") {
+    super("The platform audit write failed.");
+    this.name = "AuditAppendUnavailableError";
+    this.reasonCode = reasonCode;
+  }
+}
+
+/** A failed private runtime diagnostics transport read, without supplier details. */
+export class RuntimeDiagnosticsTransportError extends DependencyUnavailableError {
+  constructor() {
+    super("The private Gateway diagnostics transport is unavailable.");
+    this.name = "RuntimeDiagnosticsTransportError";
   }
 }
 
@@ -189,6 +252,15 @@ export class PersistedStateInvalidError extends DependencyUnavailableError {}
  * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
  */
 export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+export class NetworkProxySecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Network proxy credential Secret. Select a Secret stored through the current driver.",
+    );
+    this.name = "NetworkProxySecretDriverError";
+  }
+}
 
 /**
  * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
@@ -357,10 +429,46 @@ export class ChannelDirectoryError extends Error {
   }
 }
 
+export class WorkClaimLostError extends Error {
+  constructor() {
+    super("The controller work claim is missing, expired, or owned by another worker.");
+    this.name = "WorkClaimLostError";
+  }
+}
+
 export class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ScopeViolationError";
+  }
+}
+
+/** A password proof no longer belongs to the current recovery designation. */
+export class RecoveryPasswordPolicyError extends ScopeViolationError {
+  constructor() {
+    super("The password is not eligible for sign-in.");
+    this.name = "RecoveryPasswordPolicyError";
+  }
+}
+
+/** A submitted source field failed validation by the selected TokenService. */
+export class TokenServiceSourceInputError extends ScopeViolationError {}
+
+/** This registration was refused before the TokenService attempted any material write. */
+
+/** A device login's private binding does not match the admitted request scope. */
+export class DeviceAuthorizationScopeMismatchError extends ScopeViolationError {
+  constructor() {
+    super("The login belongs to another actor or Agent scope.");
+    this.name = "DeviceAuthorizationScopeMismatchError";
+  }
+}
+
+/** A committed revision withdrawal permanently closes its repository session admission. */
+export class RepositorySessionWithdrawnError extends ScopeViolationError {
+  constructor() {
+    super("Repository session admission was withdrawn for this revision.");
+    this.name = "RepositorySessionWithdrawnError";
   }
 }
 
@@ -375,6 +483,28 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   constructor(message: string) {
     super(message);
     this.name = "ConfigurationHarnessError";
+  }
+}
+
+/** Proxy validation discloses only fixed rules, never submitted values or Secret state. */
+export class NetworkProxyValidationError extends ScopeViolationError {
+  constructor(reason: "selection" | "credential") {
+    super(
+      reason === "selection"
+        ? "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Secret reference."
+        : "The Network proxy credential Secret must contain a valid Basic authorization value.",
+    );
+    this.name = "NetworkProxyValidationError";
+  }
+}
+
+/** A fixed operational recovery message; supplier errors can contain sensitive values. */
+export class NetworkProxyEnforcementUnavailableError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+    );
+    this.name = "NetworkProxyEnforcementUnavailableError";
   }
 }
 
@@ -394,7 +524,7 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 /**
  * An Agent's repository selections break a rule that depends only on them and on the
  * Installation's repository policy for the Namespace: Installation-wide access combined with
- * another binding (finding 2316), both selection forms or an invalid `repositoryAccess`, or a
+ * another binding (finding 2316), an invalid `repositoryAccess`, or a
  * selection the Repository Driver does not approve. Agent save, provisioning and deploy
  * admission raise it after the caller's grant on the Agent or Namespace, and each text is
  * fixed: it names no repository, Driver reason or other resource, so HTTP reports it as an
@@ -402,9 +532,7 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
  */
 export class RepositoryBindingSelectionError extends ScopeViolationError {
   static readonly installationAccessAlone =
-    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
-  static readonly accessOrBindings =
-    "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryAccess.repositories, or select each repository with its own profile instead.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
     "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
@@ -613,6 +741,22 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/** The Channel preview can relay these fixed deployment recovery instructions. */
+export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
+  constructor(reason: "unscoped_history" | "incompatible_compute") {
+    if (reason === "unscoped_history") {
+      super(
+        "This Agent has a deployment without a repository policy. Create a new Agent and save its repository policy before its first deployment.",
+      );
+    } else {
+      super(
+        "The selected Compute Driver cannot enforce this Agent's repository network policy with the selected Sandbox Driver and Harness.",
+        [{ path: "/repositoryNetworkPolicy", code: "INVALID_VALUE" }],
+      );
+    }
+  }
+}
+
 /**
  * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
  * repository route. OCC returns the message; the policy worker fails the application at once.
@@ -626,6 +770,8 @@ export class SandboxNetworkPolicyConflictError extends ResourceStateConflictErro
 
 const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
   save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  saveRepository:
+    "Protected execution applies to this Agent. The Credential Proxy governs its egress. To withdraw an existing repository list, send empty arrays for additions and repositoryNetworkPolicy.",
   apply:
     "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
   deploy:
@@ -664,17 +810,10 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   }
 }
 
-/**
- * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
- * registration is the request-phase Git service, which never advertises the execution profile.
- * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
- * credential-free metadata) or an Agent without a repository binding can never be admitted.
- * Source creation answered a generic 503 for this permanent configuration and such a deploy a
- * 503 or a bare 404; both now name the Installation settings.
- */
+/** The configured Git transport does not support protected credential-source admission. */
 export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
   static readonly description =
-    "With repository.openShell the Credential Proxy serves only repository Git, not Proxy-owned credential sources or Agents without repository access. Installation administrators can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+    "With repository.openShell the Credential Proxy serves only repository Git. Protected credential sources require a qualified execution profile. Ordinary model sources can use Credential Gateway without live adoption.";
 
   constructor() {
     super(CredentialProxyRepositoryOnlyError.description);
@@ -701,7 +840,7 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
 
 const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
   several:
-    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryAccess.repositories`.",
   single:
     "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
 });
@@ -890,6 +1029,8 @@ export const DELETED_NAMESPACE_NAME_CONFLICT =
  * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
  * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
  */
+export const EGRESS_SANDBOX_INSTALLED_CONFLICT =
+  "Sandbox already has a current egress installation.";
 export const EGRESS_REVISION_INSTALLED_CONFLICT =
   "Egress revision already has an installed execution.";
 
@@ -1032,6 +1173,13 @@ export class TransientDependencyError extends Error {
  * operator fixes that identity or grant, so Compute fails the Namespace step at once.
  * The message names only the provider's refusal code, never provider text.
  */
+export class SandboxNamespacePendingError extends Error {
+  constructor(message = "Sandbox Namespace resources have not converged.") {
+    super(message);
+    this.name = "SandboxNamespacePendingError";
+  }
+}
+
 export class SandboxNamespaceRefusedError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -1058,6 +1206,7 @@ export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableEr
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode =
+  | "CREDENTIAL_ACTIVATION_PENDING"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_BINDING_PENDING"
   | "REPOSITORY_GIT_MATERIAL_PENDING"
@@ -1082,7 +1231,18 @@ export class ActivationPendingError extends Error {
 }
 
 /** An activation step that cannot complete for this revision. */
-export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+export type ActivationFailedCode =
+  | "AGENT_GATEWAY_UNAUTHORIZED"
+  | "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE"
+  | "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE";
+
+const CODEX_PERMISSION_DENIALS = [
+  "sandbox-mode-denied",
+  "named-profile-denied",
+  "reviewer-denied",
+] as const;
+
+export type CodexPermissionDenial = (typeof CODEX_PERMISSION_DENIALS)[number];
 
 /** The selected Driver proved that this execution's repository access cannot be resumed.
  * Missing evidence or a failed dependency read must not produce this terminal result. */
@@ -1117,21 +1277,47 @@ export class ComputePreparationFailedError extends Error {
   }
 }
 
+/** The selected Credential Proxy confirmed this deployment cannot become ready. */
+export class CredentialDeploymentFailedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super("The Credential Proxy refused the staged deployment.");
+    this.name = "CredentialDeploymentFailedError";
+    this.code = code;
+  }
+}
+
 /**
- * Activation found its workloads running but one of them can never complete
- * activation for this revision: the dedicated Gateway refuses its own in-Pod CLI
- * as unauthorized, so it cannot confirm its workspace node. The cause is fixed
- * by the admitted Configuration, so the worker fails the deployment with `code`
- * instead of waiting for the convergence deadline. The message stays in the
- * controller; status shows a fixed text.
+ * A workload cannot activate under its current configuration or managed policy.
+ * Preparation and activation can both discover the refusal. The worker fails
+ * deployment with `code` instead of waiting for the convergence deadline.
+ * Status uses fixed text; the error message stays in the controller. Operational
+ * diagnostics may retain the fixed Codex permission denial categories.
  */
 export class ActivationFailedError extends Error {
   readonly code: ActivationFailedCode;
+  readonly permissionDenials?: readonly CodexPermissionDenial[];
 
-  constructor(code: ActivationFailedCode, message: string) {
+  constructor(
+    code: ActivationFailedCode,
+    message: string,
+    permissionDenials?: readonly CodexPermissionDenial[],
+  ) {
     super(message);
     this.name = "ActivationFailedError";
     this.code = code;
+    if (
+      code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE" &&
+      permissionDenials !== undefined
+    ) {
+      const recognized = CODEX_PERMISSION_DENIALS.filter((denial) =>
+        permissionDenials.includes(denial),
+      );
+      if (recognized.length > 0) {
+        this.permissionDenials = Object.freeze(recognized);
+      }
+    }
   }
 }
 
@@ -1144,6 +1330,8 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_RECREATION_REQUIRED"
+    | "SANDBOX_WORKLOAD_IMMUTABLE"
     | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
@@ -1179,6 +1367,19 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's temporary workspace preparation could not create its Pod because a
+ * Namespace ResourceQuota has no Pods left. Compute keeps the revision pending with its
+ * `NAMESPACE_POD_QUOTA_EXCEEDED` reason, as for its own refused Pods, until a Pod is free or
+ * the convergence deadline passes.
+ */
+export class SandboxPodQuotaExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPodQuotaExceededError";
   }
 }
 
@@ -1412,7 +1613,7 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
     if (field === "base_url") {
-      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must permit the destination selected by the Agent revision. Rebind and redeploy Agents, then delete the old source once unused.";
     }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
@@ -1531,6 +1732,8 @@ const RETRY_LATER_MESSAGES = Object.freeze({
     "The sign-in service did not complete this device login, so it was cancelled. Start a new device login. If it keeps failing, ask an operator to check the API logs.",
   proxyRegistration: () =>
     "The OpenShell gateway does not offer the protected egress middleware the Credential Proxy is configured to use. Ask an operator to check the gateway's middleware registration, protocol and capabilities, then retry.",
+  githubRepositoryEnrollment: () =>
+    "GitHub access could not be prepared. Verify that the registered GitHub App is installed for the selected repositories, then retry.",
 });
 
 /**
@@ -1543,9 +1746,10 @@ const RETRY_LATER_MESSAGES = Object.freeze({
  * operator can fix (`proxyRegistration`) from its availability check.
  */
 export class RetryLaterError extends DependencyUnavailableError {
+  readonly retryAfterSeconds?: number;
   constructor(reason: "deviceLoginFailed", cause: unknown);
   constructor(reason: "registrationFence", seconds: number);
-  constructor(reason: "proxyRegistration");
+  constructor(reason: "proxyRegistration" | "githubRepositoryEnrollment");
   constructor(reason: keyof typeof RETRY_LATER_MESSAGES, detail?: unknown) {
     super(
       RETRY_LATER_MESSAGES[reason](
@@ -1553,6 +1757,9 @@ export class RetryLaterError extends DependencyUnavailableError {
       ),
     );
     this.name = "RetryLaterError";
+    if (reason === "registrationFence") {
+      this.retryAfterSeconds = Math.max(1, Math.ceil(Number(detail)));
+    }
     if (reason === "deviceLoginFailed") {
       this.cause = detail;
     }

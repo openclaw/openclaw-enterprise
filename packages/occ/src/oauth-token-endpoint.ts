@@ -7,9 +7,29 @@ import { BrowserAuthorizationError } from "./errors.ts";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;
-const SLACK_MCP_TOKEN_ENDPOINT = "https://slack.com/api/oauth.v2.user.access";
 
-async function readResponse(response: Response): Promise<Record<string, unknown> | undefined> {
+/** Initial exchanges accept the issuer's grant; refresh uses the prior grant as its ceiling. */
+export function parseOAuthGrantedScopes(
+  scope: unknown,
+  scopeLimit: readonly string[] | undefined,
+): readonly string[] {
+  if (scope === undefined) {
+    return scopeLimit ?? [];
+  }
+  const reported = typeof scope === "string" ? scope.split(" ") : [];
+  const allowed = scopeLimit && new Set(scopeLimit);
+  if (
+    !reported.length ||
+    reported.some((value) => !isOAuthScopeToken(value) || (allowed && !allowed.has(value)))
+  ) {
+    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+  }
+  return [...new Set(reported)];
+}
+
+export async function readOAuthTokenResponse(
+  response: Response,
+): Promise<Record<string, unknown> | undefined> {
   const reader = response.body?.getReader();
   if (!reader) {
     return undefined;
@@ -43,7 +63,7 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
 export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
-  scopes: readonly string[],
+  scopeLimit: readonly string[] | undefined,
   client: Pick<OAuthConnectionRegistration, "clientId" | "tokenEndpointAuthMethod" | "resource">,
   clientSecret: string | undefined,
   signal: AbortSignal,
@@ -88,7 +108,7 @@ export async function requestOAuthTokens(
     // A proxy failure does not establish whether the issuer consumed the one-use grant.
     throw new Error("The outcome of the OAuth token exchange is unknown.");
   }
-  const body = await readResponse(response);
+  const body = await readOAuthTokenResponse(response);
   if (!response.ok) {
     // Never include the issuer's text, credential bytes or endpoint in errors or audit.
     if (body?.error === "invalid_grant" || body?.error === "access_denied") {
@@ -116,28 +136,14 @@ export async function requestOAuthTokens(
   if (refreshToken !== undefined && !isNonEmptyString(refreshToken)) {
     throw new BrowserAuthorizationError("invalid_refresh_token", "fix_configuration");
   }
-  // An omitted scope inherits the request, as in RFC 6749 section 5.1. An
-  // explicit response records the issuer's grant, which may differ from consent's request.
-  let grantedScopes = scopes;
-  if (body.scope !== undefined) {
-    if (typeof body.scope !== "string") {
-      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-    }
-    // Slack's MCP user-token endpoint reports comma-separated scopes. A comma
-    // is a valid character inside an RFC 6749 scope token at other endpoints.
-    const separator =
-      tokenUrl === SLACK_MCP_TOKEN_ENDPOINT && body.scope.includes(",") ? /, */ : " ";
-    const reported = body.scope === "" ? [] : body.scope.split(separator);
-    if (reported.some((scope) => !isOAuthScopeToken(scope))) {
-      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-    }
-    // A refresh can retain or narrow the previous grant, including an empty one.
-    const allowed = parameters.get("grant_type") === "refresh_token" ? new Set(scopes) : undefined;
-    if (allowed && reported.some((scope) => !allowed.has(scope))) {
-      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
-    }
-    grantedScopes = [...new Set(reported)];
-  }
+  // The issuer determines the initial grant; an omitted scope response uses the request.
+  // A refresh must not expand the grant already held in custody.
+  const grantedScopes = parseOAuthGrantedScopes(
+    body.scope,
+    parameters.get("grant_type") === "authorization_code" && body.scope !== undefined
+      ? undefined
+      : scopeLimit,
+  );
   return {
     accessToken: body.access_token,
     ...(refreshToken === undefined ? {} : { refreshToken }),

@@ -16,9 +16,10 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-For browser access, select **Enable Native admin UI** (initially unchecked).
-It requires [installation setup](../../guides/deploy/native-admin.md) and supported
-Dedicated provisioning; opening the UI requires Agent `administer`.
+Select **Enable browser chat** (initially unchecked) after
+[installation setup](../../guides/deploy/native-admin.md), for ordinary creation
+or supported guided provisioning. After deployment, `operate` permits **Open chat**;
+`administer` permits **Open Agent UI**.
 See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
 for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 
@@ -33,7 +34,7 @@ as the reason Dedicated OpenClaw is disabled.
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
-   Review defaults and choose a model Secret.
+   Review defaults and choose the model credential.
    **Start with default Preset** loads `default-codex`. **Start without Preset** skips Presets.
 3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
@@ -44,18 +45,20 @@ as the reason Dedicated OpenClaw is disabled.
    OpenClaw uses provider API keys. Get an
    [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
-   Choose a model Secret or **Create new Secret...** unless a Preset binds one
-   or you use ChatGPT OAuth.
+   For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
+   Enter the key to create a TokenService-owned Source and save the Agent as a draft.
+   Deploy from the saved Agent page. Select **Namespace Secret** to use the separate
+   Secret-backed path; Preset bindings and Service Accounts also use Secrets.
+   Wait for the access check. Changing provider or method clears your choice.
    No model is preselected. Choose a starter model or **Enter model ID manually**.
    **Choose a model from the list** keeps listed models and other settings.
    Reselect unlisted IDs when you return.
 4. Check Installation, credential, and runtime model support. Primary and
    fallback models must share a supported provider and Harness. Model changes keep
-   unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
+   unrelated JSON and authored `plugins.allow`/`plugins.deny`. **Advanced settings** → **Reset template** replaces them.
    If a malformed provider list, malformed Codex `plugins.allow`, or a number
    outside JavaScript's finite range blocks a JSON rewrite, the form keeps the draft
-   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace
-   a number such as `1e400` with a value closer to zero. Then retry.
+   and focuses **Configuration JSON**. Fix or remove the malformed field, or replace `1e400` with a finite value; retry.
    Provider lists take model objects with string `id` values in an array.
    `plugins.allow` takes a string array.
 5. Under **Repository access**, optionally select up to 16 approved repositories
@@ -68,28 +71,27 @@ as the reason Dedicated OpenClaw is disabled.
    **Apply channel settings** stages settings and bindings. **Cancel** discards selections.
    Configuration stores settings and Secret bindings. The Agent stores plugin selections.
    After creation, you can supply Slack credentials on the Agent's **Credentials** tab.
+   See [Gateway channel proxy](../../guides/deploy/channel-egress.md#select-an-agent-proxy).
 7. Optionally configure plugins or open **Advanced settings** for Configuration JSON
    and **Workspace files**. Presets prefill overrides. Omitted files use OpenClaw
    defaults. Clear a field to submit an empty file. The browser submits LF
    newlines. See [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning waits for deployment activation or failure, naming the deployment's current wait
-   when you can read the deployment.
-   Success opens Agent details. If a newer deployment takes over, Create stays open
-   and offers no retry or link. The job identifies only the deployment that ended.
-   For a failed deployment, open the linked Agent and version and follow its recovery
-   guidance. After a Stop, deploy again when ready.
+   Create opens the first revision's **Deployment** tab for progress and recovery as soon as
+   it can read the deployment. If Create sees job success first, it opens **Configuration**.
+   If a newer deployment takes over while Create is open, Create offers no retry or link.
+   For a failure on Create, follow the linked version's recovery guidance. After a Stop,
+   deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-Before saving, forms and Preset variables survive navigation; passwords clear.
-**Cancel** and **Start over** discard the draft, confirming once changed. Saved Agents
-and Secrets remain. Sign-out clears drafts; a reload asks first. A refused Create stays a draft
-reusing saved resources, except a repository-policy refusal; uncertain outcomes follow save
-recovery below.
+Navigation retains drafts and Preset variables and clears passwords.
+**Cancel** and **Start over** confirm discarding edits. Saved resources
+remain. Sign-out discards drafts. Reload asks first. See below
+for rejected or uncertain writes.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),
@@ -109,14 +111,14 @@ selections JSON** preserves selections separately from Configuration. Check perm
 or outbound access on failure, then retry. Editing follows installation capabilities
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
-Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. Binding a Secret needs Secret `operate` on it, so each Secret
-menu lists a readable Secret without it disabled, with the reason. A new Secret has no `operate`
-grant, so where a readable Secret is denied, a Preset's **Create new Secret** is disabled too. With a selected Credential Gateway, supported
-Dedicated creation registers the selected Secret as a model
-[Credential Source](../credential-sources.md), then provisions with that source.
-The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
-Authentication methods outside the selected gateway catalog remain unavailable.
+The Console submits a new static [Credential Source](../credential-sources.md) directly
+to the selected TokenService through OCC. Creating it requires CredentialSource `create`;
+binding it requires `operate`. Source reads return metadata, not the credential value.
+Guided provisioning does not yet accept managed Sources, so this choice saves a draft.
+For Secret-backed authentication, each Secret menu disables a readable Secret if the caller
+lacks Secret `operate`. A new Secret has no `operate` grant, so a Preset's **Create new Secret**
+is disabled when that access is denied. Credential values stay out of Configuration JSON,
+Agent responses, and browser storage.
 
 Presets preselect their authentication method or retain saved bindings.
 Method-only Presets require a model Secret. Bound API-key and Service Accounts
@@ -138,13 +140,9 @@ The starter list proves neither runtime compatibility nor provider acceptance.
 Optional model discovery requires Namespace Agent `create`, sends credentials
 upstream without saving them, and lists Codex models for `codex_pat`.
 
-Configure Helm `api.modelDiscoveryCidrs` with provider IPv4 `/32` hosts, then
-upgrade. This grants only API Pods TCP 443 egress; Harness rules are unchanged.
-Destinations: `api.openai.com` (OpenAI API key), `api.anthropic.com` (Anthropic),
-or `auth.openai.com` plus `chatgpt.com` (`codex_pat`). Defaults grant none.
-Operators must refresh addresses when DNS changes, or supply a cluster-specific
-FQDN policy. Standard NetworkPolicy cannot match DNS names or distinguish
-services sharing an IP.
+Model discovery uses the API's unrestricted control-plane egress. Verify API Pod
+DNS and HTTPS connectivity to the selected provider. Harness networking remains
+subject to its separate Sandbox policy.
 
 Failures distinguish credential/model-list rejection, rate limits, connectivity,
 and invalid responses. Errors include request IDs, never upstream response bodies.
@@ -169,8 +167,6 @@ If the configuration check times out, your entries stay in the form. Select
 **Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
-For an uncertain Credential Source, select **Check credential registration** to look up
-that registration without creating another. Give your operator the request ID if the outcome is unclear.
 
 If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
@@ -184,10 +180,10 @@ resends the original request. A refused retry of a confirmed failure names the
 reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-**Check credential registration** recovers an uncertain source. If absent,
-**Create Agent** retries its name/references; uniqueness fences late commits. **Remove failed credential registration** deletes a source left
-`registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
-registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+If Source creation has an unknown outcome, check Credential Sources before starting again.
+The Console clears the entered key and does not repeat the write automatically. If a later
+Agent save fails after Source creation succeeds, retry in the same form to reuse that Source.
+See the [provisioning flow](../../flows/agent-provisioning.md) for Secret-backed provisioning.
 
 If the first deployment fails with valid Agent and version IDs, follow the linked
 version's recovery guidance even without an error message. A stopped or superseded
@@ -195,9 +191,10 @@ deployment follows the separate guidance above.
 After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
 Agent and deploy when ready.
 
-If Agent creation is rejected after Configuration saves, correct the ordinary
-zero-binding Agent's editable fields and retry. The retry reuses Configuration
-and needs no repository choices or Repo Driver.
+After an ordinary Agent refusal, correct editable fields or check the named
+permission. If access changes, select **Create Agent** in this draft to reuse
+the Configuration without repository setup. **Cancel** warns that the
+Configuration stays saved. A fresh draft can save another.
 
 An unknown Agent response may mean a successful save; the form hides rejection
 actions. Check the **Agents** list and any displayed Configuration ID's

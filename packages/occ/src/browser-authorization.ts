@@ -70,7 +70,7 @@ export async function exchangeAuthorizationCode(
       redirect_uri: request.redirectUri,
       code_verifier: verifier,
     }),
-    request.scopes,
+    request.scopes.length ? request.scopes : undefined,
     request,
     clientSecret,
     signal,

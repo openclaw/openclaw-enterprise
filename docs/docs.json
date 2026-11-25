@@ -64,6 +64,10 @@
                       {
                         "page": "guides/integrations/codex-plugins",
                         "label": "Plugins"
+                      },
+                      {
+                        "page": "guides/integrations/channels",
+                        "label": "Channels"
                       }
                     ]
                   },
@@ -97,11 +101,13 @@
               }
             ],
             "hidden": [
+              "guides/deploy/eks-openshell-installation",
               "guides/README",
               "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
-              "guides/deploy/quickstart-session"
+              "guides/deploy/quickstart-session",
+              "guides/deploy/native-admin-domain-recovery"
             ]
           },
           {
@@ -128,8 +134,20 @@
                     "label": "Deployment"
                   },
                   {
+                    "page": "reference/agents/interrupted-turns",
+                    "label": "Interrupted turns"
+                  },
+                  {
+                    "page": "reference/agents/planned-replacement",
+                    "label": "Planned replacement"
+                  },
+                  {
                     "page": "reference/agents/gateway-managed-mode",
                     "label": "Gateway managed mode"
+                  },
+                  {
+                    "page": "reference/agents/network-proxy",
+                    "label": "Network Proxy"
                   },
                   {
                     "page": "guides/topics/agent-presets",
@@ -196,8 +214,20 @@
                     "label": "Create and Deploy in the Console"
                   },
                   {
+                    "page": "guides/agent-http-chat",
+                    "label": "HTTP Chat"
+                  },
+                  {
+                    "page": "reference/agent-http-chat",
+                    "label": "HTTP Chat Contract"
+                  },
+                  {
                     "page": "reference/agent-native-admin",
                     "label": "Native Admin UI"
+                  },
+                  {
+                    "page": "reference/agent-automations",
+                    "label": "Automation API"
                   },
                   {
                     "page": "guides/topics/agent-troubleshoot",
@@ -241,7 +271,7 @@
                       },
                       {
                         "page": "reference/authentication/team-enrollment",
-                        "label": "GitHub Team Enrollment"
+                        "label": "OIDC Account Enrollment"
                       },
                       {
                         "page": "reference/authentication/service-api-keys",
@@ -282,6 +312,14 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
+                  },
+                  {
+                    "page": "reference/credential-sources/other-delivery-modes",
+                    "label": "Other Delivery Modes"
+                  },
+                  {
                     "page": "guides/credential-proxy",
                     "label": "Set Up Credential Proxy"
                   },
@@ -308,6 +346,10 @@
                       {
                         "page": "guides/topics/plugins",
                         "label": "Overview"
+                      },
+                      {
+                        "page": "guides/topics/openclaw-plugins",
+                        "label": "OpenClaw Plugins"
                       },
                       {
                         "page": "guides/topics/plugins-configure",
@@ -373,6 +415,10 @@
                     "label": "Quickstart"
                   },
                   {
+                    "page": "reference/drivers/namespace-lifecycle",
+                    "label": "Namespace Lifecycle"
+                  },
+                  {
                     "group": "Compute",
                     "pages": [
                       {
@@ -397,6 +443,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/channel-egress",
+                            "label": "Channel Egress"
                           },
                           {
                             "page": "reference/drivers/kubernetes-compute/gateway-authentication",
@@ -425,6 +475,10 @@
                         ]
                       },
                       {
+                        "page": "reference/drivers/kubernetes-openshell-compute",
+                        "label": "Kubernetes + OpenShell"
+                      },
+                      {
                         "page": "reference/drivers/ssh-compute",
                         "label": "SSH"
                       },
@@ -444,6 +498,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox/harness-providers",
                         "label": "OpenShell Harness Providers"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/namespace-gateway",
+                        "label": "Namespace Gateway"
                       }
                     ]
                   },
@@ -487,7 +545,15 @@
                       },
                       {
                         "page": "reference/drivers/plugin-bundled",
-                        "label": "Bundled"
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "reference/drivers/openclaw-plugin",
+                        "label": "OpenClaw"
+                      },
+                      {
+                        "page": "reference/drivers/codex-plugin",
+                        "label": "Codex"
                       }
                     ]
                   },
@@ -573,7 +639,8 @@
               "reference/repository-credentials/development-token",
               "reference/repository-credentials/openshell-git",
               "reference/repository-credentials/openshell-git-refusals",
-              "reference/repository-credentials/openshell-git-restarts"
+              "reference/repository-credentials/openshell-git-restarts",
+              "reference/repository-credentials/worker-replacement"
             ]
           },
           {
@@ -596,16 +663,29 @@
                     "label": "Overview"
                   },
                   {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup Without OpenShell"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation",
-                    "label": "Control Plane Setup"
+                    "group": "Control Plane Setup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/control-plane-setup",
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes",
+                        "label": "Prepare the Cluster"
+                      },
+                      {
+                        "page": "guides/deploy/production-installation",
+                        "label": "Install the Control Plane"
+                      },
+                      {
+                        "page": "guides/deploy/openshift",
+                        "label": "OpenShift"
+                      },
+                      {
+                        "page": "guides/deploy/azure-postgresql",
+                        "label": "Azure PostgreSQL"
+                      }
+                    ]
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
@@ -745,12 +825,40 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/one-off-upgrades",
+                    "label": "One Off Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/channel-egress",
+                    "label": "Channel Egress Setup"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade-command",
+                    "label": "Upgrade Commands"
+                  },
+                  {
+                    "page": "guides/deploy/separate-database-upgrade",
+                    "label": "Separate Database Deployment"
+                  },
+                  {
+                    "page": "guides/deploy/immutable-installation-upgrade",
+                    "label": "Immutable Installation"
+                  },
+                  {
                     "page": "guides/deploy/production-installation-changes",
                     "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
                     "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/production-preflight-cleanup",
+                    "label": "Preflight Cleanup"
+                  },
+                  {
+                    "page": "guides/deploy/production-helm-recovery",
+                    "label": "Helm Recovery"
                   },
                   {
                     "page": "guides/deploy/split-layout-upgrade",
@@ -785,7 +893,10 @@
               }
             ],
             "hidden": [
+              "guides/quickstart",
+              "guides/deploy/production-installation-preparation",
               "guides/deploy/service-keys",
+              "guides/deploy/oidc-upgrade",
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
@@ -940,19 +1051,26 @@
               }
             ],
             "hidden": [
+              "testing/agent-http-chat",
               "testing/postgresql",
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
+              "testing/harness-restart-recovery",
+              "testing/native-agent-browser",
               "testing/populated-controller-return",
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-git-replacement",
+              "testing/openshell-managed",
               "testing/openshell-oauth",
               "testing/openshell-coverage",
+              "testing/openshell-permission-diagnostics",
               "testing/ci/openshell-execution",
               "testing/repository-credentials",
               "testing/static-egress",
+              "testing/static-egress-upgrade",
               "testing/protected-repository-custody"
             ]
           },
@@ -1017,7 +1135,7 @@
                   },
                   {
                     "page": "contributing/credential-proxy-driver",
-                    "label": "Implement a Credential Proxy Driver"
+                    "label": "Legacy Egress Driver"
                   },
                   {
                     "group": "Driver Contracts",
@@ -1061,6 +1179,10 @@
                       {
                         "page": "reference/drivers/sandbox",
                         "label": "Sandbox"
+                      },
+                      {
+                        "page": "reference/drivers/strands-box",
+                        "label": "Strands Box"
                       },
                       {
                         "page": "reference/drivers/secret",
@@ -1213,8 +1335,10 @@
               "design/safeguards",
               "reference/settings/programmatic",
               "flows/platform-startup",
+              "flows/installation-preparation",
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
+              "flows/coordinated-production-upgrade/preflight-cleanup",
               "flows/tenant-restore",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
@@ -1241,17 +1365,24 @@
               "flows/service-account-driver-credential-delivery",
               "flows/service-api-keys",
               "flows/harness-execution-topology",
+              "flows/strands-box-companion",
+              "flows/harness-restart-recovery",
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/connection-templates",
+              "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
+              "flows/token-service-static-custody",
               "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/channel-egress",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-automations",
+              "flows/agent-http-chat",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",
               "flows/production-tui/native-client",
@@ -1260,6 +1391,7 @@
               "flows/github-actions-testing",
               "flows/clawsweeper-dispatch",
               "flows/container-package-bootstrap",
+              "flows/release-oce",
               "flows/container-publication",
               "flows/cli-publication",
               "flows/cli-agent-browsing",
@@ -1322,18 +1454,18 @@
         "authenticate-the-image-builder-to-ecr": "/guides/deploy/eks-openshell-setup/#authenticate-the-image-builder-to-ecr",
         "configure-network-enforcement-and-storage": "/guides/deploy/eks-openshell-setup/#configure-network-enforcement-and-storage",
         "enable-console-workspace-files": "/guides/deploy/eks-openshell-setup/#enable-console-workspace-files",
-        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-setup/#configure-the-protected-copies-and-install",
-        "verify-workspace-routing": "/guides/deploy/eks-openshell-setup/#verify-workspace-routing",
+        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-installation/#configure-the-protected-copies-and-install",
+        "verify-workspace-routing": "/guides/deploy/eks-openshell-installation/#verify-workspace-routing",
         "update-an-existing-eks-installation": "/guides/deploy/production-upgrade/"
       }
     },
     {
       "from": "/guides/deploy/eks-openshell-browser/",
-      "to": "/guides/deploy/eks-openshell-setup/#configure-browser-access",
+      "to": "/guides/deploy/eks-openshell-installation/#configure-browser-access",
       "anchors": {
-        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
-        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
-        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-installation/#set-the-production-browser-origins-before-installing-occ",
+        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-installation/#read-the-protected-initial-owner-files",
+        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-installation/#install-the-loopback-tls-listener"
       }
     },
     {

@@ -10,10 +10,16 @@ follows `:focus-visible`. No part of any ring may be cut off.
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
    edge.
-2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, arrow through
-   the others, then Tab to Edit Configuration and the **View native
-   Configuration** disclosure. Each tab shows the inset ring on all four sides;
-   the other stops show the outer ring.
+2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, then arrow
+   through its unselected neighbors. Tab into the panel, then press Shift+Tab to
+   return to the selected tab. At 390 px, check that its label and entire focus
+   ring are clear of both horizontal fades. Tab to Edit Configuration and the
+   **View native Configuration** disclosure. Each tab shows the inset ring on all
+   four sides. The other stops show the outer ring. With **Configuration**
+   selected, use the arrow keys to focus **Repositories**. Switch to another
+   browser tab and return. After the healthy check finishes and focus returns to
+   **Repositories**, press Shift+Tab once to leave the strip. Press Tab to return
+   to the selected **Configuration** tab.
 3. Open **Pages / Agent detail / Long version history**. Tab to **Viewing
    version**. The native picker is one Tab stop and names v8 as the viewed version.
    Use its native keyboard controls to choose a version. Tab to **Load older
@@ -138,6 +144,38 @@ follows `:focus-visible`. No part of any ring may be cut off.
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
 
+## Search Agents with the keyboard
+
+In **Pages / Agents / No search matches**, press Escape and type `assistant`.
+Enter keeps the list open because two Agents match. Down Arrow visits each
+name. Escape returns to search without clearing it. Replace the query with
+`Research` and press Enter. Go back and check that the query remains and the
+focused Agent name is visible. Repeat at phone width.
+
+In **Pages / Agents / Resume a search after Retry**, type `Research` in the
+list filter. Hold Shift and press Left Arrow three times to select `rch`, then
+switch away and back. The fixture returns one 503 when it reads the list again.
+Press Enter on the focused **Retry** button. Check that focus returns to
+**Search Agents** with `rch` still selected and that typing replaces those letters.
+Reset the story and repeat after moving to another control before returning to **Retry**. Focus
+must not return to **Search Agents** in that case. Repeat at phone width.
+
+In **Pages / Agents / Namespace focus during list refresh**, reset the story.
+Type `Research` in **Search Agents** and press Shift+Left Arrow three times to
+select `rch` backwards. Switch away and back, then switch away again while the
+simulated list refresh is pending. Stay away for 6.5 seconds. Return and wait
+for the next successful check. **Search Agents** has focus with `rch` still
+selected. Type `X` and check that the query becomes `ReseaX`. Repeat at desktop
+and phone widths.
+
+Reset the same story. Type `Research` in **Search Agents**, select `rch`
+backwards, then switch windows and return. Stay in the foreground while the
+delayed healthy check is pending. Tab to the **Namespace**
+selector, then click the plain **Namespace · Research** line below the Agents
+heading. When the check finishes, type `X` without clicking or tabbing. Search
+must not regain focus, and the query must remain `Research`. Repeat at desktop
+and phone widths.
+
 ## Agent collection access checks
 
 Open **Pages / Agents / Populated Namespace leaves the list** at desktop and
@@ -164,5 +202,7 @@ three save paths: keep focus on **Checking Configuration…**, select all
 text in the pending read-only JSON editor, then focus the **Agents** link.
 Only the first path moves focus to **Reload draft**. The other paths keep focus,
 selection, and scroll position while the conflict alert appears. Reload still
-merges the local draft. This story simulates a preflight conflict; the discovered
-Agent Detail browser test covers a real Controller PATCH returning `409`.
+merges the local draft. The story simulates a conflict before sending a write.
+The Agent detail browser test also returns to the tab while a save is pending.
+If the Controller returns `409` during the access check, focus should move from
+the save status to **Reload draft** once access is confirmed.

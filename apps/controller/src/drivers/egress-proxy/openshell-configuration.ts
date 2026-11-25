@@ -7,7 +7,6 @@ import {
   InstallationFieldError,
   type InstallationFieldDetail,
 } from "../../composition/installation-fields.ts";
-import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
 /** Existing Helm listener and mounted files for the OpenShell Git adapter. */
@@ -52,11 +51,7 @@ export function openShellProxyConfiguration(
 ) {
   const egress = object(input, "drivers.credential_proxy.configuration");
   if (repository) {
-    closed(
-      egress,
-      ["observedHookPreviewWorkspace", "allowNonProxyCredentials"],
-      "drivers.credential_proxy.configuration",
-    );
+    closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
     const preview =
       egress.observedHookPreviewWorkspace === undefined
         ? {}
@@ -72,26 +67,16 @@ export function openShellProxyConfiguration(
         middlewareName: repository.registrationName,
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
-        ...(egress.allowNonProxyCredentials !== undefined && {
-          allowNonProxyCredentials: egress.allowNonProxyCredentials,
-        }),
         ...preview,
       },
     };
   }
   closed(
     egress,
-    [
-      "middlewareName",
-      "authorityScope",
-      "authority",
-      "preparedGitHub",
-      "tokenGrant",
-      "allowNonProxyCredentials",
-    ],
+    ["middlewareName", "authorityScope", "authority"],
     "drivers.credential_proxy.configuration",
   );
-  const { authority, preparedGitHub, ...policy } = egress;
+  const { authority, ...policy } = egress;
   return {
     policy,
     authority: egressAuthorityConfiguration(
@@ -99,8 +84,6 @@ export function openShellProxyConfiguration(
       mode,
       "drivers.credential_proxy.configuration.authority",
     ),
-    prepared:
-      preparedGitHub === undefined ? undefined : preparedGitHubConfiguration(preparedGitHub, false),
   };
 }
 

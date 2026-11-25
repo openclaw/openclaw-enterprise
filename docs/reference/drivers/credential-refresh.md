@@ -4,10 +4,13 @@ kind: reference/driver
 
 # CredentialRefreshDriver contract
 
+This Driver describes the retired Credential Gateway path. Configure
+[TokenService Sources](../credential-sources.md#register-a-source) for current Installations.
+
 ## Overview
 
-`CredentialRefreshDriver` mints and re-mints the tokens of `refresh`-type
-[credential sources](../credential-sources.md). A refresh type, such as an
+`CredentialRefreshDriver` is the legacy renewal contract for Gateway-owned
+`refresh`-type [credential sources](../credential-sources.md). A refresh type, such as an
 OAuth2 client-credentials source, has an issuer and long-lived refresh
 material, such as a client secret or refresh token. The Driver holds that
 material, obtains an access token from the issuer, and obtains a new one before
@@ -18,8 +21,8 @@ OpenClaw Control Plane (OCC) owns the source record, its Secret references, and
 authorization. The paired [Credential Gateway](credential-gateway.md) owns the
 source's stored record and applies the current token to the Agent's requests.
 This Driver owns issuer exchange, refresh material, and minted tokens. OCC calls
-it for setup, device authorization, incident rotation, status, and removal.
-Configuration discovery uses the Gateway's [access-token callback](credential-gateway.md#optional-additions);
+it for setup, incident rotation, status, and removal.
+Gateway-owned configuration discovery uses the Gateway's [access-token callback](credential-gateway.md#optional-additions);
 OpenShell may refresh during retrieval without an OCC refresh call.
 
 Selection is optional. The only implementation is the bundled
@@ -50,21 +53,9 @@ A `CredentialSourceType` whose `rotation` is `refresh` needs this Driver. The fo
 
 ## Device authorization
 
-A type declaring `deviceAuthorization.harnessId` requires this Driver's
-`startDeviceAuthorization(context)` and `pollDeviceAuthorization(context, privateState)`.
-OCC first registers an empty source with the Gateway; it defers refresh setup
-until authorization supplies a grant. Start returns device instructions and an
-opaque handle. Poll returns `pending` or `ready` only, never issuer credentials.
-The Refresh Driver performs the exchange, configures gateway-owned refresh, and
-confirms a usable token before reporting `ready`.
-
-OCC fences polling with Secret compare-and-swap and binds the session to its actor,
-source, and both Gateway and Refresh Driver IDs. It rechecks those bindings and
-authority after external completion. A changed selection or uncertain exchange
-requires reconnecting; it never replays the exchange. Closing the session removes
-only its handle. Existing sources remain usable by their authorized Agents.
-Device-source `PATCH` is refused: create a new login source rather than reseeding
-a rotating refresh grant.
+New Codex device login uses the selected TokenService and does not call this
+Driver's optional device hooks. Registered Gateway-owned Sources retain their
+Gateway and Refresh lifecycle. See [Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 ## IAM
 
@@ -93,8 +84,7 @@ destructor.
    derive from the source ID, so a replay of the same step is not applied twice.
    The source becomes `ready` only once `rotate` reports `ready`. On any failure,
    OCC calls `removeRefresh` and the gateway's `removeSource`, as for a failed
-   static registration. Device-authorized types register without configuring or
-   minting; their first mint occurs during the device completion above.
+   static registration.
 2. **Background refresh.** The Driver re-mints before expiry without OCC. A
    failure appears in the source's status with its recovery action.
 3. **Update.** `PATCH` reads the current or replacement Secret values and calls
@@ -121,8 +111,8 @@ destructor.
   the selected Credential Gateway's Backend.
 - OCC does not poll refresh status or audit background refresh failures; read
   the source to see them.
-- The experimental `codex-oauth` model source uses device authorization; OAuth2
-  tool sources receive their initial material through Secret references.
+- Registered `codex-oauth` model Sources retain their Gateway-owned refresh;
+  OAuth2 tool Sources receive initial material through Secret references.
 - Installed Credential Refresh packages are unsupported.
 
 ## Troubleshooting
@@ -144,7 +134,7 @@ destructor.
 ## Related
 
 - [CredentialGatewayDriver contract](credential-gateway.md)
-- [Credential sources](../credential-sources.md#rotate-a-refresh-source)
+- [Credential sources](../credential-sources/other-delivery-modes.md#rotate-a-refresh-source)
 - [Credential source refresh flow](../../flows/credential-source-refresh.md)
 - [Credential refresh proposal](../../../specs/rfcs/0016-sandbox-credential-injection/credential-refresh.md)
-- [OCC credential source operations](../../../packages/occ/src/index.ts)
+- [OCC credential source operations](../../../packages/occ/src/credential-source-operations.ts)

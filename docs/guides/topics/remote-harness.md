@@ -120,6 +120,68 @@ defines Kubernetes claim sizes, mounts, and persistence. A Sandbox provider may
 supply a different Harness layout. Neither workload mounts the other's private
 state.
 
+## Add operator-owned scratch storage
+
+For a dedicated OpenShell Harness, provision a separate filesystem PVC in its
+execution namespace, then add an exact Agent binding under
+`drivers.compute.configuration` in the Installation YAML:
+
+```yaml
+runtime:
+  # Keep the other required runtime settings.
+  scratchVolumes:
+    - namespaceId: "<OCE namespace ID>"
+      agentId: "<OCE agent ID>"
+      namespace: "<execution Kubernetes namespace>"
+      claimName: "<existing scratch PVC name>"
+      claimUid: "<existing scratch PVC metadata.uid>"
+```
+
+Before restarting API/worker and deploying a new Agent revision:
+
+1. Verify the claim's identity, writable filesystem, private-directory permissions,
+   and actual available capacity and quotas. For native OpenClaw, existing scratch
+   directories must be owned by the preparation process with mode `0700`;
+   the initializer refuses to repair them. Kubernetes may still change volume
+   group/modes; see the [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes). Prevent concurrent PVC deletion or
+   recreation: Kubernetes mounts reference claim names, so a UID check alone
+   cannot prevent replacement after verification.
+2. Check the selected OpenShell provider's resource admission policy for every
+   PVC mounted by the Harness, including the durable workspace. With the default
+   labels on providers that enable resource admission, the operator sets
+   `openshell.ai/sandbox-attachable=true` and
+   `openshell.ai/sandbox-attachable-workspace=<OpenShell workspace name>`
+   on each approved PVC. In operator mode, use the execution Kubernetes
+   namespace name as the workspace name. Check the actual policy if it uses
+   custom labels.
+3. For [local storage](https://kubernetes.io/docs/concepts/storage/volumes/#local), set the PV's node affinity to the prepared storage node.
+   Check that all Harness claims can mount there together, including the durable
+   disk's availability zone, and that resources, taints, and the operator's
+   runtime configuration permit both preparation and execution. A Bound PVC does not establish schedulability;
+   Compute's `runtime.nodeSelector` is not forwarded to OpenShell.
+4. Preserve workspace and Gateway state claims. Replacement stops existing
+   workloads before checking scratch; a failed preparation causes downtime.
+   See [replacement and recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+After deployment, use an ordinary Agent tool turn to inspect the mount at
+`/sandbox/scratch`, report total and available bytes, and write, read, and remove
+a small file in a new private temporary directory there. Correlate the mount with
+the operator's PV and backing filesystem. A directory name or PVC requested size
+does not prove NVMe backing or usable capacity. Check that durable workspace and
+conversation state remain available.
+
+Select `/sandbox/scratch` explicitly for disposable build outputs or caches;
+the mount does not widen native tool permissions or redirect existing paths.
+A separate PVC's capacity is independent of the container's ephemeral-storage
+limit, which still covers logs and writable-layer files.
+
+The operator owns scratch cleanup after consumers stop. Local storage can survive
+same-node Pod replacement but cannot move with the Pod. [Instance-store data is lost](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-store-lifetime.html)
+when its instance is stopped, hibernated, or terminated; provision and qualify replacement
+storage, update the binding, and deploy a new revision after such loss. Keep
+irreplaceable data on durable storage. The [storage contract](../../reference/drivers/kubernetes-compute/configuration.md#scratch-volumes)
+defines binding and retention behavior.
+
 ## Files across the boundary
 
 ### Agent documents
@@ -146,6 +208,69 @@ Skill files. Gateway discovers remote Skill sources and applies installation pol
 Approved dependency installation runs on the workspace host. Each host supplies
 its own bundled assets, without a shared Skill-tree mount. Remote channel menu
 discovery remains deferred; see the [workspace flow](../../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
+
+#### Recover a missing Skill Library bundle
+
+A persistent mount cannot recover files lost before it was installed. For
+`Pinned skill instructions could not be read`, point your authenticated CLI at
+the affected Agent Gateway. Set `session` to the conversation key.
+
+```bash
+openclaw skills library list --session "${session:?}" --json
+# Set skill_id and revision from the same entry in .session.selections[].
+openclaw skills library read "${skill_id:?}" --session "$session" --revision "${revision:?}"
+```
+
+The pin can still list when the bundle is gone. Confirm file loss before
+proceeding. Stop if the read succeeds or access is denied.
+
+**Continue without the skill.** A session editor can detach the broken pin.
+Check the selections and send a fresh turn in the same conversation. Its history
+and other sessions’ pins survive.
+
+```bash
+openclaw skills library detach --session "${session:?}" --skill-id "${skill_id:?}"
+```
+
+**Restore the original files.** As the owner, find the skill ID in
+`.entries[]` from `openclaw skills library list --json` and set `slug`.
+Stop if the catalog revision differs from the pin. Saving different bytes
+can change the revision for other users. CLI `update` fails because it reads
+the missing bundle first.
+
+Use a complete pre-loss `openclaw skills library read <skill-id> --json` export
+(`backup`) and its independently recorded `backup_sha256`. Preserve every support
+file and executable flag. Use this [Gateway call](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/cli/gateway/query.md#L423)
+only for small, non-sensitive bundles. Process arguments expose their contents.
+
+```bash
+(
+  digest=$(sha256sum < "${backup:?}") || exit 1
+  [[ "${digest%% *}" == "${backup_sha256:?}" ]] || { echo "Backup checksum mismatch" >&2; exit 1; }
+  params=$(jq -cse --arg id "${skill_id:?}" --arg rev "${revision:?}" --arg slug "${slug:?}" '
+    select(length == 1) | .[0]
+    | select(.entry.skillId == $id and .entry.revision == $rev and .entry.slug == $slug)
+    | select((.files | type == "array") and (.content | type == "string"))
+    | {skillId:$id, expectedRevision:$rev, slug:.entry.slug, content, files}
+  ' < "${backup:?}") &&
+    openclaw gateway call skills.library.save --params "$params" --json
+)
+```
+
+Verify the receipt’s revision and read the restored bytes, even if the save
+reports `unchanged`.
+
+```bash
+openclaw skills library read "${skill_id:?}" --revision "${revision:?}" --json
+```
+
+Try the skill in the original conversation. If you detached the pin, a session
+editor with access to the skill must [reattach it](https://github.com/openclaw/openclaw/blob/cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef/docs/cli/skills.md#L320)
+first.
+
+```bash
+openclaw skills library attach --session "${session:?}" --skill-id "${skill_id:?}" --revision "${revision:?}"
+```
 
 ### Attachments
 

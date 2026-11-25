@@ -14,10 +14,10 @@ import {
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
-import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
-import type { SessionStatus } from "../credentials/service-contracts.ts";
-import { sameBinding } from "../credentials/grant-identity.ts";
-import { hasControlCharacter } from "../credentials/client-contracts.ts";
+import { encodeRepositoryCredentialSessionFiles } from "./access/client/config.ts";
+import type { SessionStatus } from "../access/service-contracts.ts";
+import { sameBinding } from "../access/grant-identity.ts";
+import { hasControlCharacter, isCanonicalUnixSocketPath } from "../access/client-contracts.ts";
 
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
@@ -50,10 +50,10 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
       const path = configuration[field];
       if (
         typeof path !== "string" ||
-        !isAbsolute(path) ||
-        resolve(path) !== path ||
         hasControlCharacter(path) ||
-        (field === "controlSocket" && Buffer.byteLength(path) > 103)
+        (field === "controlSocket"
+          ? !isCanonicalUnixSocketPath(path)
+          : !isAbsolute(path) || resolve(path) !== path)
       ) {
         return [
           {

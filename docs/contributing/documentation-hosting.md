@@ -88,7 +88,7 @@ gh api --method PUT repos/openclaw/openclaw-enterprise/pages \
 - [Workflow](../../.github/workflows/docs-pages.yml): triggers, permissions,
   environment, build, and deployment.
 - [Navigation](../docs.json): menus, sidebars, and registered pages.
-- [Site builder](../../scripts/docs-site/build.mjs): Markdown rendering and link validation.
+- [Site builder](../../scripts/docs-site/build.ts): Markdown rendering and link validation.
 - [Package scripts](../../package.json) and [Redocly configuration](../../scripts/docs-site/redocly.yaml):
   OpenAPI lint and documentation build commands.
 - [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json): published API source.

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: "2026-10-15"
-last_updated_session: authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Public GitHub read flow
@@ -14,7 +14,7 @@ reader knows no credentials; GitHub owns visibility at the time of the read.
 
 ## Entry Points
 
-- `scripts/render-installation-profile.mjs:buildRendered` pairs Helm and Compute configuration.
+- `scripts/render-installation-profile.ts:buildRendered` pairs Helm and Compute configuration.
 - `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot` prepares the Agent revision.
 - A user asks the deployed Agent to read a known public repository.
 
@@ -42,7 +42,7 @@ graph TD
 
 ### 1. Compose a private Service and an eligible Agent revision
 
-`packages/occ/src/index.ts` asks the selected Compute Driver for side-effect-free
+`packages/occ/src/deployment-revision.ts:prepareComputeRevision` asks the selected Compute Driver for side-effect-free
 admission facts before storing the Agent revision. Kubernetes Compute freezes a digest of
 the configured reader peer only for a dedicated Codex Agent revision with an explicit
 IP allow in its authored proxy. A deny that might match withholds the capability.
@@ -100,16 +100,9 @@ the admitted Compute-owned Harness before resolving the current Sandbox; an
 unavailable or changed Sandbox still leaves ancillary cleanup unfinished and
 reports an error. A new Agent revision is needed to select a replacement peer.
 
-When the installation selects protected Credential Proxy, the active revision's own authorized
-reconcile or maintenance claim may find that Compute refuses release before preparation.
-For a revision with durable unprotected execution admission and this reader grant,
-`rejectedExecutionWithdrawal` lets that claim close the same policy and observe the
-same workload stopped. An incomplete observation remains pending beyond the convergence
-deadline. Completion fails the old release with `EXECUTION_ADMISSION_WITHDRAWN`, even if
-the reader peer returned meanwhile. Historical rows admitted before execution admission
-existed did not use Credential Proxy, so migration `0060_credential_proxy_admission`
-records the unprotected decision on them; the upgrade then closes their access through
-this same path instead of leaving them unreadable.
+Selecting a Credential Proxy alone does not reject an unprotected revision or
+withdraw its reader grant. `validateExecutionAdmission` checks each revision's
+durable decision. Protected revisions still cannot select the anonymous reader.
 
 ## Debugging and Verification
 
@@ -128,6 +121,11 @@ this same path instead of leaving them unreadable.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-14 13:26: Point profile rendering to its strict TypeScript owner in the accompanying change. (authoring-run/b8058a93-be93-46c4-a823-6c9397935811 - cc06a6ec22b7071dc7913086a0d891da53d8f8be)
+
+- 2026-11-12 10:58: Preserve unprotected admission when a Credential Proxy is selected. (authoring-run/1e8e6ab1-7c1b-4d49-a362-2dc060e32bbb - aea0cb511)
 
 - 2026-10-15 11:05: Project the managed reader skill to Gateway and Harness (authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72 - 87e12a1169a997a99fec7de261b43a0ea2255f54)
 

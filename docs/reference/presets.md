@@ -330,17 +330,17 @@ and response envelopes.
 | `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
 | `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
-An included `template` replaces the whole template, including variable
-definitions; omitted fields stay unchanged. Writes check the template structure,
-variable syntax and default types, credential-binding structure, known
-cross-Namespace credential references, and credential literals at their native
-use sites. A literal `agent.name`, `executionMode`, `backendId` or
-`pluginApprovers` that Agent create refuses is refused; plugin selections and
-tokens wait. The console checks values needed
-to populate its form; the existing creation APIs validate completed settings.
-The selected
-[Configuration Driver](drivers/configuration.md#optional-validation) must support
-value validation when a template contains `configuration.values`.
+An included `template` replaces it entirely, including variable definitions;
+omitted fields stay unchanged. Writes validate structure, variable syntax and
+default types, credential bindings, known cross-Namespace references, and native
+credential literals. Literal `agent.name`, `executionMode`, `backendId`, and
+`pluginApprovers` follow Agent-create rules. Declared, unescaped variable tokens,
+including those with defaults, and plugin selections wait for launch; unrelated
+braces and escaped tokens stay literal. `configuration.values.gateway.auth.password`
+may use a whole-string `string` variable, but supplied values and defaults must be
+credential references. Templates with `configuration.values` require a selected
+[Configuration Driver](drivers/configuration.md#optional-validation) that supports
+value validation.
 
 Fresh native-IAM bootstrap includes Preset CRUD permissions. On existing
 Installations, the upgrade adds those four permissions only to the unchanged

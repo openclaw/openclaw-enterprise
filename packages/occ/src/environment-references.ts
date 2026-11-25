@@ -861,6 +861,34 @@ export function generatedGatewayPasswordReference(secrets: unknown): {
 }
 
 /**
+ * The missing `gateway.auth.password` a Dedicated Codex Gateway signs in with to apply its
+ * workspace node at runtime, as its setting and requirement, or undefined. Kubernetes Compute
+ * refuses it where it applies the node at runtime (requireWorkspaceNodeGatewayPassword, finding
+ * 3132), and the Console names it before Deploy (finding 3138). A set password, or a `gateway` or
+ * `gateway.auth` that is not an object (a Preset variable, or a value other rules refuse), is left
+ * to those rules. The caller decides that the Configuration runs as Dedicated Codex.
+ */
+export function workspaceNodeGatewayPasswordProblem(
+  values: unknown,
+): { readonly setting: string; readonly requirement: string } | undefined {
+  const configuration = asObject(values);
+  const gateway = configuration?.gateway;
+  const auth = asObject(gateway)?.auth;
+  if (
+    (gateway !== undefined && asObject(gateway) === undefined) ||
+    (auth !== undefined && asObject(auth) === undefined) ||
+    asObject(auth)?.password !== undefined
+  ) {
+    return undefined;
+  }
+  const generated = generatedGatewayPasswordReference(configuration?.secrets);
+  return {
+    setting: "gateway.auth.password",
+    requirement: `must be the environment reference {source: "env", provider: "${generated.provider}", id: "${generated.id}"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node`,
+  };
+}
+
+/**
  * Why OpenClaw cannot read the gateway.auth.password object `password` with the Configuration's
  * `secrets`, or undefined for one it reads and for a value that is not an object (a literal or a
  * `${NAME}`, which the callers check). Every Compute runs the Gateway in password or trusted-proxy

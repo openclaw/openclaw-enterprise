@@ -91,8 +91,8 @@ reachability, `systemctl --version`, `flock` and account-management commands on
 `PATH`, executable Node, and readable OpenClaw. Failure names the configured host and stops
 production startup.
 
-`ensureNamespace` creates or verifies the Namespace marker and invokes selected
-`afterNamespacePrepared` hooks. An unmapped name fails permanently. Before
+`ensureNamespace` creates or verifies the Namespace marker. OCC then runs selected
+[Namespace setup hooks](namespace-lifecycle.md). An unmapped name fails permanently. Before
 Agent revision operations, the worker calls `bindAgent` with server-owned Namespace,
 Agent, and ServicePrincipal identities; an unbound Agent revision fails closed.
 
@@ -117,7 +117,9 @@ Activation restarts the gateway and interrupts Agent service.
 The unit runs `<nodePath> <openclawPath> gateway --port <port>` as the Agent's private Unix account,
 with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`,
 `OPENCLAW_GATEWAY_PORT`, and `OPENCLAW_NO_AUTO_UPDATE=1`, so OpenClaw does not
-check for or install its own updates. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
+check for or install its own updates. Native OpenClaw owns
+[interrupted-turn recovery](../agents/interrupted-turns.md) when it starts with
+retained state. The unit uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
 `TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The saved
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 
@@ -132,13 +134,17 @@ snapshot. `retireRevision` invokes selected
 current, retirement stops/disables the unit and removes the pointer first.
 Home, state, operator credentials, and other versions remain.
 
-`deleteNamespace` invokes `beforeNamespaceDelete`, verifies all owned Agents,
+`deleteNamespace` verifies all owned Agents,
 stops/disables their units, removes the unit files, reloads systemd, and removes
 the Namespace tree including state and its owned runtime accounts. If the Namespace tree is already gone, deletion retries cleanup of any remaining
 owned account markers.
 Agent deletion retires every Agent revision, then `deleteAgentRuntimeCredentials`
 verifies ownership, removes the Agent's unit, directory (home, state, operator
 file, port allocation) and runtime account. Absence is success.
+SSH does not expose the read-only deletion eligibility check required by
+Namespace cleanup hooks. Composition rejects registrations with those hooks
+when SSH is selected.
+
 Foreign ownership or configuration failures are permanent; transport, timeouts,
 and unexpected helper failures are retryable.
 

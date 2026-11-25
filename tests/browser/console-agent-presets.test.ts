@@ -16,11 +16,14 @@ import test, { type TestContext } from "node:test";
 import type { Dialog, Locator, Page, Request } from "playwright";
 
 import { normalizePresetTemplate } from "../../packages/contracts/src/presets.ts";
-import type {
-  HarnessAuthBinding,
-  Preset,
-  PresetTemplate,
-  PresetVariable,
+import {
+  WORKSPACE_DEFAULTS,
+  WORKSPACE_DEFAULTS_ID,
+  type HarnessAuthBinding,
+  type Preset,
+  type PresetTemplate,
+  type PresetVariable,
+  type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
 import type {
@@ -35,28 +38,28 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { PresetResponse, PresetListResponse } from "../../packages/contracts/src/api/resources.ts";
 
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/ports/platform-unit-of-work.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
-  WORKSPACE_DEFAULTS,
-  WORKSPACE_DEFAULTS_ID,
-} from "../../packages/contracts/src/workspace-defaults.mjs";
-import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   backendFixtures,
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import {
   apiRequests,
   consoleViewports,
   detailUrl,
   expectReachableReason,
-  focusKeptOverClose,
   holdRequests,
   inViewport,
   isRecord,
@@ -74,6 +77,7 @@ import {
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
@@ -92,8 +96,8 @@ import {
   KUBERNETES_ALLOW_USERS_REFUSAL,
 } from "../helpers/refusal-text.mjs";
 import { nativeAdminGatewayAuth } from "../helpers/harness-configuration.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
-import { within } from "../helpers/wait-for.mjs";
+import { restrict } from "../helpers/iam-grants.ts";
+import { within } from "../helpers/wait-for.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
 type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
@@ -158,6 +162,23 @@ const createConsoleAppFixture = (
     modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
   } = {},
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+async function createTokenServiceConsoleFixture(t: TestContext) {
+  const secretDriver = createTestSecretDriver({ id: "console-preset-token-storage" });
+  let state: PlatformStateStore | undefined;
+  const fixture = await createBaseConsoleAppFixture(t, {
+    defaultPresets: [defaultCodexPreset],
+    secretDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  await fixture.bootstrap();
+  assert.ok(state);
+  await installDeviceTokenService(fixture.controller, state, secretDriver);
+  return fixture;
+}
 
 test("Preset string variables preserve multiline defaults, edits and restored drafts", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -960,6 +981,24 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
   fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
+  const sandbox: SandboxDriver = {
+    id: "sandbox-plugin-presets",
+    capability: "sandbox",
+    implementation: "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      throw new Error("The catalog fixture does not deploy a Harness.");
+    },
+    async cleanup() {},
+  };
+  const compute = createTestKubernetesComputeDriver("compute-plugin-presets", {
+    sandboxDriver: sandbox,
+  });
+  for (const selected of [sandbox, compute]) {
+    fixture.controller.registerDriver(selected);
+    fixture.controller.selectDriver(selected.capability, selected.id);
+  }
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
@@ -997,10 +1036,15 @@ test("Create Agent browses the Codex catalog and discards its selections when sw
   );
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  assert.equal(await page.getByLabel("Execution mode", { exact: true }).inputValue(), "dedicated");
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await dialog.getByRole("button", { name: "Load plugins", disabled: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
   assert.equal(await linear.count(), 0);
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {
+    "occ-plugin:google@1.0.0": { enabled: true },
+  });
 });
 
 test("Create Agent clears approvers when the selected Harness has no plugin catalog", async (t) => {
@@ -1031,23 +1075,12 @@ test("Create Agent clears approvers when the selected Harness has no plugin cata
   assert.equal(Object.hasOwn(response.request().postDataJSON(), "pluginApprovers"), false);
 });
 
-test("Create Agent discovers hosted plugins with a transient PAT through the selected Driver", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+test("Create Agent discovers hosted plugins through a saved TokenService Source", async (t) => {
+  const fixture = await createTokenServiceConsoleFixture(t);
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Hosted plugin discovery", { ready: true });
-  const firstSecret = await fixture.createSecret(
-    namespace.id,
-    "First PAT",
-    "at-browser-plugin-one",
-  );
-  const secondSecret = await fixture.createSecret(
-    namespace.id,
-    "Second PAT",
-    "at-browser-plugin-two",
-  );
   const { page } = await newPage(t, fixture);
   const originalFetch = globalThis.fetch;
   const logoUrl = "https://plugin-images.example.test/calendar.png";
@@ -1069,9 +1102,6 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     );
   });
   let failTools = true;
-  const listRelease = Promise.withResolvers<void>();
-  const listStarted = Promise.withResolvers<void>();
-  let holdList = false;
   let holdPrefetch = true;
   const prefetchRelease = Promise.withResolvers<void>();
   const detailStarted = Promise.withResolvers<void>();
@@ -1150,16 +1180,6 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
         holdPrefetch = false;
         await prefetchRelease.promise;
       }
-      if (holdList && token === "Bearer at-browser-plugin-one") {
-        listStarted.resolve();
-        await listRelease.promise;
-      }
-      if (token === "Bearer at-browser-plugin-two") {
-        return Response.json({
-          plugins: [hosted("New-account-plugin")],
-          pagination: { next_page_token: null },
-        });
-      }
       return Response.json({
         plugins: url.searchParams.has("pageToken")
           ? [hosted("Documents")]
@@ -1220,22 +1240,26 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     });
   });
   t.after(() => prefetchRelease.resolve());
-  t.after(() => listRelease.resolve());
   t.after(() => detailRelease.resolve());
   t.after(() => searchRelease.resolve());
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await page.locator("#plugin-discovery-token > summary").click();
-  const token = page.getByLabel("Token for plugin discovery", { exact: true });
-  const prefetched = page.waitForRequest(
-    (request) =>
-      request.url().endsWith("/agents/plugins") &&
-      request.postDataJSON()?.accessToken === "at-browser-plugin-one",
+  await page.getByLabel("Agent name", { exact: true }).fill("Hosted catalog Agent");
+  const enrolled = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/credential-sources") && response.request().method() === "POST",
   );
-  await token.fill("at-browser-plugin-one");
-  await prefetched;
+  await page.getByLabel("Service account token", { exact: true }).fill("at-browser-plugin-one");
+  await page.getByRole("button", { name: "Save service account token", exact: true }).click();
+  const enrollment = await enrolled;
+  assert.equal(enrollment.status(), 201);
+  const { data: credentialSource } = await enrollment.json();
+  assert.equal(credentialSource.type, "static");
+  assert.deepEqual(credentialSource.config, { provider_preset: "codex-pat" });
+  const sourceRef = credentialSource.ref;
+  assert.match(sourceRef.id, /^cs_/);
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await dialog.isVisible(), false);
   const brokenImageRequest = page.waitForRequest(brokenLogoUrl);
@@ -1257,7 +1281,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/plugins`).map(
       ({ body }) => body,
     ),
-    [{ harnessId: "codex", accessToken: "at-browser-plugin-one" }],
+    [{ harnessId: "codex", credentialSource: sourceRef }],
   );
   const setup = dialog.locator(".plugin-access-help");
   const setupDisclosure = setup.locator("summary");
@@ -1490,7 +1514,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     catalogRequests()
       .slice(beforeTyping)
       .map((request) => request.body),
-    [{ harnessId: "codex", accessToken: "at-browser-plugin-one", q: "linear" }],
+    [{ harnessId: "codex", credentialSource: sourceRef, q: "linear" }],
   );
   assert.equal(
     await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
@@ -1508,7 +1532,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await search.fill("slow");
   await page.clock.runFor(300);
-  await searchStarted.promise;
+  await within(searchStarted.promise, "the held upstream plugin search");
   await dialog.getByRole("status").filter({ hasText: "Searching plugins…" }).waitFor();
   assert.equal(
     await dialog
@@ -1541,7 +1565,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
 
   // Selecting a plugin loads its tools; a rejected upstream body stays private and is retryable.
   await calendar.click();
-  await detailStarted.promise;
+  await within(detailStarted.promise, "the held upstream plugin detail read");
   await dialog.getByRole("status").filter({ hasText: "Loading tools…" }).waitFor();
   assert.equal(await dialog.getByText(/^Tool list unavailable\./).count(), 0);
   assert.equal(
@@ -1620,92 +1644,17 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await search.press("Enter");
   await calendar.waitFor();
 
-  // A credential edit cancels background discovery; explicit plugin selections survive.
   await closePluginDialog();
-  await token.fill("");
-  const clearedSetup = page.locator(".plugin-access-help");
-  await clearedSetup.locator("a").first().waitFor({ state: "detached" });
-  assert.equal(await clearedSetup.locator("a").count(), 0);
-  assert.equal(await clearedSetup.isVisible(), false);
-  assert.equal(
-    (await clearedSetup.locator(".plugin-access-instructions").textContent())?.trim(),
-    "",
+  assert.ok(upstreamCalls.some(({ token }) => token === "Bearer at-browser-plugin-one"));
+  const discoveryRequests = requests.filter(({ path }) =>
+    /\/agents\/plugins(?:\/details)?$/.test(path),
   );
-  assert.equal(await reminder.isVisible(), false);
-  assert.equal(await reminder.locator("a").count(), 0);
-  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
-  holdList = true;
-  const stalePrefetchCanceled = page.waitForEvent("requestfailed", {
-    predicate: (request) =>
-      request.url().endsWith("/agents/plugins") &&
-      request.postDataJSON()?.accessToken === "at-browser-plugin-one",
-  });
-  await token.fill("at-browser-plugin-one");
-  await page.clock.runFor(300);
-  await listStarted.promise;
-  assert.equal(await dialog.isVisible(), false);
-  await token.fill("at-browser-plugin-two");
-  await stalePrefetchCanceled;
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await page.clock.runFor(300);
-  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
-  listRelease.resolve();
-  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
-  assert.equal(await calendar.count(), 0);
-  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
-  await closePluginDialog();
-  assert.equal(await dialog.isVisible(), false);
-  // Selecting a saved PAT sends only its reference to OCC for both list and detail reads.
-  holdList = false;
-  await token.fill("");
-  const selectedPrefetch = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/agents/plugins") &&
-      response.request().postDataJSON()?.secretRef?.id === firstSecret.ref.id,
-  );
-  await selectSecret(page, "Service account token Secret", firstSecret);
-  await page.clock.runFor(300);
-  assert.equal((await selectedPrefetch).status(), 200);
-  assert.equal(await dialog.isVisible(), false);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await calendar.waitFor();
-  await calendar.click();
-  await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
-  const selectedRequests = requests.filter(
-    (request) =>
-      request.path.endsWith("/agents/plugins") || request.path.endsWith("/agents/plugins/details"),
-  );
-  assert.deepEqual(selectedRequests.at(-2)?.body, {
-    harnessId: "codex",
-    secretRef: firstSecret.ref,
-  });
-  assert.deepEqual(selectedRequests.at(-1)?.body, {
-    harnessId: "codex",
-    secretRef: firstSecret.ref,
-    pluginId: "remote-calendar",
-  });
-  assert.doesNotMatch(JSON.stringify(selectedRequests.at(-2)?.body), /at-browser-plugin/);
-  await closePluginDialog();
-
-  // Switching the saved Secret discards the previous account's catalog and reloads with the new one.
-  await selectSecret(page, "Service account token Secret", secondSecret);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  await page.clock.runFor(300);
-  await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
-  assert.equal(await calendar.count(), 0);
-  assert.deepEqual(
-    requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1)?.body,
-    { harnessId: "codex", secretRef: secondSecret.ref },
-  );
-  await closePluginDialog();
-  assert.equal(
-    upstreamCalls.some((call) => call.token === "Bearer at-browser-plugin-two"),
-    true,
-  );
-  assert.equal(
-    requests.some((request) => /at-browser-plugin/.test(request.path)),
-    false,
-  );
+  assert.ok(discoveryRequests.length > 0);
+  for (const { body } of discoveryRequests) {
+    assert.ok(isRecord(body));
+    assert.deepEqual(body.credentialSource, sourceRef);
+    assert.doesNotMatch(JSON.stringify(body), /at-browser-plugin/);
+  }
   assert.ok(imageRequests.some((request) => request.url === logoUrl));
   assert.ok(imageRequests.some((request) => request.url === brokenLogoUrl));
   for (const { headers } of imageRequests) {
@@ -1817,7 +1766,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
 
   // Codex advertises plugin-wide reviewers only; tool approval still inherits independently.
   const toolReviewer = dialog.getByLabel("app_knowledge/search reviewer", { exact: true });
-  assert.equal(await toolReviewer.count(), 0);
+  assert.equal(await toolReviewer.isDisabled(), true);
   await searchTool.getByRole("button", { name: "Set reviewer for all tools" }).click();
   assert.equal(await reviewer.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await toolApproval.selectOption("none");
@@ -2031,6 +1980,213 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
 
+test("Harness switches preserve unrestricted and explicit native plugin allowlists through Agent creation", async (t) => {
+  for (const allow of [undefined, [], ["knowledge"], ["knowledge", "codex"], ["codex"]]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Native plugin settings", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const base = nativeValues("preserved-native-plugin");
+    const values = {
+      ...base,
+      plugins: {
+        ...base.plugins,
+        deny: ["blocked-plugin"],
+        ...(allow === undefined ? {} : { allow }),
+      },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
+      name: "Native plugins",
+      template: {
+        agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
+        configuration: { values },
+      },
+    });
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+
+    // Harness wiring changes must neither grant plugins nor erase an authored restriction.
+    await harness.selectOption("codex");
+    const dedicated = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(dedicated.plugins.allow, allow);
+    assert.deepEqual(dedicated.plugins.deny, values.plugins.deny);
+    assert.deepEqual(dedicated.plugins.entries.knowledge, values.plugins.entries.knowledge);
+    assert.equal(dedicated.plugins.entries.codex.enabled, true);
+    await harness.selectOption("openclaw");
+    assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+
+    // Save through the ordinary Agent form and read its owned Configuration back from the API.
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    assert.equal(created.executionMode, "embedded");
+    assert.deepEqual(created.harnessAuth, harnessAuth);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.data.values.plugins, values.plugins);
+  }
+});
+
+test("Default Codex policy survives Harness switches, explicit edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex policy round-trip", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  // Explicit Preset selection supports restored drafts; the starter shortcut deliberately discards them.
+  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const harness = page.getByLabel("Harness", { exact: true });
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("openclaw");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+
+  // An operator's explicit unrestricted policy replaces the preset restriction, even after navigation.
+  const edited = JSON.parse(await configuration.inputValue());
+  edited.plugins.allow = [];
+  await openAdvancedSettings(page);
+  await configuration.fill(JSON.stringify(edited));
+  await page.goBack();
+  await page.goForward();
+  await openAdvancedSettings(page);
+  await harness.selectOption("openclaw");
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
+});
+
+for (const finalHarness of ["openclaw", "codex"] as const) {
+  test(`A disabled Codex entry survives Harness switches and saves on ${finalHarness}`, async (t) => {
+    if (!nativeBrowserSupported(t)) {
+      return;
+    }
+    const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+      agentProvisioning: false,
+      filesystemConfiguration: true,
+      nativeAdminGatewayApiKey: async () => "synthetic-native-admin-gateway-key",
+      agentGatewayManagedMode: false,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Disabled Codex entry", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+    const base = nativeValues("disabled-codex-entry");
+    const entry =
+      finalHarness === "openclaw"
+        ? { enabled: false }
+        : { enabled: false, config: { appServer: { sandbox: "workspace-write" } } };
+    const plugins = {
+      ...base.plugins,
+      allow: ["codex"],
+      entries: { ...base.plugins.entries, codex: entry },
+    };
+    const preset = await createPreset(fixture, namespace.id, {
+      name: "Disabled Codex entry",
+      template: {
+        agent: {
+          name: "Disabled entry Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values: { ...base, plugins } },
+      },
+    });
+    const { page } = await newPage(t, fixture, browserOptions);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    await harness.selectOption("codex");
+    if (finalHarness === "openclaw") {
+      // Settle the initial model catalog before editing an unfinished Configuration.
+      await settlePageRequests(page);
+      const dedicated = JSON.parse(await configuration.inputValue());
+      assert.deepEqual(dedicated.plugins.entries.codex, {
+        enabled: false,
+        config: {
+          appServer: {
+            mode: "guardian",
+            approvalPolicy: "on-request",
+            transport: "websocket",
+            sandbox: "read-only",
+            url: "${APP_SERVER_URL}",
+            authToken: "${APP_SERVER_TOKEN}",
+          },
+        },
+      });
+      const native = JSON.stringify({ ...dedicated, agents: base.agents, models: base.models });
+      const replaceEditorText = (value: string) =>
+        configuration.evaluate((input, text) => {
+          (input as HTMLTextAreaElement).value = text;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }, value);
+      const incomplete = JSON.stringify(dedicated).slice(0, -1);
+      await replaceEditorText(incomplete);
+      assert.equal(await configuration.inputValue(), incomplete);
+      await harness.selectOption("openclaw");
+      assert.equal(await configuration.inputValue(), incomplete);
+      await replaceEditorText(native);
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
+      assert.equal(await harness.inputValue(), "openclaw");
+      await harness.selectOption("codex");
+      const edited = JSON.parse(await configuration.inputValue());
+      delete edited.plugins.entries.codex;
+      await replaceEditorText(JSON.stringify(edited));
+      await harness.selectOption("openclaw");
+      assert.equal(JSON.parse(await configuration.inputValue()).plugins.entries.codex, undefined);
+    } else {
+      await harness.selectOption("openclaw");
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, plugins);
+      await harness.selectOption("codex");
+    }
+    const configurationBeforeSave = await configuration.inputValue();
+    const created = await createAgentThroughForm(page, fixture, namespace.id);
+    assert.equal(created.executionMode, finalHarness === "openclaw" ? "embedded" : "dedicated");
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    const expected =
+      finalHarness === "openclaw"
+        ? undefined
+        : {
+            enabled: false,
+            config: {
+              appServer: {
+                mode: "guardian",
+                approvalPolicy: "on-request",
+                transport: "websocket",
+                url: "${APP_SERVER_URL}",
+                authToken: "${APP_SERVER_TOKEN}",
+                sandbox: "workspace-write",
+              },
+            },
+          };
+    const expectedEntries: Record<string, unknown> = { ...plugins.entries };
+    if (expected === undefined) {
+      delete expectedEntries.codex;
+    } else {
+      expectedEntries.codex = expected;
+    }
+    assert.deepEqual(saved.data.values.plugins, { ...plugins, entries: expectedEntries });
+    assert.deepEqual(JSON.parse(configurationBeforeSave).plugins, saved.data.values.plugins);
+  });
+}
+
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     modelProvider: { protocol: "openai-completions", baseUrl: "https://models.example.test/v1" },
@@ -2166,6 +2322,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     "Preset channel token",
     "test-channel-token",
   );
+  const modelSecret = await fixture.createSecret(
+    namespace.id,
+    "Preset model key",
+    "fixture-model-key",
+  );
   await fixture.createAgent(namespace.id, "Existing Agent");
   const values = nativeValues("{{ vars.marker }}", {
     harnessId: "codex",
@@ -2194,7 +2355,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
         name: "{{ vars.name }}",
         executionMode: "{{ vars.execution }}",
         backendId: backendFixtures[0]!.id,
-        harnessAuth: { method: "codex_pat", source: secret.ref },
+        harnessAuth: { method: "api_key", source: modelSecret.ref },
         plugins,
         initialWorkspaceFiles: {
           "AGENTS.md": "# {{ vars.name }} workspace\n",
@@ -2241,12 +2402,11 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   assert.equal(await page.getByLabel("Preset template").count(), 0);
   assert.equal(await page.getByLabel("Marker", { exact: true }).count(), 0);
   await page
-    .getByText("Preset authentication: Service Accounts · Secret configured", { exact: true })
+    .getByText("Preset authentication: API key · Secret configured", { exact: true })
     .waitFor();
-  assert.equal(await page.getByLabel("Service account token", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("API key", { exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "codex");
-  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
   assert.equal(
     (await page.getByLabel("Configuration JSON", { exact: true }).inputValue()).includes(
       "test-channel-token",
@@ -2319,14 +2479,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   // Returning to the draft restores or remounts it; wait for the live form's reads.
   await waitForCreateFormReads(page);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Edited name");
-  // Plugin catalog discovery is a read sent as POST. A mounted draft with the rendered codex_pat
-  // Secret prefetches it after a 300 ms debounce, so it may or may not have been sent yet.
-  const pluginCatalogPath = `/namespaces/${namespace.id}/agents/plugins`;
-  assert.deepEqual(
-    nonAuthWriteRequests(requests).filter((request) => request.path !== pluginCatalogPath),
-    [],
-    "navigation must not save the local draft",
-  );
+  assert.deepEqual(nonAuthWriteRequests(requests), [], "navigation must not save the local draft");
   // A retained draft revalidates the Preset read on return; saving never reads it again.
   const presetPath = `/namespaces/${namespace.id}/presets/${preset.id}`;
   const presetReads = pathRequests(requests, "GET", presetPath).length;
@@ -2379,7 +2532,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   }
   assert.deepEqual(created.plugins, plugins);
   assert.equal(created.backendId, backendFixtures[0]!.id);
-  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: secret.ref });
+  assert.deepEqual(created.harnessAuth, { method: "api_key", source: modelSecret.ref });
   const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
@@ -2393,17 +2546,17 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await page.getByLabel("Service account token Secret").waitFor();
-  assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
-  await waitForInputValue(page.getByLabel("Service account token Secret"), secret.name);
+  await page.getByLabel("API key Secret").waitFor();
+  assert.equal(await page.getByLabel("Authentication source").inputValue(), "api_key");
+  await waitForInputValue(page.getByLabel("API key Secret"), modelSecret.name);
   const patched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.id}`) && response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.deepEqual((await (await patched).json()).data.harnessAuth, {
-    method: "codex_pat",
-    source: secret.ref,
+    method: "api_key",
+    source: modelSecret.ref,
   });
 
   // A Preset can supply an explicit model while requiring the operator to select its model Secret.
@@ -2720,7 +2873,9 @@ function humanAllowlistVariable(template: VariablePresetTemplate) {
     password: (gateway.auth as { password: unknown }).password,
   };
   auth.trustedProxy.allowUsers = ["occ-workspace-files", "{{ vars.human }}"];
-  auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read", "operator.write"];
+  Object.assign(auth.trustedProxy, {
+    deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
+  });
   gateway.controlUi = { enabled: true, allowedOrigins: ["http://127.0.0.1:18789"] };
   gateway.auth = auth;
 }
@@ -3309,96 +3464,6 @@ for (const recovery of ["existing", "alternate", "denied existing"] as const) {
   });
 }
 
-test("codex_pat Secret recovery restores authenticated plugin discovery", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("PAT recovery", { ready: true });
-  const existing = await fixture.createSecret(namespace.id, "Recreated Agent", "at-existing");
-  const originalFetch = globalThis.fetch;
-  const discoveryTokens: string[] = [];
-  // Keep real routes and the selected Driver; isolate every external provider request.
-  t.mock.method(globalThis, "fetch", async (...[input, options]: Parameters<typeof fetch>) => {
-    const url = new URL(input instanceof globalThis.Request ? input.url : input);
-    if (["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) {
-      return originalFetch(input, options);
-    }
-    const token = new Headers(options?.headers).get("authorization") ?? "";
-    if (url.hostname === "auth.openai.com") {
-      return Response.json({
-        chatgpt_account_id: "recovery-account",
-        chatgpt_account_is_fedramp: false,
-      });
-    }
-    assert.equal(url.hostname, "chatgpt.com");
-    assert.ok(url.pathname.endsWith("/plugins/list"), url.pathname);
-    discoveryTokens.push(token);
-    return Response.json({ plugins: [], pagination: { next_page_token: null } });
-  });
-  const artifact = structuredClone(standardCodexPreset);
-  artifact.template.agent.harnessAuth = {
-    ...artifact.template.agent.harnessAuth,
-    method: "codex_pat",
-  };
-  const preset = await createPreset(fixture, namespace.id, artifact);
-
-  const { page } = await newPage(t, fixture);
-  await page.route("**/*", (route) => {
-    const url = new URL(route.request().url());
-    return url.origin === fixture.origin ? route.continue() : route.abort();
-  });
-  await routeInstallationWithoutProvisioning(page, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.id);
-  await page.getByLabel("Name", { exact: true }).fill("Recreated Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
-  await page.getByLabel("Model Secret", { exact: true }).fill("at-replacement");
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  const conflict = page.waitForResponse(
-    (response) => response.url().endsWith("/secrets") && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal((await conflict).status(), 409);
-  await page.getByRole("button", { name: "Choose existing Secret", exact: true }).click();
-  const disclosure = page.locator("#plugin-discovery-token > summary");
-  await disclosure.click();
-  const token = page.getByLabel("Token for plugin discovery", { exact: true });
-  assert.equal(await token.inputValue(), "");
-  const discovered = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/agents/plugins") &&
-      response.request().postDataJSON()?.accessToken === "at-discovery",
-  );
-  await token.fill("at-discovery");
-  assert.equal((await discovered).status(), 200);
-  assert.ok(discoveryTokens.includes("Bearer at-discovery"));
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.waitFor();
-  // Done closes the dialog, and its close event fires a task later. Focus that moves to the
-  // Secret field in between must stay there: taking it back closed the field's list while
-  // selectSecret typed (finding 2862).
-  assert.equal(
-    await focusKeptOverClose(
-      dialog.getByRole("button", { name: "Done", exact: true }),
-      page.getByLabel("Service account token Secret", { exact: true }),
-    ),
-    true,
-    "closing the dialog keeps focus on the Secret field",
-  );
-  await selectSecret(page, "Service account token Secret", existing);
-  const created = await createAgentThroughForm(page, fixture, namespace.id);
-  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: existing.ref });
-  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
-  assert.equal(
-    requests.filter(({ method }) => ["DELETE", "PATCH", "PUT"].includes(method)).length,
-    0,
-  );
-});
-
 test("password Secret recovery clears on OAuth and Preset context changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3602,14 +3667,8 @@ for (const failure of ["denied", "uncertain", "generic conflict"] as const) {
 }
 
 test("method-only codex_pat Preset requires credential entry in the create form", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await createTokenServiceConsoleFixture(t);
   const namespace = await fixture.createNamespace("Method-only preset", { ready: true });
-  const modelSecret = await fixture.createSecret(
-    namespace.id,
-    "Existing service account token",
-    "hidden-existing-token",
-  );
   const artifact = structuredClone(standardCodexPreset);
   artifact.name = "method-only-codex-pat";
   delete artifact.template.variables.modelSecret;
@@ -3625,7 +3684,7 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await page.getByLabel("Model", { exact: true }).fill("gpt-6-astra");
   assert.equal(await page.getByLabel("Model Secret", { exact: true }).count(), 0);
   await page.getByRole("button", { name: "Use Preset" }).click();
-  const credential = page.getByLabel("Service account token Secret", { exact: true });
+  const credential = page.getByLabel("Service account token", { exact: true });
   await credential.waitFor();
   assert.equal(await credential.inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
@@ -3645,10 +3704,7 @@ test("method-only codex_pat Preset requires credential entry in the create form"
     "codex_pat",
   );
   assert.equal(await page.getByLabel("Model Secret", { exact: true }).count(), 0);
-  assert.equal(
-    await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
-    "",
-  );
+  assert.equal(await page.getByLabel("Service account token", { exact: true }).inputValue(), "");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal(
     await credential.evaluate((input: HTMLInputElement) => input.validity.valueMissing),
@@ -3656,27 +3712,30 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   );
   assert.equal(nonAuthWriteRequests(requests).length, 0);
 
-  await selectSecret(page, "Service account token Secret", modelSecret);
-  assert.equal(await credential.inputValue(), secretOptionLabel(modelSecret));
-  assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
-  await page.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
-  assert.equal(await page.getByLabel("API key Secret", { exact: true }).inputValue(), "");
-  await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await selectSecret(page, "Service account token Secret", modelSecret);
-  await page.getByLabel("Model ID", { exact: true }).fill("gpt-6-astra");
+  const modelToken = "at-method-only-preset-fixture";
+  await credential.fill(modelToken);
+  const enrolled = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/credential-sources") && response.request().method() === "POST",
+  );
   const created = await createAgentThroughForm(page, fixture, namespace.id);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const secretWrites = secretPostRequests(requests, namespace.id);
-  assert.equal(secretWrites.length, 0);
+  const sourceResponse = await enrolled;
+  assert.equal(sourceResponse.status(), 201);
+  const { data: source } = await sourceResponse.json();
+  assert.equal(source.type, "static");
+  assert.deepEqual(source.config, { provider_preset: "codex-pat" });
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
   const agentWrites = agentPostRequests(requests, namespace.id);
   assert.equal(agentWrites.length, 1);
   const body = agentWrites[0]?.body;
-  assert.ok(typeof body === "object" && body !== null && "harnessAuth" in body);
-  assert.deepEqual(body.harnessAuth, {
-    method: "codex_pat",
-    source: modelSecret.ref,
-  } satisfies CreateAgentBody["harnessAuth"]);
-  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
+  assert.ok(isRecord(body));
+  const harnessAuth = { method: "credential_source", sourceId: source.id } as const;
+  assert.deepEqual(body.harnessAuth, harnessAuth);
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  assert.deepEqual(created.credentialSources, [{ sourceId: source.id }]);
+  assert.equal(JSON.stringify(body).includes(modelToken), false);
+  assert.equal(JSON.stringify(await consoleStorage(page)).includes(modelToken), false);
 });
 
 test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Agent conflict", async (t) => {
@@ -3731,17 +3790,18 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
     await route.continue();
   });
   const save = page.getByRole("button", { name: "Create Agent", exact: true });
+  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
+  const catalogRequestsBeforeSubmit = pathRequests(requests, "POST", catalogPath).length;
   const conflict = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
       response.request().method() === "POST",
   );
   await save.click();
-  await submitStarted.promise;
+  await within(submitStarted.promise, "the held create request");
   // A prefetch due during submission must resume after the real duplicate-name rejection.
   await page.clock.runFor(300);
-  const catalogPath = `/namespaces/${namespace.id}/agents/plugins`;
-  assert.equal(pathRequests(requests, "POST", catalogPath).length, 0);
+  assert.equal(pathRequests(requests, "POST", catalogPath).length, catalogRequestsBeforeSubmit);
   submitRelease.resolve();
   assert.equal((await conflict).status(), 409);
   await page.getByText(AGENT_NAME_CONFLICT).waitFor();
@@ -4056,7 +4116,7 @@ test("a default shortcut restored after a pending Preset read keeps its form", a
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-  await observed;
+  await within(observed, "the held starter Preset read");
   await page.getByRole("link", { name: "← Agents" }).click();
   releaseRead();
   await page.unroute(presetPath);
@@ -4561,12 +4621,11 @@ test("The console requires a readable installed default for quick-start and stil
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
 });
 
-test("Preset with a managed PAT account creates a draft without a Secret grant", async (t) => {
+test("A legacy ServiceAccount Preset must select the issued Credential Source before creating an Agent", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Managed account Preset", { ready: true });
-  // Account issuance is outside this browser test. Association before issuance is
-  // supported; this proves Preset rendering and draft creation, not deployment.
+  // An existing Preset still renders its old binding, but draft creation refuses it.
   const account = await fixture.controller.transact((state: PlatformUnitOfWork) =>
     state.serviceAccounts.createServiceAccount({
       id: `sa_${crypto.randomUUID()}`,
@@ -4590,9 +4649,9 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   await page.getByLabel("Name", { exact: true }).fill("Managed PAT Preset Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
-  const created = await createAgentThroughForm(page, fixture, namespace.id);
-  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  assert.deepEqual(created.harnessAuth, harnessAuth);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText(/Bind the issued ServiceAccount's Credential Source instead/).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents/new");
   assert.equal(
     requests.some(
       (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),

@@ -7,11 +7,21 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type {
   DeployAgentAuthorization,
+  HarnessResolver,
   OpenClawController,
   RemovedAccessBinding,
   PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
+
+/** Identity and audit fields shared by contract routes and manually registered routes. */
+export interface RequestOperation extends Pick<
+  OccApiRoute,
+  "method" | "iamAction" | "resourceKind" | "authorizationTarget"
+> {
+  readonly operationId: string;
+  readonly action: string;
+}
 
 export interface RequestContext {
   readonly actorId: string;
@@ -19,17 +29,20 @@ export interface RequestContext {
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;
-  readonly operation: OccApiRoute;
+  readonly operation: RequestOperation;
 }
 
 export type ResourceHandler = (input: {
   readonly controller: OpenClawController;
+  readonly resolveHarness: HarnessResolver;
   readonly context: RequestContext;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;
   readonly params: Record<string, string>;
   readonly body: Record<string, unknown> | undefined;
   readonly namespaceId: string;
+  /** Supply the identity of a resource after an authorized lookup. */
+  readonly setAuditReadTarget: (resource: ResourceRef) => void;
   // Whether the caller may take `action` on `resource` now. Nothing is audited: advisory answers
   // only, which the operation's own authorization still decides.
   readonly callerMay: (action: PermissionAction, resource: ResourceRef) => Promise<boolean>;

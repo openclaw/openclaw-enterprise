@@ -55,6 +55,19 @@ function github(endpoint: string, paginated = false, fields: Record<string, stri
   return value.flat();
 }
 
+type ContributorCorrection = {
+  include: boolean;
+  exclude: boolean;
+  aliasOf: string | undefined;
+  displayName: string | undefined;
+};
+
+type Contributor = {
+  id: string;
+  login: string;
+  display: string;
+};
+
 function readCorrections() {
   let corrections: unknown;
   try {
@@ -66,15 +79,7 @@ function readCorrections() {
     isRecord(corrections),
     "contributors.json must be an object keyed by numeric GitHub account ID.",
   );
-  const validated = new Map<
-    string,
-    {
-      include: boolean;
-      exclude: boolean;
-      aliasOf: string | undefined;
-      displayName: string | undefined;
-    }
-  >();
+  const validated = new Map<string, ContributorCorrection>();
   for (const [id, correction] of Object.entries(corrections)) {
     assert.ok(
       /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)),
@@ -174,39 +179,17 @@ function escapeAttribute(value: string) {
   });
 }
 
-function updateContributors() {
-  assert.equal(process.argv.length, 2, "Usage: node scripts/update-contributors.ts");
-  const readme = readFileSync(readmePath, "utf8");
-  assert.ok(
-    readme.split(startMarker).length === 2 && readme.split(endMarker).length === 2,
-    "README must contain exactly one contributors:start / contributors:end marker pair.",
-  );
-  const start = readme.indexOf(startMarker) + startMarker.length;
-  const end = readme.indexOf(endMarker);
-  assert.ok(start <= end, "README contributor markers are out of order.");
-  const corrections = readCorrections();
-  const metadata = github(`repos/${repository}`);
-  assert.ok(
-    isRecord(metadata) &&
-      metadata.full_name === repository &&
-      typeof metadata.default_branch === "string",
-    "GitHub returned an unexpected repository identity or default branch.",
-  );
-  const branchEndpoint = `repos/${repository}/commits/${encodeURIComponent(metadata.default_branch)}`;
-  const branch = github(branchEndpoint);
-  assert.ok(
-    isRecord(branch) && typeof branch.sha === "string",
-    "GitHub returned an invalid default-branch SHA.",
-  );
-  const baseline = branch.sha;
-  assert.match(baseline, /^[0-9a-f]{40}$/, "GitHub returned an invalid default-branch SHA.");
+function discoverContributorIds(
+  defaultBranch: string,
+  corrections: ReadonlyMap<string, ContributorCorrection>,
+) {
   const ids = new Set<string>();
   for (const user of github(`repos/${repository}/contributors?per_page=100`, true)) {
     ids.add(accountId(user));
   }
   // Fetch only author IDs; full REST PR records exceed the collection limit.
   const pages = github("graphql", true, {
-    base: metadata.default_branch,
+    base: defaultBranch,
     query: `query($endCursor: String, $base: String!) {
       repository(owner: "openclaw", name: "openclaw-enterprise") {
         pullRequests(first: 100, after: $endCursor, states: MERGED, baseRefName: $base) {
@@ -252,19 +235,14 @@ function updateContributors() {
       `Display override ${id} has no contributor; use include with evidence if appropriate.`,
     );
   }
+  return ids;
+}
 
-  // API omissions must not silently erase previously published recognition.
-  for (const match of readme
-    .slice(start, end)
-    .matchAll(/avatars\.githubusercontent\.com\/u\/(\d+)\?/g)) {
-    const id = match[1];
-    assert.ok(id);
-    assert.ok(
-      ids.has(id) || corrections.get(id)?.exclude,
-      `Previously credited account ${id} is missing. Retry later or add an explicit inclusion/exclusion with evidence.`,
-    );
-  }
-  const people = [];
+function resolveContributors(
+  ids: ReadonlySet<string>,
+  corrections: ReadonlyMap<string, ContributorCorrection>,
+) {
+  const people: Contributor[] = [];
   for (const id of ids) {
     if (corrections.get(id)?.exclude || corrections.get(id)?.aliasOf) {
       continue;
@@ -291,6 +269,10 @@ function updateContributors() {
     people.push({ id, login: user.login, display: corrections.get(id)?.displayName ?? user.login });
   }
   assert.ok(people.length > 0, "No human contributors found; refusing to empty the README wall.");
+  return people;
+}
+
+function renderContributorRows(people: Contributor[]) {
   people.sort((left, right) => {
     const a = left.login.toLowerCase();
     const b = right.login.toLowerCase();
@@ -310,6 +292,66 @@ function updateContributors() {
         .join(" "),
     );
   }
+  return rows;
+}
+
+function updateContributors() {
+  const args = process.argv.slice(2);
+  assert.ok(
+    args.length === 0 ||
+      (args.length === 2 &&
+        args[0] === "--expected-base" &&
+        typeof args[1] === "string" &&
+        /^[0-9a-f]{40}$/.test(args[1])),
+    "Usage: node scripts/update-contributors.ts [--expected-base SHA]",
+  );
+  const expectedBase = args[1];
+  const readme = readFileSync(readmePath, "utf8");
+  assert.ok(
+    readme.split(startMarker).length === 2 && readme.split(endMarker).length === 2,
+    "README must contain exactly one contributors:start / contributors:end marker pair.",
+  );
+  const start = readme.indexOf(startMarker) + startMarker.length;
+  const end = readme.indexOf(endMarker);
+  assert.ok(start <= end, "README contributor markers are out of order.");
+  const corrections = readCorrections();
+  const metadata = github(`repos/${repository}`);
+  assert.ok(
+    isRecord(metadata) &&
+      metadata.full_name === repository &&
+      typeof metadata.default_branch === "string",
+    "GitHub returned an unexpected repository identity or default branch.",
+  );
+  const branchEndpoint = `repos/${repository}/commits/${encodeURIComponent(metadata.default_branch)}`;
+  const branch = github(branchEndpoint);
+  assert.ok(
+    isRecord(branch) && typeof branch.sha === "string",
+    "GitHub returned an invalid default-branch SHA.",
+  );
+  const baseline = branch.sha;
+  assert.match(baseline, /^[0-9a-f]{40}$/, "GitHub returned an invalid default-branch SHA.");
+  if (expectedBase !== undefined) {
+    assert.equal(
+      baseline,
+      expectedBase,
+      "Default branch does not match the expected base; start a fresh run. README unchanged.",
+    );
+  }
+  const ids = discoverContributorIds(metadata.default_branch, corrections);
+
+  // API omissions must not silently erase previously published recognition.
+  for (const match of readme
+    .slice(start, end)
+    .matchAll(/avatars\.githubusercontent\.com\/u\/(\d+)\?/g)) {
+    const id = match[1];
+    assert.ok(id);
+    assert.ok(
+      ids.has(id) || corrections.get(id)?.exclude,
+      `Previously credited account ${id} is missing. Retry later or add an explicit inclusion/exclusion with evidence.`,
+    );
+  }
+  const people = resolveContributors(ids, corrections);
+  const rows = renderContributorRows(people);
   const finalBranch = github(branchEndpoint);
   assert.ok(isRecord(finalBranch), "Default branch changed during collection; retry.");
   assert.equal(finalBranch.sha, baseline, "Default branch changed during collection; retry.");

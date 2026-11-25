@@ -10,7 +10,7 @@ Publish the first controller and combined gateway/Agent runtime images through
 the existing protected GitHub Actions release workflow. Add a separate, manually
 approved workflow that bootstraps GHCR packages with harmless marker images;
 keep Enterprise source publication restricted to verified private packages.
-The current [publisher](../../scripts/ci/container-release.mjs) requires packages
+The current [publisher](https://github.com/openclaw/openclaw-enterprise/blob/91ac04d6919860b7d7386444468a3dc0ddc90481/scripts/ci/container-release.mjs) requires packages
 to exist before transferring source-bearing images, so it cannot initialize them.
 
 The initial release uses immutable `sha-<full-source-sha>` tags and digest

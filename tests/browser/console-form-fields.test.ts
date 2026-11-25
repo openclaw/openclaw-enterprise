@@ -343,6 +343,10 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const acknowledge = panel.getByRole("checkbox");
   const share = panel.getByRole("button", { name: "Share Agent", exact: true });
   await panel.locator("#share-principal-id:enabled").waitFor();
+  assert.match(
+    (await accessible(page, acknowledge)).name,
+    /full native administration of this Agent.*Removing the Agent grant leaves the Namespace discovery grant in place/,
+  );
   await share.click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
   assert.equal(await focusedId(page), "share-principal-id");
@@ -381,6 +385,7 @@ test("choosing a model credential Secret by click clears its required error", as
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await waitForCreateFormReads(page);
   await page.getByLabel("Agent name", { exact: true }).fill("Picker Agent");
+  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   const picker = page.getByLabel("API key Secret", { exact: true });
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
@@ -512,6 +517,7 @@ for (const viewport of consoleViewports) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await waitForCreateFormReads(page);
     await page.getByLabel("Agent name", { exact: true }).fill("Picker Label Agent");
+    await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
     // A valid picker still opens on focus alone, as Tab gives it (#2922; finding 2076).
     const apiKey = page.getByLabel("API key Secret", { exact: true });
     await apiKey.focus();

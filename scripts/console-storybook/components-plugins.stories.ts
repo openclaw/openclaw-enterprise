@@ -20,18 +20,3 @@ export const Unavailable = story("pluginsUnavailable");
 export const CapabilitiesUnavailable = story("pluginsCapabilitiesUnavailable");
 export const NativeLimited = story("pluginsNativeLimited");
 export const ManagedGoogleInstall = story("managedGoogleInstall");
-
-export const ChooseConnectionTemplate = story("pluginConnectChoose");
-export const ExistingPluginAccount = story("pluginConnectBound");
-export const NoCompatibleTemplate = story("pluginConnectEmpty");
-export const TemplateNeedsOAuthClient = story("pluginConnectNoClient");
-export const ConnectionPermissionDenied = story("pluginConnectDenied");
-export const ConnectionTemplatesLoading = story("pluginConnectLoading");
-export const TemplateChangedBeforeConsent = story("pluginConnectTemplateChanged");
-
-export const NamedSlotAccounts = story("namedSlotAccounts");
-export const AgentDiscoveryOnly = story("agentDiscoveryOnly");
-export const BoundAndDiscoveryOnlyTools = story("boundAndDiscoveryOnlyTools");
-export const AuthorizeForAnotherServer = story("namedSlotAuthorize");
-
-export const UnrestrictedConnectionScopes = story("unrestrictedSlotScopes");

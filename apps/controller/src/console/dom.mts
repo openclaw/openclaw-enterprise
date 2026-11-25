@@ -259,7 +259,8 @@ export function jsonObjectProblem(text: string): string | undefined {
 
 type JsonObjectDiagnostic =
   | { kind: "valid"; value: Record<string, unknown> }
-  | { kind: "invalid-json" | "number-range"; message: string };
+  | { kind: "invalid-json"; message: string; offset?: number }
+  | { kind: "number-range"; message: string };
 
 // Model controls distinguish a number-range refusal from existing syntax/shape failures.
 export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
@@ -290,6 +291,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
     if (offset === 0 && fix) {
       return {
         kind: "invalid-json",
+        offset,
         message: `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`,
       };
     }
@@ -297,6 +299,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
     return {
       kind: "invalid-json",
+      offset,
       message: fix
         ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
         : `Invalid JSON at ${where}. Enter a valid JSON object.`,

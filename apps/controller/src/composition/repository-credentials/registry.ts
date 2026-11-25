@@ -4,14 +4,15 @@ import { isAbsolute, resolve } from "node:path";
 import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
-import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
+import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/access/registry.ts";
 import { readPublicFile } from "./public-file.ts";
 
 /** ConfigMap projections may use symlinks; one opened regular file supplies the snapshot. */
 export async function loadGitHubRepositoryRegistry(
   path: string,
   expectedBackendId: string,
+  options: { readonly allowNameOnlyNativeRepositories?: boolean } = {},
 ): Promise<GitHubRepositoryRegistry> {
   if (!isAbsolute(path) || resolve(path) !== path) {
     throw new Error("invalid-repository-registry");
@@ -24,7 +25,11 @@ export async function loadGitHubRepositoryRegistry(
       GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
       "invalid-repository-registry",
     );
-    return validateGitHubRepositoryRegistry(JSON.parse(bytes.toString("utf8")), expectedBackendId);
+    return validateGitHubRepositoryRegistry(
+      JSON.parse(bytes.toString("utf8")),
+      expectedBackendId,
+      options,
+    );
   } catch {
     throw new Error("invalid-repository-registry");
   } finally {

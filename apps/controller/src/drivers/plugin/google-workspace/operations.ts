@@ -2,10 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { normalizeConnectionDestinations } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
-import type {
-  ConnectionEndpoint,
-  CredentialSourceAttachment,
-} from "@openclaw-enterprise/contracts";
+import type { CredentialSourceAttachment } from "@openclaw-enterprise/contracts";
 
 export type GoogleRequestScope = NonNullable<CredentialSourceAttachment["requestScope"]>;
 
@@ -118,20 +115,16 @@ for (const reserved of googleCatalog.reservedRoutes) {
   addRoute(compileRoute(reserved));
 }
 
-function routeMatches(route: Route, path: string): boolean {
-  const match = route.regex.exec(path);
-  return (
-    match !== null &&
-    route.captures.every((constraint, i) => !constraint || constraint.test(match[i + 1]!))
-  );
-}
-
 /** Prefer literal Google methods over parameterized routes, even when the literal is unavailable. */
 export function googleRouteCandidates(origin: string, method: string, path: string) {
   const found: Route[] = [];
   const literal: Route[] = [];
   for (const route of routes.get(origin + " " + method) ?? []) {
-    if (!routeMatches(route, path)) {
+    const matched = route.regex.exec(path);
+    if (
+      !matched ||
+      route.captures.some((constraint, i) => constraint && !constraint.test(matched[i + 1]!))
+    ) {
       continue;
     }
     if (route.captures.length === 0) {
@@ -153,45 +146,6 @@ export function googleSourcePathMatches(pattern: string, path: string) {
   }
   const prefix = pattern.slice(0, -3);
   return path === prefix || path.startsWith(prefix + "/");
-}
-
-/** At least one reviewed operation must fall within the template's HTTPS destination. */
-export function isGoogleWorkspaceRecipient(destination: ConnectionEndpoint): boolean {
-  const { host, path, port } = destination;
-  if (
-    port !== 443 ||
-    (path !== "/**" && !/^\/[A-Za-z0-9/._~-]*(?:\/\*\*)?$/.test(path)) ||
-    path.split("/").some((segment) => segment === "." || segment === "..")
-  ) {
-    return false;
-  }
-  const origin = "https://" + host;
-  const operations = Object.values(googleCatalog.operations).filter((op) => op.origin === origin);
-  if (!path.endsWith("/**")) {
-    const methods = new Set(operations.map((op) => op.method));
-    for (const method of methods) {
-      if (
-        googleRouteCandidates(origin, method, path).some((route) => route.id && route.supported)
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-  const prefix = path.slice(0, -3);
-  const count = prefix.split("/").length;
-  return operations.some((op) => {
-    if (googleSourcePathMatches(path, op.path)) {
-      return true;
-    }
-    // A narrower subtree can include a path parameter, e.g. /users/me/messages/**.
-    const segments = op.path.split("/");
-    if (count > segments.length) {
-      return false;
-    }
-    const route = compileRoute({ ...op, path: segments.slice(0, count).join("/") });
-    return route.supported && routeMatches(route, prefix);
-  });
 }
 
 export function eligibleGoogleOperations(scope: GoogleRequestScope) {
@@ -245,30 +199,15 @@ export function googleRequestScope(input: unknown): GoogleRequestScope | undefin
   return { host: value.host, port: value.port, path: value.path, scopes: value.scopes };
 }
 
-/** gog lists the public directory and fetches an API description before a dynamic call.
- * The service-hosted fallback applies only to service/version pairs in this source's map.
- * Never offer a public request that the source's provider would credential. */
-export function googleDiscoveryRequests(
-  scope: GoogleRequestScope,
-  entries = eligibleGoogleOperations(scope),
-  omitProviderCredentialedPaths = true,
-) {
-  return publicGoogleDiscoveryRequests(entries.map(([id]) => id)).filter(
-    ({ host, path }) =>
-      !omitProviderCredentialedPaths ||
-      host !== scope.host ||
-      !googleSourcePathMatches(scope.path, path),
-  );
-}
-
-export function publicGoogleDiscoveryRequests(operationIds: readonly string[]) {
+/** The service-hosted fallback applies only to service/version pairs in the reviewed map. */
+export function googleDiscoveryRoutes(entries = Object.entries(googleCatalog.operations)) {
   const root = "www.googleapis.com";
   const directory = "/discovery/v1/apis";
   const publicRequests = [
     { host: root, path: directory, query: "" },
     { host: root, path: directory, query: "preferred=true" },
   ];
-  for (const api of new Set(operationIds.map((id) => id.split("/")[0]!))) {
+  for (const api of new Set(entries.map(([id]) => id.split("/")[0]!))) {
     const [service, version] = api.split(":");
     if (!service || !version) {
       continue;
@@ -279,4 +218,14 @@ export function publicGoogleDiscoveryRequests(operationIds: readonly string[]) {
     );
   }
   return publicRequests;
+}
+
+/** Never offer a public discovery request that the source's provider would credential. */
+export function googleDiscoveryRequests(
+  scope: GoogleRequestScope,
+  entries = eligibleGoogleOperations(scope),
+) {
+  return googleDiscoveryRoutes(entries).filter(
+    ({ host, path }) => host !== scope.host || !googleSourcePathMatches(scope.path, path),
+  );
 }

@@ -1,7 +1,7 @@
 import {
   modelProviderBaseUrl,
+  savedModelProvider,
   requireModelSourceDestination,
-  type ModelProviderConfiguration,
 } from "../compute/model-provider.ts";
 import type {
   CredentialProviderDefinition,
@@ -11,9 +11,9 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
-import { validChatRequest, validResponsesRequest } from "./openai-responses.ts";
+import { validChatRequest, responsesRequestFailure } from "./openai-responses.ts";
 import { protectedResponseOutput, protectedResponsesStream } from "./openai-responses-stream.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../repo/access/json-members.ts";
 
 const maximumResponseBytes = 4 * 1024 * 1024;
 
@@ -143,18 +143,18 @@ function protectedResponse(
   }
 }
 
+/** Exact identity shared with bundled composition's new-use admission policy. */
+export const openAiStaticProviderRef = Object.freeze({
+  id: "openai-static-https",
+  generation: 3,
+});
+
 /** Bounded inference with Harness-local tools and complete finite Responses SSE custody. */
-export function createOpenAiStaticProvider(
-  modelProvider?: ModelProviderConfiguration,
-): CredentialProviderDefinition {
-  modelProvider =
-    modelProvider === undefined
-      ? undefined
-      : Object.freeze({ ...modelProvider, baseUrl: modelProviderBaseUrl(modelProvider) });
+export function createOpenAiStaticProvider(): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
     // Generation 3 separates destination authorization from routing. Existing
     // grants must not be reinterpreted under the shared provider contract.
-    ref: { id: "openai-static-https", generation: 3 },
+    ref: openAiStaticProviderRef,
     schemaVersion: 1,
     sourceType: {
       type: "openai",
@@ -162,8 +162,7 @@ export function createOpenAiStaticProvider(
         {
           name: "authorized_base_url",
           required: false,
-          description:
-            "Immutable destination authorization; must match the Installation model provider.",
+          description: "Immutable destination authorization; must match the revision destination.",
         },
       ],
       secrets: [{ name: "api_key", required: true }],
@@ -180,7 +179,6 @@ export function createOpenAiStaticProvider(
       if (!baseUrl) {
         throw new Error("Unsupported inference source endpoint.");
       }
-      requireModelSourceDestination(config, modelProvider);
       return { authorized_base_url: baseUrl };
     },
     normalizeGrant(models) {
@@ -189,8 +187,10 @@ export function createOpenAiStaticProvider(
       }
       return immutableCopy({ kind: "inference", models, providerTools: "none" as const });
     },
-    routes(source, binding) {
+    routes(source, binding, harnessConfiguration) {
       this.normalizeConfig(source.config);
+      const modelProvider = savedModelProvider(harnessConfiguration);
+      requireModelSourceDestination(source.config, modelProvider);
       const base = new URL(modelProviderBaseUrl(modelProvider));
       return ["responses", "chat/completions"].map((operation) =>
         immutableCopy({
@@ -208,7 +208,7 @@ export function createOpenAiStaticProvider(
         }),
       );
     },
-    classify(route, request) {
+    classify(route, request, refused) {
       let url: URL;
       try {
         url = new URL(request.url);
@@ -238,8 +238,16 @@ export function createOpenAiStaticProvider(
       ) {
         return undefined;
       }
-      const valid = route.path.endsWith("/responses") ? validResponsesRequest : validChatRequest;
-      return valid(body) ? { kind: "inference", action: "generate", model: body.model } : undefined;
+      if (route.path.endsWith("/responses")) {
+        const rule = responsesRequestFailure(body);
+        if (rule !== undefined) {
+          refused?.(rule);
+          return undefined;
+        }
+      } else if (!validChatRequest(body)) {
+        return undefined;
+      }
+      return { kind: "inference", action: "generate", model: body.model };
     },
     inject(value) {
       if (value.length < 8 || value.length > 8192 || /[^\x21-\x7e]/.test(value)) {

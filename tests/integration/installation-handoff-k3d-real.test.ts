@@ -5,17 +5,13 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import {
   createKubernetesClient,
   validateExplicitK3dLoopbackContext,
-} from "../helpers/kubernetes-real.mjs";
-import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.mjs";
-
-type ChartResource = {
-  kind?: string;
-  metadata?: { name?: string; namespace?: string };
-  spec?: { managedBy?: string; suspend?: boolean };
-};
+} from "../helpers/kubernetes-real.ts";
+import { findChartJob } from "../helpers/production-chart-resource.ts";
+import { parseProductionChart, renderProductionChart } from "../helpers/production-chart.ts";
 
 const selection = {
   kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
@@ -124,11 +120,7 @@ test(
 
     async function renderJob(isUpgrade: boolean) {
       const { stdout } = await renderProductionChart({}, { namespace, isUpgrade, release });
-      const resources: ChartResource[] = await parseProductionChart(stdout);
-      const job = resources.find(
-        (resource) => resource.kind === "Job" && resource.metadata?.name === name,
-      );
-      assert.ok(job?.metadata && job.spec);
+      const job = findChartJob(await parseProductionChart(stdout), name);
       job.metadata.namespace = namespace;
       return { manifest: job, spec: job.spec };
     }
@@ -273,19 +265,28 @@ test(
         { name: "addons.k3s.cattle.io", version: "v1" },
       ],
     };
+    type Plan = typeof config & { serviceDependency?: unknown };
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
       status: string;
+      summary?: string;
       limits?: { resource: string; status: string }[];
       stale?: string[];
       missing?: string[];
+      resources?: {
+        kind: string;
+        namespace: string;
+        name: string;
+        uid: string;
+        resourceVersion: string;
+      }[];
     };
-    async function diagnose(plan = config, sensitiveValue?: string) {
+    async function diagnose(plan: Plan = config, sensitiveValue?: string) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
-        ["scripts/diagnose-kubernetes-prerequisites.mjs", "--config", configPath, "--json"],
+        ["scripts/diagnose-kubernetes-prerequisites.ts", "--config", configPath, "--json"],
         { encoding: "utf8", timeout: 100_000 },
       );
       assert.equal(result.error, undefined);
@@ -319,6 +320,7 @@ test(
     assert.equal(initial.checks.get("controller:kube-system/coredns")?.status, "passed");
     assert.equal(initial.checks.get("crd:addons.k3s.cattle.io")?.status, "passed");
     assert.equal(initial.checks.get("crd:missing.example.test")?.status, "failed");
+    assert.equal(initial.checks.has("service-egress"), false);
     assert.equal(initial.status, 1);
 
     // ResourceQuota's own controller supplies usage. One slot remains, but the candidate needs two
@@ -354,12 +356,122 @@ test(
     const fits = await diagnose({ ...config, peakAdditional: { jobs: 1, replicaSets: 1 } });
     assert.equal(fits.checks.get("resource-quotas")?.status, "passed");
 
+    // The Service observes a live allocated address and a named target port.
+    // The two policy grants cover the Service and its translated destination independently.
+    const serviceName = "middleware";
+    // A NetworkPolicy name can exceed the 63-character Service name limit.
+    const policyName = "middleware-egress".padEnd(64, "s");
+    const servicePort = 9443;
+    const targetPort = "https";
+    const labels = { app: serviceName };
+    const applyService = (name: string, spec: object) =>
+      applyManifest(
+        JSON.stringify({ apiVersion: "v1", kind: "Service", metadata: { name, namespace }, spec }),
+      );
+    await applyService(serviceName, {
+      selector: labels,
+      ports: [{ port: servicePort, targetPort }],
+    });
+    const cidr = `${(await resource("service", serviceName)).spec.clusterIP}/32`;
+    const namespaceSelector = { matchLabels: { "kubernetes.io/metadata.name": namespace } };
+    const podSelector = { matchLabels: labels };
+    const setPolicy = (
+      address: string,
+      peers: { namespaceSelector?: typeof namespaceSelector; podSelector?: typeof podSelector }[],
+    ) =>
+      applyManifest(
+        JSON.stringify({
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: { name: policyName, namespace },
+          spec: {
+            podSelector: { matchLabels: { app: "observer" } },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [{ ipBlock: { cidr: address } }],
+                ports: [{ protocol: "TCP", port: servicePort }],
+              },
+              { to: peers, ports: [{ protocol: "TCP", port: targetPort }] },
+            ],
+          },
+        }),
+      );
+    await setPolicy("192.0.2.1/32", [{ namespaceSelector, podSelector }]);
+
+    async function readVersion(kind: string, name: string) {
+      const { uid, resourceVersion } = (await resource(kind.toLowerCase(), name)).metadata;
+      assert.ok(uid && resourceVersion);
+      return { kind, namespace, name, uid, resourceVersion };
+    }
+    const readVersions = () =>
+      Promise.all([readVersion("Service", serviceName), readVersion("NetworkPolicy", policyName)]);
+    const dependency = {
+      service: { namespace, name: serviceName, port: servicePort },
+      policy: { namespace, name: policyName },
+    };
+    const dependencyPlan = { ...config, serviceDependency: dependency };
+    async function checkDependency() {
+      const versions = await readVersions();
+      const result = await diagnose(dependencyPlan);
+      assert.deepEqual(
+        await readVersions(),
+        versions,
+        "the diagnostic must leave all selected objects unchanged",
+      );
+      const egress = result.checks.get("service-egress");
+      assert.deepEqual(egress?.resources, versions);
+      return egress;
+    }
+    const stale = await checkDependency();
+    assert.equal(stale?.status, "failed");
+    assert.deepEqual(stale?.missing, [`${cidr} TCP/${servicePort}`]);
+
+    // Split selectors create two broad peers and do not establish the combined edge.
+    await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
+    const split = await checkDependency();
+    assert.equal(split?.status, "failed");
+    assert.deepEqual(split?.missing, [`${namespace} Service-selected Pods TCP/${targetPort}`]);
+
+    await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
+    assert.equal((await checkDependency())?.status, "passed");
+
+    // ExternalName is a DNS alias in both API shapes. A declared port cannot
+    // supply the ClusterIP and Pod edges that the check requires.
+    for (const hasPort of [false, true]) {
+      const name = hasPort ? "alias-with-port" : "alias-without-port";
+      await applyService(name, {
+        type: "ExternalName",
+        externalName: "middleware.example.test",
+        ports: hasPort ? [{ port: servicePort }] : undefined,
+      });
+      const observed = await resource("service", name);
+      assert.equal(observed.spec.ports?.[0]?.port, hasPort ? servicePort : undefined);
+      const alias = await diagnose({
+        ...config,
+        serviceDependency: { ...dependency, service: { ...dependency.service, name } },
+      });
+      const egress = alias.checks.get("service-egress");
+      assert.equal(egress?.status, "failed", name);
+      assert.match(egress?.summary ?? "", /ExternalName/u);
+      assert.deepEqual(egress?.resources, [
+        {
+          kind: "Service",
+          namespace,
+          name,
+          uid: observed.metadata.uid,
+          resourceVersion: observed.metadata.resourceVersion,
+        },
+      ]);
+    }
+
     // The same real API refuses this identity. A refusal is incomplete evidence,
     // not a negative readiness observation; credentials must never enter output.
     await kubectl("-n", namespace, "create", "serviceaccount", "reader");
     const token = String(
       await kubectl("-n", namespace, "create", "token", "reader", "--duration=10m"),
     ).trim();
+    assert.ok(token, "the denied reader needs a credential to exercise authorization");
     const clusters = JSON.parse(
       String(
         await kubectl(
@@ -386,7 +498,7 @@ test(
       { mode: 0o600 },
     );
     const denied = await diagnose(
-      { ...config, kubeconfig: deniedConfig, context: "reader" },
+      { ...dependencyPlan, kubeconfig: deniedConfig, context: "reader" },
       token,
     );
     for (const id of [
@@ -394,10 +506,48 @@ test(
       "api-addresses",
       "gateway-class",
       `controller:${namespace}/observer`,
+      "service-egress",
     ]) {
       assert.equal(denied.checks.get(id)?.status, "unknown", id);
     }
     assert.equal(denied.status, 2);
+
+    const missingService = "missing-middleware";
+    const role = "missing-service-reader";
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "role",
+      role,
+      "--verb=get",
+      "--resource=services",
+      `--resource-name=${missingService}`,
+    );
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "rolebinding",
+      role,
+      `--role=${role}`,
+      `--serviceaccount=${namespace}:reader`,
+    );
+    const missing = await diagnose(
+      {
+        ...config,
+        kubeconfig: deniedConfig,
+        context: "reader",
+        serviceDependency: {
+          service: { ...dependency.service, name: missingService },
+          policy: dependency.policy,
+        },
+      },
+      token,
+    );
+    assert.equal(missing.checks.get("service-egress")?.status, "failed");
+    assert.match(missing.checks.get("service-egress")?.summary ?? "", /Service does not exist/u);
+    assert.equal(missing.status, 1);
   },
 );
 
@@ -414,17 +564,20 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   await kubectl("create", "namespace", namespace);
   t.after(() => kubectl("delete", "namespace", namespace, "--wait=false"));
   const values = join(dir, "values.json");
-  // Missing input Secrets/PVC keep the genuine chart Job pending. This proves
-  // Helm dispatch and handoff, without claiming database initialization ran.
+  // Missing input Secrets keep the genuine chart Job pending. Select existing
+  // credentials below so neither install generates inputs or creates a Secret.
+  // This proves Helm dispatch and handoff, not database initialization.
   await writeFile(
     values,
     JSON.stringify({
       gatewayRouting: { enabled: false },
+      channelEgress: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
+      agentNativeAdmin: { domain: "agents.example.invalid" },
       bootstrap: {
         adminEmail: "admin@example.invalid",
-        password: { claimName: "absent-bootstrap" },
+        credentials: { secretName: "absent-bootstrap" },
       },
       api: { clients: [{ namespace: "operator-tools", podLabels: { app: "operator" } }] },
       database: { cidrs: ["10.45.0.12/32"] },
@@ -445,6 +598,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
   const args = [
     "installation",
     "install",
+    "--bootstrap-credentials=existing",
     ...target,
     "--chart",
     "deploy/helm/openclaw-enterprise",
@@ -483,10 +637,15 @@ test("first install retains exact attempt evidence after a lost client", { skip 
       resolve(code);
     }),
   );
-  let job: Awaited<ReturnType<typeof resource>> | undefined;
+  const jobMetadata = async (jobName: string) => {
+    const metadata = asRecord(asRecord(await resource("job", jobName, namespace))?.metadata);
+    assert.ok(typeof metadata?.uid === "string" && metadata.uid, "expected the Job UID");
+    return metadata;
+  };
+  let job: Awaited<ReturnType<typeof jobMetadata>> | undefined;
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
-      job = await resource("job", name, namespace);
+      job = await jobMetadata(name);
       break;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -504,11 +663,11 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     }
   }
   const captured = JSON.parse(await readFile(join(receipt, "job.json"), "utf8"));
-  assert.equal(captured.uid, job.metadata.uid);
+  assert.equal(captured.uid, job.uid);
   terminate();
   await exited;
   const intent = JSON.parse(await readFile(join(receipt, "intent.json"), "utf8"));
-  assert.equal(job.metadata.annotations["openclaw.dev/installation-attempt"], intent.attempt);
+  assert.equal(asRecord(job.annotations)?.["openclaw.dev/installation-attempt"], intent.attempt);
   assert.match(intent.attempt, /^[a-f0-9]{64}$/);
   assert.equal((await stat(receipt)).mode & 0o777, 0o700);
   assert.equal((await stat(join(receipt, "intent.json"))).mode & 0o777, 0o600);
@@ -525,11 +684,11 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     before,
     "read-only handoff does not rewrite the receipt",
   );
-  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+  assert.equal((await jobMetadata(name)).uid, job.uid);
   const retry = spawnSync(occ, args, { encoding: "utf8" });
   assert.equal(retry.status, 1);
   assert.match(retry.stderr, /not confirmed unused|never reuse/);
-  assert.equal((await resource("job", name, namespace)).metadata.uid, job.metadata.uid);
+  assert.equal((await jobMetadata(name)).uid, job.uid);
 
   // A normally returned timeout persists both its separate Helm result and
   // the actual Job UID. Failure still cannot authorize a second install.
@@ -547,10 +706,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     outcome: "failed",
   });
   const returnedJob = JSON.parse(await readFile(join(returnedReceipt, "job.json"), "utf8"));
-  assert.equal(
-    returnedJob.uid,
-    (await resource("job", "returned-initialization", namespace)).metadata.uid,
-  );
+  assert.equal(returnedJob.uid, (await jobMetadata("returned-initialization")).uid);
 
   // An upgrade must not inherit the first-install marker, even when Helm
   // retains its values. A replacement cannot silently become the original.
@@ -558,11 +714,10 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     { "installation.attemptId": intent.attempt },
     { namespace, release, isUpgrade: true },
   );
-  const replacement = (await parseProductionChart(rendered.stdout)).find(
-    (item: ChartResource) => item.kind === "Job",
-  );
-  assert.ok(replacement);
-  assert.equal(replacement.metadata.annotations["openclaw.dev/installation-attempt"], undefined);
+  const replacement = findChartJob(await parseProductionChart(rendered.stdout));
+  const annotations = asRecord(replacement.metadata.annotations);
+  assert.ok(annotations, "Expected initialization Job annotations");
+  assert.equal(annotations["openclaw.dev/installation-attempt"], undefined);
   replacement.metadata.namespace = namespace;
   replacement.spec.suspend = true;
   await kubectl("-n", namespace, "delete", "job", name);

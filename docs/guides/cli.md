@@ -11,8 +11,10 @@ To deploy through the browser, see [Create and deploy Agents in the console](../
 
 ## Connect to your Installation
 
-For a published OCE version, download the binary matching your machine from
-the [GitHub Releases page](https://github.com/openclaw/openclaw-enterprise/releases).
+Choose the release tag `v<version>` that matches your controller, then download
+the binary for your machine from the public
+[GitHub Releases page](https://github.com/openclaw/openclaw-enterprise/releases).
+You can download the binary and checksum file in a browser without signing in.
 The assets are named `occ-v<version>-<os>-<arch>` for macOS (`darwin`) and Linux,
 on `amd64` or `arm64`. Download `SHA256SUMS` from the same release and compare
 the selected binary's SHA-256 before making it executable. For example, with
@@ -51,8 +53,7 @@ the GitHub CLI:
 
 Ensure `$HOME/.local/bin` is on `PATH`. The example uses `shasum` if available
 and otherwise uses `sha256sum`. The printed CLI version should match the
-selected release. Use the release your controller runs, and upgrade `occ`
-with it: an older `occ` can misread newer API responses, such as paged Agent
+selected release. Upgrade `occ` with the controller: an older `occ` can misread newer API responses, such as paged Agent
 revision lists.
 
 To build from a trusted source checkout instead, run this from its root to
@@ -149,7 +150,9 @@ whom a key was issued for, so start each key's `--name` with the person's name, 
 
 ## Connection and credential boundaries
 
-The key file is the full JSON response from bootstrap or key issuance, not a
+The key file is JSON containing `data.key`, either prepared locally for
+[bootstrap](../reference/authentication/service-api-keys.md#retrieve-the-bootstrap-service-key)
+or saved from key issuance, not a
 file containing only the raw key. Keep it owner-readable; never put the key in
 command arguments, logs, or source control. For HTTPS signed by a private
 certificate authority, set `OCC_CA_BUNDLE` to its PEM bundle. See

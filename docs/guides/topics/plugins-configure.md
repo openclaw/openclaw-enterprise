@@ -13,12 +13,6 @@ whose selections belonged to the Codex Driver.
 
 ## Use the console
 
-On a new dedicated OpenClaw Agent on Kubernetes, open **Configure plugins**, enable the plugin and select a saved account or **Choose a connection template**. **Done** keeps the choice in the draft. **Create Agent** grants access. Leaving the form keeps the account with its owner.
-
-The connection dialog selects the permitted MCP scopes. **Unselect all** clears optional scopes. **Select all** restores them. An unrestricted template also accepts space-separated **Additional scopes**. **Connect account** (new Agent) or **Connect and attach** (saved Agent) opens provider consent in another tab.
-
-If no template is ready, Installation administrators can configure a matching template or choose **Create connection template**. In Credentials, check the Namespace and MCP URL, assign a client and save. Return to the open dialog and select **Refresh templates**.
-
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
@@ -27,13 +21,12 @@ to verify the installation with `gog --version`. To make Google API calls, choos
 **Google account**, save the selection and deploy. The worker receives an
 OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
 
-Each account field names a plugin slot. Choose a saved account that you can read and use in this Namespace, then select **Save plugin selections**. OCC binds the selected account and grants this Agent access. If a plugin declares two slots, you can choose a different account for each one.
-
-The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, then review the permissions before selecting **Connect and attach**. Required MCP scopes are already selected. On a template with no scope limit, you can enter additional scopes or use provider defaults if the server requires none. The provider opens in a separate tab. The Agent editor keeps your draft and confirms the account after rereading the saved plugin slot. If you close the provider tab, select **Check connection** or **Try again**. You can replace an existing binding this way.
-
-If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. You can attach it later. You can use **Load tools** with a saved MCP account. To deploy the saved selection, the Installation needs a [Credential Proxy and OpenShell sender that support saved accounts](../../reference/drivers/credential-proxy.md#saved-oauth-accounts). Clearing a slot keeps the separate [Agent grant](../../reference/connection-templates.md#use-a-saved-account-in-an-agent-plugin).
-
-The Google request guard limits operations at the approved destination. Enable it before deploying a credentialed Google plugin. [Configure the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+The picker lists compatible sources you can read. Select the account directly in
+the plugin. You and the Agent need `operate` on the source to deploy the selection.
+OpenShell requires distinct placeholder names and refuses another credential on
+a host covered by the Google request guard. If the package digest changes,
+select the account again. Clearing the slot or removing
+the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
@@ -72,31 +65,41 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
 OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, choose an authorized account for that slot and the upstream tool names
+Agent, select a credential for that slot and the upstream tool names
 the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls.
+selection for both worker and script calls. See
+[Get started with managed OpenClaw plugins](openclaw-plugins.md) for a complete
+walkthrough.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
-The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
-Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
-`bearer-token` source with the package's MCP host, port, path and placeholder name.
-Reference the saved access token as its `token` Secret and set `protocol: mcp`.
-Attach the source to the Agent draft and grant the operator and Agent service
-principal `credential_source:operate` on it.
+To connect an account from a Connection Template, select TokenService and the
+native OpenShell Credential Proxy. OCC includes the selected Source when it
+saves the Plugin selection. The operator and Agent service principal need
+`credential_source:operate` on the Source.
+
+On an Installation using the Credential Gateway path, configure `/usr/local/bin/node`
+in `toolBinaries`. Register a `bearer-token` Source with the MCP host, port, path,
+placeholder name, and `protocol: mcp`. Reference the saved access token as its
+`token` Secret and attach the Source to the Agent draft.
 [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
 · [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
-Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
-set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
-them when DNS changes. Other ports need the Installation's managed egress policy.
-This setting is separate from model discovery. Worker calls use the Sandbox policy.
+For **Load tools**, verify that the OCE API can resolve and reach the MCP endpoint.
+The chart gives the API unrestricted egress; Agent tool calls still use the Sandbox policy.
 
-In **Configure plugins**, add the plugin, choose the account, and select **Load tools**.
-You can do this on the Create Agent form or on a saved Agent.
-The first load enables all returned tools in the draft. Use **Filter tools** to find
-a tool and turn it off, then save and deploy. **Reload tools** keeps your choices.
-If the server adds a tool later, enable it and deploy to grant the Agent access.
-Turning off every tool disables the worker server.
+Open **Plugins** and add the plugin. Choose a compatible account directly in the
+plugin or use **Connect account** to authorize one from an approved Connection
+Template. Switching accounts clears the plugin's tool inventory, tool selection,
+and per-tool approval overrides. Select **Load tools**, choose the tools to
+enable, and set their approvals again before you save and deploy. Loading tools
+again refreshes the inventory and preserves your selection. An empty selection
+leaves the worker server disabled.
+For an enabled tool, open **Tool policy** and set **Require approval for** to
+**Every action** to require human approval for each native call. Select
+**No additional approval** to run without a prompt. The request names the server and tool;
+it does not show arguments. Save and deploy the new version. A direct
+script using the same credential can call that enabled tool without Gateway approval.
+If the Slack channel is enabled, remove native Slack per-plugin approver overrides before deploying a managed MCP approval policy.
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.

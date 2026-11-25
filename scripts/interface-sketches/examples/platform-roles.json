@@ -1,11 +1,11 @@
 {
-  "title": "00 From a user’s task to a protected request",
+  "title": "From a user’s task to a protected request",
   "width": 1180,
   "height": 450,
   "items": [
     {
       "kind": "text",
-      "text": "00 From a user’s task to a protected request",
+      "text": "From a user’s task to a protected request",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenClaw Enterprise (OCE) runs the Agent and controls how it can use credentials.",
+      "text": "OpenClaw Enterprise (OCE) · selected-repository profile (github-repository)",
       "x": 20,
       "y": 55,
       "size": 16,

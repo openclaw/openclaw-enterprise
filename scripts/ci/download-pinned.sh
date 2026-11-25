@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download one pinned file and verify its SHA-256.
 #
-# Usage: download-pinned.sh <url> <destination> <sha256>
+# Usage: download-pinned.sh <url> <destination> <sha256> [cache-directory] [existing-file] [mode]
 #
 # Every CI tool download goes through this script so transient network
 # failures are retried the same way everywhere. A transient failure is a
@@ -31,14 +31,25 @@
 # retried.
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "Usage: $0 <url> <destination> <sha256>" >&2
+if [[ $# -lt 3 || $# -gt 6 ]]; then
+  echo "Usage: $0 <url> <destination> <sha256> [cache-directory] [existing-file] [mode]" >&2
   exit 64
 fi
 
 url="$1"
 destination="$2"
 expected_sha256="$3"
+cache_directory="${4:-}"
+existing_file="${5:-}"
+requested_mode="${6:-}"
+if [[ -n "${requested_mode}" && ! "${requested_mode}" =~ ^0?[0-7]{3}$ ]]; then
+  echo "Expected an ordinary octal permission mode." >&2
+  exit 64
+fi
+if [[ ! "${expected_sha256}" =~ ^[a-f0-9]{64}$ ]]; then
+  echo "Expected a lowercase SHA-256 digest." >&2
+  exit 64
+fi
 max_attempts=8
 max_delay_seconds=20
 retry_budget_seconds="${DOWNLOAD_PINNED_RETRY_BUDGET:-120}"
@@ -47,10 +58,38 @@ attempt_max_seconds="${DOWNLOAD_PINNED_MAX_TIME:-300}"
 speed_limit_bytes="${DOWNLOAD_PINNED_SPEED_LIMIT:-102400}"
 speed_time_seconds="${DOWNLOAD_PINNED_SPEED_TIME:-30}"
 
-if ! command -v curl >/dev/null 2>&1; then
-  echo "Missing required command: curl" >&2
-  exit 1
-fi
+verify_checksum() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "${expected_sha256}  ${temporary}" | sha256sum -c -
+  else
+    echo "${expected_sha256}  ${temporary}" | shasum -a 256 -c -
+  fi
+}
+
+# Cache bytes are never executed or published directly. A private copy must pass
+# the caller's repository checksum, even when Actions reports an exact cache hit.
+copy_verified() {
+  [[ -f "$1" ]] || return 1
+  cp "$1" "${temporary}" && verify_checksum
+}
+
+restore_cache() {
+  [[ -n "${cache_directory}" ]] || return 1
+  local cached="${cache_directory}/${expected_sha256}"
+  [[ -f "${cached}" && ! -L "${cached}" ]] || return 1
+  copy_verified "${cached}"
+}
+
+save_cache() (
+  [[ -n "${cache_directory}" ]] || exit 0
+  mkdir -p "${cache_directory}" || exit 1
+  [[ ! -d "${cache_directory}/${expected_sha256}" ]] || exit 1
+  local cached
+  cached="$(mktemp "${cache_directory}/.verified.XXXXXX")" || exit 1
+  trap 'rm -f "${cached}"' EXIT
+  cp "${temporary}" "${cached}" && chmod 0644 "${cached}" &&
+    mv -f "${cached}" "${cache_directory}/${expected_sha256}"
+)
 
 is_transient() {
   local status="$1"
@@ -76,85 +115,99 @@ if [[ -d "${destination}" ]]; then
 fi
 temporary="$(mktemp "${destination}.download.XXXXXX")"
 trap 'rm -f "${temporary}"' EXIT
-# curl preserves the mode when replacing an existing file. Seed the temporary
-# file the same way so successful publication retains that behavior, then
-# empty it so a resumed attempt appends only downloaded bytes.
-if [[ -f "${destination}" ]]; then
-  cp -p "${destination}" "${temporary}"
+# Keep all candidate copies private and writable, including replacement of a
+# read-only tool. Apply the previous mode without setuid/setgid only after verification.
+chmod 0600 "${temporary}"
+if [[ -n "${requested_mode}" ]]; then
+  publication_mode="${requested_mode}"
+elif [[ -f "${destination}" ]]; then
+  publication_mode="$(stat -L -c '%a' "${destination}" 2>/dev/null || stat -L -f '%Lp' "${destination}")"
+  publication_mode="$(printf '%o' "$((8#${publication_mode} & 01777))")"
+else
+  publication_mode="$(printf '%o' "$((0666 & ~$(umask)))")"
+fi
+
+cache_hit=false
+if [[ -n "${existing_file}" ]] && copy_verified "${existing_file}" >/dev/null 2>&1; then
+  : # An installed file passed the same checksum as a fresh download.
+elif restore_cache >/dev/null 2>&1; then
+  cache_hit=true
+else
+  # Discard even a partial or corrupt cache copy before the ordinary downloader.
   : >"${temporary}"
-else
-  new_file_mode="$(printf '%o' "$((0666 & ~$(umask)))")"
-fi
-
-attempt=1
-delay=2
-started=${SECONDS}
-progress_at=${started}
-while :; do
-  status=0
-  attempt_started=${SECONDS}
-  before=$(received_bytes)
-  resume=()
-  if [[ ${before} -gt 0 ]]; then
-    resume=(--continue-at -)
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "Missing required command: curl" >&2
+    exit 1
   fi
-  max_time=$((started + deadline_seconds - SECONDS))
-  if [[ ${max_time} -gt ${attempt_max_seconds} ]]; then
-    max_time=${attempt_max_seconds}
-  elif [[ ${max_time} -lt 1 ]]; then
-    max_time=1
-  fi
-  transfer="$(curl --fail --silent --show-error --location \
-    --connect-timeout 20 --max-time "${max_time}" \
-    --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
-    ${resume[@]+"${resume[@]}"} \
-    --write-out '%{http_code} %{speed_download}' --output "${temporary}" "${url}")" || status=$?
-  http_code="${transfer%% *}"
-  after=$(received_bytes)
-  # curl --silent hides progress, so name slow attempts for the next stall investigation.
-  if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
-    echo "Slow download attempt ${attempt}: $((SECONDS - attempt_started))s, average ${transfer#* } bytes/s, ${after} bytes received, curl exit ${status}: ${url}" >&2
-  fi
-  if [[ ${status} -eq 0 ]]; then
-    break
-  fi
-  transient=false
-  if [[ ${#resume[@]} -gt 0 ]] && { [[ ${status} -eq 33 ]] || [[ ${status} -eq 22 && "${http_code}" == "416" ]]; }; then
-    echo "Server refused to resume at byte ${before}; starting over: ${url}" >&2
-    : >"${temporary}"
-    transient=true
-  elif is_transient "${status}" "${http_code}"; then
-    transient=true
-    if [[ ${after} -gt ${before} ]]; then
-      progress_at=${SECONDS}
+  attempt=1
+  delay=2
+  started=${SECONDS}
+  progress_at=${started}
+  while :; do
+    status=0
+    attempt_started=${SECONDS}
+    before=$(received_bytes)
+    resume=()
+    if [[ ${before} -gt 0 ]]; then
+      resume=(--continue-at -)
     fi
-  fi
-  if [[ ${transient} != true ]] ||
-    [[ ${attempt} -ge ${max_attempts} ]] ||
-    [[ $((SECONDS - progress_at + delay)) -gt ${retry_budget_seconds} ]] ||
-    [[ $((SECONDS - started + delay)) -ge ${deadline_seconds} ]]; then
-    echo "Download failed (curl exit ${status}, HTTP ${http_code:-none}) after ${attempt} attempt(s): ${url}" >&2
-    exit "${status}"
-  fi
-  resuming=""
-  if [[ $(received_bytes) -gt 0 ]]; then
-    resuming=", resuming at byte $(received_bytes)"
-  fi
-  echo "Transient download failure (curl exit ${status}, HTTP ${http_code:-none}); retrying in ${delay}s (attempt $((attempt + 1))/${max_attempts}${resuming}): ${url}" >&2
-  sleep "${delay}"
-  attempt=$((attempt + 1))
-  delay=$((delay * 2 > max_delay_seconds ? max_delay_seconds : delay * 2))
-done
+    max_time=$((started + deadline_seconds - SECONDS))
+    if [[ ${max_time} -gt ${attempt_max_seconds} ]]; then
+      max_time=${attempt_max_seconds}
+    elif [[ ${max_time} -lt 1 ]]; then
+      max_time=1
+    fi
+    transfer="$(curl --fail --silent --show-error --location \
+      --connect-timeout 20 --max-time "${max_time}" \
+      --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
+      ${resume[@]+"${resume[@]}"} \
+      --write-out '%{http_code} %{speed_download}' --output "${temporary}" "${url}")" || status=$?
+    http_code="${transfer%% *}"
+    after=$(received_bytes)
+    # curl --silent hides progress, so name slow attempts for the next stall investigation.
+    if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
+      echo "Slow download attempt ${attempt}: $((SECONDS - attempt_started))s, average ${transfer#* } bytes/s, ${after} bytes received, curl exit ${status}: ${url}" >&2
+    fi
+    if [[ ${status} -eq 0 ]]; then
+      break
+    fi
+    transient=false
+    if [[ ${#resume[@]} -gt 0 ]] && { [[ ${status} -eq 33 ]] || [[ ${status} -eq 22 && "${http_code}" == "416" ]]; }; then
+      echo "Server refused to resume at byte ${before}; starting over: ${url}" >&2
+      : >"${temporary}"
+      transient=true
+    elif is_transient "${status}" "${http_code}"; then
+      transient=true
+      if [[ ${after} -gt ${before} ]]; then
+        progress_at=${SECONDS}
+      fi
+    fi
+    if [[ ${transient} != true ]] ||
+      [[ ${attempt} -ge ${max_attempts} ]] ||
+      [[ $((SECONDS - progress_at + delay)) -gt ${retry_budget_seconds} ]] ||
+      [[ $((SECONDS - started + delay)) -ge ${deadline_seconds} ]]; then
+      echo "Download failed (curl exit ${status}, HTTP ${http_code:-none}) after ${attempt} attempt(s): ${url}" >&2
+      exit "${status}"
+    fi
+    resuming=""
+    if [[ $(received_bytes) -gt 0 ]]; then
+      resuming=", resuming at byte $(received_bytes)"
+    fi
+    echo "Transient download failure (curl exit ${status}, HTTP ${http_code:-none}); retrying in ${delay}s (attempt $((attempt + 1))/${max_attempts}${resuming}): ${url}" >&2
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2 > max_delay_seconds ? max_delay_seconds : delay * 2))
+  done
 
-if command -v sha256sum >/dev/null 2>&1; then
-  echo "${expected_sha256}  ${temporary}" | sha256sum -c -
-else
-  echo "${expected_sha256}  ${temporary}" | shasum -a 256 -c -
+  verify_checksum
 fi
 
-# Keep a first download private until verification has succeeded, then publish
-# it with the same umask-derived permissions curl would have created.
-if [[ -n "${new_file_mode:-}" ]]; then
-  chmod "${new_file_mode}" "${temporary}"
+# A cache is optional transport, not a prerequisite for a verified download.
+if [[ "${cache_hit}" != true ]] && ! save_cache; then
+  echo "Tool cache unavailable; continuing with verified download." >&2
 fi
+
+# Publication retains the previous destination mode, or the caller's umask for
+# a new destination. Neither mode applies to unverified staging bytes.
+chmod "${publication_mode}" "${temporary}"
 mv -f "${temporary}" "${destination}"

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { TestContext } from "node:test";
 import type { BrowserContext, Page, Request } from "playwright";
-import { within } from "./wait-for.mjs";
+import { within } from "./wait-for.ts";
 
 // CI sets this only for lanes whose browser tests use disposable fixtures. When
 // it is unset, nothing is tracked.

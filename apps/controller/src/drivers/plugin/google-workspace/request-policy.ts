@@ -1,9 +1,6 @@
-import type { CredentialHttpRequest, ConnectionEndpoint } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
   googleCatalog,
-  eligibleGoogleOperations,
-  isGoogleWorkspaceRecipient,
   googleDiscoveryRequests,
   googleRouteCandidates,
   googleReleaseSha256,
@@ -14,7 +11,7 @@ import {
   type GoogleRequestScope,
   type GoogleSchema,
 } from "./operations.ts";
-import { parseUnambiguousJson } from "../../repo/credentials/json-members.ts";
+import { parseUnambiguousJson } from "../../json-members.ts";
 import type { OpenShellOnlineHttpRequest } from "../../egress-proxy/openshell-online-authority.ts";
 
 // OpenShell removes routing, framing and credential headers before this RPC. Only these
@@ -143,7 +140,7 @@ function matchesJson(value: unknown, schema: GoogleSchema | undefined, depth = 0
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-function matchesBody(op: GoogleOperation, request: CredentialHttpRequest) {
+function matchesBody(op: GoogleOperation, request: OpenShellOnlineHttpRequest) {
   if (!op.requestSchema) {
     return request.body.length === 0;
   }
@@ -179,8 +176,7 @@ function matchesBody(op: GoogleOperation, request: CredentialHttpRequest) {
 
 function validGoogleRequest(
   scope: GoogleRequestScope,
-  request: CredentialHttpRequest,
-  discovery: "provider" | "proxy",
+  request: OpenShellOnlineHttpRequest,
 ): boolean {
   const { host, path, query, port, reportedScheme, method } = request.target;
   const names = request.headers.map(([name]) => name);
@@ -214,7 +210,7 @@ function validGoogleRequest(
     return (
       method === "GET" &&
       !request.body.length &&
-      googleDiscoveryRequests(scope, undefined, discovery === "provider").some(
+      googleDiscoveryRequests(scope).some(
         (r) => r.host === host && r.path === path && r.query === query,
       )
     );
@@ -288,30 +284,6 @@ function validGoogleRequest(
   );
 }
 
-/** Public discovery uses no credential, including when an approved API shares its host. */
-export function classifyGoogleAccountRequest(
-  destinations: readonly ConnectionEndpoint[],
-  scopes: readonly string[],
-  request: CredentialHttpRequest,
-): "credential" | "public" | "deny" {
-  const publicPath =
-    request.target.path.startsWith("/discovery/v1/apis") ||
-    request.target.path === "/$discovery/rest";
-  for (const endpoint of destinations) {
-    if (!isGoogleWorkspaceRecipient(endpoint)) {
-      continue;
-    }
-    const scope = { ...endpoint, scopes };
-    if (publicPath && !eligibleGoogleOperations(scope).length) {
-      continue;
-    }
-    if (validGoogleRequest(scope, request, "proxy")) {
-      return publicPath ? "public" : "credential";
-    }
-  }
-  return "deny";
-}
-
 export const googleWorkspaceRequestPolicy = {
   releaseSha256: googleReleaseSha256,
   acceptsScope(raw: string): boolean {
@@ -319,6 +291,6 @@ export const googleWorkspaceRequestPolicy = {
   },
   allows(request: OpenShellOnlineHttpRequest): boolean {
     const scope = googleScopeFromString(request.bindingConfig);
-    return scope !== undefined && validGoogleRequest(scope, request, "provider");
+    return scope !== undefined && validGoogleRequest(scope, request);
   },
 };

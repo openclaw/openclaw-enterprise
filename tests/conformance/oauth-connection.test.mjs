@@ -10,6 +10,7 @@ import {
 import { OAuthGrantStore } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { refreshPinnedOAuthGrant } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { registerOAuthRenewalRefusalCases } from "./oauth-renewal-refusal-cases.ts";
 
 test("the browser code exchange passes only granted scopes to refresh", async (t) => {
   const request = {
@@ -57,23 +58,17 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   responseScope = "read";
   assert.deepEqual((await exchange()).grantedScopes, ["read"]);
   responseScope = "read admin";
-  assert.deepEqual((await exchange()).grantedScopes, ["read", "admin"]);
-  responseScope = "";
-  const empty = await exchange();
-  assert.deepEqual(empty.requestedScopes, request.scopes);
-  assert.deepEqual(empty.grantedScopes, []);
-  for (responseScope of [["read"], "read  write"]) {
+  const expanded = await exchange();
+  assert.deepEqual(expanded.requestedScopes, ["read", "write"]);
+  assert.deepEqual(expanded.grantedScopes, ["read", "admin"]);
+  for (responseScope of [["read"], ""]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
       code: "grant_scope_mismatch",
       recoveryAction: "fix_configuration",
     });
   }
-  // At an ordinary token endpoint a comma belongs to one scope name.
-  responseScope = "read,write";
-  assert.deepEqual((await exchange(["read,write"])).grantedScopes, ["read,write"]);
-  assert.deepEqual((await exchange()).grantedScopes, ["read,write"]);
-  // The issuer may also choose scopes for a request that omitted them.
+  // An initial grant reflects the issuer's response, including provider defaults.
   responseScope = "provider.default";
   const defaults = await exchange([]);
   assert.deepEqual(defaults.grantedScopes, ["provider.default"]);
@@ -91,83 +86,27 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   );
 });
 
-async function oauthCustody() {
+/** @param {import("@openclaw-enterprise/contracts").OAuthConnectionGrant} grant
+ * @param {AbortSignal} signal
+ */
+async function oauthCustody(grant, signal) {
   const driver = createTestSecretDriver();
-  const service = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const worker = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const custody = await service.reserve({ namespaceId: "ns_test", sourceId: "source" });
-  return { driver, custody, service, worker };
-}
-
-test("Slack MCP records the issuer's grant and refreshes with only the scopes it still grants", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
-  const registration = {
-    issuer: "https://mcp.slack.com",
-    tokenUrl: "https://slack.com/api/oauth.v2.user.access",
-    resource: "https://mcp.slack.com/mcp",
-    oauthClientId: "registration",
-    clientId: "test-client",
-    tokenEndpointAuthMethod: "client_secret_post",
-  };
-  const scopes = ["channels:read", "files:read"];
-  const granted = ["channels:read", "users:read", "users:read.email"];
-  const renewed = ["channels:read", "users:read.email"];
-  const request = { ...registration, scopes, redirectUri: "https://oce.example.test/callback" };
-  const clientSecret = randomUUID();
-  const refreshScopes = [];
-  let responseScope = granted.join(",");
-  // Exercise the production exchange and Token Service. Only Slack's HTTPS response is synthetic.
-  t.mock.method(globalThis, "fetch", async (url, options) => {
-    assert.equal(url, registration.tokenUrl);
-    assert.equal(options.body.get("client_secret"), clientSecret);
-    if (options.body.get("grant_type") === "refresh_token") {
-      refreshScopes.push(options.body.get("scope"));
-    }
-    return Response.json({
-      access_token: randomUUID(),
-      token_type: "Bearer",
-      expires_in: 120,
-      refresh_token: randomUUID(),
-      scope: responseScope,
-    });
-  });
-  const exchange = () =>
-    exchangeAuthorizationCode(request, "test-verifier", randomUUID(), clientSecret, t.signal);
-  const initial = await exchange();
-  const { driver, service, custody } = await oauthCustody();
-  await service.storeInitialGrant(custody, { ...registration, ...initial }, t.signal);
-  const savedScopes = () =>
-    driver.withValue(custody.secret, (value) => {
-      const { requestedScopes, grantedScopes } = JSON.parse(value);
-      return { requestedScopes, grantedScopes };
-    });
-  assert.deepEqual(await savedScopes(), {
-    requestedScopes: scopes,
-    grantedScopes: granted,
-  });
-
-  assert.deepEqual((await service.observe(custody, t.signal, 0)).token.grantedScopes, granted);
-
-  responseScope = renewed.join(",");
-  const resolveClient = async () => ({ registration, readSecret: async () => clientSecret });
-  t.mock.timers.tick(65_000);
-  assert.equal((await service.renew(custody, t.signal, resolveClient)).state, "ready");
-  assert.deepEqual(await savedScopes(), {
-    requestedScopes: scopes,
-    grantedScopes: renewed,
-  });
-
-  // Slack cannot add back a previously approved scope after a narrower renewal.
-  t.mock.timers.tick(65_000);
-  responseScope = "channels:read,users:read";
-  assert.equal(
-    (await service.renew(custody, t.signal, resolveClient)).failureCode,
-    "grant_scope_mismatch",
+  const store = driver.privateSecrets;
+  const service = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
+  const worker = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
+  const { custody, schedule } = await service.create(
+    {
+      sourceId: "source",
+      secret: {
+        installationId: "ins_test",
+        id: JSON.stringify(["token_service", "instance", "credential_source", "ns_test", "source"]),
+      },
+    },
+    grant,
+    signal,
   );
-  assert.deepEqual(refreshScopes, [granted.join(" "), renewed.join(" ")]);
-  responseScope = "files:read,,users:read";
-  await assert.rejects(exchange(), { code: "grant_scope_mismatch" });
-});
+  return { driver, custody, schedule, service, worker };
+}
 
 test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
@@ -222,14 +161,14 @@ test("the Token Service keeps the first access token in custody and serializes r
   const request = {
     issuer,
     oauthClientId: "registration",
+    requestedScopes: ["read", "write"],
     tokenEndpointAuthMethod: "client_secret_basic",
     clientId: "test:client",
-    scopes: ["read", "write", "admin"],
+    scopes: ["read", "write"],
     resource: "https://mcp.example.test/mcp",
     tokenUrl: issuer + "/token",
     redirectUri: "https://oce.example.test/callback",
   };
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = await exchangeAuthorizationCode(
     request,
     "test-verifier",
@@ -237,19 +176,21 @@ test("the Token Service keeps the first access token in custody and serializes r
     clientSecret,
     t.signal,
   );
-  await service.storeInitialGrant(custody, { ...request, ...grant }, t.signal);
+  const { driver, custody, schedule, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({
     registration: request,
     readSecret: async () => rotatedClientSecret,
   });
-  const stored = driver.valueFor(custody.secret);
-  const { requestedScopes, grantedScopes } = JSON.parse(stored);
-  assert.deepEqual(requestedScopes, ["read", "write", "admin"]);
-  assert.deepEqual(grantedScopes, ["read", "write"]);
+  const stored = await driver.privateSecrets.withValue(custody.secret, async (value) => value);
   assert.ok(!stored.includes(clientSecret));
   assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = (await worker.observe(custody, t.signal, 0)).token;
   assert.equal(accepted.accessToken, first);
+  assert.deepEqual(schedule, {
+    version: accepted.version,
+    nextRefreshAt: accepted.nextRefreshAt,
+    grantedScopes: accepted.grantedScopes,
+  });
   assert.deepEqual(Object.keys(accepted).sort(), [
     "accessToken",
     "expiresAt",
@@ -266,9 +207,9 @@ test("the Token Service keeps the first access token in custody and serializes r
   // The custody CAS takes four seconds, then the issuer takes twelve. A second worker must
   // neither replay the grant nor fence its owner at the shorter issuer-only timeout.
   t.mock.timers.tick(65_000);
-  const compareAndSwap = driver.compareAndSwap.bind(driver);
+  const compareAndSwap = driver.privateSecrets.compareAndSwap.bind(driver.privateSecrets);
   t.mock.method(
-    driver,
+    driver.privateSecrets,
     "compareAndSwap",
     (...args) => {
       t.mock.timers.tick(4_000);
@@ -312,14 +253,25 @@ test("the Token Service keeps the first access token in custody and serializes r
   assert.deepEqual((await service.observe(custody, t.signal)).status, {
     state: "failed",
     failureCode: "grant_scope_mismatch",
-    recoveryAction: "fix_configuration",
+    recoveryAction: "reauthorize",
   });
   await worker.renew(custody, t.signal, resolveClient, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");
   await service.delete(custody, t.signal);
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });
 
+/** @import { OAuthConnectionGrant, OAuthConnectionRegistration } from "@openclaw-enterprise/contracts" */
+
+/**
+ * @param {string} issuer
+ * @returns {OAuthConnectionRegistration & OAuthConnectionGrant}
+ */
 function connectionGrant(issuer) {
   return {
     issuer,
@@ -335,170 +287,7 @@ function connectionGrant(issuer) {
   };
 }
 
-test("OAuth renewal retries cancellation before dispatch and quarantines a lost issuer reply", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-01-01T00:00:00Z") });
-  const requests = [];
-  const server = createServer(async (req) => {
-    const chunks = [];
-    for await (const chunk of req) {
-      chunks.push(chunk);
-    }
-    requests.push(new URLSearchParams(Buffer.concat(chunks).toString()));
-    // The issuer received the grant, but the worker cannot know whether it rotated.
-    req.socket.destroy();
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => server.close());
-  const grant = connectionGrant("http://127.0.0.1:" + server.address().port);
-  const { driver, custody, service, worker } = await oauthCustody();
-  const resolveClient = async () => ({
-    registration: grant,
-    readSecret: async () => assert.fail("public clients have no secret"),
-  });
-  await service.storeInitialGrant(custody, grant, t.signal);
-  const accepted = (await service.observe(custody, t.signal, 0)).token;
-  t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
-  const stop = new AbortController();
-  const swap = driver.compareAndSwap.bind(driver);
-  // The control plane cancels while the Secret Driver is committing the intent.
-  t.mock.method(
-    driver,
-    "compareAndSwap",
-    async (...args) => {
-      stop.abort(new Error("Worker stopped during the custody claim."));
-      return swap(...args);
-    },
-    { times: 1 },
-  );
-  await assert.rejects(worker.renew(custody, stop.signal, resolveClient), {
-    message: "Worker stopped during the custody claim.",
-  });
-  assert.deepEqual(requests, []);
-  assert.deepEqual((await service.observe(custody, t.signal, 0)).token, accepted);
-
-  const failed = await worker.renew(custody, t.signal, resolveClient);
-  assert.equal(failed.failureCode, "refresh_outcome_unknown");
-  assert.deepEqual(await service.renew(custody, t.signal, resolveClient), failed);
-  assert.deepEqual(
-    requests.map((body) => body.get("refresh_token")),
-    [grant.refreshToken],
-  );
-});
-
-test("client authentication can recover with the same grant and a repaired registration", async (t) => {
-  const currentSecret = randomUUID();
-  let storedSecret = randomUUID();
-  let revoked = false;
-  let requests = 0;
-  const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const part of req) {
-      chunks.push(part);
-    }
-    const form = new URLSearchParams(Buffer.concat(chunks).toString());
-    requests++;
-    assert.equal(form.get("grant_type"), "refresh_token");
-    assert.ok(form.get("refresh_token") === grant.refreshToken);
-    assert.equal(form.get("client_id"), "test-client");
-    assert.equal(req.headers.authorization, undefined);
-    const wrongClient = form.get("client_secret") !== currentSecret;
-    res.writeHead(wrongClient ? 401 : revoked ? 400 : 200, { "Content-Type": "application/json" });
-    if (wrongClient) {
-      res.end(JSON.stringify({ error: requests === 1 ? "invalid_client" : "unauthorized_client" }));
-    } else if (revoked) {
-      res.end(JSON.stringify({ error: "invalid_grant" }));
-    } else {
-      res.end(
-        JSON.stringify({ access_token: randomUUID(), token_type: "Bearer", expires_in: 120 }),
-      );
-    }
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => server.close());
-  const grant = {
-    ...connectionGrant("http://127.0.0.1:" + server.address().port),
-    tokenEndpointAuthMethod: "client_secret_post",
-  };
-  const { custody, driver, service, worker } = await oauthCustody();
-  await service.storeInitialGrant(custody, grant, t.signal);
-  const material = driver.valueFor(custody.secret);
-  const { version } = (await service.observe(custody, t.signal, 0)).token;
-  const readSecret = t.mock.fn(async () => storedSecret);
-  const resolveClient = async () => ({ registration: grant, readSecret });
-  // Changing the private custody reference cannot export another client's secret or redirect
-  // the issuer request. The controller supplies an independent registration for this source.
-  for (const edited of [
-    { oauthClientId: "another-registration" },
-    { tokenUrl: grant.tokenUrl + "/unapproved" },
-    { resource: "https://unapproved.test" },
-  ]) {
-    await driver.update(custody.secret, JSON.stringify({ ...JSON.parse(material), ...edited }));
-    const refused = await service.renew(custody, t.signal, resolveClient, version);
-    assert.equal(refused.failureCode, "client_registration_mismatch");
-    assert.equal((await service.observe(custody, t.signal, 0)).token, undefined);
-  }
-  assert.equal(requests, 0);
-  assert.equal(readSecret.mock.callCount(), 0);
-  await driver.update(custody.secret, material);
-  // A registration store outage keeps the same upstream grant. Re-observing the old SQL due
-  // version after interruption must recover the persisted retry without making another read.
-  const unavailable = t.mock.fn(async () => {
-    throw new Error("Registration credentials unavailable");
-  });
-  const down = await service.renew(
-    custody,
-    t.signal,
-    async () => ({ registration: grant, readSecret: unavailable }),
-    version,
-  );
-  assert.equal(down.failureCode, "client_unavailable");
-  assert.equal(down.recoveryAction, "retry");
-  assert.ok(Date.parse(down.schedule.nextRefreshAt) > Date.now());
-  assert.notEqual(down.schedule.version, version);
-  const previousDue = await worker.renew(
-    custody,
-    t.signal,
-    async () => ({ registration: grant, readSecret: unavailable }),
-    version,
-  );
-  assert.deepEqual(previousDue, down);
-  assert.equal(unavailable.mock.callCount(), 1);
-  assert.equal(requests, 0);
-  const refused = await service.renew(custody, t.signal, resolveClient, down.schedule.version);
-  assert.equal(refused.state, "failed");
-  assert.equal(refused.failureCode, "client_refused");
-  assert.equal(refused.recoveryAction, "fix_configuration");
-  assert.ok(refused.schedule.nextRefreshAt);
-  assert.equal((await service.observe(custody, t.signal, 0)).token, undefined);
-  const refusedAgain = await worker.renew(
-    custody,
-    t.signal,
-    resolveClient,
-    refused.schedule.version,
-  );
-  assert.equal(refusedAgain.failureCode, "client_refused");
-  assert.equal(refusedAgain.recoveryAction, "fix_configuration");
-  storedSecret = currentSecret;
-  assert.equal(
-    (await worker.renew(custody, t.signal, resolveClient, refusedAgain.schedule.version)).state,
-    "ready",
-  );
-  assert.ok(!driver.valueFor(custody.secret).includes(currentSecret));
-  // A definitive grant refusal is terminal, even with a working client credential.
-  revoked = true;
-  const result = await worker.renew(
-    custody,
-    t.signal,
-    resolveClient,
-    (await worker.observe(custody, t.signal, 0)).token.version,
-  );
-  assert.equal(result.failureCode, "grant_refused");
-  assert.equal(result.recoveryAction, "reauthorize");
-  assert.deepEqual(await service.renew(custody, t.signal, resolveClient, version), result);
-  assert.equal(requests, 4);
-});
+registerOAuthRenewalRefusalCases({ oauthCustody, connectionGrant });
 
 test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   const received = Promise.withResolvers();
@@ -523,10 +312,9 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
     server.close();
   });
   const issuer = "http://127.0.0.1:" + server.address().port;
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = connectionGrant(issuer);
+  const { driver, custody, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({ registration: grant });
-  await service.storeInitialGrant(custody, grant, t.signal);
   assert.equal((await worker.observe(custody, t.signal)).status.state, "ready");
   const refreshing = worker.renew(
     custody,
@@ -538,6 +326,11 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   // Retire the exact custody identity after the issuer consumed the old refresh token and before its reply.
   await service.delete(custody, t.signal);
   respond.resolve();
-  await assert.rejects(refreshing, { message: "Secret does not exist." });
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(refreshing, /Secret does not exist/u);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });

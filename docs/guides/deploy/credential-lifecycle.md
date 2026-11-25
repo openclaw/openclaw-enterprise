@@ -8,9 +8,8 @@ the old value has been compromised.
 
 For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
 use [Credential Proxy setup](../credential-proxy.md) and its
-[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
-can remain. Do not apply a copied-key rotation procedure to live Secret resolution
-or worker-prepared tokens: their owners and recovery requirements differ.
+[upgrade procedure](credential-proxy-upgrade.md). Follow the procedure for the
+recorded owner of each credential and check its current Agent bindings.
 
 ## Before changing a credential
 
@@ -27,17 +26,19 @@ and who can stop affected workloads if access must be revoked immediately.
 
 ## Choose the credential owner
 
-| Credential                           | Owner and consumer                                                                                                             | Supported change and effect                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                         | Sign-out revokes the current session. Admins create accounts; no endpoint resets passwords. External sign-in adds online disable and revocation; password-only ends others' sessions only by [stopped maintenance](auth-maintenance.md#choose-the-operation). See [authentication](../../reference/authentication.md#session-lifecycle). |
-| OCC service API key                  | An Installation administrator issues keys for a non-Agent IAM service principal; automation clients consume them.              | Multiple keys may overlap. Revocation rejects subsequent requests; an already-authorized request may finish. See [service keys](../../reference/authentication/service-api-keys.md).                                                                                                                                                     |
-| Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
-| Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
-| Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
-| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                   | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
-| OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
-| Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
-| Auth signing and bootstrap material  | The operator protects the mounted auth Secret and bootstrap password/key output.                                               | Auth-secret changes require API restart. Bootstrap does not regenerate existing credentials or recover missing output. See [production settings](../../reference/settings/production.md) and [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap).                                   |
+| Credential                           | Owner and consumer                                                                                                                                        | Supported change and effect                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Human password and session           | The administrator owns the account; Better Auth verifies sessions for OCC API clients.                                                                    | Sign-out revokes the current session. Admins create accounts; no endpoint resets passwords. External sign-in adds online disable and revocation; password-only ends others' sessions only by [stopped maintenance](auth-maintenance.md#choose-the-operation). See [authentication](../../reference/authentication.md#session-lifecycle). |
+| OCC service API key                  | An Installation administrator issues keys for a non-Agent IAM service principal; automation clients consume them.                                         | Multiple keys may overlap. Revocation rejects subsequent requests; an already-authorized request may finish. See [service keys](../../reference/authentication/service-api-keys.md).                                                                                                                                                     |
+| GitHub App installation token        | TokenService holds the short-lived token for the shared Namespace Source. The native Credential Proxy delivers it for each Agent's approved repositories. | The API schedules renewal. TokenService replaces the token and asks the Proxy to redeliver it. Remove the Agent's repository selections to withdraw its access. See [GitHub App access for an OpenShell Agent](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).                                               |
+| Prepared Git session                 | The Worker issues and renews the token. The repository sender uses it for approved requests.                                                              | Renewal preserves the finite session's deadline. A standing approval can authorize a new session for the running Agent. See [sessions and closure](../../reference/repository-credentials.md#sessions-and-closure).                                                                                                                      |
+| ChatGPT ServiceAccount PAT           | The ServiceAccount Driver issues and revokes the upstream credential. TokenService stores the PAT in a Source.                                            | After issuance, select the issued account's Source in Agent Credentials. Normal deletion revokes the issuer credential. Forced deletion can skip revocation. See [service-account lifecycle](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                      |
+| Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                                           | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
+| Managed Harness API key              | The provider issues the key. TokenService stores it in a Source for the approved model route.                                                             | To rotate the key, update the Source so the Proxy redelivers the replacement to active Agents. Verify model access before revoking the old key at the issuer.                                                                                                                                                                            |
+| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                                              | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
+| OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers.                            | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
+| Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                                                   | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
+| Auth signing and bootstrap material  | The operator protects the mounted auth Secret and precreated bootstrap password/key inputs.                                                               | Auth-secret changes require API restart. Bootstrap does not rotate existing credentials, renew expiry, or recover lost inputs. See [production settings](../../reference/settings/production.md) and [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap).                           |
 
 ## Replace an OCC service API key
 
@@ -56,104 +57,131 @@ and verify that a protected request with the old session fails.
 
 ## Replace runtime values and verify consumption
 
-Obtain replacement API keys and channel credentials through the provider's
-supported process. For a harness API key or Configuration channel Secret, use its
-[supported value update](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
-instead of editing its backing object directly. Generated transport credentials
-are separate from channel Secrets; the current initial provisioning flow does not
-rotate an existing generated bundle.
+Obtain replacement credentials through the provider's supported process.
 
-List all affected applications or Agents before restarting or deploying them.
-`occ secret get "$SECRET_ID" -o json` lists a Secret's consuming Agents in
-`consumers.agents`; a nonzero `consumers.unreadable` means some references are
-hidden from you (see [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers)).
-A running process keeps the environment variables it received, even after the
-source Secret changes. For a model API key, the supported sequence is:
+### Managed model API keys
 
-1. Update the existing OCC Secret through its API, retaining the Secret reference.
-2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
-   Configuration and `harnessAuth` reference are unchanged.
-3. Wait for OCC to select the new version, then perform a
-   [real model request](../operate/model-verification.md).
+1. [Update the existing Credential Source](../../reference/credential-sources.md#update-a-source).
+   TokenService saves the replacement and notifies the Proxy for active Agent bindings.
+2. If delivery fails, [retry delivery](../../reference/credential-sources.md#retry-credential-delivery)
+   for the affected Agent.
+3. Make a [real model request](../operate/model-verification.md) before revoking the
+   old key at the issuer.
 
-With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
-projection from the CP source. Recreating its Pod or running `kubectl rollout restart` reads the existing
-projection and is not a substitute for this OCE deployment.
+### Channel and transport credentials
 
-For a channel credential, explicitly deploy each consumer and exercise the
-affected channel workflow; a successful model turn does not prove channel authentication. For transport tokens, coordinate
-both endpoints and clients, and verify a fresh allowed connection and rejection
-of the old token. No automatic coordinated transport-token rotation is provided.
+Use `occ secret get "$SECRET_ID" -o json` to list Channel Secret consumers in
+`consumers.agents`. A nonzero `consumers.unreadable` means some references are
+hidden from you. See [Find a Secret's consumers](../../reference/drivers/kubernetes-secret.md#find-a-secrets-consumers).
 
-Where the provider permits overlap, revoke the old upstream credential after
-successful replacement checks. A stored credential status does not show that
-the provider accepts the value. Dedicated Gateway restarts read current canonical
-channel values; Harness restarts read their existing runtime projection.
-Version history does not restore old source values.
+[Update the Channel Secret](../../reference/drivers/kubernetes-secret.md#update-and-redeploy),
+deploy a new version of each consuming Agent and exercise the affected Channel
+before revoking the old credential. A running Gateway uses its existing
+projection until OCE prepares the new version.
 
-Backend-managed account credentials require separate handling: OCC cannot
-refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
-a separately issued replacement account before it expires. Bind that account
-and explicitly deploy each intended consumer. Account deletion performs upstream
-cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
-inactive history alone does not retain the source indefinitely.
+For transport credentials, coordinate both endpoints and verify a fresh
+connection with the replacement and rejection of the old token.
+
+### Issued ChatGPT ServiceAccount PATs
+
+Issue a replacement account before the token expires. Bind its Source and deploy
+each intended consumer. Normal ServiceAccount deletion revokes the upstream
+token independently of the Source. If the Backend has been removed,
+[force-delete](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
+can skip issuer revocation. Retire the old Source separately after removing
+the Agent references.
+
+## Enroll a Codex PAT Source
+
+Use an Installation with OCC TokenService selected. In **Create Agent**, choose
+Dedicated Codex, **Service Accounts**, and **Credential Source**. Enter the
+Agent name and PAT, then choose **Save service account token**. The Console
+enrolls a Source before it loads hosted Apps. When you save the Agent, the
+Console binds that Source as its model credential.
+
+For an existing Agent using a PAT Secret, use the Source API to register the
+PAT with `type: static`, `config.provider_preset: codex-pat`, and the
+write-only input `secret.opaque`. Use an authenticated client that keeps the
+credential out of logs and shell history. Update the Agent draft's
+`harnessAuth` to `{ "method": "credential_source", "sourceId": "<new-source-id>" }`
+and grant the Agent permission to use that Source. See [Credential Sources](../../reference/credential-sources.md#use-a-codex-pat-source).
+The original Namespace Secret remains available for its other bindings.
 
 ## Use a personal Codex login
 
-Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Refresh Driver for device login, a paired Credential Gateway for
-access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
-the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
-There is no installation opt-in flag.
+Codex OAuth login is **Experimental**. It requires dedicated Codex, the selected
+TokenService, and native OpenShell Credential Proxy and Sandbox delivery. The
+Harness receives a placeholder and account metadata; TokenService retains the
+OAuth grant. See the [native Codex request policy](../../reference/credential-sources.md#codex-account-model-requests).
 
 The initial Codex exchange runs in the OCE API Pods. If sign-in reports
-`auth.openai.com` unreachable, check API Pod HTTPS egress to that issuer (Helm
-`api.modelDiscoveryCidrs`) and retry. OpenShell's gateway needs its own issuer
-access for subsequent refresh.
+`auth.openai.com` unreachable, check API Pod DNS, routing, and HTTPS connectivity
+to that issuer, then retry. The refresh Worker also needs issuer connectivity.
 
 1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
    verification link, enter the displayed code, and complete sign-in.
 2. Search and select plugins using the resulting credential source, then create
-   and deploy the Agent. The Console grants the Agent service principal exact
-   source `operate` permission. Deployment still requires a successful native
-   model probe.
-3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a usable access token; the token service owns refresh. Another device login
-   is needed only when replacing or recovering the connection.
-4. To replace the connection, sign in from the credential editor, save the new
-   source, and deploy. Saving a draft does not change the running version.
+   the Agent. When the Installation network ceiling allows one stock Codex binary
+   to reach `chatgpt.com:443`, OCC adds the [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
+   at deployment without a manual Agent rule. With OCC-managed IAM, admission
+   grants the Agent exact Source `operate` access. Deployment becomes ready only
+   after a successful native model probe.
+3. For later plugin edits, use the saved Source. Authorized hosted Apps discovery
+   resolves a usable access token through TokenService. Another device login is
+   needed only when replacing or recovering the connection.
+4. To replace the connection, sign in from the credential editor and save the new
+   Source. Complete **Stop** before deploying the replacement; deploying managed
+   credentials over an active revision returns `409`. Once no Agent, active
+   revision, or pending deployment references the old Source,
+   [delete it](../../reference/credential-sources.md#delete-a-source). A refused
+   deletion leaves the Source and grant unchanged.
 
-Starting requires Agent-create, Secret-create and credential-source-create in the
-Namespace, plus `operate` on the resulting session Secret and source. For an
-existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the actor
-who started a session can poll or close it. Source use has its own exact
-`credential_source:operate` authorization; it is not tied to the login session.
+Starting requires Agent-create and credential-source-create in the Namespace.
+For an existing Agent, exact Agent `read` and `update` replace Agent-create.
+Only the person who started the login can poll or close it, while retaining
+those Agent permissions. Completing a pending login rechecks
+`credential_source:create`; replaying a ready session requires
+`credential_source:operate` on the new Source. The temporary login needs no
+separate grant. If polling returns `403`, give your platform operator the
+request ID. They can find the exact permission and resource in the
+[denial audit event](../topics/audit-log.md#access-and-limitations). After access
+is restored, select **Retry login check** for a denied Agent check or ready
+replay before the login expires. If Source creation was denied during completion,
+select **Cancel login** and start a new login. Keep the provider's sign-in code
+private.
 
-The session Secret binds an opaque login handle to the actor, scope, and source.
-The Refresh Driver hands exchanged credentials to the external service. A pending session uses
-the provider deadline; a completed session closes after 24 hours on its next
-access. **Close login** discards the handle without revoking the source or
-interrupting a deployed Agent. Failed and abandoned sources remain visible in
-credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets.
+For API clients, the start response includes a `session` handle with `id` and
+`namespaceId`. Use the same device-authorizations route that started the login:
+send `POST …/{id}/poll` to check it or `DELETE …/{id}` to cancel.
 
-If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
-`503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
-opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+A pending login expires at the provider deadline; choose **Cancel login** to
+close it. A completed login handle expires after 24 hours; **Clear selection**
+closes it without deleting its Source. No Source is created before the issuer
+authorizes the grant.
+Deleting a Source that an Agent or revision still references returns `409`; withdraw and
+remove those references first.
+
+A Dedicated Codex Agent can use its ChatGPT OAuth Source and approved GitHub
+repositories together. Select the App Client and repository grants in the
+[Agent repository configuration](../repository-credentials.md). An operator can
+[replace earlier Credential Gateway Sources](credential-proxy-upgrade.md).
+
+If sign-in is unavailable, check the selected TokenService device-login capability.
+For `503 DEPENDENCY_UNAVAILABLE`, check API or Worker connectivity to the issuer
+and selected Proxy connectivity to OpenShell. See the [Credential source lifecycle](../../flows/credential-source-lifecycle.md).
 
 ### Recover an interrupted Codex sign-in
 
 If the Console says **Sign-in may have started**, do not start again. The Console
-did not receive a usable session reference, so it cannot poll or cancel that
+did not receive a usable login handle, so it cannot poll or cancel that
 attempt. Give an administrator the time, Namespace, Agent ID if already saved,
-and OCC request ID if available. Do not share the device code or Secret value.
+and OCC request ID if available. Keep the device code private.
 
 Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
 for a successful `openclaw.agents.device_authorization.start` for that actor and
 request with `details.phase: "session_pending"`. OCC commits this event with the
-session Secret, before sending the reply. It confirms that OCC saved the session,
-not that sign-in completed, and does not include the session ID.
+login session before sending the reply. The event confirms that OCC saved the
+session. It omits the session ID.
 
 The `source_registering` and `source_ready` phases confirm only source registration;
 they can exist even when provider login fails before OCC saves a session. A missing
@@ -170,8 +198,10 @@ message alone does not tell you whether OCC reached that exchange.
 
 Replace the mounted auth signing Secret through the deployment owner and restart
 the API processes that consume it. Verify fresh human sign-in and authenticated
-API access; do not assume existing sessions survive. This change does not replace
-human passwords or runtime provider credentials.
+API access. OCC derives the device-login encryption key from the auth secret.
+After rotation, users must restart pending Codex logins. OCC also loses access
+to the challenge for a completed login, so it cannot return that login's poll
+response again. Existing credential sources and human passwords remain valid.
 
 The initial bootstrap service key expires after 30 days. Preserve authorized
 administrator access and renew automation credentials before expiry. Deleting a

@@ -2,24 +2,19 @@ import {
   credentialFreeMetadataGrant,
   credentialFreeMetadataType,
   credentialFreeProviderRef,
-  githubMetadataGrant,
-  preparedGitHubProviderRef,
-  preparedGitHubType,
   type CredentialProviderDefinition,
   type EgressRoute,
   type EgressRequest,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { isDeepStrictEqual } from "node:util";
-import { isSameGitHubRepository } from "../repo/credentials/client-contracts.ts";
-import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
-import { isGitHubWireCredential } from "../repo/github/credentials/wire-credential.ts";
+import { isSameGitHubRepository } from "../repo/access/client-contracts.ts";
+import { parseUnambiguousJson } from "../json-members.ts";
 
 function closedRequest(route: EgressRoute, request: EgressRequest): boolean {
   const { grant } = route.binding;
   if (
-    (grant.kind !== "github_repository_metadata" &&
-      grant.kind !== "credential_free_repository_metadata") ||
+    grant.kind !== "credential_free_repository_metadata" ||
     grant.profile !== "metadata-read" ||
     grant.isolationId !== route.binding.execution.agentId ||
     grant.isolationId !== route.binding.isolationId ||
@@ -55,36 +50,31 @@ function closedRequest(route: EgressRoute, request: EgressRequest): boolean {
   });
 }
 
-/** The complete protected operation, deliberately distinct from Git discovery, clone or push. */
-export const githubMetadataProvider: CredentialProviderDefinition =
+/** Protected repository identity read with no credential injection. */
+export const credentialFreeMetadataProvider: CredentialProviderDefinition =
   Object.freeze<CredentialProviderDefinition>({
-    ref: preparedGitHubProviderRef,
+    ref: credentialFreeProviderRef,
     schemaVersion: 1,
     sourceType: {
-      type: preparedGitHubType,
+      type: credentialFreeMetadataType,
       rotation: "none",
-      config: [
-        "app_id",
-        "installation_id",
-        "repository_id",
-        "repository",
-        "agent_id",
-        "authority",
-      ].map((name) => ({ name, required: true })),
-      secrets: [{ name: "private_key", required: true }],
+      config: ["origin", "repository_id", "repository", "agent_id", "authority"].map((name) => ({
+        name,
+        required: true,
+      })),
+      secrets: [],
     },
     normalizeConfig(config) {
-      githubMetadataGrant(config);
+      credentialFreeMetadataGrant(config);
       return immutableCopy(config);
     },
     normalizeGrant(_models, config) {
-      return githubMetadataGrant(config ?? {});
+      return credentialFreeMetadataGrant(config ?? {});
     },
     routes(source, binding) {
       const admitted = source.egress;
       if (
-        (admitted?.adoption !== "prepared" && admitted?.adoption !== "credential_free") ||
-        admitted.grant.kind === "prepared_scope" ||
+        admitted?.adoption !== "credential_free" ||
         !isDeepStrictEqual(binding.grant, admitted.grant) ||
         binding.execution.agentId !== admitted.grant.isolationId
       ) {
@@ -105,19 +95,13 @@ export const githubMetadataProvider: CredentialProviderDefinition =
     },
     classify(route, request) {
       const { grant } = route.binding;
-      return closedRequest(route, request) &&
-        grant.kind !== "inference" &&
-        grant.kind !== "prepared_scope"
+      return closedRequest(route, request) && grant.kind === "credential_free_repository_metadata"
         ? { kind: grant.kind, repository: grant.repository, repositoryId: grant.repositoryId }
         : undefined;
     },
-    inject(value) {
-      if (!isGitHubWireCredential(value)) {
-        throw new Error("Invalid prepared GitHub installation credential.");
-      }
-      return [["authorization", "Bearer " + value]];
+    inject() {
+      throw new Error("Credential-free metadata does not perform credential injection.");
     },
-    // A status alone, including GitHub 401, does not prove a specific credential was rejected.
     credentialRejected() {
       return false;
     },
@@ -125,8 +109,7 @@ export const githubMetadataProvider: CredentialProviderDefinition =
       const { trailers, headers } = response;
       const media = headers.filter(([name]) => name.toLowerCase() === "content-type");
       if (
-        operation.kind === "inference" ||
-        operation.kind === "prepared_scope" ||
+        operation.kind !== "credential_free_repository_metadata" ||
         response.status !== 200 ||
         trailers?.length !== 0 ||
         response.body.byteLength > 64 * 1024 ||
@@ -161,31 +144,5 @@ export const githubMetadataProvider: CredentialProviderDefinition =
       } catch {
         return undefined;
       }
-    },
-  });
-
-/** Same exact GET and complete response as the prepared profile, expressly without material. */
-export const credentialFreeMetadataProvider: CredentialProviderDefinition =
-  Object.freeze<CredentialProviderDefinition>({
-    ...githubMetadataProvider,
-    ref: credentialFreeProviderRef,
-    sourceType: {
-      type: credentialFreeMetadataType,
-      rotation: "none",
-      config: ["origin", "repository_id", "repository", "agent_id", "authority"].map((name) => ({
-        name,
-        required: true,
-      })),
-      secrets: [],
-    },
-    normalizeConfig(config) {
-      credentialFreeMetadataGrant(config);
-      return immutableCopy(config);
-    },
-    normalizeGrant(_models, config) {
-      return credentialFreeMetadataGrant(config ?? {});
-    },
-    inject() {
-      throw new Error("Credential-free metadata does not perform credential injection.");
     },
   });

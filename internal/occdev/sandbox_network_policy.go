@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -48,7 +49,7 @@ func (r *runner) loadSandboxNetworkPolicies(ctx context.Context, sandboxDriver s
 	if err != nil {
 		return nil, fmt.Errorf("invalid Sandbox network policy values: %w", err)
 	}
-	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.mjs"))
+	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.ts"))
 	command.Stdin = bytes.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -89,11 +90,39 @@ func (r *runner) loadSandboxNetworkPolicyCeiling(ctx context.Context, sandboxDri
 	if err != nil {
 		return nil, err
 	}
-	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.mjs"), "--ceiling")
+	command := r.command(ctx, "node", filepath.Join(r.opts.Repository, "scripts", "validate-sandbox-network-policy.ts"), "--ceiling")
 	command.Stdin = bytes.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("Sandbox delegation ceiling validation failed: %s: %w", bytes.TrimSpace(output), err)
 	}
 	return document.Grants, nil
+}
+
+// Normal Codex OAuth admission needs one approved executable for this cluster.
+func (r *runner) setDefaultOpenShellModelCeiling(ctx context.Context, state *developmentState) error {
+	if state.SandboxDriver != "openshell" || len(state.SandboxNetworkPolicyCeiling) != 0 {
+		return nil
+	}
+	nodes, err := r.output(ctx, "kubectl", "get", "nodes", "-o", "json")
+	if err != nil {
+		return err
+	}
+	_, selected, err := agentSandboxControllerForNodes(nodes)
+	if err != nil {
+		return err
+	}
+	binary := openShellCodexBinaries()[0]
+	if selected.platform == "linux/arm64" {
+		binary = openShellCodexBinaries()[1]
+	}
+	for _, host := range []string{"api.openai.com", "auth.openai.com", "chatgpt.com"} {
+		state.SandboxNetworkPolicyCeiling = append(state.SandboxNetworkPolicyCeiling, map[string]any{
+			"id":     "first-agent-codex-" + strings.ReplaceAll(host, ".", "-"),
+			"binary": binary,
+			"host":   host,
+			"ports":  []map[string]int{{"from": 443, "to": 443}},
+		})
+	}
+	return nil
 }

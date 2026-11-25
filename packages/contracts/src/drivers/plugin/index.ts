@@ -1,16 +1,15 @@
-import type { CredentialHttpRequest } from "../../credential-proxy-exchange.ts";
 import type { Driver } from "../index.ts";
+import type { PluginDeploymentContract } from "./deployment.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
-  ConnectionTemplateValues,
-  CredentialSource,
+  ConnectionTemplateVersion,
+  StoredCredentialSource,
   Namespace,
   OpenClawConfigurationDocument,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
-  PluginDesiredSelection,
   PluginDesiredState,
   PluginPolicyCapabilities,
   RevisionHarnessDescriptor,
@@ -30,53 +29,41 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
-/** Only the issuer selects candidate accounts. The receiver controls where a token may go. */
-export type PluginAccountTarget = Pick<
-  ConnectionTemplateValues,
-  "issuer" | "tokenUrl" | "destinations" | "mcp"
->;
-
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
   readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
-  /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
+  readonly describeDeployment?: PluginDeploymentContract["describeDeployment"];
+  /**
+   * Matches only source metadata authorized by OCC. Template versions are keyed by Source ID;
+   * OCC checks the original consent issuer and MCP resource before passing the current approved
+   * destination ceiling. Source enrollment owns OAuth client validation. The Driver receives no
+   * credential values.
+   */
   readonly credentials?: {
-    choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
-    /** A saved slot that can accept an account from a compatible browser OAuth template. */
-    connectionSlot?(
-      selections: PluginDesiredState,
-      pluginId: string,
-      slotId: string,
-    ):
-      | {
-          readonly releaseSha256: string;
-          readonly credentialSourceId: string | null;
-          readonly issuers: readonly string[];
-          /** The reviewed endpoint for MCP tool discovery with a saved account. */
-          readonly mcpServerUrl?: string;
-          acceptsRecipient(target: PluginAccountTarget): boolean;
-          /** Decide whether this release may present the account for this request. */
-          authorizeRequest?(
-            target: PluginAccountTarget,
-            grantedScopes: readonly string[],
-            request: CredentialHttpRequest,
-          ): "credential" | "public" | "deny";
-          bind(sourceId: string): PluginDesiredSelection;
-        }
-      | undefined;
+    choices(
+      sources: readonly StoredCredentialSource[],
+      templates?: ReadonlyMap<string, ConnectionTemplateVersion>,
+    ): readonly AgentPluginCredentialSlot[];
+    /** Reports selected Source IDs before source or release validation. */
+    selectedBindings(input: {
+      readonly pluginId: string;
+      readonly selection: PluginDesiredState[string];
+    }): Readonly<Record<string, Readonly<Record<string, string>>>>;
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,
       slotId: string,
-      source: CredentialSource,
+      source: StoredCredentialSource,
+      template?: ConnectionTemplateVersion,
     ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
-      sources: readonly CredentialSource[],
+      sources: readonly StoredCredentialSource[],
       modelSourceId?: string,
-    ): void;
+      templates?: ReadonlyMap<string, ConnectionTemplateVersion>,
+    ): void | Promise<void>;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
@@ -97,7 +84,8 @@ export interface PluginDriver extends Driver {
     credentialRuntime?: {
       readonly sandbox: string | undefined;
       readonly gateway: string | undefined;
-      readonly requestTimeCredentials?: boolean;
+      /** Plugin IDs for which OCC authorized every selected credential binding for staged delivery. */
+      readonly stagedPluginIds?: ReadonlySet<string>;
     },
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;

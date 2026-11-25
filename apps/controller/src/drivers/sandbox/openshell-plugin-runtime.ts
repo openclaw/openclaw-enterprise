@@ -1,19 +1,9 @@
-/** The currently qualified adapter pair for managed plugin credential injection. */
-export function supportsManagedPluginRuntime(
-  sandbox?: string,
-  gateway?: string,
-  requestTimeCredentials = false,
-): boolean {
-  return sandbox === "openshell" && (gateway === "openshell" || requestTimeCredentials);
-}
-
 export const managedCredentialEnvironment = "OPENCLAW_MANAGED_CREDENTIAL_ENV";
 
 // The adapter owns placeholder syntax; shared worker bootstrap consumes this helper.
 export const MANAGED_PLUGIN_CREDENTIAL_HELPER = String.raw`
 function isManagedPluginPlaceholder(environment, value, kind) {
   if (typeof environment !== "string" || typeof value !== "string") return false;
-  if (value === "oce:saved-account:" + environment) return true;
   let match;
   if (kind === "cli") {
     match = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(value);

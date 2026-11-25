@@ -1,9 +1,9 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
-import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
+import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   type createNavigation,
   type pages,
 } from "./navigation.mjs";
@@ -33,7 +33,11 @@ type ShellOptions = Pick<Navigation, "route" | "pageUrl" | "navigate"> & {
   logout(): void;
 };
 
-type LeaveGuard = (options?: { pendingOnly: true } | { refresh: true }) => boolean;
+type LeaveGuard = (options?: {
+  pendingOnly?: true;
+  refresh?: true;
+  focusFeedback?: (feedback: HTMLElement) => void;
+}) => boolean;
 
 export function brandContents(placement: "navigation" | "sign-in") {
   const displayName =
@@ -133,8 +137,8 @@ export function sorted<T extends { id: string; name?: string }>(items: readonly 
 }
 
 const backendTypes = {
-  chatgpt: "ChatGPT",
   github: "GitHub",
+  chatgpt: "ChatGPT",
   openshell: "OpenShell",
 } satisfies Record<BackendSummary["type"], string>;
 
@@ -175,6 +179,14 @@ export function createShell({
   let refuseLeave: LeaveGuard = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
+  function focusLeaveFeedback(feedback: HTMLElement) {
+    // The drawer makes the page inert. Close it without returning focus to its toggle.
+    if (drawerControls?.shell.classList.contains("drawer-open")) {
+      drawerControls.close(false);
+    }
+    focusSaveOutcome(document.body, [], feedback);
+  }
+
   mobileLayout.addEventListener("change", (event) => {
     // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
     menuControls?.close();
@@ -202,7 +214,7 @@ export function createShell({
     return svg;
   }
 
-  // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
+  // Navigation and drawer controls share a 24-unit drawing grid.
   function lineIcon(d: string) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "line-icon");
@@ -294,7 +306,18 @@ export function createShell({
     });
     enableMenuKeys(menu, closeAccount);
     menu.append(
-      button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
+      button(
+        "Settings",
+        () => {
+          if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
+            // Restore the toggle only if the guard left focus in the menu.
+            closeAccount(menu.contains(document.activeElement));
+            return;
+          }
+          navigate("settings");
+        },
+        { role: "menuitem", tabindex: "-1" },
+      ),
       button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
     account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
@@ -414,7 +437,7 @@ export function createShell({
         return;
       }
       // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         select.value = namespaceId ?? "";
         return;
       }
@@ -456,28 +479,37 @@ export function createShell({
   // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
   function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
-    const copied = element("span", { className: "page-meta-copied", role: "status" });
-    let clearCopied: number | undefined;
+    const feedback = element("span", { className: "page-meta-copied" });
+    const status = element("span", { role: "status" }, feedback);
+    let clearFeedback: number | undefined;
+    let latestCopy = 0;
     const copy = button(
       "",
-      () => {
-        const done = () => {
-          copied.textContent = "Copied";
-          clearTimeout(clearCopied);
-          clearCopied = setTimeout(() => {
-            copied.textContent = "";
+      async () => {
+        const attempt = ++latestCopy;
+        clearTimeout(clearFeedback);
+        feedback.textContent = "";
+
+        let copied = false;
+        try {
+          if (typeof navigator.clipboard?.writeText === "function") {
+            await navigator.clipboard.writeText(agentId);
+            copied = true;
+          }
+        } catch {
+          // Fall back to manual copying when the browser rejects the write.
+        }
+        if (attempt !== latestCopy || !id.isConnected) {
+          return;
+        }
+        if (copied) {
+          feedback.textContent = "Copied";
+          clearFeedback = window.setTimeout(() => {
+            feedback.textContent = "";
           }, 2000);
-        };
-        const select = () => {
-          const range = document.createRange();
-          range.selectNodeContents(id);
-          document.getSelection()?.removeAllRanges();
-          document.getSelection()?.addRange(range);
-        };
-        if (typeof navigator.clipboard?.writeText === "function") {
-          navigator.clipboard.writeText(agentId).then(done, select);
         } else {
-          select();
+          document.getSelection()?.selectAllChildren(id);
+          feedback.textContent = "Copy selection";
         }
       },
       {
@@ -488,8 +520,9 @@ export function createShell({
         title: "Copy Agent ID",
       },
     );
+    copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, copied);
+    return element("span", { className: "page-meta-id" }, id, copy, status);
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -505,7 +538,7 @@ export function createShell({
         return;
       }
       event.preventDefault();
-      if (refuseLeave()) {
+      if (refuseLeave({ focusFeedback: focusLeaveFeedback })) {
         return;
       }
       navigate("agents");
@@ -551,9 +584,14 @@ export function createShell({
     const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
+    const focused = document.activeElement;
+    // After admission the reader can Tab to the header's selector while the page read runs.
+    const focusedNamespace =
+      focused === namespaceSelect && namespaceSelect?.closest(".page-header")
+        ? namespaceSelect.value
+        : null;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const focused = document.activeElement;
     const menuFocus =
       focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -587,7 +625,7 @@ export function createShell({
         event.preventDefault();
         // A page waiting on a write stays and says why, as ← Agents does (finding 1937). On a
         // phone the drawer closes, so the reason is not hidden behind it.
-        if (refuseLeave({ pendingOnly: true })) {
+        if (refuseLeave({ pendingOnly: true, focusFeedback: focusLeaveFeedback })) {
           if (drawerControls?.shell.classList.contains("drawer-open")) {
             drawerControls.close();
           }
@@ -597,8 +635,13 @@ export function createShell({
       });
     }
     const credentialAdministration =
-      feature === connectionTemplatesPage || feature === oauthClientsPage;
-    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
+      feature === connectionTemplatesPage || feature === credentialClientsPage;
+    const icons = {
+      agents:
+        "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
+      secrets: "M15 14a6 6 0 1 0-5-5l-7 7v5h5v-3h3v-3l1.5-1.5Q14 14 15 14z M17 7h.01",
+      namespaces: "m3 7 9-5 9 5-9 5z M3 12l9 5 9-5M3 17l9 5 9-5",
+    };
     for (const name of ["agents", "secrets", "namespaces"] as const) {
       const link = element(
         "a",
@@ -609,7 +652,7 @@ export function createShell({
             ? { "aria-current": "page" }
             : {}),
         },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
+        lineIcon(icons[name]),
         pages[name],
       );
       followPage(link, name);
@@ -624,7 +667,7 @@ export function createShell({
           target: "_blank",
           rel: "noopener noreferrer",
         },
-        element("span", { className: "nav-icon", "aria-hidden": "true" }, "◉"),
+        lineIcon("M2 12h5l3-8 4 16 3-8h5"),
         "Observability",
         externalLinkIcon(),
       );
@@ -744,7 +787,7 @@ export function createShell({
       for (const [name, label] of [
         ["secrets", "Secrets"],
         [connectionTemplatesPage, "Connection templates"],
-        [oauthClientsPage, "OAuth clients"],
+        [credentialClientsPage, "Credential clients"],
       ] as const) {
         if (name !== "secrets" && !state.installationAdmin) {
           continue;
@@ -860,6 +903,12 @@ export function createShell({
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
       if (document.activeElement !== menuFocus) {
         menuControls?.close();
+      }
+    }
+    if (focusedNamespace && document.activeElement === document.body) {
+      const replacement = scopeSelector?.querySelector("select");
+      if (replacement?.value === focusedNamespace && !replacement.disabled) {
+        replacement.focus({ preventScroll: true });
       }
     }
     return { view, refresh, diagnostics, scopeSelector, actions };
@@ -1041,7 +1090,7 @@ export function createShell({
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
     dropAdministrationLinks() {
-      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+      for (const page of [connectionTemplatesPage, credentialClientsPage]) {
         app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
       }
       observabilityUrl = null;

@@ -10,7 +10,7 @@
     "NODE_EXTRA_CA_CERTS",
     "OCC_TEST_KEYCLOAK_TOKEN_ORIGIN"
   ],
-  "optionalEnv": ["OCC_TEST_OPENSHELL_CREDENTIAL_SENDER"],
+  "optionalEnv": ["OCC_TEST_KEYCLOAK_HOST_PORT"],
   "prepare": {
     "postgres": true,
     "keycloak": true,
@@ -25,14 +25,15 @@
         "attached alice signs in through Keycloak with client_secret_basic",
         "a higher-priority Keycloak realm key changes the signing kid and the next sign-in succeeds without a controller restart",
         "unattached carol is refused after Keycloak sign-in, audited and given no account",
-        "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in"
+        "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in",
+        "real Keycloak enrollment enforces groups and email policy without inventing verification"
       ]
     },
     {
       "path": "tests/integration/postgres-saved-oauth-connections.test.ts",
       "expectedTests": [
-        "OAuth consent saves the account for its owner and refreshes it through the Token Service",
-        "Plugin consent attaches its saved account only while the Agent still permits the requested binding"
+        "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
+        "OAuth callback persists issuer-granted initial scopes and refuses refresh escalation"
       ]
     }
   ]

@@ -34,6 +34,21 @@ async function connectGateway({ url, apiKey, extraHeaders = {}, native = {} }) {
     scopes: [],
     deviceIdentity: null,
     ...native,
+    ...(native.deviceIdentity
+      ? {
+          hostDeps: {
+            loadOrCreateDeviceIdentity: () => undefined,
+            loadDeviceAuthToken: () => null,
+            storeDeviceAuthToken: () => {},
+            clearDeviceAuthToken: () => {},
+            logDebug: () => {},
+            logError: () => {},
+            signDevicePayload: (pem, payload) =>
+              sign(null, Buffer.from(payload), pem).toString("base64url"),
+            publicKeyRawBase64UrlFromPem: (pem) => createPublicKey(pem).export({ format: "jwk" }).x,
+          },
+        }
+      : {}),
     edgeAuthHeaders: {
       ...(apiKey === undefined ? {} : { "x-api-key": apiKey }),
       ...extraHeaders,
@@ -201,7 +216,9 @@ async function assertNativeNodeRouteAuthentication({
       () => requestGatewayHello({ url: nodeUrl, extraHeaders, native }),
       (error) => {
         assert.ok(error instanceof GatewayClientRequestError);
-        assert.equal(error.details?.authReason, "trusted_proxy_user_missing");
+        // The node route strips the required scope header, which native auth
+        // checks before the user header, including when both were forged.
+        assert.equal(error.details?.authReason, "trusted_proxy_missing_header_x-openclaw-scopes");
         return true;
       },
     );
@@ -313,6 +330,36 @@ async function assertNativeNodeRouteAuthentication({
 const input = await readInput();
 let result;
 switch (input.action) {
+  case "browser-boundary": {
+    // Only return public outcomes. Credentials arrive on stdin and never enter
+    // error messages or the host test result.
+    try {
+      result = await requestGatewayHello({
+        ...input,
+        native: { ...input.native, scopes: input.native?.scopes ?? ["operator.admin"] },
+        onConnected: async (client, hello) => {
+          const self = input.readProfile
+            ? await client.request("users.self", {}, { timeoutMs: 15000 })
+            : undefined;
+          return {
+            connected: true,
+            scopes: hello.auth?.scopes,
+            deviceTokenIssued: Boolean(hello.auth?.deviceToken),
+            profileId: self?.profile?.id,
+          };
+        },
+      });
+    } catch (error) {
+      const http = /(?:HTTP |unexpected server response: )(401|403)\b/i.exec(String(error.message));
+      result = {
+        connected: false,
+        httpStatus: http ? Number(http[1]) : undefined,
+        authReason:
+          typeof error.details?.authReason === "string" ? error.details.authReason : undefined,
+      };
+    }
+    break;
+  }
   case "sandbox-preview":
     result = await requestGatewayHello({
       ...input,

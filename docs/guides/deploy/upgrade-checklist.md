@@ -1,22 +1,17 @@
 # Plan an OpenClaw Enterprise upgrade
 
-Use this checklist before changing an OpenClaw Enterprise (OCE) controller,
-runtime, Helm chart, or Installation configuration in an environment that must
-retain data. It inventories the state an image update does not change by itself.
-
-The checklist complements the
-[production image upgrade procedure](production-upgrade.md) and the
-[persistent local k3d procedure](local-k3d-image-upgrade.md). A custom retained
-Compose or Compose-and-k3d environment has no supported in-place upgrade
-command; use this page as its migration inventory.
+Use this checklist to preserve data across controller, runtime, Helm chart, or
+Installation changes. Follow the [production](production-upgrade.md) or
+[persistent local k3d](local-k3d-image-upgrade.md) procedure. For custom
+Compose or Compose-and-k3d environments, use the checklist as an inventory.
+They have no supported in-place upgrade command.
 
 ## Classify the release
 
 - [ ] Record the candidate OCE source commit, upstream OpenClaw commit, Codex
       version, configured image references, and immutable controller and runtime
-      image digests. Confirm the build source was clean, recorded, and includes
-      this release's required changes. Do not use a moving tag or a configured
-      reference alone as upgrade evidence.
+      image digests. Verify the recorded build source was clean and includes
+      the required changes. Tags alone do not identify the build.
 - [ ] Diff the deployed and candidate source for database migrations, Helm
       templates, Installation schema, bundled Presets, Driver settings, runtime
       dependencies, and required Kubernetes assets.
@@ -36,29 +31,57 @@ command; use this page as its migration inventory.
       [correct any value it refuses](production-upgrade-recovery.md#correct-values-the-candidate-refuses).
       The image helper renders again and runs its startup preflight before
       stopping anything.
-- [ ] Decide whether this is a controller-only, runtime-only, or coordinated
-      release. A controller-only release does not request Agent deployments,
-      but the new worker can restart existing Agent Pods once and interrupt
-      repository-bound versions. A runtime
-      release creates new versions from current Agent and Configuration drafts.
-      To classify a source diff, compare its paths with what
-      `deploy/runtime/Dockerfile` copies into its final `runtime` stage, directly
-      or through a stage that stage copies from (`COPY --from=`);
-      `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile` lists them. A change to
-      one of those paths, or to the OpenClaw commit or Codex version the
-      Dockerfile pins, needs the new runtime image. For example, the repository
-      credential client in
-      `apps/controller/src/drivers/repo/github/credentials/client/` is built into
-      the runtime image. Other controller source ships only in the controller
-      image. This includes the Agent Pod specs that the controller renders, such
-      as `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`:
-      existing Agents get that change when the controller renders their Pods again.
-- [ ] Check controller/runtime compatibility. Upgrade the controller first when
-      it supports the deployed runtime. Use a release-specific sequence when the
-      versions cannot run together.
+- [ ] Classify the release as controller-only, runtime-only, or coordinated.
+      Controller-only upgrades request no Agent deployments. The new worker
+      can still restart existing Agent Pods once and interrupt repository-bound
+      versions. Runtime upgrades create versions from current Agent and
+      Configuration drafts.
+      Trace inputs to the final runtime stage with
+      `grep -nE '^(FROM|COPY)' deploy/runtime/Dockerfile`, including stages
+      referenced by `COPY --from`. Changes to those inputs, the pinned OpenClaw
+      commit, or the Codex version require a new runtime image. For example,
+      `apps/controller/src/drivers/repo/github/access/client/` ships in the
+      runtime. The controller image supplies Pod specs such as those in
+      `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`.
+      Existing Agents get changes when the controller renders their Pods again.
+- [ ] Upgrade the controller first if it supports the deployed runtime.
+      Otherwise, follow the release-specific sequence.
+- [ ] [Check operator access](#check-operator-access) while the incumbent serves traffic.
 - [ ] Freeze concurrent Helm changes, disable OCC autoscalers and restart automation,
-      and stop all other database writers through recovery. For runtime releases,
-      also stop Agent deployments and draft edits and resolve existing deployment work.
+      and stop all other database writers through recovery. Freeze Agent deployments
+      and settle existing deployment work for every release; also freeze draft edits
+      for runtime releases.
+
+### Check operator access
+
+Use the upgrade's OCC CLI, endpoint, CA and protected key file. Verify any
+recorded key expiry falls after the recovery window. Check the Installation
+ID and fleet access before freezing writers. Set `BASELINE` to the release's
+[baseline directory](upgrade-baseline.md#record-the-release-and-its-configuration).
+
+```bash
+(
+  set -euo pipefail
+  installation_id=$(jq -er '.installationId | strings | select(length > 0)' \
+    "${BASELINE:?}/installation-secret.json")
+  /secure/occ/bin/occ --output json installation get |
+    jq -es --arg id "$installation_id" 'length == 1 and .[0].id == $id' >/dev/null
+  /secure/occ/bin/occ --output json installation deployment-inventory |
+    jq -es --arg id "$installation_id" \
+      'length == 1 and .[0].installationId == $id and (.[0].namespaces | type == "array")' >/dev/null
+)
+```
+
+Continue on exit zero, including for an empty fleet. If OCC rejects the key,
+obtain a current key from the Installation administrator and repeat both reads.
+For permission failures, check the [inventory grants](upgrade-baseline.md#record-the-occ-inventory).
+Resolve target or connection errors before maintenance. The helper rechecks the
+inventory before stopping writers.
+
+If several ingress instances serve the HTTPS host, repeat the Installation
+read over fresh connections. Match reads to instances in access logs. Stop
+unless every instance returns the expected ID. Keep TLS verification enabled
+and credentials out of logs.
 
 ### Check ReplicaSet capacity
 
@@ -160,7 +183,11 @@ Create a private evidence directory and record these values before mutation.
       controller or sidecar versions.
 - [ ] PVC names and UIDs, PV names, representative workspace file hashes,
       session counts, and gateway state. Back up volumes when recovery could
-      require restoring Agent data.
+      require restoring Agent data. For a streamed backup,
+      including after an interruption, require the producer to finish successfully
+      and compare the archive's byte count and SHA-256 digest at both ends.
+      Reject the backup if either differs or the producer failed. Retain
+      partial output and diagnostics.
 - [ ] When recovery needs data from multiple stores, capture the required stores
       at one consistent point. Include the selected Configuration Driver's
       backing store when recovery needs current Configuration values. For the
@@ -189,12 +216,10 @@ Create a private evidence directory and record these values before mutation.
       bootstrap key storage, service-principal and service-key identities,
       repository registry metadata, broker sessions, and external provider or
       channel grants.
-- [ ] If CredentialSources are enabled, inventory their IDs, status, bindings,
-      and selected Gateway. Record recovery and rotation procedures for the
-      Gateway's separately managed provider credentials without recording values.
-      Updating a Namespace Secret does not update the Gateway's copy. See the
-      [CredentialSource reference](../../reference/credential-sources.md) for
-      the OpenShell Gateway's production limitations.
+- [ ] Inventory Credential Source IDs, status and Agent bindings. Record the
+      selected TokenService and Credential Proxy and which credentials need
+      [re-enrollment](credential-proxy-upgrade.md) during a Gateway cutover.
+      Keep Slack Channel startup Secrets in the separate channel inventory.
 - [ ] Compare Agent drafts and persisted Preset plugin policies with the
       candidate's [plugin policy contract](../../reference/agent-plugins.md).
       Resolve unsupported approval fields or values deliberately. Verify
@@ -216,23 +241,25 @@ Create a private evidence directory and record these values before mutation.
 
 ## Assign every surface a disposition
 
-Give every surface the disposition and operator action listed in
-[upgrade surface dispositions](upgrade-dispositions.md), from controller images
-and database migrations to retained volumes and local profile state.
+Follow the [operator instructions for each surface](upgrade-dispositions.md).
 
 ## Apply the release in dependency order
 
 1. Install cluster prerequisites (on two clusters, upgrade the
    [execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart)
    first) and reconcile protected inputs without replacing retained data.
-2. Run the canonical migration preflight. Stop if the history is unsupported or
-   a required quiescence step is unresolved.
-3. Upgrade the controller, worker, and Console. Wait for database migration,
-   bootstrap, authenticated API recovery, and worker readiness. The old API Pod
-   stops first and finishes admitted requests within its 30-second grace
-   ([shutdown timing](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)).
-4. Reconcile persisted resources that startup intentionally preserves, including
-   same-name Presets. Compare complete objects, not only counts or names.
+2. Run the [upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window),
+   including the candidate's canonical migration check. Stop on unsupported
+   history or an unresolved required quiescence step.
+3. Upgrade the controller, worker, and Console. The API Pod’s
+   [30-second grace period](../../flows/production-startup.md#4-start-private-api-and-worker-deployments)
+   can expire mid-request. Keep writers paused through recovery. After forced
+   or uncertain shutdown, wait for the database owner to confirm old transactions
+   have ended. Pod removal, drained ingress connections, and migration checks
+   cannot confirm this. Verify migration, bootstrap, authenticated API recovery,
+   and worker readiness.
+4. Reconcile resources that startup preserves. Compare complete objects,
+   including same-name Presets.
 5. Update runtime image selection only when required. Reload API and worker, then
    deploy the recorded running fleet through OCC.
 6. Reconcile external integrations and cluster-owned supporting services.
@@ -245,11 +272,13 @@ and database migrations to retained volumes and local profile state.
       expected controller digest; migration history is canonical.
 - [ ] The authenticated Installation and protected startup configuration agree.
       API and worker selected the same Driver identities.
+- [ ] Repeat the [operator access checks](#check-operator-access) before
+      reopening traffic. Include every restarted or replaced ingress instance.
 - [ ] Namespace, Agent, Configuration, Preset, and Secret-metadata inventories
       contain the expected IDs. IAM, Backend, service-account, deployment-work,
       and audit-record inventories also reconcile. The controller-only helper
-      requests no deployments, but affected Agents' Pods can restart once on the
-      same image; check for versions affected by broker restart.
+      requests no deployments. Verify readiness after Agent Pod restarts and
+      check any replacement revisions needed after broker restart.
 - [ ] Persisted Preset templates match the intended source definitions. Missing
       defaults were created, intended same-name copies were updated in place,
       and obsolete copies were handled deliberately.
@@ -257,19 +286,24 @@ and database migrations to retained volumes and local profile state.
       are ready on the requested digest; stopped Agents were not started.
 - [ ] PVC and PV identities, workspace hashes, gateway state, and representative
       sessions match the baseline.
-- [ ] Authentication, audit, metrics, traces, and alert delivery still reach
-      their sinks.
-- [ ] A real model response succeeds for each execution mode and provider in
-      scope. Startup and Pod readiness alone do not prove model access.
-- [ ] Required Slack or other channel delivery, repository clone or write,
-      plugin tool policy, workspace access, and native admin UI each pass a
-      representative live check. Where plugin approval is required, verify an
-      approval and a denial through the intended reviewer. For installed integrations,
-      check negotiated capabilities through the authenticated connection before
-      the downstream smoke. For example, gateway capability negotiation does not
-      prove an actual repository operation.
-- [ ] Where CredentialSources are enabled, confirm source status and Agent
-      bindings, then verify a real model response through the selected Gateway.
+- [ ] The configured sign-in paths work and expected operations appear in the
+      audit ledger. Check that configured metrics, traces, and test alerts
+      reach their destinations.
+- [ ] For each execution mode and provider in use, verify the expected Agent
+      revision, allowed and denied gateway access, and a fresh reply from the
+      intended model provider.
+      For manual checks, follow [production workload verification](production-agents.md#verify-production-workloads).
+- [ ] Run a representative request for each workflow in use and
+      check its result at the destination. Include relevant channel delivery,
+      repository clone or write, plugin tool policy, workspace access, and
+      native admin UI. For installed integrations, verify negotiated
+      capabilities through the authenticated connection, then verify the
+      downstream operation. Where plugin approval is required, verify approval
+      and denial through the intended reviewer. See
+      [workflow verification](production-handoff.md#verify-the-deployed-workflow).
+- [ ] Confirm TokenService Source status, exact operator and Agent grants,
+      and the active revision's bindings. Verify a real model reply through
+      the selected Credential Proxy delivery path.
 - [ ] Evidence contains the before/after inventory, rendered configuration,
       migration receipt, rollout status, deployment results, and any accepted
       exceptions, but no credential values.
@@ -286,6 +320,12 @@ considering rollback. Do not run an older controller against state it cannot
 read. After a partial runtime failure, keep the healthy control plane and recover
 the affected Agents individually. Never delete persistent resources to make the
 upgrade appear clean.
+
+A write can commit after a timeout or HTTP `503`. Once the database owner
+confirms the transaction has ended, check the resource and its
+[audit record](../../flows/audit-ledger.md) with authorized reads. Do not
+retry a committed write. If the outcome remains unknown, keep writers
+paused and do not retry.
 
 If the candidate accepted writes, preserve them before restoring older data and
 reconcile them before reopening traffic, or repair the candidate in place.

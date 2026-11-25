@@ -14,17 +14,13 @@ Choose one OpenShell installation path: [local k3d](docs/guides/deploy/local-set
 
 ```bash
 go build -trimpath -o bin/occ ./cmd/occ
-export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
-export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
-export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./bin/occ dev up
 ```
 
-This selects the Kubernetes-only profile for Agent deployment. With no profile
-selection, `occ dev up` starts a Compose control-plane preview that cannot deploy
-Agents.
+This starts the Kubernetes-only profile, which deploys Agents. The first build
+can take a long time. Other profiles need an [explicit selection](docs/guides/deploy/local-kubernetes-development.md#select-another-profile).
 
-You need Docker Engine or Podman, k3d, kubectl, Helm, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
+You need Docker Engine or Podman, k3d, kubectl, Helm, jq, Bash, Python 3, Go (the version in [`go.mod`](go.mod)), Node.js 24.22.1 or newer, and the pnpm version in [`package.json`](package.json). The quickstart covers installation checks, the local API credentials, and cleanup.
 
 For a dedicated OpenShell Codex Agent, complete [local k3d setup](docs/guides/deploy/local-setup.md), then [deploy and onboard your Agent](docs/guides/deploy/deploy-first-agent.md). For an existing installation, [deploy and verify an Agent](docs/guides/deploy/production-agents.md).
 

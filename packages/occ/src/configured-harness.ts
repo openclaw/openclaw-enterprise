@@ -324,23 +324,25 @@ function configuredModels(value: unknown, setting: SelectionMessage): readonly s
 }
 
 /**
- * The refusal for an agents.defaults.models or agents.entries.<id>.models setting (`parent`,
- * holding `value`) that breaks the selectable rule, or undefined when it holds: an object keyed
- * by model ref, where a model other than the primary needs the primary's provider and the same
- * agentRuntime, set on both. The first model that breaks it, in document order, is named.
+ * Require an agents.defaults.models or agents.entries.<id>.models setting (`parent`, holding
+ * `value`) to be an object keyed by model ref. Each model beside the primary needs the primary's
+ * provider and the same agentRuntime, set on both. The first model that breaks the rule, in
+ * document order, is named.
  * `primaryOffer` gives the remedy for the primary's missing runtime: the values to set it to, or
  * the next step where the deploying Agent runs none.
  */
-function selectableModelsRefusal(
+function requireSelectableModels(
   parent: string,
   value: Readonly<Record<string, unknown>> | undefined,
   selectedModel: string,
   primaryOffer: (listed: Readonly<Record<string, unknown>>) => string,
-): string | undefined {
+): void {
   if (value === undefined) {
-    return configurationSettingMessage(
-      parent,
-      'must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}',
+    throw new ConfigurationHarnessError(
+      configurationSettingMessage(
+        parent,
+        'must be an object keyed by model ref, such as {"openai/gpt-5.1": {"agentRuntime": {"id": "openclaw"}}}',
+      ),
     );
   }
   const selectedPolicy = () => keyedSettingPath(parent, selectedModel);
@@ -351,26 +353,31 @@ function selectableModelsRefusal(
       continue;
     }
     if (selectedRuntime === undefined) {
-      return configurationSettingMessage(
-        `${selectedPolicy()}.agentRuntime.id`,
-        `is required when other models are listed beside the primary model: ${primaryOffer(value)}`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `${selectedPolicy()}.agentRuntime.id`,
+          `is required when other models are listed beside the primary model: ${primaryOffer(value)}`,
+        ),
       );
     }
     const listed = () => keyedSettingPath(parent, model);
     if (splitModelRef(model).provider !== selectedProvider) {
-      return configurationSettingMessage(
-        listed(),
-        `is not on the primary model's provider, ${quotedSettingKey(selectedProvider, 64)}: remove it, or list a model of that provider`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          listed(),
+          `is not on the primary model's provider, ${quotedSettingKey(selectedProvider, 64)}: remove it, or list a model of that provider`,
+        ),
       );
     }
     if (configuredRuntime(policy, listed) !== selectedRuntime) {
-      return configurationSettingMessage(
-        `${listed()}.agentRuntime.id`,
-        `must be ${selectedRuntime}, the primary model's runtime: set it, or remove the model`,
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(
+          `${listed()}.agentRuntime.id`,
+          `must be ${selectedRuntime}, the primary model's runtime: set it, or remove the model`,
+        ),
       );
     }
   }
-  return undefined;
 }
 
 // A provider catalog's rows keyed by id, built once per resolution so that looking up each
@@ -431,16 +438,15 @@ function providerModelEntry(
 }
 
 /**
- * The provider catalog rule of resolveConfiguredHarnessId: each row of a
- * models.providers.<provider>.models list names a primary or fallback model of `selections`, by
- * its complete ref or the remainder after the provider. Deployment checks it on every Harness,
- * before it resolves one, so Configuration save runs it too (requireConsistentModelPolicy;
- * finding 3019).
+ * Save and deployment admit the same catalog rows. Return the additional models
+ * with rows so their policies are checked without adding automatic fallbacks.
  */
 function requireSelectedCatalogRows(
   providerConfigurations: Readonly<Record<string, unknown>> | undefined,
   selections: Iterable<readonly string[]>,
-): void {
+  defaults: Readonly<Record<string, unknown>> | undefined,
+  codexRuns: (providerId: string) => boolean,
+): ReadonlySet<string> {
   // The catalog ids that name each provider's candidates (complete ref or remainder), so each
   // catalog row is checked in constant time.
   const catalogIds = new Map<string, Set<string>>();
@@ -452,6 +458,10 @@ function requireSelectedCatalogRows(
     }
   }
 
+  const models = asRecord(defaults?.models);
+  const allow = asRecord(defaults?.modelPolicy)?.allow;
+  const allowed = allow === undefined ? undefined : new Set(Array.isArray(allow) ? allow : []);
+  const selectable = new Set<string>();
   for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
     const provider = asRecord(value);
     if (provider === undefined) {
@@ -469,23 +479,39 @@ function requireSelectedCatalogRows(
       throw providerModelsListError(providerId);
     }
     const ids = catalogIds.get(providerId);
-    if (
-      provider.models.some((value) => {
-        const id = asRecord(value)?.id;
-        return !(typeof id === "string" && ids?.has(id) === true);
-      })
-    ) {
-      // With no model selected at all, no row can name one: the setting to set is the model,
-      // not the row (dogfood-member-r67 catalog row 7).
+    const supportsCodex = ids !== undefined && codexRuns(providerId);
+    for (const row of provider.models) {
+      const id = asRecord(row)?.id;
+      if (typeof id === "string" && ids?.has(id)) {
+        continue;
+      }
+      // Only native IDs can name alternatives: a full reference could also be
+      // a nested ID. requireSelectableModels already required the same primary runtime.
+      if (supportsCodex && typeof id === "string" && !id.startsWith(`${providerId}/`)) {
+        const ref = `${providerId}/${id}`;
+        if (
+          isModelReference(ref) &&
+          !/[\s*@]/u.test(ref) &&
+          policyRuntime(models?.[ref]) === "codex" &&
+          (allowed === undefined || allowed.has(ref))
+        ) {
+          selectable.add(ref);
+          continue;
+        }
+      }
       throw new ConfigurationHarnessError(
-        modelProviderMessage(providerId, (path) =>
-          catalogIds.size === 0
-            ? `Configuration setting ${path}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`
-            : `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`,
-        ),
+        modelProviderMessage(providerId, (path) => {
+          if (catalogIds.size === 0) {
+            return `Configuration setting ${path}.models lists models, but no model is selected: set agents.defaults.model or an agents.entries model.`;
+          }
+          return supportsCodex
+            ? `Configuration setting ${path}.models accepts primaries and fallbacks. Alternatives omit the provider prefix. Set both models' agentRuntime.id to codex in agents.defaults.models. List exact refs in agents.defaults.modelPolicy.allow if set.`
+            : `Configuration setting ${path}.models may list only entries whose id names a primary or fallback model set in agents.defaults.model or agents.entries.`;
+        }),
       );
     }
   }
+  return selectable;
 }
 
 /**
@@ -658,15 +684,12 @@ function resolveModelPolicy(
     }
     primary ??= model;
     if (entry.models !== undefined) {
-      const refusal = selectableModelsRefusal(
+      requireSelectableModels(
         entryModelsPath(key),
         asRecord(entry.models),
         model,
         primaryRuntimeOffer(model, [defaultModels?.[model]]),
       );
-      if (refusal !== undefined) {
-        throw new ConfigurationHarnessError(refusal);
-      }
     }
     selections.push({ models: selection, entry, key });
   }
@@ -677,7 +700,7 @@ function resolveModelPolicy(
         "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model.",
       );
     }
-    const refusal = selectableModelsRefusal(
+    requireSelectableModels(
       "agents.defaults.models",
       defaultModels,
       primary,
@@ -686,14 +709,13 @@ function resolveModelPolicy(
         Object.values(entries ?? {}).map((entry) => asRecord(asRecord(entry)?.models)?.[primary]),
       ),
     );
-    if (refusal !== undefined) {
-      throw new ConfigurationHarnessError(refusal);
-    }
   }
 
-  requireSelectedCatalogRows(
+  const selectable = requireSelectedCatalogRows(
     providerConfigurations,
     selections.map(({ models }) => models),
+    defaults,
+    codexRuns,
   );
 
   if (primary === undefined) {
@@ -883,6 +905,13 @@ function resolveModelPolicy(
     }
   }
 
+  for (const model of selectable) {
+    const harness = resolveCandidate(model, undefined, undefined, false, primary);
+    if (harness !== undefined) {
+      resolved.add(harness);
+    }
+  }
+
   // Deployment resolves every candidate. A draft that left each one to deployment resolves none.
   if (resolved.size > 1 || (!draft && resolved.size === 0)) {
     throw new ConfigurationHarnessError(
@@ -909,7 +938,7 @@ export function resolveConfiguredHarnessId(
  * the document sets conflicting values, with deployment's text and in deployment's order: the
  * agents shape, each selection's form and fallback provider, an entry primary other than the
  * defaults', agents.*.models that break the selectable rule, a provider catalog row that names no
- * selected model (finding 3019), a selected model listed twice in its catalog, conflicting runtime
+ * selected or selectable model, a model listed twice in its catalog, conflicting runtime
  * policies, an unsupported runtime id, a Codex runtime on another provider than codex, and models
  * that select different runtimes (finding 3020). A draft without a model, or a model without its
  * required runtime, still saves; deployment refuses it. None of these rules reads Installation or

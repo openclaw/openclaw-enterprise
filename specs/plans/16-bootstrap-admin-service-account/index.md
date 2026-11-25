@@ -47,7 +47,7 @@ initializer removes that duplication and the internal HTTP error boundary.
 | Initialization | [`scripts/bootstrap-installation.mjs`](../../../scripts/bootstrap-installation.mjs) handles both environment modes, private output, commit, and failure cleanup. |
 | API startup | [Development composition](../../../apps/controller/src/composition/development-postgres.ts) and [production composition](../../../apps/controller/src/composition/production.ts) require initialized state. |
 | Identity and keys | [Native IAM](../../../packages/iam/src/index.ts) owns the shared administrator Role and bindings; the [auth wrapper](../../../apps/controller/src/auth/index.ts) owns Better Auth key issuance and verification. |
-| Persistence and delivery | [PostgreSQL transactions](../../../packages/occ/src/state/postgres-state.ts) distinguish unknown COMMIT outcomes; [private output](../../../apps/controller/src/composition/bootstrap-output.ts) protects attempt-owned files. |
+| Persistence and delivery | [PostgreSQL transactions](../../../packages/occ/src/state/postgres-state.ts) distinguish unknown COMMIT outcomes; [private output](https://github.com/openclaw/openclaw-enterprise/blob/81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92/apps/controller/src/composition/bootstrap-output.ts) protects attempt-owned files. |
 | Packaging and operator access | [Compose](../../../compose.yaml) and the [Helm Job](../../../deploy/helm/openclaw-enterprise/templates/jobs.yaml) run initialization before serving; [`scripts/occ-api`](../../../docs/guides/cli.md) sends protected operator requests. |
 
 ## Requirements -> Design Mapping

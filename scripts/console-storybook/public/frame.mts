@@ -1,6 +1,5 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
-import type { ConnectionPreview } from "./scenario-groups/plugins.mts";
 import { scenarios } from "./scenarios.mts";
 import { installFixture } from "./fixtures.mts";
 
@@ -22,10 +21,8 @@ type FrameScenario = FrameScenarioBase &
     | {
         component: "plugins";
         pluginSelections?: string | undefined;
-        connectionPreview?: ConnectionPreview;
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
-        managedToolPreview?: boolean;
         disabled?: boolean | undefined;
       }
   );
@@ -123,153 +120,9 @@ if (scenario.component === "plugins") {
   input.rows = 6;
   input.spellcheck = false;
   input.value = scenario.pluginSelections ?? "{}";
-  let changedTemplateAttempted = false;
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
-    ...(scenario.managedToolPreview && {
-      // The component preview returns its preloaded simulated result on reload.
-      onLoadTools: async (id, connection) => {
-        if (!connection) {
-          return;
-        }
-        return scenario.pluginCatalog?.entries?.find((entry) => entry.id === id)?.managedTools?.[
-          connection.slot
-        ]?.[connection.sourceId]?.tools;
-      },
-    }),
-    ...(scenario.connectionPreview && {
-      saveHint:
-        scenario.connectionPreview === "changed"
-          ? "Changes are saved when you create the Agent."
-          : "Changes are saved when you choose Save plugin selections.",
-      getSlotConnection: () => ({
-        ...(scenario.connectionPreview === "changed" && { grantOnCreate: true as const }),
-        unavailable: () => undefined,
-        async list() {
-          if (scenario.connectionPreview === "denied") {
-            throw Object.assign(new Error("Access denied"), { status: 403 });
-          }
-          if (scenario.connectionPreview === "loading") {
-            return await new Promise<never>(() => {});
-          }
-          if (scenario.connectionPreview === "changed") {
-            const version = changedTemplateAttempted ? 2 : 1;
-            const scope = changedTemplateAttempted ? "gmail.modify" : "gmail.readonly";
-            return {
-              templates: [
-                {
-                  id: "changing-template",
-                  displayName: `Workspace OAuth (version ${version})`,
-                  version,
-                  mode: "manual",
-                  scopes: [scope],
-                  requiredScopes: [],
-                  offeredScopes: [],
-                },
-              ],
-            };
-          }
-          if (scenario.connectionPreview === "unregistered") {
-            return {
-              templates: [],
-              setup: {
-                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
-                issuers: ["https://accounts.google.com"],
-                unregisteredTemplates: [
-                  { id: "ctp_00000000-0000-4000-8000-000000000003", displayName: "Google OAuth" },
-                ],
-              },
-            };
-          }
-          if (scenario.connectionPreview === "named") {
-            return {
-              templates: [
-                {
-                  id: "support",
-                  displayName: "Support server access",
-                  version: 1,
-                  mode: "mcp_discovery",
-                  scopes: ["messages.read", "messages.write"],
-                  requiredScopes: ["messages.read"],
-                  offeredScopes: ["messages.read", "messages.write"],
-                },
-              ],
-            };
-          }
-          if (scenario.connectionPreview === "unrestricted") {
-            return {
-              templates: [
-                {
-                  id: "discovered-open",
-                  displayName: "Support MCP",
-                  version: 1,
-                  mode: "mcp_discovery",
-                  scopes: [],
-                  requiredScopes: ["messages.read"],
-                  offeredScopes: ["messages.read", "messages.write"],
-                },
-                {
-                  id: "manual-open",
-                  displayName: "Support OAuth",
-                  version: 1,
-                  mode: "manual",
-                  scopes: [],
-                  requiredScopes: [],
-                  offeredScopes: [],
-                },
-              ],
-            };
-          }
-          if (scenario.connectionPreview === "empty") {
-            return { templates: [] };
-          }
-          return {
-            templates: [
-              {
-                id: "first",
-                displayName: "Engineering Gmail",
-                version: 2,
-                mode: "manual",
-                scopes: ["gmail.readonly"],
-                requiredScopes: [],
-                offeredScopes: [],
-              },
-              {
-                id: "second",
-                displayName: "Shared Gmail",
-                version: 1,
-                mode: "manual",
-                scopes: ["gmail.readonly"],
-                requiredScopes: [],
-                offeredScopes: [],
-              },
-            ],
-          };
-        },
-        async start(_slot, template, selectedScopes) {
-          if (scenario.connectionPreview === "changed" && !changedTemplateAttempted) {
-            changedTemplateAttempted = true;
-            throw Object.assign(new Error("Template changed"), { status: 409 });
-          }
-          document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
-          const receipt = document.createElement("section");
-          receipt.className = "agent-card agent-form";
-          const output = document.createElement("p");
-          output.setAttribute("role", "status");
-          output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
-          receipt.append(output);
-          if (selectedScopes) {
-            const permissions = document.createElement("p");
-            permissions.textContent = selectedScopes.length
-              ? `Requested scopes: ${selectedScopes.join(", ")}`
-              : "Provider defaults requested.";
-            receipt.append(permissions);
-          }
-          document.getElementById("app")?.replaceChildren(receipt);
-        },
-      }),
-    }),
     capabilities: scenario.pluginCapabilities ?? null,
   });
   const panel = document.createElement("section");

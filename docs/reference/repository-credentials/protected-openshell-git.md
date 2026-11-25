@@ -1,10 +1,9 @@
 # Protected repository access with OpenShell
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-OCE matches the held launcher request to an authenticated middleware denial before
-issuing credentials. Installation and signed release precede Agent startup.
-Select repositories sharing explicit permissions. OCE verifies GitHub's returned scope
-against canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
+OCE verifies middleware denial before issuing credentials and releasing the Agent.
+Repositories must share explicit permissions. OCE checks GitHub's scope against
+canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
 
 `git-write` retains exact ref policy. Qualification requires configured capabilities
 and runtime evidence. `git-read` and
@@ -35,11 +34,12 @@ Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from on
 Driver registration. Use
 [Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) and
 [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-Set repository eligibility in the GitHub Backend registry at
+Set repository eligibility in the registry at
 `/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
-`repository.preparedGitHub` for prepared credentials. Connect the selected Driver
+`repository.preparedGitHub`. Connect the selected Driver
 with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
-`publicCaPath`, and `repository.nativeSender`.
+`publicCaPath`, `repository.nativeSender` and `repository.preparedGitHub.apiOrigin`:
+`repository.openShell` reaches only `github.com`, and deploy refuses repository Git otherwise.
 Remove Compute's `network.repositoryCredentials`: startup refuses it without
 `repository.nativeSender`.
 
@@ -49,10 +49,10 @@ Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repository.openShell.authority` on host `0.0.0.0` (or `::`) and on the
 `openshellGit.port` value (default 8445), with the chart's files
 `/etc/openclaw/openshell-git/tls.crt`, `tls.key` and `gateway-public.pem`.
-Startup and the upgrade check refuse another host, port or path with
+Startup and the upgrade check refuse other values with
 `CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
 inputs select the registry ConfigMap, worker-only App-key and existing custody
-Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
+Secrets. Preserve the custody key across restarts;
 never put either key in Agent configuration or Helm values.
 
 ## Prepare the request-phase service
@@ -132,8 +132,7 @@ max_payload_bytes = 4194304
 timeout = "5s"
 ```
 
-The selected repository path and `github-installation` preview require exactly `5s` here. OCE still caps its
-authorization decision at three seconds.
+Selected repositories and the `github-installation` preview require `5s`; OCE limits authorization to three seconds.
 
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.
@@ -167,7 +166,7 @@ for membership and permissions, and the
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+`profile: github-installation` in the Agent's `repositoryAccess.repositories`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. The bundled OpenShell Credential Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers
@@ -195,17 +194,18 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-The Sandbox sets process-scoped `safe.directory` for its approved mount,
-allowing root-owned workspaces without trusting nested repositories or changing
-persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+Process-scoped `safe.directory` permits the Sandbox's root-owned mount without trusting
+nested repositories or changing persistent Git configuration. `push.negotiate=true`
+reduces transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
 With `github-repository`, use selected HTTPS Git URLs; API operations use token
 permissions. Both API scopes refuse runner-token and deploy-key creation.
+Both allow read-only API-root discovery for `gh auth status` under current grants.
 Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
 GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
 `X-GH-CACHE-TTL` hints (such as `24h0m0s`).
-Hints support `gh pr list --search`; OCE ignores their values and checks current
-authorization. Duplicate headers are refused.
+For `gh pr list --search`, OCE ignores hint values, checks current authorization
+and refuses duplicate headers.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
@@ -213,17 +213,19 @@ Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
 receive no credential. Git reports `could not read Username` or
 `The requested URL returned error: 403`.
 
-[OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime
-and standing approval. Access is finite unless separately approved as standing;
-each token and session still expires. Remove standing approval with its current
-approval generation **before** clearing the repository binding. An already
-authorized request can finish after withdrawal.
+Finite access ends at its deadline or when an admitted binding is removed.
+Removal withdraws that revision's whole Git set; re-adding cannot restore it.
+Remove standing approval with its current generation **before** clearing bindings.
+An authorized request can finish after withdrawal.
+Removal during incomplete activation can fail deployment while retaining the independently
+verified runtime; workspace setup stays pending.
+See [withdrawal and retained supervision](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
-For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
-draft, and every Agent and version that has the grant shares it. To let Agents open a new
-draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
-records each draft use without spending an allowance; the draft-only, head and base checks
-still apply. This changes the grant identity: deploy a new version to use it.
+With `git-write`, draft POSTs to `api.github.com` accept one
+`Time-Zone: Etc/UTC` header. `draftPullLimit: one-per-grant` allows one draft
+across Agents and versions sharing the grant. For more drafts from that ref,
+set `draftPullLimit: none` in the Namespace policy and deploy a new version.
+OCE still records each draft use and checks draft status, head and base.
 
 A one-draft grant spends its allowance at authorization, before
 OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
@@ -232,22 +234,24 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git hides JSON error bodies. If OpenShell refuses the first clone, fetch,
-`ls-remote` or push request, Git reports `The requested URL returned error: 403`
-(exit 128). If only the push upload is refused, usually for another branch or tag
-(`request_not_allowed`), Git reports `error: RPC failed; HTTP 403`, then
-`fatal: the remote end hung up unexpectedly`. Even if it prints
-`Everything up-to-date` (exit 1), the push never reached GitHub.
+GitHub App `permissions` flags alone prove neither write access nor denial.
+[Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
+Git push success does not prove pull-request API access.
 
-After a known pre-send refusal, trace a fresh read. Git redacts the authorization
-header. Join the response lines to extract the reason. Never replay an uncertain write.
+Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push
+reports HTTP 403 (exit 128). Refused push uploads, usually for another branch or
+tag (`request_not_allowed`), report `error: RPC failed; HTTP 403` and
+`fatal: the remote end hung up unexpectedly`. Even with `Everything up-to-date`
+(exit 1), GitHub received nothing.
+
+After a known pre-send refusal, trace a fresh read. Git redacts authorization:
 
 ```bash
 GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
   | tr -d '\n' | grep -o '"reason_code":"[a-z_]*"'
 ```
 
-The draft helper prints the code and the matching advice itself, for example
+The draft helper reports
 `Draft not created: the repository route refused it (access_withdrawn); GitHub did not receive it.`
 
 ### Reason codes
@@ -262,10 +266,9 @@ The draft helper prints the code and the matching advice itself, for example
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
 | `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
-Retry advice above applies only to a known pre-send refusal, never an uncertain send.
+Retry advice applies only to known pre-send refusals, never uncertain sends.
 
-A version that is still deploying has no credential yet, so its requests answer
-`route_not_ready` until it is active.
+Deploying versions lack credentials; requests answer `route_not_ready` until activation.
 
 ### Worker log
 
@@ -289,64 +292,75 @@ a removed binding (`access_withdrawn`) from a rejected App key (`credential_unav
 
 ## Route state, restarts and recovery
 
-`REPOSITORY_GIT_ROUTE_PENDING` means the worker has not verified the current
-Sandbox, supervisor and provider generation, or material is unavailable.
-`REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision; continued chat
-requires independent model access and verified Git-only removal. Unsafe identity
-changes, overlapping GitHub access from retained providers or failed observation
-can require runtime retirement instead. Git-only removal records one conditional
-detach request. While Git stays attached, the worker sends that same request again;
-a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
-An empty OpenShell profile workspace selects the platform profile, not a same-named
-Workspace profile.
+`REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox, supervisor or provider
+generation, or unavailable material; `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git
+until redeployment. Continued chat requires independent model access and verified
+Git-only removal. Identity changes, GitHub overlap or failed observation can require
+retirement. The worker reuses one conditional detach request while Git remains attached.
+A moved Sandbox version or unknown Gateway outcome retires the runtime. Empty profile
+workspaces select the platform profile. Files-only profiles may omit endpoint and
+credential lists; identity and overlap checks still apply.
 
-Standing succession can use a fresh expired-provider report only to confirm
-predecessor identity. New installations and post-detach model completion require
-ready credentials; model authorization remains independent.
+Standing succession requires a fresh `WITHHELD / CREDENTIAL_EXPIRED` report matching
+the predecessor and generation, then rechecks Sandbox readiness and main-process identity.
+Observation age plus monotonic read time must stay under 15 seconds at nanosecond precision;
+both timestamps must be within 30 seconds of local time. An elapsed budget leaves the route
+pending; contradictory evidence cannot authorize issuance, preparation or a route fence.
+New installations and post-detach model completion require ready credentials and independent model authorization.
 
-A transient observation failure closes access until the same installation verifies,
-with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
-protected `git-write`, and installation preview) cannot be adopted by a replacement
-worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-For v5 held launches after verified replacement, deployment detail reports `repositoryAccess.state: redeploy-required`
-and `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`, preserving history. OCE closes Git and checks
-withdrawal and model authority.
-Waiting cannot reopen this route. Other qualified paths may retry
-a pre-write read or re-observe durable delivery after restart. No path replays an
-uncertain provider write. Provider writes retain their own deadline. See
-[Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
-Prepared-material expiry, quarantine and retirement belong to
+OpenShell 0.1.6 policy reload during Git detach can interrupt model and workspace
+connections. Inspect uncertain turn outcomes before retrying.
+
+Failed observations deny access until readiness verifies (1–10 s retry backoff).
+Within the same revision and Sandbox, the original worker permits runtime recovery
+after verifying policy, Providers and a fresh launcher denial. Worker replacement,
+uncertain credential writes or unacknowledged launcher releases require a new
+revision; replacement does not automatically deploy one.
+
+Stop or revision replacement withdraws the binding; starting requires new authority.
+The observed-only preview forbids process recovery and worker adoption.
+See [Provider write deadlines](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty),
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
-its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
+its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core)
+for expiry, quarantine and retirement.
 
-Inspect `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and its `reason`:
-`execution_replaced`, `supervisor_replaced`, `write_unknown`, `worker_restarted`
-or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
-`unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
-`withdrawn` and `repository_expired` when another worker closed the route) and
-`retained` ones.
-`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means withdrawal was not persisted.
-Confirm Sandbox deletion: this worker refuses the route, but another could adopt it.
-Closed routes are dropped after confirmed absence (two reads if never observed).
-Failed reads retain them. Gateway authorization refusal logs `retained` with
-`gateway_unauthorized` and retries with backoff until absence; preparation, adoption
-and verification remain refused, and denials log `no_binding`.
-`worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
-Correlate the revision and request ID with `worker.openshell-git-denied`.
+Use `worker.openshell-git-denied` for request denials and
+`worker.openshell-git-route-warning` for unavailable observations, credentials,
+closed routes and retained resources. `OPENSHELL_GIT_RECONCILIATION_REQUIRED`
+reports terminal failures; deploy a new revision after correcting the cause.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` requires confirmation of durable withdrawal
+and Git detach or runtime retirement.
+
+OCE drops closed routes after confirmed absence (two reads if never observed).
+Failed reads retain them. Gateway authorization refusal prevents preparation,
+adoption and verification; absence checks retry with backoff.
+`worker.openshell-git-route` reports restoration in the original worker with
+`durationMs`. Correlate revision and request IDs across these events.
+
+[Managed replacement](../drivers/kubernetes-openshell-compute.md#lifecycle-and-retained-files)
+withdraws the old route and removes its middleware and Provider before creating
+the successor's binding for its admitted scope. The Sandbox and tombstone remain.
+See that reference for replacement limits.
+
+### Execution identity
+
+Both Workspace modes use OpenShell APIs without Pod access. Missing or inconsistent
+Sandbox ownership, readiness, execution or Provider evidence denies Git. Reconnects
+require fresh evidence; replacement needs admission. Expiry verifies the original execution.
+
+OCE trusts authenticated OpenShell reports. It does not independently attest them
+or detect a compromised supervisor claiming an earlier identity. See the
+[verification flow](../../flows/openshell-managed-workload.md).
 
 ### Qualification history
 
-OpenShell 0.1.4 (`5a7728c3`) reported supervisor process and network identities
-without Gateway attestation; the Gateway authenticated only the Sandbox
-principal. Reconnect continuity therefore relied on the supervisor's claims.
-This observation does not qualify a newer candidate's identity.
-
-That version also reset all Sandbox connections on provider material changes,
-including the workspace WebSocket and model streams. Activation passed through
-`REPOSITORY_GIT_MATERIAL_PENDING`, `WORKSPACE_NODE_RECONNECT_PENDING`, and
-`WORKSPACE_NODE_PENDING`. Later renewals repeated the reset (observed chat outages
-of about 1–7 s). Qualify connection continuity on the selected release; inspect
-uncertain request outcomes before retrying.
+OpenShell 0.1.4 (`5a7728c3`) authenticated the Sandbox principal but did not attest
+reported execution identities. Provider changes reset Sandbox connections,
+including workspace and model streams, with observed outages of 1–7 s.
+Activation reported `REPOSITORY_GIT_MATERIAL_PENDING`,
+`WORKSPACE_NODE_RECONNECT_PENDING`, and `WORKSPACE_NODE_PENDING`.
+Qualify identity and connection continuity on the selected release; inspect
+uncertain outcomes before retrying.
 
 ## GitHub App key rotated or revoked
 

@@ -16,7 +16,7 @@ Use `fred` from setup, before or after [adding Linear](../integrations/codex-plu
 - **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting your selected installation setup. If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). Check that the matching checkout includes `deploy/examples/repository-credentials/openshell.registry.json`. See the [enrollment guide](openshell-enrollment.md) for the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
 - **GitHub App:** Choose a test repository with at least one commit. The screenshots use a private repository. [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app) on your test repository with **Contents write** and **Metadata read**. Obtain its App ID, installation ID, numeric repository ID and RSA signing key. The worker calls [GitHub's installation token endpoint](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app); the operator does not stage a token file.
 - **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and the [GitHub CLI](https://cli.github.com/). Check that `gh auth status` shows your approved reader account.
-- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. Git works with either ready Credential Gateway source from that guide: an OpenAI API key (`openai`) or a Codex service account token (`codex-pat`). For Linear, use the token for the account with the authorized connection. Keep the Agent’s provisioned runtime credentials and plugin selections. Register the model source before enabling the repository Credential Proxy.
+- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. Git works with either ready Credential Gateway source from that guide: an OpenAI API key (`openai`) or a Codex service account token (`codex-pat`). For Linear, use the token for the account with the authorized connection. Keep the Agent’s provisioned runtime credentials and plugin selections. Model source registration uses Credential Gateway with or without the repository Credential Proxy.
 
 ## 1. Enroll one repository in the Installation
 
@@ -46,7 +46,7 @@ Use the existing isolated installation and the [shared operator session](../depl
 
    `profiles` selects the allowed access mode; `permissions` sets its GitHub capabilities. See [registry profiles](../../reference/repository-credentials/access-levels.md#registry-profiles). The `github-repository` profile delegates ref restrictions to GitHub.
 
-2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names. Set `upstreamCidrs` to the [worker GitHub API ranges](openshell-enrollment.md#allow-the-worker-to-reach-github).
+2. Mount the immutable registry ConfigMap in the controller and worker. Mount the App signing key and a persistent 32-byte custody key **only in the worker**. Merge this fragment into the OCE Helm values, replacing the ConfigMap and Secret names.
 
    ```yaml
    repositoryCredentials:
@@ -56,8 +56,6 @@ Use the existing isolated installation and the [shared operator session](../depl
      registryConfigMapName: replace-with-registry-configmap-name
      appKeySecretName: replace-with-app-key-secret-name
      preparedCustodySecretName: replace-with-custody-secret-name
-     upstreamCidrs:
-       - replace-with-approved-issuer-cidr
    ```
 
 3. Merge the [release Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) into the existing Installation, preserving its Credential Gateway selection for model authentication. The following fields select the session duration and worker key paths:
@@ -217,8 +215,8 @@ Read the current draft and save the binding with its existing `configurationId`.
 
 ```bash
 request GET "$base/agents/$agent" |
-  jq -e --arg ref "$ref" '.data | select((.repositoryBindings // [] | length)==0) |
-    {configurationId,repositoryBindings:[{repositoryRef:$ref,profile:"github-repository"}]}' > "$RUN_DIR/git-binding.json" &&
+  jq -e --arg ref "$ref" '.data | select((.repositoryAccess.repositories // [] | length)==0) |
+    {configurationId,repositoryAccess:{defaultProfile:"github-repository",repositories:[{repositoryRef:$ref}]}}' > "$RUN_DIR/git-binding.json" &&
   request PATCH "$base/agents/$agent" --data-binary @- < "$RUN_DIR/git-binding.json" > "$RUN_DIR/git-agent"
 ```
 

@@ -6,7 +6,7 @@ umask 077
 
 source "${RUN_DIR:?Missing quickstart run directory}/session.sh"
 guide=docs/guides/integrations/codex-plugins.md
-extractor=scripts/ci/k3d-quickstart/guide-bash.mjs
+extractor=scripts/ci/k3d-quickstart/guide-bash.ts
 team=${OCC_TEST_LINEAR_TEAM_ID:?Set the known team UUID for the connected Linear account}
 [[ $team =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]
 # Extract and check all steps before touching the Agent or sending a turn.
@@ -23,12 +23,12 @@ for stage in catalog deploy prompt send transcript; do
 done
 
 stage_file="$RUN_DIR/linear-stage"
-evidence=scripts/ci/k3d-quickstart/linear-evidence.mjs
+evidence=scripts/ci/k3d-quickstart/linear-evidence.ts
 printf '%s\n' before > "$stage_file"
 request GET "$base/agents/$agent" > "$RUN_DIR/linear-agent-before.json"
 jq -e --arg agent "$agent" --slurpfile onboard "$RUN_DIR/receipt-browser-onboard.json" '
   .data | .id==$agent and .id==$onboard[0].agentId and .activeRevisionId==$onboard[0].revisionId and
-  ((.repositoryBindings // [])|length)==0' "$RUN_DIR/linear-agent-before.json" > /dev/null
+  ((.repositoryAccess.repositories // [])|length)==0' "$RUN_DIR/linear-agent-before.json" > /dev/null
 for stage in catalog deploy prompt send; do
   printf '%s\n' "$stage" > "$stage_file"
   if [[ $stage == send ]]; then
@@ -53,7 +53,7 @@ request GET "$base/agents/$agent" > "$RUN_DIR/linear-agent-after.json"
 jq -e --arg a "$agent" --arg r "$revision" --arg p "$plugin" \
     --slurpfile before "$RUN_DIR/linear-agent-before.json" '
       .data | .id==$a and .activeRevisionId==$r and .plugins[$p].enabled==true and
-      .repositoryBindings==$before[0].data.repositoryBindings and
+      .repositoryAccess==$before[0].data.repositoryAccess and
       .credentialSources==$before[0].data.credentialSources' "$RUN_DIR/linear-agent-after.json" > /dev/null
 # Use the displayed call and its matched result if the fresh session retained
 # both. The guide's native reader handles hidden rows and dispatch_action.

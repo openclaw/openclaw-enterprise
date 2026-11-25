@@ -1,0 +1,167 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import vm from "node:vm";
+import {
+  PLUGIN_RUNTIME_TRANSLATOR_SOURCE,
+  type pluginRuntimeTranslator,
+} from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+
+const translatorMethods = [
+  "codexSearchPlan",
+  "codexReadParamsFromSearch",
+  "codexRuntimeArtifact",
+  "codexOpenClawConfiguration",
+] as const;
+type SerializedTranslator = Pick<
+  typeof pluginRuntimeTranslator,
+  (typeof translatorMethods)[number]
+>;
+
+function assertRecord(value: unknown): asserts value is Record<string, unknown> {
+  assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+}
+
+function assertSerializedTranslator(value: unknown): asserts value is SerializedTranslator {
+  assertRecord(value);
+  for (const method of translatorMethods) {
+    assert.equal(typeof value[method], "function");
+  }
+}
+
+function normalizeVmValue(value: unknown): unknown {
+  const parsed: unknown = JSON.parse(JSON.stringify(value));
+  return parsed;
+}
+
+const translator: unknown = vm.runInNewContext(`(${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})()`);
+assertSerializedTranslator(translator);
+
+const nativeId = "fixture@openai-curated-remote";
+const selections = {
+  [`codex-plugin:${nativeId}`]: {
+    enabled: true,
+    toolDefaults: { approval: "provider_default", reviewer: "human" },
+  },
+};
+const detail = {
+  plugin: {
+    summary: { id: nativeId, remotePluginId: "fixture", version: "1.0.0" },
+    apps: [{ id: "concrete_app" }],
+    skills: [],
+    hooks: [],
+    mcpServers: [],
+  },
+};
+const templates = [
+  {
+    templateId: "unconfigured_template",
+    name: "Unconfigured app",
+    reason: "NOT_CONFIGURED_FOR_WORKSPACE",
+    materializedAppIds: [],
+  },
+  {
+    templateId: "workspace_template",
+    name: "Workspace app",
+    reason: "NO_ACTIVE_WORKSPACE",
+    materializedAppIds: [],
+  },
+  {
+    templateId: "materialized_template",
+    name: "Materialized app",
+    materializedAppIds: ["concrete_app", "template_only_app"],
+    reason: null,
+  },
+];
+
+test("selected plugin search requires exact identity and the admitted marketplace", () => {
+  const pluginId = `codex-plugin:${nativeId}`;
+  const [search] = translator.codexSearchPlan(selections);
+  assert.ok(search);
+  assert.equal(search.params.searchTerm, "fixture");
+  // Search can return fuzzy matches and entries from other marketplaces. Neither
+  // may redirect installation away from the Agent's admitted selection.
+  for (const result of [
+    { marketplaceName: "workspace-directory", plugin: detail.plugin.summary },
+    {
+      marketplaceName: "openai-curated-remote",
+      plugin: { ...detail.plugin.summary, id: "fixture-tools@openai-curated-remote" },
+    },
+  ]) {
+    assert.equal(translator.codexReadParamsFromSearch(pluginId, { data: [result] }), undefined);
+  }
+  const params = translator.codexReadParamsFromSearch(pluginId, {
+    data: [{ marketplaceName: "openai-curated-remote", plugin: detail.plugin.summary }],
+    nextCursor: null,
+  });
+  assert.ok(params);
+  assert.equal(params.pluginName, "fixture");
+  assert.equal(params.remoteMarketplaceName, "openai-curated-remote");
+});
+
+test("serialized Agent startup ignores template metadata and configures only concrete apps", () => {
+  // Template-only IDs must not gain access, even when reported as materialized.
+  for (const appTemplates of [templates, undefined, null, "uninterpreted metadata"]) {
+    const artifact = translator.codexRuntimeArtifact(selections, [
+      { plugin: { ...detail.plugin, appTemplates } },
+    ]);
+    assertRecord(artifact.configuration);
+    assert.deepEqual(normalizeVmValue(artifact.configuration.apps), {
+      _default: { enabled: false },
+      concrete_app: {
+        enabled: true,
+        default_tools_approval_mode: "auto",
+        approvals_reviewer: "user",
+      },
+    });
+    assert.deepEqual(normalizeVmValue(artifact.installs), [
+      {
+        pluginId: `codex-plugin:${nativeId}`,
+        nativeId,
+        remotePluginId: "fixture",
+        version: "1.0.0",
+        registry: "openai-curated-remote",
+      },
+    ]);
+  }
+});
+
+test("serialized Agent startup carries repository broker policy into bridge config", () => {
+  const overlay = translator.codexOpenClawConfiguration({}, [], {
+    repositoryBrokerNetworkPolicy: {
+      host: "git.openclaw-system.svc.cluster.local",
+      domains: { "github.com": "allow" },
+    },
+  });
+
+  assert.ok(overlay);
+  assertRecord(overlay.plugins);
+  assertRecord(overlay.plugins.entries);
+  assertRecord(overlay.plugins.entries.codex);
+  assert.deepEqual(normalizeVmValue(overlay.plugins.entries.codex.config), {
+    appServer: {
+      networkProxy: {
+        enabled: true,
+        mode: "full",
+        allowLocalBinding: true,
+        readOnlyPaths: [
+          "/app/node_modules/openclaw",
+          "/home/node/.openclaw/plugin-skills",
+          "/home/node/openclaw-runtime-assets/plugin-skills",
+          "/opt/oce/repository-credentials",
+          "/run/oce/repository-credentials",
+        ],
+        domains: { "github.com": "allow", "git.openclaw-system.svc.cluster.local": "allow" },
+      },
+    },
+  });
+});
+
+test("serialized Agent startup cannot use templates in place of a concrete app mapping", () => {
+  assert.throws(
+    () =>
+      translator.codexRuntimeArtifact(selections, [
+        { plugin: { ...detail.plugin, apps: [], appTemplates: templates } },
+      ]),
+    /does not expose an app mapping/,
+  );
+});

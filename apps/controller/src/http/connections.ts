@@ -1,4 +1,5 @@
-import type { AuditEvent, OccApiRoute, ResourceRef } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, ResourceRef } from "@openclaw-enterprise/contracts";
+import { createHash, randomBytes } from "node:crypto";
 import {
   BrowserAuthorizationError,
   CallerStateDeniedError,
@@ -13,119 +14,17 @@ export const CONNECTION_CALLBACK_PATH = "/oauth/callback";
 
 export function namespaceConnectionHandlers(redirectUri: string | undefined): ResourceHandlers {
   return {
-    async listAgentPluginConnectionTemplates({
-      controller,
-      context,
-      request,
-      reply,
-      params,
-      namespaceId,
-    }) {
-      const data = await controller.listAgentPluginConnectionTemplates(context.actorId, {
-        namespaceId,
-        agentId: params.agentId!,
-        pluginId: params.pluginId!,
-        slotId: params.slotId!,
-      });
-      reply.send({ data, meta: { requestId: request.id } });
-    },
-    async startAgentPluginConnection({
-      controller,
-      context,
-      request,
-      reply,
-      params,
-      namespaceId,
-      body,
-      mutationEvent,
-    }) {
-      const { sessionId } = context;
-      if (!sessionId) {
-        throw failure(
-          403,
-          "FORBIDDEN",
-          "Connecting an account requires a signed-in browser session.",
-        );
-      }
-      if (!redirectUri) {
-        throw failure(
-          503,
-          "DEPENDENCY_UNAVAILABLE",
-          "The public OAuth callback origin is unavailable.",
-        );
-      }
-      const data = await controller.startAgentPluginConnection(
-        context.actorId,
-        {
-          namespaceId,
-          agentId: params.agentId!,
-          sessionId,
-          redirectUri,
-          ...(body!.selectedScopes !== undefined && {
-            selectedScopes: body!.selectedScopes as string[],
-          }),
-          pluginId: body!.pluginId as string,
-          slotId: body!.slotId as string,
-          releaseSha256: body!.releaseSha256 as string,
-          expectedCredentialSourceId: body!.expectedCredentialSourceId as string | null,
-          connectionTemplateId: body!.connectionTemplateId as string,
-          connectionTemplateVersion: body!.connectionTemplateVersion as number,
-        },
-        (id) => mutationEvent({ kind: "credential_source", namespaceId, id }),
-      );
-      reply
-        .header("cache-control", "no-store")
-        .status(201)
-        .send({ data, meta: { requestId: request.id } });
-    },
-    async attachAgentConnection({
-      controller,
-      transactIAM,
-      context,
-      reply,
-      params,
-      namespaceId,
-      mutationEvent,
-    }) {
-      const { agentId, credentialSourceId } = params;
-      await transactIAM(() =>
-        controller.attachAgentConnection(
-          context.actorId,
-          {
-            namespaceId,
-            agentId: agentId!,
-            credentialSourceId: credentialSourceId!,
-          },
-          mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
-        ),
-      );
-      reply.status(204).send();
-    },
-    async detachAgentConnection({
-      controller,
-      transactIAM,
-      context,
-      reply,
-      params,
-      namespaceId,
-      mutationEvent,
-    }) {
-      const { agentId, credentialSourceId } = params;
-      await transactIAM(() =>
-        controller.detachAgentConnection(
-          context.actorId,
-          {
-            namespaceId,
-            agentId: agentId!,
-            credentialSourceId: credentialSourceId!,
-          },
-          mutationEvent({ kind: "agent", id: agentId!, namespaceId }, { credentialSourceId }),
-        ),
-      );
-      reply.status(204).send();
-    },
     async listUsableConnectionTemplates({ controller, context, request, reply, namespaceId }) {
       const data = await controller.listUsableConnectionTemplates(context.actorId, namespaceId);
+      reply.send({ data, meta: { requestId: request.id } });
+    },
+    async listEligibleOAuthClients({ controller, context, request, reply, namespaceId }) {
+      const { connectionTemplateId } = request.query as { connectionTemplateId: string };
+      const data = await controller.listEligibleOAuthClients(
+        context.actorId,
+        namespaceId,
+        connectionTemplateId,
+      );
       reply.send({ data, meta: { requestId: request.id } });
     },
     async startNamespaceConnection({
@@ -156,40 +55,19 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         {
           namespaceId,
           connectionTemplateId: body!.connectionTemplateId as string,
-          connectionTemplateVersion: body!.connectionTemplateVersion as number,
+          oauthClientId: body!.oauthClientId as string,
           ...(body!.selectedScopes === undefined
             ? {}
             : { selectedScopes: body!.selectedScopes as string[] }),
           redirectUri,
           sessionId: context.sessionId,
         },
-        (id) => mutationEvent({ kind: "credential_source", namespaceId, id }),
+        () => mutationEvent({ kind: "credential_source", namespaceId, id: namespaceId }),
       );
       reply
         .header("cache-control", "no-store")
         .status(201)
         .send({ data, meta: { requestId: request.id } });
-    },
-    async listNamespaceConnections({ controller, context, request, reply, namespaceId }) {
-      const data = await controller.listNamespaceConnections(context.actorId, namespaceId);
-      reply.send({ data, meta: { requestId: request.id } });
-    },
-    async disconnectNamespaceConnection({
-      controller,
-      context,
-      reply,
-      params,
-      namespaceId,
-      mutationEvent,
-    }) {
-      const id = params.credentialSourceId!;
-      await controller.disconnectNamespaceConnection(
-        context.actorId,
-        namespaceId,
-        id,
-        mutationEvent({ kind: "credential_source", namespaceId, id }),
-      );
-      reply.status(204).send();
     },
   };
 }
@@ -205,20 +83,23 @@ export const connectionCallbackOperation = {
   authorizationTarget: "namespace_collection",
   summary: "Complete a browser connection for the signed-in person who started it",
   tags: ["Connections"],
-  schema: {},
-} as unknown as OccApiRoute;
+} as const;
 
 export const connectionCallbackSchema = {
   operationId: connectionCallbackOperation.operationId,
   summary: connectionCallbackOperation.summary,
   description:
-    "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+    "Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. Browser success returns a small HTML page that confirms the saved Source to the initiating Console tab; other requests redirect to the console without the provider query.",
   tags: [...connectionCallbackOperation.tags],
   security: [{ sessionCookie: [] }],
   "x-openclaw-permissions": [
     { action: "create", resourceKind: "credential_source", scope: "namespace" },
   ],
   response: {
+    200: {
+      description: "Browser consent completion page",
+      content: { "text/html": { schema: { type: "string" } } },
+    },
     303: { description: "Redirect to the console with the connection outcome" },
     429: { description: "Too many requests; wait for Retry-After" },
   },
@@ -260,8 +141,8 @@ export interface ConnectionCallbackDependencies {
 }
 
 /**
- * Completes the connection, then redirects to the console without the query string, so the
- * the landing page and callback audit receive no OAuth code or state.
+ * Only the successfully verified callback can confirm a Source to the initiating tab.
+ * A URL that the provider can construct is not proof that consent completed.
  */
 export function createConnectionCallback(dependencies: ConnectionCallbackDependencies) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
@@ -271,6 +152,7 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
     const context = dependencies.getContext(request);
     const sessionId = context?.sessionId;
     const query = request.query as Record<string, unknown>;
+    const state = typeof query.state === "string" ? query.state : "";
     const fail = (reason: string) =>
       reply.redirect(`/console/?connection=failed&reason=${encodeURIComponent(reason)}`, 303);
     if (controller === undefined || !context || sessionId === undefined) {
@@ -282,48 +164,36 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
         controller.completeNamespaceConnection(
           context.actorId,
           {
-            state: typeof query.state === "string" ? query.state : "",
+            state,
             sessionId,
             ...(typeof query.iss === "string" ? { iss: query.iss } : {}),
             ...(typeof query.code === "string" ? { code: query.code } : {}),
             ...(typeof query.error === "string" ? { error: query.error } : {}),
           },
-          (result, attachedAgentId) => {
-            if (attachedAgentId) {
-              const event = dependencies.auditEvent(request, context, {
-                kind: "agent",
-                namespaceId: result.namespaceId,
-                id: attachedAgentId,
-              });
-              return { ...event, action: "openclaw.agents.connections.attach" };
-            }
-            return dependencies.auditEvent(request, context, {
+          (result) =>
+            dependencies.auditEvent(request, context, {
               kind: "credential_source",
               namespaceId: result.namespaceId,
-              id: result.credentialSourceId,
-            });
-          },
+              id: result.id,
+            }),
           holdSession,
         ),
       );
-      if (connection.attachment) {
-        const { agentId, outcome } = connection.attachment;
-        const landing = new URLSearchParams({
-          namespace: connection.namespaceId,
-          revision: "draft",
-          tab: "plugins",
-          connection: outcome,
-        });
-        if (outcome === "saved") {
-          landing.set("sourceId", connection.credentialSourceId);
-        }
-        reply.redirect(`/console/agents/${encodeURIComponent(agentId)}?${landing}`, 303);
-      } else {
-        reply.redirect(
-          `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected`,
-          303,
-        );
+      const cleanUrl = `/console/?namespace=${encodeURIComponent(connection.namespaceId)}&connection=connected&sourceId=${encodeURIComponent(connection.id)}`;
+      if (acceptsHtml(request.headers.accept)) {
+        const nonce = randomBytes(18).toString("base64");
+        const stateHash = createHash("sha256").update(state).digest("hex");
+        reply
+          .header(
+            "content-security-policy",
+            `default-src 'none'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'`,
+          )
+          .header("x-content-type-options", "nosniff")
+          .type("text/html; charset=utf-8")
+          .send(consentCompletionPage(nonce, cleanUrl, stateHash, connection.id));
+        return;
       }
+      reply.redirect(cleanUrl, 303);
     } catch (error) {
       let reason = "unavailable";
       if (error instanceof CallerStateDeniedError) {
@@ -338,4 +208,42 @@ export function createConnectionCallback(dependencies: ConnectionCallbackDepende
       fail(reason);
     }
   };
+}
+
+function acceptsHtml(accept: string | undefined): boolean {
+  return (accept ?? "")
+    .split(",")
+    .some((part) => part.trim().split(";", 1)[0]?.toLowerCase() === "text/html");
+}
+
+function scriptString(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function consentCompletionPage(
+  nonce: string,
+  cleanUrl: string,
+  stateHash: string,
+  sourceId: string,
+): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Account connected</title></head><body><script nonce="${nonce}">(() => {
+    const clean = ${scriptString(cleanUrl)};
+    history.replaceState(null, "", clean);
+    try {
+      const key = "oce.pluginAccountConsent";
+      const name = sessionStorage.getItem(key);
+      const expected = sessionStorage.getItem(key + ".stateHash");
+      if (name && expected === ${scriptString(stateHash)} && typeof BroadcastChannel !== "undefined") {
+        sessionStorage.removeItem(key);
+        sessionStorage.removeItem(key + ".stateHash");
+        const channel = new BroadcastChannel(name);
+        channel.postMessage({ outcome: "saved", sourceId: ${scriptString(sourceId)} });
+        channel.close();
+        document.body.textContent = "Return to the Agent tab to check your connection.";
+        window.close();
+        return;
+      }
+    } catch {}
+    location.replace(clean);
+  })();</script></body></html>`;
 }

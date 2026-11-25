@@ -50,7 +50,7 @@ and the supported binding steps.
 Record a separate result for each selected topology and follow its setup:
 [EKS with Helm OCC](./setup-eks.md), [k3d with Helm OCC](./setup-k3d.md),
 or [k3d with Compose OCC](./setup-compose-k3d.md). Never transfer a pass across
-topologies. The default Compose-only preview cannot deploy Agents; the explicit
+topologies. The Docker Compute preview cannot deploy Agents; the explicit
 Compose/Kubernetes profile is distinct and requires additional setup. Record
 its documented capability differences without counting substitutes as passes.
 

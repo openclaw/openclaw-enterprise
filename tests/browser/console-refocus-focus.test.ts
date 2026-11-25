@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
-import type { Locator, Page } from "playwright";
+import { join } from "node:path";
+import { chromium, type Locator, type Page } from "playwright";
+import { Check } from "typebox/value";
 
-import type { NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentListResponse,
+  AgentReadResponse,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 
 import {
@@ -10,6 +18,7 @@ import {
   apiRequests,
   denyRevisionRead,
   detailUrl,
+  expireSessions,
   fileBrowser,
   grantMember,
   hasFocus,
@@ -18,13 +27,16 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  recordFocusTrail,
   secretOptionLabel,
   selectSecret,
   settledView,
+  stopFocusTrail,
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
@@ -39,10 +51,10 @@ import {
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { within } from "../helpers/wait-for.mjs";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { waitForResult, within } from "../helpers/wait-for.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -65,10 +77,10 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
       outsideOrigins.push(origin);
       return route.abort();
     });
-    // Only discovery is simulated. The local Controller refuses GitHub start with no provider
+    // Only discovery is simulated. The local Controller refuses Google start with no provider
     // configured, and it rejects the wrong password through the real sign-in route.
     await page.route("**/api/auth/providers", (route) =>
-      route.fulfill({ json: { data: { password: true, github: true }, meta: {} } }),
+      route.fulfill({ json: { data: { password: true, google: true }, meta: {} } }),
     );
     const discovery = lateDiscovery
       ? await holdRequests(t, page, `${fixture.origin}/api/auth/providers`, {
@@ -78,7 +90,7 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
             json: {
               data: {
                 password: true,
-                github: true,
+                google: true,
                 oidc: true,
                 oidcSignIn: {
                   label: "Example SSO",
@@ -92,12 +104,13 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
       : null;
     await page.goto(`${fixture.origin}/console/login`);
     const submit = page.getByRole("button", { name: "Sign in", exact: true });
-    const github = page.getByRole("button", { name: "Continue with GitHub", exact: true });
+    const google = page.getByRole("button", { name: "Continue with Google", exact: true });
     const password = page.getByLabel("Password", { exact: true });
     if (discovery) {
       await discovery.requested;
+      await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
     } else {
-      await github.waitFor();
+      await google.waitFor();
     }
     await page.getByLabel("Email", { exact: true }).fill("synthetic@example.invalid");
     await password.fill("not-the-password");
@@ -105,11 +118,11 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
     if (provider) {
       await page.keyboard.press("Tab");
     }
-    const trigger = provider ? github : submit;
-    const sibling = provider ? submit : github;
+    const trigger = provider ? google : submit;
+    const sibling = provider ? submit : google;
     assert.equal(await hasFocus(trigger), true, `${attempt}: keyboard reaches the control`);
 
-    const path = provider ? "/api/auth/providers/github/start" : "/api/auth/sign-in/email";
+    const path = provider ? "/api/auth/providers/google/start" : "/api/auth/sign-in/email";
     const url = `${fixture.origin}${path}`;
     const requests = apiRequests(page, fixture.origin);
     const held = await holdRequests(t, page, url, {
@@ -144,7 +157,7 @@ test("a pending sign-in keeps keyboard focus without taking it back after a refu
     held.release();
     assert.equal((await answered).status(), expectedStatus);
     const refusal = provider
-      ? "GitHub sign-in is unavailable. Try again or use your password."
+      ? "Google sign-in is unavailable. Try again or use your password."
       : "Could not sign in. Check your email and password.";
     await page.getByText(refusal, { exact: true }).waitFor();
     assert.equal(await hasFocus(attempt === "move" ? password : trigger), true);
@@ -194,6 +207,480 @@ test("refocusing the Agents list restores its focused link unless the reader mov
     await link.waitFor();
     assert.equal(await hasFocus(expectedFocus), true, "keep the reader's place after the check");
   }
+});
+
+test("Agents Retry restores the interrupted search selection unless the reader moved on", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Search recovery");
+  await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
+  const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
+  const { page } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const path = `/console/agents?namespace=${namespace.id}`;
+  const api = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  await login(page, fixture, path, credentials);
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Agents", exact: true });
+  const retry = view.getByRole("button", { name: "Retry", exact: true });
+  const row = view.getByRole("link", { name: "Fleet Report", exact: true });
+  const loading = page.getByRole("heading", { name: "Loading…", exact: true });
+  const statuses: number[] = [];
+  await search.waitFor();
+  await waitForIdleFetches(page);
+  page.on("response", (response) => {
+    if (response.url() === api && response.request().method() === "GET") {
+      statuses.push(response.status());
+    }
+  });
+
+  const holdFailure = (status: number, retryAfter = false) =>
+    holdRequests(t, page, api, {
+      once: true,
+      method: "GET",
+      fulfill: {
+        ...(status === 503
+          ? apiErrorResponse(status, "DEPENDENCY_UNAVAILABLE", "Try again.")
+          : proxyErrorResponse(status)),
+        ...(retryAfter ? { headers: { "retry-after": "60" } } : {}),
+      },
+    });
+  const expectRetry = async (expected: number[], focused = true) => {
+    await retry.waitFor();
+    await waitForIdleFetches(page);
+    assert.deepEqual(statuses, expected, "recovery waits for explicit Retry");
+    assert.equal(await search.count(), 0);
+    assert.equal(await row.count(), 0, "an unavailable list withholds Agent rows");
+    assert.equal(await hasFocus(retry), focused);
+  };
+
+  for (const attempt of ["restore", "move", "retry-after"] as const) {
+    statuses.length = 0;
+    await search.fill("Fleet Rep");
+    await search.evaluate((input: HTMLInputElement) => input.setSelectionRange(6, 9, "backward"));
+    assert.equal(await hasFocus(search), true);
+    const status = attempt === "move" ? 502 : 503;
+    const failure = await holdFailure(status, attempt === "retry-after");
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    await expectRetry([status], attempt !== "retry-after");
+    if (attempt === "retry-after") {
+      break;
+    }
+
+    const expected = [status];
+    if (attempt === "restore") {
+      // A second temporary failure keeps the same selection and returns focus to the new Retry.
+      const again = await holdFailure(503);
+      try {
+        await page.keyboard.press("Enter");
+        await again.requested;
+        await loading.waitFor();
+      } finally {
+        again.release();
+      }
+      expected.push(503);
+      await expectRetry(expected);
+    }
+
+    const pending = await holdRequests(t, page, api, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    try {
+      await page.keyboard.press("Enter");
+      const response = await pending.requested;
+      assert.equal(response?.status(), 200, "the real Controller readmits the list");
+      if (attempt === "move") {
+        // Let the slow load transfer focus to its replacement heading before the reader moves.
+        const heading = page.locator(".content h1");
+        await loading.waitFor();
+        assert.equal(await hasFocus(heading), true);
+        const account = page.locator(".account-toggle");
+        await account.focus();
+        assert.equal(await hasFocus(account), true);
+        await heading.focus();
+        assert.equal(await hasFocus(heading), true);
+      }
+    } finally {
+      pending.release();
+    }
+    await search.waitFor();
+    await row.waitFor();
+    assert.equal(page.url(), `${fixture.origin}${path}`);
+    assert.deepEqual(statuses, [...expected, 200]);
+    assert.equal(await search.inputValue(), "Fleet Rep");
+    assert.equal(await hasFocus(search), attempt === "restore");
+    if (attempt === "restore") {
+      const direction = await search.evaluate(
+        (input: HTMLInputElement) => input.selectionDirection,
+      );
+      assert.equal(direction, "backward");
+      await page.keyboard.press("r");
+      assert.equal(await search.inputValue(), "Fleet r", "typing replaces the original selection");
+    }
+  }
+});
+
+test("Back keeps the keyboard-focused Agent in view when the filtered list changes", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Report workspace");
+  const query = "Fleet Report";
+  await fixture.createAgent(namespace.id, "Fleet Report 02", nativeValues("report-02"));
+  const target = await fixture.createAgent(
+    namespace.id,
+    "Fleet Report 03",
+    nativeValues("report-03"),
+  );
+  await fixture.createAgent(namespace.id, "Fleet Report 04", nativeValues("report-04"));
+  const unrelated = await fixture.createAgent(namespace.id, "Inventory", nativeValues("inventory"));
+  const { credentials } = await fixture.createNamespaceMember(
+    "report-reader",
+    namespace.id,
+    AGENT_READ,
+  );
+  const viewport = { width: 390, height: 844 };
+  const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, credentials);
+
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Agents", exact: true });
+  const list = view.getByRole("table", { name: "Agents", exact: true });
+  const link = (name: string) => list.getByRole("link", { name, exact: true });
+  const opened = link(target.name);
+  await opened.waitFor();
+  const requests = apiRequests(page, fixture.origin);
+  const listUrl = page.url();
+
+  await search.focus();
+  await page.keyboard.insertText(query);
+  await waitForIdleFetches(page);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await hasFocus(opened), true, "Down Arrow reaches the second match");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+
+  // Another caller inserts an earlier match, moving the opened Agent below the fold on return.
+  const added = await fixture.createAgent(
+    namespace.id,
+    "Fleet Report 01",
+    nativeValues("report-01"),
+  );
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const returned = responseTo(page, "GET", agentsUrl);
+  await page.goBack();
+  const response = await returned;
+  assert.equal(response.status(), 200);
+  const body: unknown = await response.json();
+  assert.ok(Check(AgentListResponse, body), "the Controller returned an Agents list");
+  assert.ok(
+    body.data.some(({ id }) => id === target.id),
+    "the first list includes the target",
+  );
+  await page.waitForURL(listUrl);
+  await link(added.name).waitFor();
+  await waitForIdleFetches(page);
+
+  assert.equal(await search.inputValue(), query);
+  assert.equal(await link(unrelated.name).count(), 0, "the saved filter excludes unrelated Agents");
+  assert.equal(await hasFocus(opened), true, "Back restores focus to the opened Agent");
+  const box = await opened.boundingBox();
+  assert.ok(
+    box && box.y >= 0 && box.y + box.height <= viewport.height,
+    "the focused Agent link is within the viewport",
+  );
+  // Reopen the focused Agent. On this return the list no longer contains its focus target.
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+  await fulfillMethod(page, agentsUrl, "GET", {
+    status: 200,
+    json: { ...body, data: body.data.filter(({ id }) => id !== target.id) },
+  });
+  const reread = responseTo(page, "GET", agentsUrl);
+  await page.goBack();
+  assert.equal((await reread).status(), 200);
+  await page.waitForURL(listUrl);
+  await link(added.name).waitFor();
+  await waitForIdleFetches(page);
+
+  assert.equal(await search.inputValue(), query);
+  assert.equal(await opened.count(), 0, "the stale Agent link is gone");
+  const heading = page.getByRole("heading", { level: 1, name: "Agents", exact: true });
+  assert.equal(await hasFocus(heading), true, "Back falls back to the Agents heading");
+  const bounds = await heading.boundingBox();
+  assert.ok(
+    bounds &&
+      bounds.x >= 0 &&
+      bounds.x + bounds.width <= viewport.width &&
+      bounds.y >= 0 &&
+      bounds.y + bounds.height <= viewport.height,
+    "the focused heading is fully within the viewport",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), [], "opening and returning send no writes");
+});
+
+// The admitted selector becomes usable before the Agent list read settles. A reader who
+// tabs to it during the wait should keep that place when the shell redraws.
+test("The Namespace selector keeps keyboard focus acquired during Agents list revalidation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Selected workspace");
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Visible Agent", nativeValues("visible"));
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("other"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const row = page.locator(settledView).getByRole("link", { name: "Visible Agent", exact: true });
+  await row.waitFor();
+  await waitForIdleFetches(page);
+
+  const requests = apiRequests(page, fixture.origin);
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  const listUrl = page.url();
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+
+  for (const focus of ["navigation", "selector"] as const) {
+    await row.focus();
+    assert.equal(await hasFocus(row), true);
+    const read = await holdRequests(t, page, agentsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    await refocus(page);
+    const response = await read.requested;
+    assert.ok(response, "the hold received a real Controller response");
+    assert.equal(response.status(), 200, "the Controller admitted the selected list read");
+    const body: unknown = await response.json();
+    assert.ok(Check(AgentListResponse, body), "the Controller answered with the Agents list");
+    assert.deepEqual(
+      body.data.map(({ id }) => id),
+      [agent.id],
+    );
+
+    await page.locator(heldView).waitFor();
+    await waitForEnabled(selector);
+    await navigation.focus();
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    const previous = await selector.elementHandle();
+    assert.equal(await hasFocus(previous), true, "Tab reached the admitted Namespace selector");
+    assert.equal(await selector.inputValue(), namespace.id);
+    if (focus === "navigation") {
+      await navigation.focus();
+      assert.equal(await hasFocus(navigation), true, "the reader moved away from the selector");
+    }
+
+    await recordFocusTrail(page);
+    const delivered = page.waitForResponse(
+      (answer) => answer.url() === agentsUrl && answer.request().method() === "GET",
+    );
+    read.release();
+    assert.equal((await delivered).status(), 200);
+    await row.waitFor();
+    assert.equal(
+      await previous.evaluate((node) => node.isConnected),
+      false,
+      "the shell replaced its selector",
+    );
+    assert.equal(await selector.isVisible(), true);
+    assert.equal(await selector.isEnabled(), true);
+    assert.equal(await selector.inputValue(), namespace.id);
+    assert.equal(page.url(), listUrl, "keyboard focus does not switch Namespace");
+    assert.equal(await page.getByRole("link", { name: "Other Agent", exact: true }).count(), 0);
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "moving focus sends no writes");
+    assert.equal(
+      requests.some(({ path }) => path.startsWith(`/namespaces/${other.id}/`)),
+      false,
+    );
+
+    const { trail } = await stopFocusTrail(page);
+    const active = await page.evaluate(() => globalThis.document.activeElement?.tagName);
+    t.diagnostic(
+      `${focus} focus after the Controller read: ${trail.join(" → ")} (active ${active})`,
+    );
+    assert.equal(
+      trail.some((entry) => entry.endsWith(": Visible Agent")),
+      false,
+      "the old Agent link did not take focus back",
+    );
+    assert.equal(
+      await hasFocus(focus === "selector" ? selector : navigation),
+      true,
+      focus === "selector"
+        ? "focus remains on the current usable Namespace selector"
+        : "the Namespace selector does not take focus from navigation",
+    );
+  }
+});
+
+test("Namespaces refocus keeps the active row control in view after the list changes", async (t) => {
+  const { fixture } = await createReadyConsoleNamespace(t, "Workshop");
+  for (let index = 0; index < 20; index += 1) {
+    await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
+  }
+
+  for (const width of [1440, 390]) {
+    const target = await fixture.createNamespace(`Team 20 at ${width}`, { ready: true });
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, "/console/namespaces");
+    const view = page.locator(settledView);
+    const row = view.getByRole("link", { name: target.name, exact: true });
+    const remove = view.getByRole("button", { name: `Delete ${target.name}`, exact: true });
+    await row.waitFor();
+    await waitForIdleFetches(page);
+    for (const [index, control] of [row, remove].entries()) {
+      await control.focus();
+      const name = `Added ${width} ${index}`;
+      await fixture.createNamespace(name);
+      await refocusHeld(t, page);
+      await view.getByRole("link", { name, exact: true }).waitFor();
+      assert.equal(await hasFocus(control), true, `same control at ${width}px`);
+      const box = await control.boundingBox();
+      assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
+    }
+
+    await remove.focus();
+    assert.equal((await fixture.request("DELETE", `/namespaces/${target.id}`)).status, 202);
+    await refocusHeld(t, page);
+    await row.locator("xpath=ancestor::li").getByText("Deleting…", { exact: true }).waitFor();
+    await remove.waitFor({ state: "hidden" });
+    assert.equal(
+      await hasFocus(row),
+      true,
+      `the row link replaces the missing Delete at ${width}px`,
+    );
+    const box = await row.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `row link visible at ${width}px`);
+
+    const tabTarget =
+      width === 1440
+        ? page.getByRole("link", { name: "Agents", exact: true })
+        : page.getByRole("button", { name: "Open navigation", exact: true });
+    for (const changed of [false, true]) {
+      await waitForIdleFetches(page);
+      await tagView(page);
+      await row.focus();
+      if (changed) {
+        await fixture.createNamespace(`Changed ${width}`);
+      }
+      await refocusHeld(t, page, async () => {
+        await page.keyboard.press("Tab");
+        assert.equal(
+          await hasFocus(tabTarget),
+          true,
+          `Tab reaches the shell control at ${width}px`,
+        );
+      });
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(tabTarget), true, `the shell control keeps focus at ${width}px`);
+    }
+  }
+});
+
+test("Namespaces search uses current readable names and IDs without selecting a Namespace", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Support Operations");
+  const incoming = await fixture.createNamespace("Support Research");
+  const privateNamespace = await fixture.createNamespace("Private Finance");
+  const { credentials, principal } = await fixture.createNamespaceMember(
+    "namespace-search-reader",
+    namespace.id,
+    [["read", "namespace"]],
+  );
+  const { page } = await newPage(t, fixture, { context: { ignoreHTTPSErrors: false } });
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/namespaces", credentials);
+
+  const view = page.locator(settledView);
+  const search = view.getByRole("searchbox", { name: "Search Namespaces" });
+  const clear = view.getByRole("button", { name: "Clear search", exact: true });
+  const row = (name: string) => view.getByRole("link", { name, exact: true });
+  const rows = view.getByRole("list", { name: "Namespaces" }).getByRole("listitem");
+  const noMatch = view.getByRole("heading", { name: "No matching Namespaces" });
+  await row(namespace.name).waitFor();
+  await waitForIdleFetches(page);
+  const url = page.url();
+  const requests = apiRequests(page, fixture.origin);
+
+  await search.fill(`  ${namespace.id.toUpperCase()}  `);
+  assert.equal(await rows.count(), 1, "the admitted ID matches case-insensitively");
+  for (const query of [privateNamespace.name, privateNamespace.id]) {
+    await search.fill(query);
+    await noMatch.waitFor();
+    assert.equal(await row(privateNamespace.name).count(), 0);
+    assert.equal(await view.getByText(privateNamespace.id, { exact: true }).count(), 0);
+  }
+  await clear.click();
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await hasFocus(search), true, "clearing returns focus to search");
+
+  await search.fill("sUpPoRt");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  assert.equal(await rows.count(), 1, "only one authorized name matches before the grant");
+  assert.equal(page.url(), url, "Enter in search does not open the only match");
+  assert.deepEqual(requests, [], "typing and clearing search send no API requests");
+
+  grantRole(fixture.policy, principal.id, {
+    id: "read-incoming-namespace",
+    namespaceId: incoming.id,
+    permissions: { namespace: ["read"] },
+  });
+  await refocusHeld(t, page);
+  await row(incoming.name).waitFor();
+  assert.equal(await hasFocus(search), true);
+  assert.equal(await search.inputValue(), "sUpPoRt");
+  assert.equal(await search.evaluate((input: HTMLInputElement) => input.selectionStart), 1);
+  assert.equal(await rows.count(), 2, "the new grant is reflected under the existing query");
+  assert.equal(
+    await row(incoming.name).locator("xpath=ancestor::li").getByText("Provisioning").count(),
+    1,
+  );
+
+  await row(incoming.name).focus();
+  restrict(fixture.policy, "read", "namespace", { namespaceId: incoming.id });
+  await refocusHeld(t, page);
+  assert.equal(await row(incoming.name).count(), 0);
+  assert.equal(
+    await hasFocus(page.getByRole("heading", { name: "Namespaces", exact: true })),
+    true,
+  );
+  assert.equal(await search.inputValue(), "sUpPoRt");
+
+  await fulfillMethod(
+    page,
+    `${fixture.origin}/namespaces`,
+    "GET",
+    apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."),
+  );
+  await refocus(page);
+  const retry = page.getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  assert.equal(await page.getByRole("searchbox", { name: "Search Namespaces" }).count(), 0);
+  await page.unroute(`${fixture.origin}/namespaces`);
+  await retry.click();
+  await search.waitFor();
+  assert.equal(await search.inputValue(), "", "retry cannot recover query from a discarded view");
+
+  restrict(fixture.policy, "read", "namespace", { namespaceId: namespace.id });
+  await refocusHeld(t, page);
+  await view.getByRole("heading", { name: "No readable Namespaces" }).waitFor();
+  assert.equal(await search.count(), 0);
+  assert.equal(await noMatch.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 const deploymentsRead = (namespace: NamespaceWire) =>
@@ -686,7 +1173,43 @@ test("a session reply missing its binding blocks private reads until Retry", asy
   assert.ok((await account.innerText()).includes(fixture.credentials.email));
 });
 
-test("recovery-only discovery keeps focus on the empty sign-in form", async (t) => {
+for (const status of [200, 503]) {
+  test(`discovery ${status} preserves keyboard focus when revealing passwords`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const { page } = await newPage(t, fixture, { browser });
+    const discovery = await holdRequests(t, page, "**/api/auth/providers", {
+      method: "GET",
+      once: true,
+      fulfill:
+        status === 503
+          ? apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sign-in discovery is unavailable.")
+          : {
+              status,
+              json: {
+                data: { google: true, oidc: false, password: true, sessionBinding: true },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+              },
+            },
+    });
+    await page.goto(`${fixture.origin}/console/login`);
+    await discovery.requested;
+    const recovery = page.getByRole("button", { name: "Recovery sign-in", exact: true });
+    await page.keyboard.press("Tab");
+    assert.equal(await hasFocus(recovery), true);
+
+    // Both ordinary password discovery and its failure fallback replace the
+    // focused recovery action with the form. Keyboard entry must remain usable.
+    discovery.release();
+    const email = page.getByLabel("Email", { exact: true });
+    await email.waitFor();
+    assert.equal(await hasFocus(email), true);
+    await page.keyboard.type("recovery@example.com");
+    assert.equal(await email.inputValue(), "recovery@example.com");
+  });
+}
+
+test("recovery-only discovery preserves explicitly opened recovery sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
@@ -698,7 +1221,7 @@ test("recovery-only discovery keeps focus on the empty sign-in form", async (t) 
     fulfill: {
       status: 200,
       json: {
-        data: { github: true, google: false, password: false, sessionBinding: true },
+        data: { google: true, password: false, sessionBinding: true },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
       },
     },
@@ -707,14 +1230,16 @@ test("recovery-only discovery keeps focus on the empty sign-in form", async (t) 
   await page.goto(`${fixture.origin}/console/login`);
   await discovery.requested;
   const email = page.getByLabel("Email", { exact: true });
-  await email.waitFor();
-  await page.keyboard.press("Tab");
+  // Do not expose ordinary password sign-in before its policy is known. The
+  // recovery path remains available even if discovery never answers.
+  assert.equal(await email.isVisible(), false);
+  await page.getByRole("button", { name: "Recovery sign-in", exact: true }).click();
   assert.equal(await hasFocus(email), true);
   assert.equal(await email.inputValue(), "");
 
   discovery.release();
   assert.equal((await response).status(), 200);
-  await page.getByRole("button", { name: "Continue with GitHub", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Continue with Google", exact: true }).waitFor();
   assert.equal(await hasFocus(email), true);
   await page.getByText("Use the recovery account's email.", { exact: true }).waitFor();
   await page.keyboard.type("recovery@example.com");
@@ -816,6 +1341,848 @@ test("mounted Agent refocus cannot infer revision omission from a malformed page
   );
 });
 
+async function openRefocusDraft(
+  t: TestContext,
+  openPage = (context: TestContext, fixture: Parameters<typeof newPage>[1]) =>
+    newPage(context, fixture, { browser }),
+) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus recovery");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const { page, artifacts } = await openPage(t, fixture);
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  await editor.evaluate((node) => (node as HTMLTextAreaElement).setSelectionRange(3, 7));
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const readCount = (path: string) =>
+    requests.filter((request) => request.method === "GET" && request.path === path).length;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  };
+}
+
+test("a slow Agent refocus shows the pending status beside the scrolled draft", async (t) => {
+  const {
+    fixture,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  await tagView(page);
+  const scrollY = await editor.evaluate((node) => {
+    node.scrollIntoView({ block: "center" });
+    return window.scrollY;
+  });
+  assert.ok(scrollY > 0, "the editor is below the fold");
+  assert.ok(
+    await page
+      .locator(".content .page-actions")
+      .evaluate((node) => node.getBoundingClientRect().bottom < 0),
+    "the page actions have scrolled out of the viewport",
+  );
+  const capture = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-editor.png` });
+  }
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  // Hold the retry across the delayed cue deadline.
+  const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
+  const firstRead = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const configurationRead = await holdRequests(t, page, fixture.origin + configurationPath, {
+    once: true,
+    method: "GET",
+  });
+  const now = Date.now();
+  await page.clock.install({ time: now - 60_000 });
+  await page.clock.pauseAt(now);
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+  const first = responseTo(page, "GET", revisionsUrl);
+  await refocus(page);
+  await Promise.all([firstRead.requested, configurationRead.requested]);
+  assert.equal(await status.count(), 0, "an ordinary read does not immediately show a cue");
+  firstRead.release();
+  assert.equal((await first).status(), 500);
+  await page
+    .locator('.content [inert][style*="opacity: 0"]')
+    .filter({ has: editor })
+    .waitFor({ state: "attached" });
+  assert.equal(readCount(revisionsPath), 1, "the retry waits for the Configuration response");
+  assert.equal(
+    await status.count(),
+    1,
+    "concealing the draft shows the cue while Configuration is pending",
+  );
+  const cue = await status.evaluateHandle((node) => node);
+  configurationRead.release();
+  await retryRead.requested;
+  assert.equal(await status.count(), 1, "the cue stays visible while the retry is pending");
+  await page.clock.fastForward(1_001);
+  assert.equal(await status.count(), 1, "the timer does not add a second cue");
+  assert.equal(await cue.evaluate((node) => node.isConnected), true, "the original cue remains");
+  await page.clock.resume();
+  const pending = await status.evaluate((node) => {
+    const { top, right, bottom, left } = node.getBoundingClientRect();
+    return {
+      scrollY: window.scrollY,
+      inViewport: top >= 0 && left >= 0 && bottom <= innerHeight && right <= innerWidth,
+      painted: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+    };
+  });
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-held.png` });
+  }
+  assert.ok(
+    pending.painted && pending.inViewport,
+    `pending status must be visible in the viewport: ${JSON.stringify(pending)}`,
+  );
+  assert.equal(pending.scrollY, scrollY);
+  assert.deepEqual(
+    await editor.evaluate((node) => ({
+      concealed: !node.checkVisibility({ opacityProperty: true }),
+      inert: Boolean(node.closest("[inert]")),
+    })),
+    { concealed: true, inert: true },
+  );
+  assert.equal(await hasFocus(status), false);
+  const recovered = responseTo(page, "GET", revisionsUrl);
+  retryRead.release();
+  assert.equal((await recovered).status(), 200);
+  await waitForIdleFetches(page);
+  assert.equal(await status.count(), 0);
+  assert.equal(await viewTag(page), "kept");
+  assert.equal(page.url(), url.href);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await hasFocus(editor), true);
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      const input = node as HTMLTextAreaElement;
+      return [input.selectionStart, input.selectionEnd, window.scrollY];
+    }),
+    [3, 7, scrollY],
+  );
+  assert.equal(readCount("/api/auth/session"), 1);
+  assert.equal(readCount(revisionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  if (capture) {
+    await page.screenshot({ path: `${artifacts}/slow-refocus-recovered.png` });
+  }
+});
+
+test("a transient refocus failure recovers the same focused Agent draft automatically", async (t) => {
+  const {
+    fixture,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  await tagView(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-before.png` });
+  }
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  const sessionPath = "/api/auth/session";
+  const failedRead = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const statuses: number[] = [];
+  page.on("response", (response) => {
+    if (response.url() === revisionsUrl && response.request().method() === "GET") {
+      statuses.push(response.status());
+    }
+  });
+
+  await page.evaluate(() => {
+    const view = document.querySelector(".content")!;
+    new MutationObserver(() => {
+      if (view.textContent?.includes("Could not check Agent details") || !view.isConnected) {
+        document.documentElement.dataset.refocusInterruption = "true";
+      }
+    }).observe(document.getElementById("app")!, { subtree: true, childList: true });
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await failedRead.requested;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  failedRead.release();
+  await waitForIdleFetches(page);
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await page.screenshot({ path: `${artifacts}/refocus-draft-after.png` });
+  }
+  assert.deepEqual(
+    statuses,
+    [500, 200],
+    "refocus retries the failed read exactly once without a click",
+  );
+  assert.equal(readCount(sessionPath), 1, "duplicate focus and visibility events share admission");
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(readCount(configurationPath), 2);
+  assert.equal(await viewTag(page), "kept", "the Agent view was never replaced");
+  assert.equal(
+    await page.locator("html").getAttribute("data-refocus-interruption"),
+    null,
+    "the original layout stayed mounted without a retry warning",
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await hasFocus(editor), true);
+  assert.deepEqual(
+    await editor.evaluate((node) => {
+      const input = node as HTMLTextAreaElement;
+      return [input.selectionStart, input.selectionEnd];
+    }),
+    [3, 7],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("keyboard Retry restores the Agent name and reading position on a phone after an exact read reset", async (t) => {
+  const { fixture, page, editor, draft, requests, readCount, agentPath } = await openRefocusDraft(
+    t,
+    (context, fixture) =>
+      newPage(context, fixture, { browser, context: { viewport: { width: 390, height: 844 } } }),
+  );
+  const agentUrl = fixture.origin + agentPath;
+  const heading = page.getByRole("heading", { name: "Example Agent", exact: true });
+  const maskedHeading = page.getByRole("heading", { name: "Agent details", exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  const configuration = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  await heading.waitFor();
+  await tagView(page);
+  const scrollY = await editor.evaluate((node) => {
+    node.scrollIntoView({ block: "center" });
+    return window.scrollY;
+  });
+  assert.ok(scrollY > 0, "the editor is below the fold");
+  const panelTop = await configuration.evaluate((node) => node.getBoundingClientRect().top);
+
+  // Reset the first exact Agent GET before the recheck can admit the Agent's identity.
+  const retryRead = await holdRequests(t, page, agentUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.route(agentUrl, (route) => route.abort("connectionreset"), { times: 1 });
+  const failed = page.waitForEvent("requestfailed", {
+    predicate: (request) => request.method() === "GET" && request.url() === agentUrl,
+  });
+  await refocus(page);
+  assert.equal((await failed).failure()?.errorText, "net::ERR_CONNECTION_RESET");
+  await warning.waitFor();
+  assert.equal(readCount(agentPath), 1);
+  assert.equal(await hasFocus(retry), true);
+  assert.equal(await maskedHeading.count(), 1);
+  assert.equal(await heading.count(), 0);
+  assert.equal(await editor.count(), 0);
+
+  // The server still serves the same Agent. Hold its genuine answer so the browser cannot
+  // reveal the title or editor before the Retry read completes.
+  const recovered = responseTo(page, "GET", agentUrl);
+  await page.keyboard.press("Enter");
+  try {
+    assert.equal((await retryRead.requested)?.status(), 200);
+    assert.equal(await maskedHeading.count(), 1);
+    assert.equal(await heading.count(), 0);
+    assert.equal(await editor.count(), 0);
+  } finally {
+    retryRead.release();
+  }
+  assert.equal((await recovered).status(), 200);
+  await editor.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept", "Retry reused the original Agent view");
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(await heading.count(), 1, "the readmitted Agent name is the heading");
+  assert.equal(await maskedHeading.count(), 0);
+  assert.equal(
+    await configuration.evaluate((node) => node.getBoundingClientRect().top),
+    panelTop,
+    "the retained Configuration panel returns to its original position in the viewport",
+  );
+  assert.equal(readCount(agentPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("Agent Retry rejects a mismatch already refused by the mounted editor", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const agentUrl = fixture.origin + agentPath;
+  const wrongId = agent.id.slice(0, -1) + (agent.id.endsWith("0") ? "1" : "0");
+  const wrongName = "Synthetic mismatched Agent";
+  const wrongHeading = page.getByRole("heading", { name: wrongName, exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+
+  // Save's exact read returns a valid Agent reply for the wrong identity.
+  const genuine = fixture.fixtureResponse(
+    await fixture.request("GET", agentPath),
+    200,
+    AgentReadResponse,
+    "Read the original Agent",
+  );
+  const mismatch = { ...genuine, data: { ...genuine.data, id: wrongId, name: wrongName } };
+  await fulfillMethod(page, agentUrl, "GET", { status: 200, json: mismatch });
+  const preflight = responseTo(page, "GET", agentUrl);
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  const first = await preflight;
+  assert.equal(first.status(), 200);
+  assert.deepEqual(await first.json(), mismatch);
+  await page.locator('#configuration-editor-feedback[role="alert"]').waitFor();
+  assert.equal(await editor.inputValue(), draft);
+
+  // Refocus resets the exact read. Retry must reject the same mismatched reply.
+  await page.route(agentUrl, (route) => route.abort("connectionreset"), { times: 1 });
+  const failed = page.waitForEvent("requestfailed", {
+    predicate: (request) => request.method() === "GET" && request.url() === agentUrl,
+  });
+  await refocus(page);
+  assert.equal((await failed).failure()?.errorText, "net::ERR_CONNECTION_RESET");
+  await warning.waitFor();
+  const retryRead = responseTo(page, "GET", agentUrl);
+  await warning.getByRole("button", { name: "Retry", exact: true }).click();
+  assert.equal((await retryRead).status(), 200);
+  const unavailable = page.getByRole("heading", { name: "Request unavailable", exact: true });
+  await unavailable.or(wrongHeading).first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await unavailable.count(), 1);
+  assert.equal(await wrongHeading.count(), 0);
+  assert.equal(await editor.count(), 0);
+  assert.equal(readCount(agentPath), 3);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("persistent refocus failure leaves a local warning and Retry checks fresh access", async (t) => {
+  const {
+    fixture,
+    agent,
+    namespace,
+    page,
+    artifacts,
+    url,
+    editor,
+    draft,
+    requests,
+    readCount,
+    agentPath,
+    configurationPath,
+  } = await openRefocusDraft(t);
+  const configurationUrl = fixture.origin + configurationPath;
+  const heading = page.getByRole("heading", { name: "Example Agent", exact: true });
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await heading.evaluate((node) => node.setAttribute("data-refocus-header", "original"));
+
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "read" &&
+      resource.kind === "configuration" &&
+      resource.id === agent.configurationId,
+    async () => {
+      const statuses: number[] = [];
+      page.on("response", (response) => {
+        if (response.url() === configurationUrl && response.request().method() === "GET") {
+          statuses.push(response.status());
+        }
+      });
+      await refocus(page);
+      await warning.waitFor();
+      await waitForIdleFetches(page);
+      assert.deepEqual(statuses, [503, 503], "a real Controller outage exhausts the one retry");
+      assert.equal(await heading.getAttribute("data-refocus-header"), "original");
+      assert.equal(
+        await editor.count(),
+        0,
+        "the private draft is detached while its access is unknown",
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "Edit Configuration", exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
+        namespace.id,
+      );
+      assert.equal(await hasFocus(retry), true);
+      await refocus(page);
+      await waitForIdleFetches(page);
+      assert.equal(
+        readCount(configurationPath),
+        2,
+        "warning does not retry on another focus event",
+      );
+      if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+        await page.screenshot({ path: `${artifacts}/persistent-refocus-warning.png` });
+      }
+    },
+  );
+
+  const recovered = responseTo(page, "GET", configurationUrl);
+  await retry.click();
+  assert.equal((await recovered).status(), 200);
+  await editor.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await editor.inputValue(), draft);
+  assert.equal(page.url(), url.href);
+
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const revisions = await holdRequests(t, page, `${fixture.origin}${agentPath}/revisions`, {
+    once: true,
+    method: "GET",
+  });
+  const beforeRefusal = readCount(configurationPath);
+  const refused = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  try {
+    await revisions.requested;
+    assert.equal((await refused).status(), 403);
+    await page
+      .getByRole("heading", { name: "Access denied", exact: true })
+      .waitFor({ timeout: 5_000 });
+  } finally {
+    revisions.release();
+  }
+  await waitForIdleFetches(page);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await retry.count(), 0);
+  assert.equal(readCount(configurationPath) - beforeRefusal, 1, "access refusal is never retried");
+
+  assert.equal(await heading.count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+for (const recover of [false, true]) {
+  test(`Agent refocus keeps Delete gated ${recover ? "after a recovered 5xx" : "after healthy reads"}`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, agentPath } =
+      await openRefocusDraft(t);
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+    const actionable = (control: Locator) =>
+      control.click({ trial: true, timeout: 600 }).then(
+        () => true,
+        () => false,
+      );
+    await remove.click({ trial: true });
+    await save.click({ trial: true });
+
+    const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
+    const revisionsUrl = `${fixture.origin}${agentPath}/revisions`;
+    const revisionStatuses: number[] = [];
+    page.on("response", (response) => {
+      if (response.url() === revisionsUrl && response.request().method() === "GET") {
+        revisionStatuses.push(response.status());
+      }
+    });
+    const transient = recover
+      ? await holdRequests(t, page, revisionsUrl, {
+          once: true,
+          method: "GET",
+          fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+        })
+      : null;
+    const allowed = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const allowedInBrowser = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    if (transient) {
+      await transient.requested;
+      transient.release();
+    }
+    const allowedByServer = await allowed.requested;
+    assert.ok(allowedByServer);
+    assert.equal(allowedByServer.status(), 200);
+    assert.equal((await allowedByServer.json()).data.delete, true);
+    const pendingActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    allowed.release();
+    assert.equal((await allowedInBrowser).status(), 200);
+    await waitForIdleFetches(page);
+    assert.deepEqual(revisionStatuses, recover ? [500, 200] : [200]);
+    await remove.click({ trial: true });
+
+    const failure = await holdRequests(t, page, permissionsUrl, {
+      once: true,
+      method: "GET",
+      fulfill: proxyErrorResponse(503),
+    });
+    const failed = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    await failure.requested;
+    failure.release();
+    assert.equal((await failed).status(), 503);
+    await waitForIdleFetches(page);
+    const failedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+    assert.equal(await editor.inputValue(), draft);
+    assert.equal(await hasFocus(editor), true);
+    assert.deepEqual(
+      await editor.evaluate((node: HTMLTextAreaElement) => [
+        node.selectionStart,
+        node.selectionEnd,
+      ]),
+      [3, 7],
+    );
+
+    const granted = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    assert.equal((await granted).status(), 200);
+    await remove.click({ trial: true });
+    restrict(fixture.policy, "delete", "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
+    const denied = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    const revoked = await denied;
+    assert.equal(revoked.status(), 200);
+    assert.equal((await revoked.json()).data.delete, false);
+    await waitForIdleFetches(page);
+    const revokedActionable = {
+      delete: await actionable(remove),
+      save: await actionable(save),
+    };
+
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(
+      { pendingActionable, failedActionable, revokedActionable },
+      {
+        pendingActionable: { delete: false, save: false },
+        failedActionable: { delete: false, save: false },
+        revokedActionable: { delete: false, save: true },
+      },
+    );
+  });
+}
+
+test("a failed sharing refresh retains permissions confirmed on Agent refocus", async (t) => {
+  const { fixture, agent, page, editor, draft, requests, readCount, agentPath } =
+    await openRefocusDraft(t);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const permissionsPath = `${agentPath}/permissions`;
+  const permissionsUrl = fixture.origin + permissionsPath;
+
+  await tagView(page);
+  const confirmed = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await confirmed;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewTag(page), "kept");
+  await save.click({ trial: true });
+
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const refresh = sharing.getByRole("button", { name: "Refresh sharing", exact: true });
+  await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(permissionsPath), 1);
+
+  // Only the Agent permission summary probes Delete. The Controller reports that decision's
+  // outage while Refresh sharing runs as an ordinary reread after foreground admission.
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const reread = responseTo(page, "GET", permissionsUrl);
+      await refresh.click();
+      assert.equal((await reread).status(), 503);
+      await waitForEnabled(refresh);
+      await waitForIdleFetches(page);
+    },
+  );
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await waitForIdleFetches(page);
+  const actionable = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.equal(readCount(permissionsPath), 2);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(actionable, true, "a failed ordinary reread must retain the confirmed Save grant");
+  assert.equal(await editor.inputValue(), draft);
+});
+
+test("Agent refocus keeps Save gated on a replacement view after a permission outage", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replacement Agent refocus");
+  const agent = await fixture.createAgent(namespace.id, "Example Agent", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const revisionsUrl = `${agentUrl}/revisions`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const initialVersions = responseTo(page, "GET", revisionsUrl);
+  await login(page, fixture, url);
+  const initial = await initialVersions;
+  assert.equal(initial.status(), 200);
+  assert.deepEqual(
+    (await initial.json()).data.map(({ id }: { id: string }) => id),
+    [active.revision.id, first.revision.id],
+  );
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft = JSON.stringify({ ...JSON.parse(await editor.inputValue()), exampleDraft: true });
+  await editor.fill(draft);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await save.click({ trial: true });
+  await page.locator(settledView).waitFor();
+  await waitForIdleFetches(page);
+  await tagView(page);
+
+  // The Controller's real version list shrinks, so the shell must rebuild. Only its exact
+  // Agent permission summary probes Delete, whose IAM decision now fails.
+  denyRevisionRead(fixture, namespace, first.revision);
+  const blocked = restrict(fixture.policy, "update", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const reads: { url: string; status: number }[] = [];
+  page.on("response", (response) => {
+    const url = response.url();
+    if (response.request().method() === "GET" && [revisionsUrl, permissionsUrl].includes(url)) {
+      reads.push({ url, status: response.status() });
+    }
+  });
+  await fixture.withIamOutage(
+    ({ action, resource }) =>
+      action === "delete" && resource.kind === "agent" && resource.id === agent.id,
+    async () => {
+      const narrowed = responseTo(page, "GET", revisionsUrl);
+      const failed = responseTo(page, "GET", permissionsUrl);
+      await refocus(page);
+      const versions = await narrowed;
+      assert.equal(versions.status(), 200);
+      assert.deepEqual(
+        (await versions.json()).data.map(({ id }: { id: string }) => id),
+        [active.revision.id],
+      );
+      assert.equal((await failed).status(), 503);
+      await editor.waitFor();
+      await page.locator(settledView).waitFor();
+      await waitForIdleFetches(page);
+    },
+  );
+  assert.equal(page.url(), url.href);
+  assert.equal(await viewTag(page), null);
+  assert.equal(await page.locator('[data-nav-tag="kept"]').count(), 0, "the old view was retired");
+  assert.deepEqual(reads[0], { url: revisionsUrl, status: 200 });
+  assert.deepEqual(
+    reads.filter(({ url }) => url === revisionsUrl).map(({ status }) => status),
+    [200, 200],
+  );
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503],
+  );
+  assert.equal(await editor.inputValue(), draft);
+  await save.waitFor();
+  const actionableAfterFailure = await save.click({ trial: true, timeout: 600 }).then(
+    () => true,
+    () => false,
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  if (process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR) {
+    await save.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${artifacts}/replacement-save-unavailable.png` });
+  }
+
+  liftRestriction(fixture.policy, blocked);
+  const granted = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  const answer = await granted;
+  assert.equal(answer.status(), 200);
+  const { configurationUpdate, configurationSecretsOperate } = (await answer.json()).data;
+  assert.equal(configurationUpdate, true);
+  assert.equal(configurationSecretsOperate, true);
+  await save.click({ trial: true });
+  assert.equal(await editor.inputValue(), draft);
+  assert.deepEqual(
+    reads.filter(({ url }) => url === permissionsUrl).map(({ status }) => status),
+    [503, 200],
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(
+    actionableAfterFailure,
+    false,
+    "a failed replacement permission read must gate Save",
+  );
+});
+
+test("a rate-limited Agent refocus respects the longest delay and waits for explicit Retry", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const configurationUrl = fixture.origin + configurationPath;
+  await page.clock.install();
+  const unavailable = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(503), headers: { "retry-after": "1" } },
+  });
+  const throttle = await holdRequests(t, page, configurationUrl, {
+    once: true,
+    method: "GET",
+    fulfill: { ...proxyErrorResponse(429), headers: { "retry-after": "60" } },
+  });
+  const unavailableResponse = responseTo(page, "GET", url);
+  const limited = responseTo(page, "GET", configurationUrl);
+  await refocus(page);
+  await Promise.all([unavailable.requested, throttle.requested]);
+  unavailable.release();
+  throttle.release();
+  assert.equal((await unavailableResponse).status(), 503);
+  assert.equal((await limited).status(), 429);
+  const warning = page.getByRole("status").filter({ hasText: "Could not check Agent details" });
+  const retry = warning.getByRole("button", { name: "Retry", exact: true });
+  await warning.waitFor();
+  assert.equal(await retry.isEnabled(), false);
+  assert.equal(await editor.count(), 0);
+  await page.clock.fastForward(2_000);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isEnabled(), false, "the longer Configuration delay still applies");
+  await page.clock.fastForward(57_000);
+  assert.equal(await retry.isEnabled(), false, "Retry stays disabled just before the deadline");
+  await page.clock.fastForward(1_000);
+  assert.equal(await retry.isEnabled(), true);
+  assert.equal(readCount(path), 1, "the server delay does not schedule another revision read");
+  assert.equal(
+    readCount(configurationPath),
+    1,
+    "the server delay does not schedule another Configuration read",
+  );
+  const admitted = responseTo(page, "GET", url);
+  await retry.click();
+  assert.equal((await admitted).status(), 200);
+  await editor.waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("session expiry during a refocus retry removes the private Agent", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath, configurationPath } =
+    await openRefocusDraft(t);
+  const path = `${agentPath}/revisions`;
+  const url = fixture.origin + path;
+  const held = await holdRequests(t, page, url, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const failed = responseTo(page, "GET", url);
+  const configuration = responseTo(page, "GET", fixture.origin + configurationPath);
+  await refocus(page);
+  await held.requested;
+  assert.equal((await configuration).status(), 200);
+  expireSessions(fixture);
+  const unauthorized = responseTo(page, "GET", fixture.origin + agentPath);
+  held.release();
+  assert.equal((await failed).status(), 500);
+  assert.equal((await unauthorized).status(), 401);
+  await page.getByText("Your session has expired.", { exact: true }).waitFor();
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.equal(readCount(path), 1, "the expired retry never reads revision history");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("switching Namespace during the refocus retry drops the stale Agent result", async (t) => {
+  const { fixture, page, editor, requests, readCount, agentPath } = await openRefocusDraft(t);
+  const other = await fixture.createNamespace("Other workspace", { ready: true });
+  await fixture.createAgent(other.id, "Other Agent", nativeValues("v1"));
+  const revisionsPath = `${agentPath}/revisions`;
+  const revisionsUrl = fixture.origin + revisionsPath;
+  // Install the later handler first. The first read is fulfilled by the one-shot 500.
+  const retryRead = await holdRequests(t, page, revisionsUrl, { once: true, method: "GET" });
+  const failure = await holdRequests(t, page, revisionsUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(500, "INTERNAL_ERROR", "The request could not be completed."),
+  });
+  const first = responseTo(page, "GET", revisionsUrl);
+  await refocus(page);
+  await failure.requested;
+  failure.release();
+  assert.equal((await first).status(), 500);
+  await retryRead.requested;
+  assert.equal(
+    await editor.evaluate((node) => node.checkVisibility({ opacityProperty: true })),
+    false,
+    "a pending retry cannot paint the private draft",
+  );
+  await page.getByRole("combobox", { name: "Namespace", exact: true }).selectOption(other.id);
+  await page.waitForURL(`**/console/agents?namespace=${other.id}`);
+  await page.getByRole("link", { name: "Other Agent", exact: true }).waitFor();
+  retryRead.release();
+  await waitForIdleFetches(page);
+  assert.equal(readCount(revisionsPath), 2);
+  assert.equal(await editor.count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Example Agent", exact: true }).count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 for (const revoked of ["configuration", "agent"] as const) {
   test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(
@@ -891,5 +2258,434 @@ for (const revoked of ["configuration", "agent"] as const) {
     await page.goBack();
     await page.getByRole("heading", { name: heading, exact: true }).waitFor();
     await assertScrubbed();
+  });
+}
+
+async function openNativeTabBrowser(t: TestContext, fixture: Parameters<typeof newPage>[1]) {
+  // Prefer full Chromium for tabs in one window. CI installs the headless shell,
+  // which assigns each page its own window.
+  const fullBrowser = chromium.executablePath();
+  const executablePath =
+    process.env.OCC_TEST_BROWSER_EXECUTABLE || (existsSync(fullBrowser) ? fullBrowser : undefined);
+  const server = await chromium.launchServer({
+    host: "127.0.0.1",
+    headless: true,
+    ...(executablePath ? { executablePath } : {}),
+    args: [
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-debugging-port=0",
+      ...(fixture.browserArgs ?? []),
+    ],
+    env: { PATH: process.env.PATH },
+  });
+  t.after(() => server.close());
+  const prefix = "--user-data-dir=";
+  const profile = server
+    .process()
+    .spawnargs.find((arg) => arg.startsWith(prefix))
+    ?.slice(prefix.length);
+  assert.ok(profile, "Playwright launched Chromium with a disposable profile");
+  const port = await waitForResult("Chromium's loopback debugging port", async () => {
+    const address = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return "";
+    });
+    return address.split("\n")[0] || false;
+  });
+
+  // Use the browser's own focus and visibility instead of Playwright's default focus emulation.
+  const connection = await chromium.connectOverCDP({
+    endpointURL: `http://127.0.0.1:${port}`,
+    noDefaults: true,
+    timeout: 10_000,
+  });
+  const context = connection.contexts()[0];
+  assert.ok(context);
+  const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
+  return { page, artifacts: process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR || profile };
+}
+
+async function windowFor(page: Page) {
+  const session = await page.context().newCDPSession(page);
+  const { windowId } = await session.send("Browser.getWindowForTarget");
+  return {
+    page,
+    windowId,
+    setState: (windowState: "minimized" | "normal") =>
+      session.send("Browser.setWindowBounds", { windowId, bounds: { windowState } }),
+  };
+}
+
+type BrowserWindow = Awaited<ReturnType<typeof windowFor>>;
+
+async function activate(foreground: BrowserWindow, background: BrowserWindow) {
+  if (foreground.windowId !== background.windowId) {
+    // Minimize the outgoing shell window so Chromium itself hides and blurs the page.
+    await background.setState("minimized");
+    await foreground.setState("normal");
+  }
+  await foreground.page.bringToFront();
+  // Chromium stops animation frames in a hidden tab. Poll the browser state in timer tasks.
+  await Promise.all([
+    foreground.page.waitForFunction(() => !document.hidden && document.hasFocus(), null, {
+      polling: 25,
+    }),
+    background.page.waitForFunction(() => document.hidden && !document.hasFocus(), null, {
+      polling: 25,
+    }),
+  ]);
+}
+
+test("Agents list restores search after a recheck unless focus moved", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Returning to search");
+  await fixture.createAgent(namespace.id, "Fleet Report", nativeValues("fleet-report"));
+  const { credentials } = await fixture.createNamespaceMember("reader", namespace.id, AGENT_READ);
+  const { page } = await openNativeTabBrowser(t, fixture);
+  await trackSettledFetches(page);
+  const listWindow = await windowFor(page);
+  const popup = page.waitForEvent("popup");
+  await page.evaluate(() => {
+    window.open("about:blank", "_blank", "popup,width=360,height=280");
+  });
+  const other = await windowFor(await popup);
+  assert.notEqual(listWindow.windowId, other.windowId, "use two native browser windows");
+  await activate(listWindow, other);
+
+  const path = `/console/agents?namespace=${namespace.id}`;
+  const apiPath = `/namespaces/${namespace.id}/agents`;
+  const api = fixture.origin + apiPath;
+  await login(page, fixture, path, credentials);
+  const view = page.locator(settledView);
+  const search = page.getByRole("searchbox", { name: "Search Agents", exact: true });
+  await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+  await waitForIdleFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+
+  const state = () =>
+    search.evaluate((node: HTMLInputElement) => ({
+      focused: document.activeElement === node,
+      value: node.value,
+      range: [node.selectionStart, node.selectionEnd],
+      direction: node.selectionDirection,
+    }));
+  const selection = { focused: true, value: "Fleet Rep", range: [6, 9], direction: "backward" };
+  const reads = () => requests.filter(({ method, path }) => method === "GET" && path === apiPath);
+  const returnToList = async () => {
+    const held = await holdRequests(t, page, api, { once: true, method: "GET", afterServer: true });
+    const response = responseTo(page, "GET", api);
+    await activate(listWindow, other);
+    assert.equal((await held.requested)?.status(), 200);
+    await page.locator(heldView).waitFor();
+    return async () => {
+      held.release();
+      assert.equal((await response).status(), 200);
+    };
+  };
+
+  const selectSearchSuffix = async () => {
+    // Replace the previous pass's edit before selecting the suffix again.
+    await search.press("ControlOrMeta+A");
+    await page.keyboard.insertText("Fleet Rep");
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await hasFocus(search), true);
+    await page.keyboard.press("End");
+    for (let press = 0; press < 3; press++) {
+      await page.keyboard.press("Shift+ArrowLeft");
+    }
+    assert.deepEqual(await state(), selection);
+  };
+
+  for (const moveFocus of [false, true]) {
+    const before = reads().length;
+    await selectSearchSuffix();
+
+    await activate(other, listWindow);
+    const finishFirst = await returnToList();
+
+    // Leave before the first genuine read reaches the Console. Its hidden completion may
+    // retain the selection, but the input must remain unfocused until a new admission.
+    await activate(other, listWindow);
+    await finishFirst();
+    await page.waitForFunction(
+      (selector) =>
+        document.hidden &&
+        !document.hasFocus() &&
+        globalThis.inFlightFetchCount?.() === 0 &&
+        !document.querySelector(selector),
+      heldView,
+      { polling: 25 },
+    );
+    assert.deepEqual(await state(), { ...selection, focused: false });
+
+    const finishSecond = await returnToList();
+    assert.equal(await hasFocus(search), false, "wait for the second list read");
+    if (moveFocus) {
+      // A newer focus choice still wins when the control later loses focus to the body.
+      const account = page.locator(".account-toggle");
+      await account.click();
+      await page.keyboard.press("Escape");
+      assert.equal(await hasFocus(account), true);
+      await account.evaluate((node: HTMLElement) => node.blur());
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    }
+    await finishSecond();
+    await view.waitFor();
+    await waitForIdleFetches(page);
+
+    assert.deepEqual(await state(), { ...selection, focused: !moveFocus });
+    if (!moveFocus) {
+      await page.keyboard.press("r");
+      assert.equal(await search.inputValue(), "Fleet r", "typing replaces the original selection");
+    }
+    assert.equal(page.url(), fixture.origin + path);
+    assert.equal(reads().length - before, 2);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  }
+
+  for (const rebuild of [false, true]) {
+    await t.test(`foreground recheck ${rebuild ? "rebuilds" : "retains"} the list`, async () => {
+      const before = reads().length;
+      await selectSearchSuffix();
+      await tagView(page);
+      if (rebuild) {
+        await fixture.createAgent(namespace.id, "Fleet Report 02", nativeValues("fleet-report-02"));
+      }
+      await activate(other, listWindow);
+      const finish = await returnToList();
+      const namespaceSelector = page.getByRole("combobox", { name: "Namespace", exact: true });
+      const bodyHasFocus = () => page.evaluate(() => document.activeElement === document.body);
+      try {
+        for (let press = 0; press < 35 && !(await hasFocus(namespaceSelector)); press++) {
+          await page.keyboard.press("Tab");
+        }
+        assert.equal(await hasFocus(namespaceSelector), true, "Tab reaches the Namespace selector");
+        assert.equal(await namespaceSelector.inputValue(), namespace.id);
+        // The non-interactive scope line leaves focus on the body after the reader moved away.
+        await page.locator("main .page-header .page-title .scope").click();
+        assert.equal(await bodyHasFocus(), true);
+      } finally {
+        await finish();
+      }
+
+      await view.waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(await viewTag(page), rebuild ? null : "kept");
+      const bodyFocusedBeforeTyping = await bodyHasFocus();
+      await page.keyboard.press("r");
+      assert.deepEqual(
+        { bodyFocusedBeforeTyping, query: await search.inputValue() },
+        { bodyFocusedBeforeTyping: true, query: selection.value },
+        "the completed read leaves focus on the body and typing leaves the filter intact",
+      );
+      await view.getByRole("link", { name: "Fleet Report", exact: true }).waitFor();
+      if (rebuild) {
+        await view.getByRole("link", { name: "Fleet Report 02", exact: true }).waitFor();
+      }
+      assert.equal(page.url(), fixture.origin + path);
+      assert.equal(reads().length - before, 1);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    });
+  }
+});
+
+async function selectedAgentId(page: Page) {
+  return page.locator(".page-meta-id .resource-id").evaluate((id) => {
+    const selection = document.getSelection();
+    return selection && id.contains(selection.anchorNode) && id.contains(selection.focusNode)
+      ? selection.toString()
+      : "";
+  });
+}
+
+for (const scenario of [
+  "foreground completion",
+  "second return",
+  "moved focus",
+  "selected Agent ID",
+  "revoked access",
+  "expired session",
+  "navigation",
+] as const) {
+  test(`Configuration draft focus on browser activation (${scenario})`, async (t) => {
+    const { fixture, namespace, agent, page, editor, draft, requests, readCount, agentPath, url } =
+      await openRefocusDraft(t, openNativeTabBrowser);
+    let selectedId = "";
+    const backward = scenario === "foreground completion" || scenario === "second return";
+    const original = await editor.evaluateHandle((node, backward) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected the Advanced Configuration textarea");
+      }
+      if (backward) {
+        node.setSelectionRange(3, 7, "backward");
+      }
+      return { node, view: node.closest('.content [aria-live="polite"]') };
+    }, backward);
+    const editorState = () =>
+      original.evaluate(({ node, view }) => ({
+        connected: node.isConnected,
+        sameEditor: document.getElementById(node.id) === node,
+        sameView: document.querySelector('.content [aria-live="polite"]') === view,
+        focused: document.activeElement === node,
+        value: node.value,
+        range: [node.selectionStart, node.selectionEnd],
+        direction: node.selectionDirection,
+      }));
+    const selected = {
+      connected: true,
+      sameEditor: true,
+      sameView: true,
+      focused: true,
+      value: draft,
+      range: [3, 7],
+      direction: backward ? "backward" : (await editorState()).direction,
+    };
+    assert.deepEqual(await editorState(), selected);
+
+    const agentUrl = fixture.origin + agentPath;
+    const firstCheck = await holdRequests(t, page, agentUrl, {
+      once: true,
+      method: "GET",
+      afterServer: true,
+    });
+    const popup = page.waitForEvent("popup");
+    await page.evaluate(() => {
+      window.open("about:blank", "_blank");
+    });
+    const other = await windowFor(await popup);
+    const draftTab = await windowFor(page);
+    t.diagnostic(
+      draftTab.windowId === other.windowId ? "two tabs in one window" : "two browser windows",
+    );
+    await activate(other, draftTab);
+
+    const firstResponse = responseTo(page, "GET", agentUrl);
+    await activate(draftTab, other);
+    assert.equal((await firstCheck.requested)?.status(), 200);
+    await page.locator(heldView).waitFor();
+    const repeat = scenario !== "foreground completion";
+    if (repeat) {
+      // Leave again before access is confirmed. Let the genuine reply settle in the hidden tab.
+      await activate(other, draftTab);
+    }
+    firstCheck.release();
+    assert.equal((await firstResponse).status(), 200);
+    await page.waitForFunction(
+      (selector) => globalThis.inFlightFetchCount?.() === 0 && !document.querySelector(selector),
+      heldView,
+      { polling: 25 },
+    );
+    if (repeat) {
+      assert.deepEqual(await page.evaluate(() => [document.visibilityState, document.hasFocus()]), [
+        "hidden",
+        false,
+      ]);
+      assert.deepEqual(await editorState(), { ...selected, focused: false });
+
+      const secondCheck = await holdRequests(t, page, agentUrl, {
+        once: true,
+        method: "GET",
+        afterServer: scenario !== "expired session",
+      });
+      if (scenario === "revoked access") {
+        restrict(fixture.policy, "read", "agent", {
+          namespaceId: namespace.id,
+          resourceId: agent.id,
+        });
+      }
+      const otherNamespace =
+        scenario === "navigation"
+          ? await fixture.createNamespace("Other workspace", { ready: true })
+          : null;
+      const secondResponse = otherNamespace ? null : responseTo(page, "GET", agentUrl);
+      await activate(draftTab, other);
+      const upstream = await secondCheck.requested;
+      await page.locator(heldView).waitFor();
+      if (otherNamespace) {
+        // Navigation must invalidate the target even though the old Agent read succeeded.
+        assert.equal(upstream?.status(), 200);
+        await page
+          .getByRole("combobox", { name: "Namespace", exact: true })
+          .selectOption(otherNamespace.id);
+        await page.waitForURL(`**/console/agents?namespace=${otherNamespace.id}`);
+        secondCheck.release();
+        await page.locator(settledView).waitFor();
+        await waitForIdleFetches(page);
+        assert.equal(await editor.count(), 0);
+        const afterNavigation = await editorState();
+        assert.equal(afterNavigation.connected, false);
+        assert.equal(afterNavigation.sameView, false);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        return;
+      }
+
+      if (scenario === "expired session") {
+        // Expire the actual session after its read passed, before the pending Agent GET reaches the Controller.
+        expireSessions(fixture);
+      } else {
+        assert.equal(upstream?.status(), scenario === "revoked access" ? 403 : 200);
+      }
+      if (scenario === "moved focus") {
+        // Once the reader uses the keyboard elsewhere, returning to BODY must not reclaim focus.
+        const account = page.locator(".account-toggle");
+        await account.click();
+        await page.keyboard.press("Escape");
+        assert.equal(await hasFocus(account), true);
+        await account.evaluate((node: HTMLElement) => node.blur());
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      }
+      if (scenario === "selected Agent ID") {
+        // Selecting an ID to copy keeps keyboard focus on the body throughout the recheck.
+        await page.locator(".page-meta-id .resource-id").dblclick();
+        selectedId = await selectedAgentId(page);
+        assert.ok(selectedId);
+        assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      }
+      secondCheck.release();
+      assert.equal(
+        (await secondResponse)?.status(),
+        scenario === "expired session" ? 401 : scenario === "revoked access" ? 403 : 200,
+      );
+      if (scenario === "expired session" || scenario === "revoked access") {
+        if (scenario === "expired session") {
+          await page.getByText("Your session has expired.", { exact: true }).waitFor();
+        } else {
+          await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+        }
+        assert.equal(await editor.count(), 0);
+        const refused = await editorState();
+        assert.equal(refused.connected, false);
+        assert.equal(refused.focused, false);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        return;
+      }
+    }
+
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), url.href);
+    assert.equal(readCount(agentPath), repeat ? 2 : 1);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    const restored = await editorState();
+    if (scenario === "selected Agent ID") {
+      assert.equal(
+        await selectedAgentId(page),
+        selectedId,
+        "the selected ID is still ready to copy",
+      );
+    }
+    assert.equal(
+      restored.focused,
+      scenario !== "moved focus" && scenario !== "selected Agent ID",
+      "keyboard focus after admission",
+    );
+    if (scenario === "foreground completion") {
+      await page.keyboard.press("Shift+ArrowLeft");
+      assert.deepEqual((await editorState()).range, [2, 7], "extend from the original anchor");
+    }
+    assert.deepEqual(restored, { ...selected, focused: restored.focused });
   });
 }

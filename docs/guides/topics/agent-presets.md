@@ -67,7 +67,7 @@ Fill the Preset variables with:
 - The owner's Slack user ID, a channel ID where the bot is already invited,
   and an IANA timezone. The timezone defaults to `UTC`.
 
-Configure the Installation's [Slack channel proxy](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
+Configure the Installation's [managed channel egress](../../reference/drivers/kubernetes-compute/channel-egress.md)
 and use compatible gateway, Codex plugin, and Codex app-server images before deployment.
 
 The owner is initially the only allowed channel user. DMs and bot messages are
@@ -97,10 +97,11 @@ selected runtime before relying on it.
 1. Sign in, select the same Namespace, and open **Agents → Create Agent**.
    You need `read` on the Preset and Agent and Configuration `create` in the
    Namespace. An administrator can grant exact Preset access through
-   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy), but
-   Namespace IAM cannot grant `create`, so only Installation administrators can save
-   the Agent. Other members can render a Preset into a draft, and the console says
-   that creating it needs Installation access.
+   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy).
+   That API cannot grant `create`. An
+   [Installation-configured Role and binding](../../reference/authorization/default-users.md)
+   can grant create to a member. If Agent create is unavailable, the console
+   explains the required access instead of opening the form.
 2. Choose your Preset in **Preset template**, fill its variables,
    and select **Use Preset**. The chooser closes and the Agent form opens with
    the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.

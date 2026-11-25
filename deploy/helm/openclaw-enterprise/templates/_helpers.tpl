@@ -87,6 +87,10 @@
 {{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "openclaw.channelEgress.slotName" -}}
+{{- printf "channel-egress-%s-%d" (.gatewayName | sha256sum | trunc 12) (int .port) -}}
+{{- end -}}
 {{- /* Shared repository inputs. Only an explicit delivery selection, broker or OpenShell listener activates them. */ -}}
 {{- define "openclaw.repositoryCredentials.gitEnabled" -}}
 {{- $credentials := .Values.repositoryCredentials -}}
@@ -107,6 +111,7 @@ true
 {{- define "openclaw.validate" -}}
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled -}}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
+{{- $repositoryRegistry := .Values.repositoryCredentials.registryConfigMapName -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
 {{- end -}}
@@ -122,7 +127,7 @@ true
 {{- /* Inside, the host parser refuses spaces, < and > (Go's URL parser keeps < and >), and drops most invisible characters. Only the joiners U+200C and U+200D, which some IDN labels need, may appear besides L, M, N, P and S; this also covers the ends, except for a joiner there. */ -}}
 {{- /* A joiner outside an IDNA ContextJ position (U+200D not after a virama, U+200C not after a virama or in an Arabic joining context) renders: RE2 has no combining-class property. The API, the bootstrap Job and the profile renderer refuse it, so install or upgrade fails at the bootstrap Job. */ -}}
 {{- if regexMatch "[^\\pL\\pM\\pN\\pP\\pS\\x{200C}\\x{200D}]|[<>]" $baseUrlText -}}{{- fail "auth.baseUrl must not contain spaces, invisible characters, < or >; the API's URL parser refuses or drops them in a host" -}}{{- end -}}
-{{- /* The host parser maps compatibility characters (UTS #46, close to NFKC) before it checks them, and refuses those that map to a forbidden host code point (full-width ? # / : @, spacing accents that map to a space) or that UTS #46 disallows (dotted numbers such as U+2488, ideographic description characters, U+FFFC, U+FFFD). Go's URL parser keeps them all. The list is generated from Node; sign-in-chart-parity.test.mjs re-derives it. */ -}}
+{{- /* The host parser maps compatibility characters (UTS #46, close to NFKC) before it checks them, and refuses those that map to a forbidden host code point (full-width ? # / : @, spacing accents that map to a space) or that UTS #46 disallows (dotted numbers such as U+2488, ideographic description characters, U+FFFC, U+FFFD). Go's URL parser keeps them all. The list is generated from Node; sign-in-chart-parity.test.ts re-derives it. */ -}}
 {{- $baseUrlHostRefused := "[\\x{00A8}\\x{00AF}\\x{00B4}\\x{00B8}\\x{02D8}-\\x{02DD}\\x{037A}\\x{0384}\\x{0385}\\x{1FBD}\\x{1FBF}-\\x{1FC1}\\x{1FCD}-\\x{1FCF}\\x{1FDD}-\\x{1FDF}\\x{1FED}\\x{1FEE}\\x{1FFD}\\x{1FFE}\\x{2017}\\x{2024}-\\x{2026}\\x{203E}\\x{2047}-\\x{2049}\\x{2100}\\x{2101}\\x{2105}\\x{2106}\\x{2488}-\\x{249B}\\x{2A74}\\x{2FF0}-\\x{2FFF}\\x{309B}\\x{309C}\\x{31EF}\\x{33C2}\\x{33C7}\\x{33D8}\\x{FC5E}-\\x{FC63}\\x{FDFA}\\x{FDFB}\\x{FE12}\\x{FE13}\\x{FE16}\\x{FE19}\\x{FE30}\\x{FE47}-\\x{FE4C}\\x{FE52}\\x{FE55}\\x{FE56}\\x{FE5F}\\x{FE64}\\x{FE65}\\x{FE68}\\x{FE6A}\\x{FE6B}\\x{FE70}\\x{FE72}\\x{FE74}\\x{FE76}\\x{FE78}\\x{FE7A}\\x{FE7C}\\x{FE7E}\\x{FF03}\\x{FF05}\\x{FF0F}\\x{FF1A}\\x{FF1C}\\x{FF1E}-\\x{FF20}\\x{FF3B}-\\x{FF3E}\\x{FF5C}\\x{FFE3}\\x{FFFC}\\x{FFFD}\\x{1F100}]" -}}
 {{- if regexMatch $baseUrlHostRefused $baseUrlText -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
 {{- /* The API and the bootstrap Job accept only an absolute HTTP(S) origin (validHttpBaseURL). They also refuse a bare ? or #, which urlParse reads as an empty query or fragment, and any @: Node drops an empty user info (https://@host), which urlParse keeps. Go keeps an extra port colon in the host name and accepts an IPv6 zone ID; Node refuses both. */ -}}
@@ -134,7 +139,7 @@ true
 {{- /* Both parsers percent-decode the host, so the character checks above also run on the decoded host name (https://ex%C2%A0ample.com), with the same deliberate strictness for the invisible characters the API drops. */ -}}
 {{- if regexMatch "[^\\pL\\pM\\pN\\pP\\pS\\x{200C}\\x{200D}]|[<>]" $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain spaces, invisible characters, < or >; the API's URL parser refuses or drops them in a host" -}}{{- end -}}
 {{- if regexMatch $baseUrlHostRefused $baseUrl.hostname -}}{{- fail "auth.baseUrl must not contain compatibility characters such as full-width ? # / : @ or dotted numbers; the API's URL parser refuses them" -}}{{- end -}}
-{{- /* Go's URL parser keeps the written host. Node treats a host whose last label (after one trailing dot) is a number, decimal or 0x hex, as IPv4: it reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address, and refuses a host such as example.123 or foo.1.0.0.1 that is not one. Before that check it maps compatibility characters (UTS #46): it drops variation selectors and Hangul fillers, maps the dots U+3002, U+FF0E and U+FF61, and maps digits such as １, ①, ⑩, 𝟏 and ¹ and letters such as ｘ, Ａ, ⓕ and ㏈ to ASCII. The chart maps the same characters, enough to decide whether the last label is a number; such a host must then be written as four ASCII decimal octets. A DNS name that only borrows those characters elsewhere is left alone. The lists are generated from Node; sign-in-chart-parity.test.mjs re-derives them. */ -}}
+{{- /* Go's URL parser keeps the written host. Node treats a host whose last label (after one trailing dot) is a number, decimal or 0x hex, as IPv4: it reads a leading zero as octal and also accepts hex (a bare 0x is 0), shorthand, a single integer and a trailing dot, then publishes that other address, and refuses a host such as example.123 or foo.1.0.0.1 that is not one. Before that check it maps compatibility characters (UTS #46): it drops variation selectors and Hangul fillers, maps the dots U+3002, U+FF0E and U+FF61, and maps digits such as １, ①, ⑩, 𝟏 and ¹ and letters such as ｘ, Ａ, ⓕ and ㏈ to ASCII. The chart maps the same characters, enough to decide whether the last label is a number; such a host must then be written as four ASCII decimal octets. A DNS name that only borrows those characters elsewhere is left alone. The lists are generated from Node; sign-in-chart-parity.test.ts re-derives them. */ -}}
 {{- $ipv4Ignored := "[\\x{034F}\\x{115F}\\x{1160}\\x{17B4}\\x{17B5}\\x{180B}-\\x{180D}\\x{180F}\\x{3164}\\x{FE00}-\\x{FE0F}\\x{FFA0}\\x{E0100}-\\x{E01EF}]" -}}
 {{- $ipv4Dots := "[\\x{3002}\\x{FF0E}\\x{FF61}]" -}}
 {{- $ipv4Zeros := "[\\x{2070}\\x{2080}\\x{24EA}\\x{FF10}\\x{1CCF0}\\x{1D7CE}\\x{1D7D8}\\x{1D7E2}\\x{1D7EC}\\x{1D7F6}\\x{1FBF0}]" -}}
@@ -164,46 +169,26 @@ true
 {{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
-{{- $github := .Values.auth.github -}}
+{{- if hasKey .Values.auth "github" -}}{{- fail "auth.github was removed; use auth.oidc.enrollment. See docs/guides/deploy/oidc-upgrade.md" -}}{{- end -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
-{{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
 {{- $google := .Values.auth.google -}}
 {{- $oidc := .Values.auth.oidc -}}
-{{- $external := or (and $github $github.enabled) (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
-{{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- $external := or (and $google $google.enabled) (and $oidc $oidc.enabled) -}}
+{{- if and $recoveryUserId (not $external) -}}{{- fail "auth.recoveryUserId requires auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- $passwordSignIn := toString (default "all" .Values.auth.passwordSignIn) -}}
 {{- if not (has $passwordSignIn (list "all" "recovery-only")) -}}{{- fail "auth.passwordSignIn must be all or recovery-only" -}}{{- end -}}
-{{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.github.enabled, auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
+{{- if and (eq $passwordSignIn "recovery-only") (not $external) -}}{{- fail "auth.passwordSignIn: recovery-only requires auth.google.enabled or auth.oidc.enabled" -}}{{- end -}}
 {{- /* JavaScript's trim for the allowlists below and the OIDC URLs: ASCII whitespace, Unicode Zs, U+2028, U+2029 and U+FEFF. Go's TrimSpace also drops U+0085, which the API keeps and then rejects, and keeps U+FEFF, which the API trims. The rendered env keeps the value as written. Go's lower maps U+0130 (İ) to i, but JavaScript's toLowerCase maps it to i and U+0307, which the API then refuses, so the allowlists below map it that way first. */ -}}
 {{- $jsTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- /* Allowlists are checked whether or not their provider is enabled, as the API does, and
 an allowlist without its provider is refused: the API treats it as a startup error. */ -}}
-{{- $githubLists := default dict $github -}}
 {{- $googleLists := default dict $google -}}
-{{- if not (or (kindIs "invalid" $githubLists.allowedOrgs) (kindIs "slice" $githubLists.allowedOrgs)) -}}{{- fail "auth.github.allowedOrgs must be a list of GitHub organization logins" -}}{{- end -}}
-{{- range $org := $githubLists.allowedOrgs -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $org) "") "i\u0307"))) -}}{{- fail "auth.github.allowedOrgs requires GitHub organization logins such as acme" -}}{{- end -}}
-{{- end -}}
-{{- if not (or (kindIs "invalid" $githubLists.allowedTeams) (kindIs "slice" $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedTeams must be a list of org/team-slug entries" -}}{{- end -}}
-{{- range $team := $githubLists.allowedTeams -}}
-{{- if not (regexMatch "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9][a-z0-9_-]{0,99}$" (lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $team) "") "i\u0307"))) -}}{{- fail "auth.github.allowedTeams requires org/team-slug entries such as acme/platform" -}}{{- end -}}
-{{- end -}}
-{{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
-{{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $githubLists.autoEnrollGroupId) (kindIs "string" $githubLists.autoEnrollGroupId)) -}}
-{{- fail "auth.github.autoEnrollGroupId must be a Group ID string" -}}
-{{- end -}}
-{{- with $group := $githubLists.autoEnrollGroupId -}}
-{{- if or (not (kindIs "string" $group)) (not (regexReplaceAll $jsTrim (toString $group) "")) (not (default list $githubLists.allowedTeams)) (default list $githubLists.allowedOrgs) -}}
-{{- fail "auth.github.autoEnrollGroupId requires a valid Group ID, allowedTeams and no allowedOrgs" -}}
-{{- end -}}
-{{- end -}}
 {{- with $binding := .Values.preprovisionedNamespace -}}
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
 {{- end -}}
-{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.github.enabled $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
+{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
 {{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, egress or OpenShell Git authority, disposable password operator and no external login or native admin" -}}
 {{- end -}}
 {{- end -}}
@@ -213,19 +198,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $name) 253) (not (regexMatch "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$" $name)) -}}{{- fail "auth.google.allowedDomains requires DNS domain names such as example.com" -}}{{- end -}}
 {{- end -}}
 {{- if and (not (and $google $google.enabled)) (default list $googleLists.allowedDomains) -}}{{- fail "auth.google.allowedDomains requires auth.google.enabled: true; it limits Google sign-in only" -}}{{- end -}}
-{{- if and $github $github.enabled -}}
-{{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
-{{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientIdKey" "value" $github.clientIdKey) -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientSecretKey" "value" $github.clientSecretKey) -}}
-{{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
-{{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $github.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.github.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
-{{- end -}}
+{{- $nativeSessionMode := .Values.agentNativeAdmin.sessionMode -}}
+{{- if not (has $nativeSessionMode (list "shared-cookie" "host-only-exchange")) -}}{{- fail "agentNativeAdmin.sessionMode must be shared-cookie or host-only-exchange" -}}{{- end -}}
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
@@ -233,13 +207,18 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.google.clientSecretKey" "value" $google.clientSecretKey) -}}
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $google.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
+{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google native browser access is not supported" -}}{{- end -}}
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
+{{- if and (hasKey $oidcCa "enrollment") (not $oidcCa.enabled) -}}{{- fail "auth.oidc.enrollment requires auth.oidc.enabled: true" -}}{{- end -}}
+{{- if hasKey $oidcCa "enrollment" -}}
+{{- if not (kindIs "map" $oidcCa.enrollment) -}}{{- fail "auth.oidc.enrollment must be an object" -}}{{- end -}}
+{{- if hasKey $oidcCa.enrollment "createAccount" -}}
+{{- $create := $oidcCa.enrollment.createAccount -}}
+{{- if not (kindIs "map" $create) -}}{{- fail "auth.oidc.enrollment.createAccount must be an object" -}}{{- end -}}
+{{- if and (hasKey $create "requireVerifiedEmail") (not (kindIs "bool" $create.requireVerifiedEmail)) -}}{{- fail "auth.oidc.enrollment.createAccount.requireVerifiedEmail must be a boolean" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- range $key := list "caSecretName" "caSecretKey" -}}
 {{- if hasKey $oidcCa $key -}}{{- include "openclaw.requireString" (dict "label" (printf "auth.oidc.%s" $key) "value" (index $oidcCa $key)) -}}{{- end -}}
 {{- end -}}
@@ -262,24 +241,20 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
-{{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}
-{{- /* The API's startup checks, mirrored: https on 443, a DNS host, no userinfo, query or fragment, and one host for all four. */ -}}
-{{- $endpoint := "^(?i)https://(([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?)(:443)?(/[^?#]*)?$" -}}
+{{- /* The API's startup checks, mirrored for each configured URL: https on 443, a DNS host, no userinfo, query or fragment. */ -}}
+{{- $endpoint := "^[Hh][Tt][Tt][Pp][Ss]://(([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(:443)?(/[^?#]*)?$" -}}
 {{- $issuer := regexReplaceAll $jsTrim (toString (default "" $oidc.issuer)) "" -}}
-{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^(?i)https://[^/]*:" $issuer) (gt (len (regexReplaceAll $endpoint $issuer "${1}")) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
-{{- $host := lower (regexReplaceAll $endpoint $issuer "${1}") -}}
+{{- $issuerHost := regexReplaceAll $endpoint $issuer "${1}" -}}
+{{- if or (not (regexMatch $endpoint $issuer)) (regexMatch "^[Hh][Tt][Tt][Pp][Ss]://[^/]*:" $issuer) (gt (len $issuerHost) 253) -}}{{- fail "auth.oidc.issuer must be an https URL on port 443 with a DNS host name and no query or fragment, written without a port" -}}{{- end -}}
 {{- range $key := list "authorizationUrl" "tokenUrl" "jwksUrl" -}}
 {{- $url := regexReplaceAll $jsTrim (toString (default "" (index $oidc $key))) "" -}}
-{{- if or (not (regexMatch $endpoint $url)) (ne (lower (regexReplaceAll $endpoint $url "${1}")) $host) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 on the issuer's host, with no query or fragment" $key) -}}{{- end -}}
+{{- $host := regexReplaceAll $endpoint $url "${1}" -}}
+{{- if or (not (regexMatch $endpoint $url)) (gt (len $host) 253) -}}{{- fail (printf "auth.oidc.%s must be an https URL on port 443 with a DNS host name and no query or fragment" $key) -}}{{- end -}}
 {{- end -}}
 {{- if not (has (toString (default "client_secret_post" $oidc.tokenAuth)) (list "client_secret_post" "client_secret_basic")) -}}{{- fail "auth.oidc.tokenAuth must be client_secret_post or client_secret_basic" -}}{{- end -}}
 {{- /* The API trims the display name and uses its default when nothing is left. RE2's \p{C} has no unassigned code points, which the API refuses at startup; a positive class would instead refuse characters newer than Helm's Unicode tables that the API accepts, such as new emoji. */ -}}
 {{- $displayName := regexReplaceAll $jsTrim (toString (default "" $oidc.displayName)) "" -}}
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
-{{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
-{{- range $cidr := $oidc.egressCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
-{{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
 {{- $preset := toString (default "" $proxy.preset) -}}
@@ -320,20 +295,19 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and (ne $preset "generic") (ne $header "x-forwarded-for") -}}{{- fail (printf "api.trustedProxy.preset %s reads x-forwarded-for; use the generic preset for %s" $preset $header) -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.agentNativeAdmin.enabled -}}
-{{- if not .Values.agentNativeAdmin.domain -}}{{- fail "agentNativeAdmin.domain must identify the public Agent native admin DNS suffix when agentNativeAdmin.enabled is true" -}}{{- end -}}
+{{- if hasKey .Values.agentNativeAdmin "sharedCookieDomain" -}}{{- fail "agentNativeAdmin.sharedCookieDomain is no longer supported; session cookie scope is derived from auth.baseUrl and agentNativeAdmin.domain" -}}{{- end -}}
+{{- if and .Values.agentNativeAdmin.enabled (gt (len .Values.agentNativeAdmin.domain) 214) -}}{{- fail "agentNativeAdmin.domain must not exceed 214 characters, leaving room for the Agent hostname prefix" -}}{{- end -}}
+{{- if not .Values.agentNativeAdmin.domain -}}{{- fail "agentNativeAdmin.domain is required for shared browser sessions, including when native browser access is disabled" -}}{{- end -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.agentNativeAdmin.domain) -}}{{- fail "agentNativeAdmin.domain must be a DNS hostname without a wildcard, port, scheme, or path" -}}{{- end -}}
-{{- if not .Values.agentNativeAdmin.sharedCookieDomain -}}{{- fail "agentNativeAdmin.sharedCookieDomain must identify the trusted shared OCE cookie parent when agentNativeAdmin.enabled is true" -}}{{- end -}}
-{{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" .Values.agentNativeAdmin.sharedCookieDomain) -}}{{- fail "agentNativeAdmin.sharedCookieDomain must be a DNS hostname without a wildcard, port, scheme, or path" -}}{{- end -}}
-{{- $agentNativeAdminDomain := lower .Values.agentNativeAdmin.domain -}}
-{{- $sharedCookieDomain := lower .Values.agentNativeAdmin.sharedCookieDomain -}}
-{{- if not (or (eq $agentNativeAdminDomain $sharedCookieDomain) (hasSuffix (printf ".%s" $sharedCookieDomain) $agentNativeAdminDomain)) -}}{{- fail "agentNativeAdmin.domain must be inside agentNativeAdmin.sharedCookieDomain" -}}{{- end -}}
-{{- /* The API's startup checks, mirrored: shared session cookies are secure-only, and the console host must be inside their parent. */ -}}
-{{- if ne $baseUrl.scheme "https" -}}{{- fail "agentNativeAdmin.enabled requires an HTTPS auth.baseUrl; shared session cookies are secure-only" -}}{{- end -}}
-{{- $authBaseHost := trimSuffix "." (lower $baseUrl.hostname) -}}
-{{- if not (or (eq $authBaseHost $sharedCookieDomain) (hasSuffix (printf ".%s" $sharedCookieDomain) $authBaseHost)) -}}{{- fail "agentNativeAdmin.sharedCookieDomain must contain the auth.baseUrl host" -}}{{- end -}}
-{{- if not .Values.gatewayRouting.enabled -}}{{- fail "agentNativeAdmin.enabled requires gatewayRouting.enabled so the API can reach private Agent gateways" -}}{{- end -}}
+{{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.baseUrl must use HTTPS for browser sessions" -}}{{- end -}}
+{{- $cookieDomain := include "openclaw.sharedCookieDomain" . -}}
+{{- if lt (len (splitList "." $cookieDomain)) 2 -}}{{- fail "auth.baseUrl and agentNativeAdmin.domain must share a non-public DNS suffix" -}}{{- end -}}
+{{- if eq $nativeSessionMode "host-only-exchange" -}}
+{{- if or (not .Values.auth.oidc.enabled) .Values.auth.google.enabled -}}{{- fail "agentNativeAdmin host-only-exchange requires guarded OIDC sign-in without Google" -}}{{- end -}}
+{{- if .Values.gatewayRouting.sandbox.enabled -}}{{- fail "agentNativeAdmin host-only-exchange does not support sandbox preview" -}}{{- end -}}
+{{- /* API startup validates the registrable site with the public suffix list. */ -}}
 {{- end -}}
+{{- if and .Values.agentNativeAdmin.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "agentNativeAdmin.enabled requires gatewayRouting.enabled so the API can reach private Agent gateways" -}}{{- end -}}
 {{- /* The bootstrap Job refuses plain HTTP unless the host is 127.0.0.1, localhost, or ::1. Helm reads http://[::1] as hostname ::1. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost" "::1"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost or ::1; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
 {{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
@@ -347,30 +321,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
-{{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
-{{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
+{{- if .Release.IsInstall -}}
+{{- $secret := required "Set bootstrap.credentials.secretName. Use an unused name with occ installation install. Direct Helm and --bootstrap-credentials=existing require a precreated Secret in the release namespace." .Values.bootstrap.credentials.secretName -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap.credentials.secretName" "value" $secret) -}}
+{{- if or (gt (len $secret) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $secret)) -}}
+{{- fail "bootstrap.credentials.secretName must be a DNS subdomain of at most 253 characters" -}}
 {{- end -}}
-{{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
-{{- include "openclaw.requireString" (dict "label" "bootstrap.password.claimName" "value" .Values.bootstrap.password.claimName) -}}
-{{- $claimName := .Values.bootstrap.password.claimName -}}
-{{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
-{{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
-{{- end -}}
-{{- if or (not .Values.bootstrap.serviceKey) (not .Values.bootstrap.serviceKey.fileName) -}}
-{{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
-{{- end -}}
-{{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
-{{- include "openclaw.requireString" (dict "label" $label "value" $fileName) -}}
-{{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
-{{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
+{{- range $key := list .Values.bootstrap.credentials.passwordKey .Values.bootstrap.credentials.serviceKeyKey -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap credential key" "value" $key) -}}
+{{- if or (not $key) (gt (len $key) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" $key)) -}}
+{{- fail "bootstrap credential keys must be Secret key names of at most 253 characters" -}}
 {{- end -}}
 {{- end -}}
-{{- if eq .Values.bootstrap.password.fileName .Values.bootstrap.serviceKey.fileName -}}
-{{- fail "bootstrap service key and password output file names must be distinct" -}}
+{{- if eq .Values.bootstrap.credentials.passwordKey .Values.bootstrap.credentials.serviceKeyKey -}}
+{{- fail "bootstrap credential keys must be distinct" -}}
 {{- end -}}
-{{- /* The bootstrap Job's bootstrapOutputPath requires an absolute file. A relative mount path joins into a relative OCC_BOOTSTRAP_PASSWORD_FILE. */ -}}
-{{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
-{{- fail "bootstrap.password.mountPath must be an absolute path" -}}
 {{- end -}}
 {{- /* Database routing uses numeric TCP ports in bootstrap and controller NetworkPolicies. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
@@ -416,7 +381,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and (hasKey .Values.controlPlane "nodeSelector") (not (kindIs "invalid" .Values.controlPlane.nodeSelector)) -}}
 {{- if not (kindIs "map" .Values.controlPlane.nodeSelector) -}}{{- fail "controlPlane.nodeSelector must be a map of Kubernetes node labels" -}}{{- end -}}
-{{- /* prepare-bootstrap-volume is_label_key and is_label_value. A qualified key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
+{{- /* A qualified label key is a DNS subdomain prefix plus a label name; a value is empty or a label name. */ -}}
 {{- $labelName := "^[A-Za-z0-9]([A-Za-z0-9_.-]*[A-Za-z0-9])?$" -}}
 {{- range $key, $value := .Values.controlPlane.nodeSelector }}
 {{- if or (not (kindIs "string" $value)) (gt (len $value) 63) (and (ne $value "") (not (regexMatch $labelName $value))) -}}
@@ -458,12 +423,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
-{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
+{{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" "/run/openclaw-bootstrap" -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
 {{- end -}}
+{{- if $repositoryRegistry -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/repository-registry" -}}
+{{- end -}}
 {{- if $repositoryGit -}}
-{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/var/run/secrets/kubernetes.io/serviceaccount") -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/var/run/secrets/kubernetes.io/serviceaccount" -}}
 {{- if $repositoryBroker -}}
 {{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-ca" "/run/openclaw/repository-control") -}}
 {{- end -}}
@@ -479,12 +447,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.egressAuthority.enabled -}}
 {{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/egress/tls" "/etc/openclaw/egress/issuer") -}}
-{{- end -}}
-{{- if .Values.preparedGitHub.custodySecretName -}}
-{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github" -}}
-{{- if .Values.preparedGitHub.issuerCaConfigMapName -}}
-{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github-issuer" -}}
-{{- end -}}
 {{- end -}}
 {{- if .Values.openshellGit.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell-git" -}}
@@ -517,29 +479,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $execution.apiKubeconfigSecretName) (not $execution.workerKubeconfigSecretName) (eq $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName) -}}
 {{- fail "executionCluster requires separate API and worker kubeconfig Secrets" -}}
 {{- end -}}
-{{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
-{{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
-{{- end -}}
+{{- if not $execution.kubeconfigKey -}}{{- fail "executionCluster requires a kubeconfig key" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "executionCluster.kubeconfigKey" "value" $execution.kubeconfigKey) -}}
-{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $execution.apiPort))) (gt (int $execution.apiPort) 65535) -}}
-{{- fail "executionCluster.apiPort must be an integer TCP port from 1 to 65535" -}}
-{{- end -}}
-{{- range $cidr := $execution.apiCidrs -}}
-{{- $value := toString $cidr -}}
-{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])$" $value -}}
-{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
-{{- $addr := first (splitList "/" $value) -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "executionCluster.apiCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- else -}}
-{{- fail "executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix" -}}
-{{- end -}}
-{{- end -}}
 {{- end -}}
 {{- /* YAML and --set read yes/no, true/false, or a bare number as a boolean or number. An unquoted name would mount ConfigMap "true" or skip the theme. */ -}}
 {{- if kindIs "map" .Values.api.consoleTheme -}}
@@ -554,17 +495,56 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.slackProxy.enabled -}}
-{{- $proxy := .Values.slackProxy -}}
-{{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
-{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "slackProxy.enabled must be a boolean" -}}{{- end -}}
-{{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
-{{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
+{{- if or (hasKey .Values "slackProxy") (hasKey .Values.api "channelDirectoryProxyUrl") -}}
+{{- fail "Legacy Slack proxy settings are unsupported; configure channelEgress" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
+{{- if .Values.channelEgress.enabled -}}
+{{- $egress := .Values.channelEgress -}}
+{{- if and .Values.gatewayRouting.enabled (eq $egress.gatewayName (include "openclaw.gatewayRouting.gatewayName" .)) -}}{{- fail "channelEgress must use a Gateway separate from private workspace ingress" -}}{{- end -}}
+{{- range $name := list "listenerPortStart" "listenerPortEnd" "occListenerPort" "inspectionPort" -}}
+{{- $port := get $egress $name -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $port))) (lt (int $port) 1024) (gt (int $port) 65535) -}}{{- fail (printf "channelEgress.%s must be an integer TCP port from 1024 to 65535" $name) -}}{{- end -}}
 {{- end -}}
-{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
+{{- range $name := list "gatewayName" "gatewayClassName" "envoyNamespace" "serviceName" -}}
+{{- include "openclaw.validateResourceName" (dict "label" (printf "channelEgress.%s" $name) "value" (get $egress $name)) -}}
+{{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "channelEgress.resources" "requirements" $egress.resources) -}}
+{{- range $index, $cidr := $egress.excludedCidrs -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.excludedCidrs[%d]" $index) "value" $cidr) -}}
+{{- end -}}
+{{- if gt (len $egress.upstreamProxies) 32 -}}{{- fail "channelEgress.upstreamProxies accepts at most 32 endpoints" -}}{{- end -}}
+{{- $seenProxies := dict -}}
+{{- range $index, $proxy := $egress.upstreamProxies -}}
+{{- if or (not (kindIs "map" $proxy)) (not (regexMatch "^https?://[^/@[:space:]]+$" (toString $proxy.url))) (hasKey $seenProxies (toString $proxy.url)) -}}{{- fail "channelEgress.upstreamProxies requires unique HTTP/HTTPS endpoints without credentials" -}}{{- end -}}
+{{- $_ := set $seenProxies (toString $proxy.url) true -}}
+{{- if or (not $proxy.addresses) (gt (len $proxy.addresses) 16) -}}{{- fail "each channel upstream proxy requires 1 to 16 IPv4 /32 addresses" -}}{{- end -}}
+{{- range $address := $proxy.addresses -}}
+{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" (toString $address)) -}}{{- fail "channel upstream proxy addresses must be IPv4 /32 CIDRs" -}}{{- end -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "channelEgress.upstreamProxies[%d].addresses" $index) "value" $address) -}}
+{{- end -}}
+{{- end -}}
+{{- if $egress.proxyTrust.caSecretName -}}
+{{- include "openclaw.validateResourceName" (dict "label" "channelEgress.proxyTrust.caSecretName" "value" $egress.proxyTrust.caSecretName) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "channelEgress.proxyTrust.caKey" "value" $egress.proxyTrust.caKey) -}}
+{{- end -}}
+{{- if or (lt (int $egress.listenerPortStart) 1024) (gt (int $egress.listenerPortEnd) 65535) (lt (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) (gt (sub (int $egress.listenerPortEnd) (int $egress.listenerPortStart)) 61) -}}
+{{- fail "channelEgress requires a range of at most 62 Agent listener ports" -}}
+{{- end -}}
+{{- if not $egress.excludedCidrs -}}{{- fail "channelEgress.excludedCidrs must contain the installation Pod, Service and node ranges" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort 19000 19001 19003 -}}
+{{- if and (ge (int $port) (int $egress.listenerPortStart)) (le (int $port) (int $egress.listenerPortEnd)) -}}{{- fail "channelEgress reserved ports must be outside the Agent range" -}}{{- end -}}
+{{- end -}}
+{{- if eq (int $egress.occListenerPort) (int $egress.inspectionPort) -}}{{- fail "channelEgress OCC and inspection listeners must be distinct" -}}{{- end -}}
+{{- range $port := list $egress.occListenerPort $egress.inspectionPort -}}
+{{- if has (int $port) (list 19000 19001 19003) -}}{{- fail "channelEgress OCC and inspection ports must not use Envoy administrative ports" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $repositoryGit (not $repositoryRegistry) -}}
+{{- fail "repositoryCredentials.registryConfigMapName is required when enabled" -}}
+{{- end -}}
+{{- if $repositoryRegistry -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $repositoryRegistry) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" .Values.repositoryCredentials.registryKey) -}}
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
@@ -588,15 +568,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
 {{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
 {{- end -}}
-{{- $registryName := required "repositoryCredentials.registryConfigMapName is required when enabled" $credentials.registryConfigMapName -}}
-{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $registryName) -}}
-{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" $credentials.registryKey) -}}
 {{- with $credentials.preparedProviderCaConfigMapName -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.preparedProviderCaConfigMapName" "value" .) -}}
-{{- end -}}
-{{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
-{{- range $cidr := $credentials.upstreamCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- if $repositoryBroker -}}
 {{- include "openclaw.validateImageReference" (dict "label" "repositoryCredentials.image" "image" $credentials.image) -}}
@@ -705,6 +678,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if kindIs "slice" $routing.remoteNodeCidrs -}}
 {{- range $cidr := $routing.remoteNodeCidrs -}}
 {{- include "openclaw.networkPolicy.cidr" (dict "name" "gatewayRouting.remoteNodeCidrs" "value" $cidr) -}}
+{{- if hasSuffix "/0" (toString $cidr) -}}{{- fail "gatewayRouting.remoteNodeCidrs must not allow every address; list the remote node sources" -}}{{- end -}}
 {{- end -}}
 {{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
 {{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
@@ -722,7 +696,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if ge (int $routing.tenantGatewayPort) 65535 -}}{{- fail "gatewayRouting.tenantGatewayPort must leave room for the adjacent sandbox port" -}}{{- end -}}
 {{- if eq (add1 (int $routing.tenantGatewayPort)) $runtimeStatusPort -}}{{- fail (printf "gatewayRouting.tenantGatewayPort cannot be %d with the sandbox enabled: the adjacent sandbox port is the reserved runtime status port %d" (sub $runtimeStatusPort 1) $runtimeStatusPort) -}}{{- end -}}
 {{- if not $routing.sandbox.ingressPeers -}}{{- fail "gatewayRouting.sandbox.ingressPeers must explicitly select public ingress sources" -}}{{- end -}}
-{{- $cookieDomain := trimPrefix "." (lower .Values.agentNativeAdmin.sharedCookieDomain) -}}
+{{- $cookieDomain := include "openclaw.sharedCookieDomain" . -}}
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
@@ -736,12 +710,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.openshellGit.enabled -}}
 {{- $roles = append $roles (list "openshellGit.tlsSecretName" .Values.openshellGit.tlsSecretName) -}}
 {{- end -}}
-{{- if .Values.preparedGitHub.custodySecretName -}}
-{{- if not .Values.egressAuthority.enabled -}}{{- fail "preparedGitHub custody requires egressAuthority.enabled" -}}{{- end -}}
-{{- $roles = append $roles (list "preparedGitHub.custodySecretName" .Values.preparedGitHub.custodySecretName) -}}
-{{- end -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
+{{- if .Release.IsInstall -}}{{- $roles = append $roles (list "bootstrap.credentials.secretName" .Values.bootstrap.credentials.secretName) -}}{{- end -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
 {{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
@@ -749,7 +720,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
-{{- range $provider := list "github" "google" "oidc" -}}
+{{- range $provider := list "google" "oidc" -}}
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}
 {{- end -}}
@@ -857,14 +828,6 @@ capabilities:
       key: {{ .key | quote }}
 {{- end -}}
 
-{{- define "openclaw.slackProxy.serviceName" -}}
-{{- .Values.slackProxy.serviceName -}}
-{{- end -}}
-
-{{- define "openclaw.slackProxy.url" -}}
-{{- printf "http://%s.%s.svc:%v" (include "openclaw.slackProxy.serviceName" .) .Release.Namespace (int .Values.slackProxy.port) -}}
-{{- end -}}
-
 {{- define "openclaw.gatewayRouting.gatewayName" -}}
 {{- default (printf "%s-agent-gateways" .Release.Name | trunc 63 | trimSuffix "-") .Values.gatewayRouting.gatewayName -}}
 {{- end -}}
@@ -927,7 +890,7 @@ capabilities:
      other than the chart's mounts. The chart-owned private Gateway expectation also checks
      selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
-{{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) (dict "name" "OCC_OPENSHELL_TOKEN_GRANT_PORT" "label" "egressAuthority.tokenGrant.port" "values" .Values.egressAuthority.tokenGrant) }}
+{{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
 {{- end }}
@@ -1016,12 +979,11 @@ limit every user.
 */}}
 {{- define "openclaw.trustedProxy.notice" -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
-{{- $github := default dict .Values.auth.github -}}
 {{- $google := default dict .Values.auth.google -}}
 {{- $oidc := default dict .Values.auth.oidc -}}
 {{- if not $proxy.preset -}}
-{{- if or $github.enabled $google.enabled $oidc.enabled -}}
-WARNING: api.trustedProxy is not set. With GitHub, Google or OIDC sign-in, failed
+{{- if or $google.enabled $oidc.enabled -}}
+WARNING: api.trustedProxy is not set. With Google or OIDC sign-in, failed
 password sign-ins are then limited per email only, and external sign-in
 starts have no per-client limit, because every browser behind a proxy shares its
 address. Set api.trustedProxy unless the API sees each client's own address, as
@@ -1038,4 +1000,21 @@ is set.
 
 {{- define "openclaw.installationSecretNamespace" -}}
 {{- printf "oce-installation-secrets-%s" (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 15) -}}
+{{- end -}}
+
+{{/* The API and profile renderer additionally check this suffix against the public suffix list. */}}
+{{- define "openclaw.sharedCookieDomain" -}}
+{{- $baseUrlText := regexReplaceAll "^[\\x00-\\x20]+|[\\x00-\\x20]+$" (toString .Values.auth.baseUrl) "" -}}
+{{- $console := reverse (splitList "." (trimSuffix "." (lower (urlParse $baseUrlText).hostname))) -}}
+{{- $agent := reverse (splitList "." (lower .Values.agentNativeAdmin.domain)) -}}
+{{- $common := list -}}
+{{- $matching := true -}}
+{{- range $index, $label := $console -}}
+{{- if and $matching (lt $index (len $agent)) -}}
+{{- if eq $label (index $agent $index) -}}
+{{- $common = prepend $common $label -}}
+{{- else -}}{{- $matching = false -}}{{- end -}}
+{{- else -}}{{- $matching = false -}}{{- end -}}
+{{- end -}}
+{{- join "." $common -}}
 {{- end -}}

@@ -1,14 +1,12 @@
 import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import type { Page } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type { Restriction } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -41,13 +39,15 @@ import {
   AGENT_STOP_DENIED,
   AGENT_UPDATE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   stopRefused,
+} from "../helpers/refusal-text.mjs";
+import {
+  DIAGNOSTICS_DENIED,
   WORKSPACE_SAVE_DENIED,
   REPOSITORY_CHOICES_AGENT_DENIED,
   SAVE_READ_REFUSED,
   WORKSPACE_SAVE_REFUSED,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -58,8 +58,6 @@ const browser = fileBrowser();
 // grant they need; Agent-side saves are disabled up front when the permission answer denies
 // Agent update.
 
-const AGENT_SOURCES_SERVICE_ACCOUNT_DENIED =
-  "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, and read on the ServiceAccount it uses for Harness authentication. Your access does not include all of them. Ask an Installation administrator for that access.";
 const AGENT_CONFIGURATION_READ_DENIED =
   "Saving these settings needs read access to this Agent's Configuration, which your access does not include. Ask an Installation administrator for Configuration read on it.";
 
@@ -315,48 +313,6 @@ test("an Agent editor without operate on the bound Secrets sees the Agent-side s
 // An Agent that uses a ServiceAccount for Harness authentication: each update also reads it. A
 // member with every operate grant but no read on that account was asked only for operate, which
 // an administrator could grant without effect (finding 2459). The note names both grants.
-test("an Agent editor without read on the Harness ServiceAccount is told about it", async (t) => {
-  const member = await readOnlyMember(t, "Account Read Off");
-  const { fixture, namespace, agent, page } = member;
-  // Issuance is outside this test: the account is seeded through State.
-  const account = await fixture.controller.transact((state: PlatformUnitOfWork) =>
-    state.serviceAccounts.createServiceAccount({
-      id: `sa_${randomUUID()}`,
-      namespaceId: namespace.id,
-      name: "Harness account",
-    }),
-  );
-  const switched = await fixture.request(
-    "PATCH",
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-    {
-      body: {
-        configurationId: agent.configurationId,
-        harnessAuth: {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-        },
-      },
-    },
-  );
-  assert.equal(switched.status, 200);
-  grantMember(fixture, READER, [
-    ["update", "agent"],
-    ["operate", "secret"],
-  ]);
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
-    member.member.credentials,
-  );
-  await page
-    .getByRole("status")
-    .filter({ hasText: AGENT_SOURCES_SERVICE_ACCOUNT_DENIED })
-    .waitFor();
-  assert.equal(await page.getByRole("status").filter({ hasText: AGENT_SOURCES_DENIED }).count(), 0);
-});
-
 // Each Agent update also needs Configuration read. When that read is the missing grant, the note
 // names it instead of source operate, which this member has. The permission answer is held until
 // the draft has read the Configuration, and the read is revoked meanwhile, so the real answer
@@ -1077,8 +1033,12 @@ test("a refused Request Stop again stays reachable with its reason", async (t) =
   assert.equal(await page.getByRole("dialog", { name: "Stop this Agent?" }).count(), 0);
 });
 
-for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
-  test(`Agent policy does not apply after ${reply}`, async (t) => {
+for (const reply of [
+  "an incomplete preview",
+  "a mismatched application receipt",
+  "a lost application receipt",
+] as const) {
+  test(`Agent policy handles ${reply} without repeating a mutation`, async (t) => {
     const grant = {
       id: "python-docs",
       binary: "/usr/bin/python3.11",
@@ -1101,22 +1061,25 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     await page.getByRole("button", { name: "Remove rule", exact: true }).click();
     const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
-    // The operator removes the grant. Let the controller validate or commit that removal, then
-    // deliver an incomplete preview, or a well-formed save response still listing the old grant.
-    await page.route(fixture.origin + base + (preview ? "/validate" : ""), async (route) => {
-      if (route.request().method() !== (preview ? "POST" : "PUT")) {
-        return route.continue();
-      }
+    // Allow the controller to complete the request before corrupting or losing its receipt.
+    await page.route(fixture.origin + base + (preview ? "/validate" : "/apply"), async (route) => {
       const response = await route.fetch();
-      assert.equal(response.status(), 200);
+      assert.equal(response.status(), preview ? 200 : 202);
       const { data, meta } = await response.json();
-      const actual = preview ? data.data : data;
-      assert.deepEqual(actual.additions, []);
-      if (!preview) {
-        assert.equal(await refresh.isDisabled(), true, "cannot start a refresh during the save");
+      if (preview) {
+        assert.deepEqual(data.data.additions, []);
+        await route.fulfill({ response, json: { data: { success: true, data: {} }, meta } });
+        return;
       }
-      const changed = preview ? { success: true, data: {} } : { ...actual, additions: [grant] };
-      await route.fulfill({ response, json: { data: changed, meta } });
+      assert.equal(await refresh.isDisabled(), true);
+      assert.deepEqual(data.additions, []);
+      assert.equal(data.application.revisionId, revision.id);
+      if (reply === "a lost application receipt") {
+        await route.abort("failed");
+      } else {
+        const application = { ...data.application, policyVersion: 2 };
+        await route.fulfill({ response, json: { data: { ...data, application }, meta } });
+      }
     });
     const review = page.getByRole("button", { name: "Review changes", exact: true });
     await review.click();
@@ -1132,8 +1095,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {
-      // A refresh started before Save can still be delivering the previous version when Save
-      // finishes. Only the operator's subsequent refresh can resolve the uncertain outcome.
+      // A pre-mutation read arrives while the Console is reconciling the committed change.
       const policyUrl = fixture.origin + base;
       const stale = await holdRequests(t, page, policyUrl, {
         once: true,
@@ -1142,32 +1104,51 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       });
       await refresh.click();
       await stale.requested;
+      const lostReceipt = reply === "a lost application receipt";
+      const reconcile = await holdRequests(t, page, policyUrl, {
+        once: true,
+        method: "GET",
+        afterServer: true,
+        loseResponse: lostReceipt,
+      });
       await page.getByRole("button", { name: "Save and apply to current revision" }).click();
-      const alert = page
-        .getByRole("alert")
-        .filter({ hasText: "could not confirm the saved rules" });
-      await alert.waitFor();
-
+      await reconcile.requested;
       const delivered = page.waitForResponse(policyUrl);
       stale.release();
-      const response = await delivered;
-      assert.equal(response.status(), 200);
-      assert.equal((await response.json()).data.policy.version, 2);
+      assert.equal((await (await delivered).json()).data.policy.version, 2);
       await nextFrames(page);
-      assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
-      assert.equal(await review.count(), 0);
-      assert.equal(
-        await page.getByRole("button", { name: /^(Apply saved rules|Retry application)$/ }).count(),
-        0,
-      );
-      await refresh.click();
+      assert.equal(await refresh.isDisabled(), true);
+      reconcile.release();
+      if (lostReceipt) {
+        const dialog = page.getByRole("dialog");
+        // The failed reconciliation keeps the summary's retry action behind the open dialog.
+        await page.getByText("Retry policy read", { exact: true }).waitFor();
+        assert.equal(
+          await dialog.getByRole("button", { name: "Done", exact: true }).isEnabled(),
+          true,
+        );
+        assert.equal(await refresh.isEnabled(), true);
+        const reads = pathRequests(requests, "GET", base).length;
+        await refresh.click();
+        await dialog.getByText(/Policy v3 reloaded/).waitFor();
+        assert.equal(pathRequests(requests, "GET", base).length, reads + 1);
+      }
       await page.getByText(/Policy v3 reloaded/).waitFor();
-      assert.equal(pathRequests(requests, "PUT", base).length, 1);
+      await page.getByRole("dialog").getByText("Applying…", { exact: true }).waitFor();
     }
 
     const { policy } = (await fixture.request("GET", base)).data;
-    assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
-    assert.equal(policy.application, undefined);
+    assert.equal(pathRequests(requests, "PUT", base).length, 0);
+    assert.deepEqual(
+      pathRequests(requests, "POST", base + "/apply").map(({ body }) => body),
+      preview ? [] : [{ expectedVersion: 2, revisionId: revision.id, additions: [] }],
+    );
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`)
+        .length,
+      0,
+    );
+    assert.equal(policy.application?.state, preview ? undefined : "pending");
     assert.equal(policy.version, preview ? 2 : 3);
     assert.deepEqual(policy.additions, preview ? [grant] : []);
   });

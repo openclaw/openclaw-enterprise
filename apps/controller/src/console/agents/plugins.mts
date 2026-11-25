@@ -1,6 +1,6 @@
 import type {
   Agent,
-  AgentPluginCredentialSlot,
+  SavedAgentPluginCredentialSlot,
   AgentRevision,
   Configuration,
   InstallationCapabilities,
@@ -17,19 +17,23 @@ import {
   focusSaveOutcome,
   jsonObjectDiagnostic,
   revealStatus,
+  setHidden,
   setUnavailable,
   statusBlock,
   validateFields,
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
+import {
+  pluginConnectionControl,
+  type PluginAccountSlot,
+  type SlotConnection,
+} from "./plugin-connection.mjs";
 import { isPluginSelections } from "./plugin-fields.mjs";
-import { authorizePluginInNewTab, type SlotTemplate } from "./plugin-connection.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
   SAVE_REFUSALS,
   assertReadableConfiguration,
   describeFailure,
-  namespacePath,
   readFailure,
   rejectionMessage,
 } from "./list.mjs";
@@ -43,7 +47,52 @@ type PluginCapabilities = NonNullable<
   InstallationCapabilities["pluginCatalogs"]
 >[number]["pluginPolicies"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
+  hostedCredential?: "codex_account" | "api_key";
+  credentialSlots?: readonly SavedAgentPluginCredentialSlot[];
 };
+
+// The saved-Agent GET can change source eligibility without changing the Driver or its policy.
+function recheckedCredentialSlots(original: PluginCapabilities["credentialSlots"], fresh: unknown) {
+  if (!original || !Array.isArray(fresh) || fresh.length !== original.length) {
+    return;
+  }
+  const slots: SavedAgentPluginCredentialSlot[] = [];
+  for (const [index, originalSlot] of original.entries()) {
+    const { sources: _originalSources, boundSourceId: _originalBound, ...binding } = originalSlot;
+    const { sources, boundSourceId, ...freshBinding } = responseFields(fresh[index]);
+    if (
+      !sameValue(binding, freshBinding) ||
+      !Array.isArray(sources) ||
+      (boundSourceId !== undefined &&
+        (typeof boundSourceId !== "string" ||
+          !boundSourceId ||
+          boundSourceId.trim() !== boundSourceId))
+    ) {
+      return;
+    }
+    const choices = new Map<string, string>();
+    for (const source of sources) {
+      const { id, name } = responseFields(source);
+      if (
+        typeof id !== "string" ||
+        !id ||
+        id.trim() !== id ||
+        typeof name !== "string" ||
+        !name.trim() ||
+        choices.has(id)
+      ) {
+        return;
+      }
+      choices.set(id, name);
+    }
+    slots.push({
+      ...binding,
+      ...(boundSourceId === undefined ? {} : { boundSourceId }),
+      sources: [...choices].map(([id, name]) => ({ id, name })),
+    });
+  }
+  return slots;
+}
 
 interface PluginDraft {
   dirty: boolean;
@@ -103,8 +152,7 @@ const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
     "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
 });
 
-// The saved Agent default approvers as text: a version's snapshot and a reader's view of the
-// draft, which has no field to edit them (finding 2447).
+// Agent default approvers as text when the editor is unavailable or the view is read-only.
 function approverSummary(
   approvers: PluginApprovers | undefined,
   notes: { inherited: string; empty: string; listed: string },
@@ -188,14 +236,14 @@ export function renderAgentPlugins(
   let initialText = retained?.initialText ?? JSON.stringify(agent.plugins ?? {}, null, 2);
   const initialApprovers = retained ? retained.initialApprovers : agent.pluginApprovers;
   let pluginApprovers = retained ? retained.pluginApprovers : structuredClone(initialApprovers);
+  const approversChanged = () =>
+    JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
   const baseline = retained?.baseline ?? {
     configurationId: agent.configurationId,
     plugins: agent.plugins ?? {},
     pluginApprovers: agent.pluginApprovers,
   };
   let pending = false;
-  let consentAttempt: AbortController | undefined;
-  let confirmed: { pluginId: string; slotId: string; sourceId: string } | undefined;
   let outcomeUnknown = retained?.outcomeUnknown ?? false;
   let reloadRequired = retained?.reloadRequired ?? false;
   // Set when the caller's permission answer denies Agent update (finding 1530).
@@ -208,218 +256,192 @@ export function renderAgentPlugins(
   input.value = retained?.text ?? initialText;
   let catalogCredential: PluginCapabilities["discoveryCredential"] | null = null;
   let catalogCapabilityChecked = false;
+  let initialCapabilities: PluginCapabilities | undefined;
   // The failed capabilities read's reason, shown once under the policy controls.
   let catalogCapabilityError: "missing" | "unreadable" | undefined;
-  const hasBoundCredential =
-    agent.harnessAuth?.method === "credential_source" ||
-    (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
   const codex = configuredHarnessId(snapshot.values) === "codex";
   // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
-  const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
+  const apiKeyAuth = () =>
+    codex &&
+    (agent.harnessAuth?.method === "api_key" ||
+      initialCapabilities?.hostedCredential === "api_key");
+  const hasCodexAccount = () => initialCapabilities?.hostedCredential === "codex_account";
+  const sourceNotice = statusBlock(
+    "info",
+    null,
+    "Plugin browsing uses this Agent's saved credential source.",
+    [],
+    { role: null },
+  );
+  const apiKeyNotice = statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null });
+  sourceNotice.hidden = true;
+  apiKeyNotice.hidden = !apiKeyAuth();
   const getSlackBotSecretId = () => {
     const source = snapshot.secretBindings?.SLACK_BOT_TOKEN?.source;
     return source?.kind === "secret" && source.namespaceId === context.namespaceId
       ? source.id
       : null;
   };
+  let connectionNotice:
+    { pluginId: string; slotId: string; message: string; retry?: boolean } | undefined;
+  const slotConnection: SlotConnection = {
+    feedback: (slot) =>
+      connectionNotice?.pluginId === slot.pluginId && connectionNotice.slotId === slot.id
+        ? connectionNotice
+        : undefined,
+    report(slot, message, retry) {
+      connectionNotice = {
+        pluginId: slot.pluginId,
+        slotId: slot.id,
+        message,
+        ...(retry ? { retry } : {}),
+      };
+      discovery.fields.refresh();
+    },
+    unavailable() {
+      if (updateDenied || pending || outcomeUnknown || reloadRequired) {
+        return "Reload this Agent and check your update access before connecting an account.";
+      }
+      return undefined;
+    },
+    async refreshSlot(slot) {
+      const capabilities = (await context.request(
+        `${path}/plugins/capabilities`,
+      )) as PluginCapabilities;
+      initialCapabilities = capabilities;
+      discovery.fields.setCapabilities(capabilities);
+      return capabilities.credentialSlots?.find(
+        (candidate) =>
+          candidate.pluginId === slot.pluginId &&
+          candidate.id === slot.id &&
+          candidate.releaseSha256 === slot.releaseSha256,
+      ) as PluginAccountSlot | undefined;
+    },
+    async attach(slot, sourceId, stage) {
+      const draft = jsonObjectDiagnostic(input.value);
+      if (
+        !agent.plugins?.[slot.pluginId]?.enabled ||
+        draft.kind !== "valid" ||
+        !sameValue(draft.value[slot.pluginId], agent.plugins[slot.pluginId])
+      ) {
+        connectionNotice = {
+          pluginId: slot.pluginId,
+          slotId: slot.id,
+          message: "Account connected. Save plugin selections to grant this Agent access.",
+        };
+        if (!stage(sourceId)) {
+          return "The account was saved, but this plugin selection changed. Choose the account again.";
+        }
+        return connectionNotice.message;
+      }
+      const fresh = responseFields(await context.request(path));
+      const savedPlugins = fresh.plugins;
+      if (
+        fresh.id !== agent.id ||
+        fresh.namespaceId !== context.namespaceId ||
+        fresh.configurationId !== baseline.configurationId ||
+        !isPluginSelections(savedPlugins) ||
+        !sameValue(savedPlugins, baseline.plugins) ||
+        !sameValue(fresh.pluginApprovers, baseline.pluginApprovers)
+      ) {
+        reloadRequired = true;
+        updateState();
+        return "The account was saved, but the Agent changed. Reload its plugin selections before attaching it.";
+      }
+      const selection = savedPlugins[slot.pluginId];
+      if (
+        !selection?.enabled ||
+        (selection.driverPolicy?.releaseSha256 !== undefined &&
+          selection.driverPolicy.releaseSha256 !== slot.releaseSha256)
+      ) {
+        return "The account was saved, but the plugin release changed. Reload its plugin selections.";
+      }
+      const policy: Record<string, unknown> = {
+        ...selection.driverPolicy,
+        releaseSha256: slot.releaseSha256,
+      };
+      const credentials = responseFields(policy.credentials);
+      const attachedSelection = { ...selection };
+      if (slot.toolDiscovery && credentials[slot.id] !== sourceId) {
+        delete policy.toolNames;
+        delete attachedSelection.tools;
+      }
+      const plugins = {
+        ...savedPlugins,
+        [slot.pluginId]: {
+          ...attachedSelection,
+          driverPolicy: { ...policy, credentials: { ...credentials, [slot.id]: sourceId } },
+        },
+      };
+      pending = true;
+      updateState();
+      let patchAccepted = false;
+      try {
+        await context.request(path, {
+          method: "PATCH",
+          body: { configurationId: baseline.configurationId, plugins },
+        });
+        patchAccepted = true;
+        const confirmed = responseFields(await context.request(path));
+        const confirmedPlugins = confirmed.plugins;
+        if (
+          confirmed.id !== agent.id ||
+          confirmed.namespaceId !== context.namespaceId ||
+          confirmed.configurationId !== baseline.configurationId ||
+          !isPluginSelections(confirmedPlugins) ||
+          !sameValue(confirmedPlugins, plugins)
+        ) {
+          outcomeUnknown = true;
+          return "The account was saved, but its Agent binding could not be confirmed. Reload the saved state before retrying.";
+        }
+        connectionNotice = {
+          pluginId: slot.pluginId,
+          slotId: slot.id,
+          message: "Account attached.",
+        };
+        pending = false;
+        updateState();
+        if (!stage(sourceId)) {
+          reloadRequired = true;
+          return "Account attached. Reload plugin selections to reconcile your draft.";
+        }
+        baseline.plugins = confirmedPlugins;
+        initialText = JSON.stringify(confirmedPlugins, null, 2);
+        agent = { ...agent, plugins: confirmedPlugins };
+        return connectionNotice.message;
+      } catch (cause) {
+        const { status } = requestFailure(cause);
+        outcomeUnknown = patchAccepted || ![400, 403, 404, 409, 429, 501].includes(status ?? 0);
+        return outcomeUnknown
+          ? "The account was saved, but its Agent binding could not be confirmed. Reload the saved state before retrying."
+          : "The account was saved, but OCE could not attach it. Choose the saved account and save the plugin selections to retry.";
+      } finally {
+        pending = false;
+        updateState();
+      }
+    },
+  };
   const discovery = createPluginDiscovery({
     context,
     input,
+    savedAgent: true,
     catalogPath: `${path}/plugins`,
-    getSlotConnection: () => ({
-      feedback(slot, sourceId) {
-        if (
-          confirmed?.pluginId === slot.pluginId &&
-          confirmed.slotId === slot.id &&
-          confirmed.sourceId === sourceId
-        ) {
-          return "Account attached.";
-        }
-        return undefined;
-      },
-      unavailable(slot) {
-        if (updateDenied) {
-          return "You need permission to update this Agent to attach an account.";
-        }
-        if (pending || outcomeUnknown || reloadRequired) {
-          return "Reload the saved Agent before connecting an account.";
-        }
-        const draft = jsonObjectDiagnostic(input.value);
-        if (
-          !agent.plugins?.[slot.pluginId]?.enabled ||
-          draft.kind !== "valid" ||
-          !sameValue(draft.value[slot.pluginId], agent.plugins[slot.pluginId])
-        ) {
-          return "Save your plugin selections before connecting an account.";
-        }
-        return undefined;
-      },
-      async list(slot) {
-        const capabilities = (await context.request(`${path}/plugins/capabilities`)) as {
-          credentialSlots?: readonly AgentPluginCredentialSlot[];
-        };
-        const current = capabilities.credentialSlots?.find(
-          (candidate) =>
-            candidate.pluginId === slot.pluginId &&
-            candidate.id === slot.id &&
-            candidate.releaseSha256 === slot.releaseSha256,
-        );
-        if (!current) {
-          throw Object.assign(new Error("The plugin slot changed."), { status: 409 });
-        }
-        if (current.templateSetup) {
-          return {
-            templates: [],
-            setup: { ...current.templateSetup, namespaceId: context.namespaceId },
-          };
-        }
-        if (!current.connectAccount) {
-          return { templates: [] };
-        }
-        const templates = (await context.request(
-          `${path}/plugins/${encodeURIComponent(slot.pluginId)}/credentials/${encodeURIComponent(slot.id)}/connection-templates`,
-        )) as readonly SlotTemplate[];
-        return { templates };
-      },
-      async start(slot, template, selectedScopes, waiting) {
-        consentAttempt?.abort();
-        const attempt = new AbortController();
-        consentAttempt = attempt;
-        confirmed = undefined;
-        let starting = true;
-        pending = true;
-        updateState();
-        try {
-          const originalSource = responseFields(
-            agent.plugins?.[slot.pluginId]?.driverPolicy?.credentials,
-          )[slot.id];
-          const readSlot = async () => {
-            const current = responseFields(await context.request(path));
-            const plugins = current.plugins;
-            if (
-              current.id !== agent.id ||
-              current.namespaceId !== context.namespaceId ||
-              !isPluginSelections(plugins)
-            ) {
-              throw new Error("Could not read this Agent's saved plugin selections.");
-            }
-            const selection = plugins[slot.pluginId];
-            const bound =
-              selection?.enabled && selection.driverPolicy?.releaseSha256 === slot.releaseSha256
-                ? responseFields(selection.driverPolicy.credentials)[slot.id]
-                : undefined;
-            return { current, plugins, selection, bound };
-          };
-          const unconfirmed =
-            "The account binding could not be confirmed. Finish sign-in or try again.";
-          const result = await authorizePluginInNewTab(
-            async () => {
-              return (await context.request(`${path}/connections`, {
-                method: "POST",
-                body: {
-                  pluginId: slot.pluginId,
-                  slotId: slot.id,
-                  releaseSha256: slot.releaseSha256,
-                  expectedCredentialSourceId:
-                    typeof originalSource === "string" ? originalSource : null,
-                  connectionTemplateId: template.id,
-                  connectionTemplateVersion: template.version,
-                  ...(selectedScopes && { selectedScopes }),
-                },
-              })) as { authorizationUrl: string; credentialSourceId: string; expiresAt: string };
-            },
-            attempt.signal,
-            (sourceId, complete) => {
-              starting = false;
-              pending = false;
-              updateState();
-              waiting(async () => {
-                if ((await readSlot()).bound !== sourceId) {
-                  return unconfirmed;
-                }
-                complete();
-                return undefined;
-              });
-            },
-          );
-          if (attempt.signal.aborted || !context.isCurrent()) {
-            return;
-          }
-          if ("message" in result) {
-            return result.message;
-          }
-          // The redirect can race returning from the provider. Trust only the saved Agent and its exact slot.
-          const { current, plugins, selection, bound } = await readSlot();
-          if (attempt.signal.aborted || !context.isCurrent()) {
-            return;
-          }
-          if (
-            current.configurationId !== baseline.configurationId ||
-            !sameValue(current.pluginApprovers, baseline.pluginApprovers)
-          ) {
-            reloadRequired = true;
-            return "The saved Agent changed. Reload the plugin selections to check the account.";
-          }
-          if (!selection || bound !== result.sourceId) {
-            if (result.outcome === "failed") {
-              return result.failure;
-            }
-            if (result.outcome === "saved" || result.outcome === "unconfirmed") {
-              showConsentReturn(result.outcome, result.sourceId);
-              return "The account was saved. Close the plugin picker to check its attachment.";
-            }
-            return unconfirmed;
-          }
-          // Rebase only the confirmed plugin onto unrelated local edits. Keep a conflicting
-          // draft intact and let the existing reload control reconcile concurrent changes.
-          const dirty = input.value !== initialText;
-          const draft = jsonObjectDiagnostic(input.value);
-          if (
-            dirty &&
-            (draft.kind !== "valid" ||
-              !sameValue(draft.value[slot.pluginId], baseline.plugins?.[slot.pluginId]) ||
-              !sameValue(plugins, { ...baseline.plugins, [slot.pluginId]: selection }))
-          ) {
-            reloadRequired = true;
-            return "Account attached. Your plugin draft has conflicting edits. Reload to see the saved selection.";
-          }
-          confirmed = { pluginId: slot.pluginId, slotId: slot.id, sourceId: result.sourceId };
-          agent = { ...agent, plugins };
-          baseline.plugins = plugins;
-          initialText = JSON.stringify(plugins, null, 2);
-          input.value =
-            dirty && draft.kind === "valid"
-              ? JSON.stringify({ ...draft.value, [slot.pluginId]: selection }, null, 2)
-              : initialText;
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-          readCapabilities();
-          return;
-        } finally {
-          if (consentAttempt === attempt) {
-            consentAttempt = undefined;
-            if (starting) {
-              pending = false;
-            }
-            if (context.isCurrent()) {
-              updateState();
-            }
-          }
-        }
-      },
-    }),
     requestBody: (body) => body,
+    renderAccountConnection: (slot, stage) =>
+      pluginConnectionControl(context, slot, slotConnection, stage),
     canDiscover: () =>
       !updateDenied &&
       (openClawDriver
         ? agent.executionMode === "dedicated" && catalogCredential === "none"
         : codex &&
-          !apiKeyAuth &&
+          !apiKeyAuth() &&
           (catalogCredential === "none" ||
-            (catalogCredential === "required" && hasBoundCredential))),
-    canPrefetch: () => openClawDriver || hasBoundCredential,
+            (catalogCredential === "required" && hasCodexAccount()))),
+    canPrefetch: () => openClawDriver || hasCodexAccount(),
+    applyRecheckedCapabilities,
     isPending: () => pending,
     unavailableMessage: () =>
       // A caller who may not update the Agent is not told to edit its selections (finding 2436).
@@ -432,14 +454,14 @@ export function renderAgentPlugins(
             : catalogCapabilityError === "missing" || !codex || openClawDriver
               ? "The selected Plugin Driver does not offer a catalog for this harness and execution mode. You can still edit existing plugin selections."
               : // Only the Codex Plugin Driver's catalog depends on Codex auth (finding 2791).
-                apiKeyAuth
+                apiKeyAuth()
                 ? "Plugin browsing is unavailable with API-key authentication."
-                : "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+                : "Hosted plugin browsing requires a TokenService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound credential. Saved selections can still be edited.",
     unsupportedMessage:
-      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs also require a saved ChatGPT login or Service Accounts token Secret under Credentials.",
+      "Plugin browsing is unavailable. Select a catalog-capable Driver; hosted catalogs require a TokenService account Source.",
     availableMessage: () =>
       catalogCredential === "none"
         ? "Load the Installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -475,6 +497,7 @@ export function renderAgentPlugins(
     defaultApprovers,
     discovery.fields.section.querySelector(".plugin-json"),
   );
+  const pendingApprovers = element("div", { hidden: true });
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const save = button("Save plugin selections", () => void savePlugins(), {
@@ -500,21 +523,10 @@ export function renderAgentPlugins(
     "section",
     { className: "agent-card" },
     intro,
-    ...(codex && agent.harnessAuth?.method === "credential_source"
-      ? [
-          statusBlock(
-            "info",
-            null,
-            "Plugin browsing uses this Agent's saved credential source.",
-            [],
-            { role: null },
-          ),
-        ]
-      : []),
-    ...(apiKeyAuth
-      ? [statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null })]
-      : []),
+    sourceNotice,
+    apiKeyNotice,
     discovery.fields.section,
+    pendingApprovers,
     capabilitiesStatus,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
@@ -522,9 +534,7 @@ export function renderAgentPlugins(
   );
 
   context.drafts.track("plugins", (): PluginDraft | undefined => {
-    const dirty =
-      input.value !== initialText ||
-      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
+    const dirty = input.value !== initialText || approversChanged();
     return dirty || pending || outcomeUnknown || reloadRequired
       ? {
           dirty,
@@ -541,10 +551,26 @@ export function renderAgentPlugins(
 
   let saveUnavailable = true;
   let discardUnavailable = true;
+  function renderPendingApprovers() {
+    const hidden = !catalogCapabilityChecked || !defaultApprovers.hidden || !approversChanged();
+    if (pendingApprovers.hidden === hidden) {
+      return;
+    }
+    pendingApprovers.hidden = hidden;
+    pendingApprovers.replaceChildren(
+      ...(hidden
+        ? []
+        : approverSummary(pluginApprovers, {
+            inherited: "Existing OpenClaw approval routing is still selected in your draft.",
+            empty: "No Slack approvers. This choice is still in your draft.",
+            listed: "These approvers are still in your draft.",
+          })),
+    );
+  }
+
   function updateState() {
-    const dirty =
-      input.value !== initialText ||
-      JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
+    const dirty = input.value !== initialText || approversChanged();
+    renderPendingApprovers();
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
     saveUnavailable = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
     discardUnavailable = !dirty || pending || outcomeUnknown || reloadRequired;
@@ -713,103 +739,46 @@ export function renderAgentPlugins(
   }
 
   updateState();
-  const consentReturn = new URL(window.location.href);
-  const outcome = consentReturn.searchParams.get("connection");
-  if (outcome === "attached" || outcome === "saved" || outcome === "unconfirmed") {
-    showConsentReturn(outcome, consentReturn.searchParams.get("sourceId"));
-    consentReturn.searchParams.delete("connection");
-    consentReturn.searchParams.delete("sourceId");
-    window.history.replaceState(window.history.state, "", consentReturn.href);
-  } else if (savedNotice) {
+  if (savedNotice) {
     feedback.textContent = savedNotice;
     describeControls();
   }
-
-  function showConsentReturn(
-    outcome: "attached" | "saved" | "unconfirmed",
-    sourceId: string | null,
-  ) {
-    const consentNotice = element("p", { className: "hint", role: "status" });
-    discovery.fields.section.before(consentNotice);
-    if (outcome === "unconfirmed") {
-      consentNotice.textContent =
-        "Account saved. Check the current plugin selection to see whether the account was attached.";
-    } else if (outcome === "attached") {
-      consentNotice.textContent =
-        "Sign-in returned. Check the saved account in the plugin’s account selection.";
-    } else {
-      consentNotice.textContent = "Account saved. The plugin attachment could not finish.";
-      if (sourceId) {
-        const sourcePath = `${namespacePath(context.namespaceId)}/credential-sources/${encodeURIComponent(sourceId)}`;
-        void context
-          .request(sourcePath)
-          .then((result) => {
-            const source = result as { id: string; name: string };
-            if (!context.isCurrent() || source.id !== sourceId) {
-              return;
-            }
-            const retry = button(
-              `Attach saved account: ${source.name}`,
-              async () => {
-                if (
-                  pending ||
-                  updateDenied ||
-                  reloadRequired ||
-                  outcomeUnknown ||
-                  input.value !== initialText ||
-                  JSON.stringify(initialApprovers) !== JSON.stringify(pluginApprovers)
-                ) {
-                  consentNotice.textContent =
-                    "Save or discard pending plugin changes before attaching.";
-                  return;
-                }
-                retry.disabled = true;
-                try {
-                  await context.request(`${path}/connections/${encodeURIComponent(source.id)}`, {
-                    method: "POST",
-                    expectedStatus: 204,
-                  });
-                  if (!context.isCurrent()) {
-                    return;
-                  }
-                  consentNotice.textContent =
-                    "Account attached. Select it for the plugin and save your selections.";
-                  retry.remove();
-                  readCapabilities();
-                } catch (cause) {
-                  if (!context.isCurrent()) {
-                    return;
-                  }
-                  consentNotice.textContent = describeFailure(requestFailure(cause));
-                  retry.disabled = false;
-                }
-              },
-              { tone: "secondary", size: "sm" },
-            );
-            consentNotice.after(retry);
-          })
-          .catch((cause: unknown) => {
-            if (context.isCurrent()) {
-              consentNotice.textContent = `Account saved. ${describeFailure(requestFailure(cause))}`;
-            }
-          });
-      }
+  function applyRecheckedCapabilities(response: unknown) {
+    if (!initialCapabilities) {
+      return false;
     }
+    const { credentialSlots: original, ...policy } = initialCapabilities;
+    const { credentialSlots: fresh, ...freshPolicy } = responseFields(response);
+    // Source choices can be unusable even when the approval policy is confirmed.
+    const policyConfirmed = sameValue(policy, freshPolicy);
+    setHidden(defaultApprovers, !policyConfirmed || policy.approvers?.agent !== true);
+    renderPendingApprovers();
+    const credentialSlots = policyConfirmed && recheckedCredentialSlots(original, fresh);
+    if (!credentialSlots) {
+      return false;
+    }
+    discovery.fields.setCapabilities({ ...policy, credentialSlots });
+    return true;
   }
+
   function readCapabilities() {
     void context.request(`${path}/plugins/capabilities`).then(
       (response) => {
         if (context.isCurrent()) {
           const capabilities = response as PluginCapabilities;
+          initialCapabilities = capabilities;
           catalogCredential = capabilities.discoveryCredential;
           openClawDriver = capabilities.driver?.implementation === "occ/openclaw-plugin";
           catalogCapabilityChecked = true;
+          sourceNotice.hidden = !hasCodexAccount();
+          apiKeyNotice.hidden = !apiKeyAuth();
           discovery.fields.setCapabilities(capabilities);
           discovery.update();
           defaultApprovers.hidden = capabilities.approvers?.agent !== true;
           if (!defaultApprovers.hidden) {
             defaultApprovers.refreshNames();
           }
+          renderPendingApprovers();
         }
       },
       (cause: unknown) => {
@@ -828,6 +797,7 @@ export function renderAgentPlugins(
           if (status === 501 && initialApprovers?.length) {
             defaultApprovers.hidden = false;
           }
+          renderPendingApprovers();
           // A refusal names the grant this read checks, an outage who to ask (finding 2538).
           capabilitiesStatus.textContent = `${readFailure(
             "Plugin policy controls",

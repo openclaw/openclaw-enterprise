@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
-import { harnessTlsFixture } from "./harness-tls.mjs";
+import { harnessTlsFixture } from "./harness-tls.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 export const grpc = require("@grpc/grpc-js");
@@ -83,13 +83,7 @@ export async function openShellOnlineWire(
   };
 }
 
-export function openShellMiddlewareClient(
-  t,
-  port,
-  caBundle,
-  service = "SupervisorMiddleware",
-  address = "localhost",
-) {
+export function openShellMiddlewareClient(t, port, caBundle) {
   // An independently supplied released OpenShell proto can serve as the client decoder.
   const proto =
     process.env.OCC_TEST_OPENSHELL_MIDDLEWARE_PROTO ??
@@ -106,12 +100,9 @@ export function openShellMiddlewareClient(
     defaults: false,
     oneofs: true,
   });
-  const Client = grpc.loadPackageDefinition(definition).openshell.middleware.v1[service];
-  const client = new Client(
-    `${address}:${port}`,
-    grpc.credentials.createSsl(Buffer.from(caBundle)),
-    address === "localhost" ? {} : { "grpc.ssl_target_name_override": "localhost" },
-  );
+  const Client =
+    grpc.loadPackageDefinition(definition).openshell.middleware.v1.SupervisorMiddleware;
+  const client = new Client(`localhost:${port}`, grpc.credentials.createSsl(Buffer.from(caBundle)));
   t.after(() => client.close());
   return client;
 }

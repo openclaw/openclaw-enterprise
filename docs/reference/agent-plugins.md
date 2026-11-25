@@ -10,9 +10,10 @@ for the Agent's Harness. OCC checks policy before saving and performs
 ## Current support
 
 Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
-[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
-[Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
+[Slack](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) discovers tools through `tools/list`.
 Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
+Gateway approval names the selected MCP server and tool, without arguments. Direct scripts bypass approval.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -88,6 +89,8 @@ default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
 ## HTTP operations
+
+See [Plugin Source selection and delivery limits](credential-sources.md#bind-a-source-to-an-agent).
 
 Plugin selections and default approvers use Agent create/update. There are no
 separate plugin resources or install, delete, policy-mutation or tool-invocation

@@ -20,6 +20,11 @@ A standalone native image check uses the selected source's checked-in CI base.
 
 Runner overrides must select provisioned Linux runners with the matching
 architecture, at least four CPUs, 12 GiB RAM, and enough disk for the build.
+The override takes precedence for both images.
+
+Runtime smoke uses fresh native runners with the same runner overrides, after
+verifying the retained OCI build. Both construction and smoke must succeed; an
+intermediate build artifact is not a qualified release image.
 
 The [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) builds
 controller/runtime caches without provider secrets. GitHub supplies its cache
@@ -27,9 +32,12 @@ credentials; it does not publish container images.
 
 ## Publication configuration
 
-Protect `main`, require `CI Required`, and review workflow changes. Publication
-requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch;
-there is no second-person approval or approval-comment requirement.
+Protect `main`, require `CI Required` for merge, and review workflow changes.
+The standalone image and CLI workflows require successful push CI for the
+release commit. **Release OCE** qualifies the selected commit through Full
+Integration and requires the dispatcher's approval through
+[`integration-main-approval`](../testing/ci/configuration.md#environments).
+Keep provider credentials in the integration environments.
 
 Create a separate `container-publish` environment: no required reviewers or wait
 timer, administrator bypass disabled, and exactly one deployment rule, branch

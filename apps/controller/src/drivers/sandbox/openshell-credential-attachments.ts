@@ -28,9 +28,9 @@ import {
 import { codexAccountMetadata } from "../credential-refresh/codex-device-authorization.ts";
 import {
   modelProviderBaseUrl,
+  savedModelProvider,
   modelProviderConfiguration,
   requireModelSourceDestination,
-  type ModelProviderConfiguration,
 } from "../compute/model-provider.ts";
 import { nativeOpenAiModelSelections } from "../native-openai-catalog.ts";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
@@ -48,7 +48,6 @@ import {
   type OpenShellProviderProfile,
 } from "./openshell-gateway-client.ts";
 import { verifyManagedPluginRegistration } from "./openshell-plugin-policy.ts";
-import { openShellSavedAccountSlots } from "./openshell-saved-account-policy.ts";
 
 // Shared internally so source operations and attachment operations retain one error identity.
 export class OpenShellCredentialGatewayFailure extends Error {}
@@ -71,24 +70,18 @@ interface OpenShellAttachmentSources {
 export class OpenShellCredentialAttachments {
   private readonly id: string;
   private readonly backend: Backend<OpenShellGateway>;
-  private readonly modelProvider: ModelProviderConfiguration | undefined;
   private readonly sources: OpenShellAttachmentSources;
 
-  constructor(
-    id: string,
-    backend: Backend<OpenShellGateway>,
-    modelProvider: ModelProviderConfiguration | undefined,
-    sources: OpenShellAttachmentSources,
-  ) {
+  constructor(id: string, backend: Backend<OpenShellGateway>, sources: OpenShellAttachmentSources) {
     this.id = id;
     this.backend = backend;
-    this.modelProvider = modelProvider;
     this.sources = sources;
   }
 
   async attachForRevision(
     context: CredentialRevisionContext,
   ): Promise<readonly CredentialSourceAttachment[]> {
+    const modelProvider = savedModelProvider(context.revision.harness.configuration);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const binding = managedCredentialBinding(
@@ -115,7 +108,7 @@ export class OpenShellCredentialAttachments {
       const conflict = context.sources.some((other) => {
         const host =
           other.type === "openai"
-            ? new URL(modelProviderBaseUrl(this.modelProvider)).hostname
+            ? new URL(modelProviderBaseUrl(modelProvider)).hostname
             : (other.config.host ?? "");
         return (
           other.id !== source.id &&
@@ -151,16 +144,14 @@ export class OpenShellCredentialAttachments {
       await verifyManagedPluginRegistration(client, context.signal);
     }
     const attachments: CredentialSourceAttachment[] = [];
-    const savedSlots = [...openShellSavedAccountSlots(context.revision)];
-    const environment = new Set(savedSlots.map(({ env }) => env));
-    const savedHosts = new Set(savedSlots.flatMap(({ destinationHosts }) => destinationHosts));
+    const environment = new Set<string>();
     for (const source of context.sources) {
       if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
       }
       const type = this.sources.sourceType(source.type);
       if (type.catalog.type === "openai") {
-        requireModelSourceDestination(source.config, this.modelProvider);
+        requireModelSourceDestination(source.config, modelProvider);
         if (
           (context.revision.harness.id !== "codex" && context.revision.harness.id !== "openclaw") ||
           context.revision.harness.mode !== "dedicated"
@@ -174,9 +165,9 @@ export class OpenShellCredentialAttachments {
             modelProviderConfiguration(
               context.revision.configuration,
               context.revision.harness,
-              this.modelProvider,
+              modelProvider,
             ),
-            modelProviderBaseUrl(this.modelProvider),
+            modelProviderBaseUrl(modelProvider),
           );
         }
       }
@@ -202,13 +193,6 @@ export class OpenShellCredentialAttachments {
       const profile = type.profile(source.id, source.config, () =>
         this.backend.client.placement(context.namespace.name),
       );
-      if (
-        profile.endpoints.some(({ host }) => savedHosts.has(host.toLowerCase().replace(/\.$/, "")))
-      ) {
-        throw new ScopeViolationError(
-          "An attached credential supplies authentication on a host reserved by a saved OAuth account.",
-        );
-      }
       await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);
       attachments.push(
         Object.freeze({

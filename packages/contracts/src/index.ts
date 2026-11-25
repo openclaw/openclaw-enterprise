@@ -1,16 +1,30 @@
 import type { Static } from "typebox";
+
+import type { AgentNetworkProxy } from "./agent-network-proxy.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
-import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
-import {
-  validDriverRegistrationRef,
-  type DriverCapability,
-  type DriverRegistrationRef,
-} from "./drivers/index.ts";
+import type { ConnectionEndpoint } from "./connection-templates.ts";
+import type { DeploymentPolicy } from "./deployment-policy.ts";
+import type {
+  ComputeAgentProvisioningCapabilities,
+  RepositoryWorkerRestartDisposition,
+} from "./drivers/compute/index.ts";
+import type { DriverCapability, DriverRegistrationRef } from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
   ProxyPlan,
 } from "./drivers/credential-proxy/index.ts";
+
+export type { NetworkDestinationRule } from "./network-destination.ts";
+export type { AgentNetworkProxy } from "./agent-network-proxy.ts";
+export {
+  normalizeAgentNetworkProxy,
+  validNetworkProxyAuthorization,
+} from "./agent-network-proxy.ts";
+export {
+  NetworkDestinationRuleSchema,
+  normalizeNetworkDestinationRules,
+} from "./network-destination.ts";
 
 export type {
   CredentialPolicyReduction,
@@ -45,14 +59,14 @@ export type {
   ProxyRevisionContext,
   CredentialProviderDefinition,
   CredentialSourceControl,
+  CredentialUpdateNotification,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
+  CredentialDeploymentContext,
 } from "./drivers/credential-proxy/index.ts";
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
-  CredentialHttpRequest,
-  RequestCredentialInput,
-  RequestCredentialGrant,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -74,7 +88,6 @@ export type {
   PreparedTokenIssuer,
   OAuthConnectionAccessToken,
   OAuthConnectionGrant,
-  OAuthRefreshTokenRegistration,
   OAuthRefreshTokenIssuer,
   OAuthConnectionClient,
   OAuthConnectionRegistration,
@@ -157,20 +170,38 @@ export {
   SandboxNetworkGrantsSchema,
   SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
-  sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
+export {
+  maxRepositoryNetworkGrants,
+  parseRepositoryApiLimits,
+  type RepositoryApiLevel,
+  type RepositoryApiLimits,
+  type RepositoryApiMaximum,
+  isCanonicalRepositoryNetworkPolicy,
+  repositoryNetworkGrantPattern,
+  parseRepositoryNetworkPolicyCeiling,
+  RepositoryNetworkPolicyAdmissionError,
+  type RepositoryNetworkPolicyCeiling,
+  isCanonicalRepositoryGrantList,
+  type RepositoryNetworkGrant,
+  type RepositoryNetworkPolicy,
+} from "./repository-network-policy.ts";
 
 export type {
   OAuthClient,
+  GitHubAppClient,
+  CredentialClient,
   OAuthClientAuthMethod,
   McpAuthorizationMetadata,
   ConnectionEndpoint,
+  StaticKeyDestination,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  ConnectionTemplateSettings,
+  ConnectionTemplateVersion,
+  StaticKeyTemplateValues,
   OAuthConnectionTemplateVersion,
-  ConnectionAttachmentIntent,
   ConnectionSession,
-  SavedConnection,
 } from "./connection-templates.ts";
 export {
   ConnectionTemplateValidationError,
@@ -178,13 +209,14 @@ export {
   isFlowOwnedOAuthParameter,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
+  normalizeStaticKeyDestinations,
   validateConnectionTemplateAuthorization,
   validateConnectionTemplateDestinations,
 } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
-import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   PluginDesiredSelectionSchema,
   PluginDesiredStateSchema,
@@ -196,8 +228,8 @@ import { Check } from "typebox/value";
 import { PluginApproversSchema } from "./api/common.ts";
 import type {
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "./drivers/repo/index.ts";
 
 export type {
@@ -255,11 +287,13 @@ export type {
   RepositoryCredentialSessionFiles,
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "./drivers/repo/index.ts";
 export {
   githubInstallationProfile,
   isInstallationRepositoryProfile,
   repositoryGitDeliveryProfile,
+  repositoryAccessSelections,
 } from "./drivers/repo/index.ts";
 
 /** Experimental Installation backend composition; separate from native model providers. */
@@ -323,10 +357,12 @@ export interface OpenShellBackendDefinition {
   readonly configuration: OpenShellBackendConfiguration;
   readonly drivers: {
     readonly sandbox: string;
-    readonly credential_gateway: string;
+    /** Legacy credential Source owner, when selected. The Gateway service is configured separately. */
+    readonly credential_gateway?: string;
     readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
+    readonly token_service?: string;
   };
 }
 
@@ -341,10 +377,14 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
-  /** The API offers native admin configuration during Agent provisioning. */
+  /** The API can configure Agent browser access during creation or provisioning. */
   readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
-  /** A selected Credential Gateway requires source-backed model authentication. */
+  /** The selected TokenService supports Codex device authorization. */
+  readonly deviceAuthorization?: true;
+  /** Model presets that enroll credentials through the selected TokenService and native delivery. */
+  readonly modelCredentialSourcePresets?: readonly import("./model-providers.ts").SourceProviderPresetId[];
+  /** Source types offered by independently selected protected request transports. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
   readonly pluginCatalogs?: readonly {
@@ -418,6 +458,21 @@ export interface ResourceRef extends Scope {
   readonly id: string;
 }
 
+export type {
+  ModelProvider,
+  ModelProviderSettings,
+  ModelProviderView,
+  ModelProviderModel,
+  InferenceProtocol,
+  SourceProviderPresetId,
+} from "./model-providers.ts";
+export {
+  inferenceKeyDestination,
+  isSourceProviderPresetId,
+  modelProviderRequestApproved,
+  normalizeInferenceBaseUrl,
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+} from "./model-providers.ts";
 export interface Installation {
   readonly id: string;
   readonly name: string;
@@ -554,18 +609,88 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** Driver-owned sources pin the selected Driver. The Token Service owns saved accounts directly. */
-type CredentialSourceOwner =
-  | {
-      readonly ownerCapability: "credential_gateway" | "credential_proxy";
-      readonly driverId: string;
-    }
-  | { readonly ownerCapability: "token_service"; readonly driverId?: never };
+interface OAuthSourceConsentBase {
+  readonly ownerPrincipalId: string;
+  readonly requestedScopes: readonly string[];
+  readonly grantedScopes: readonly string[];
+  readonly revocationRequestedBy?: string;
+  readonly revokedAt?: string;
+}
 
-export type CredentialSourceOwnerCapability = CredentialSourceOwner["ownerCapability"];
+export interface OAuthTemplateSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "connection_template";
+  readonly version: number;
+  readonly oauthClientId: string;
+}
 
-/** OCC source admission, including its owner and Secret references, never credential values. */
-export type CredentialSource = CredentialSourceOwner & {
+export interface BuiltinCodexOAuthAccount {
+  readonly accountId: string;
+  readonly planType: string;
+  readonly isFedramp: boolean;
+  readonly userId?: string;
+  readonly email?: string;
+  readonly accountUserId?: string;
+}
+
+export interface OAuthBuiltinCodexSourceConsent extends OAuthSourceConsentBase {
+  readonly kind: "builtin_codex";
+  readonly account: BuiltinCodexOAuthAccount;
+}
+
+/** The original, nonsecret authorization attached to an OAuth Source. */
+export type OAuthSourceConsent = OAuthTemplateSourceConsent | OAuthBuiltinCodexSourceConsent;
+
+interface TokenServiceCredentialSource {
+  readonly id: string;
+  readonly namespaceId: string;
+  readonly name: string;
+  readonly ownerCapability: "token_service";
+  readonly tokenServiceInstanceId: string;
+  /** Private, nonsecret reference interpreted by the selected TokenService. */
+  readonly backendRef?: Readonly<Record<string, string>>;
+  readonly state: "ready" | "deleting";
+  readonly createdAt: string;
+}
+
+export interface StaticCredentialSource extends TokenServiceCredentialSource {
+  readonly type: "static";
+  readonly connectionTemplateId?: string;
+  readonly config: Readonly<Record<string, string>>;
+}
+
+interface OAuthCredentialSourceBase extends TokenServiceCredentialSource {
+  readonly type: "oauth2-refresh-token";
+}
+
+export type OAuthCredentialSource = OAuthCredentialSourceBase &
+  (
+    | { readonly connectionTemplateId: string; readonly consent: OAuthTemplateSourceConsent }
+    | { readonly connectionTemplateId?: never; readonly consent: OAuthBuiltinCodexSourceConsent }
+  );
+
+/** The finite installation-token scope reviewed against the Namespace repository registry. */
+export interface GitHubAppInstallationScope {
+  readonly appId: string;
+  readonly installationId: string;
+  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
+  readonly permissions: Readonly<Record<string, string>>;
+}
+
+export interface GitHubAppInstallationCredentialSource extends TokenServiceCredentialSource {
+  readonly type: "github-app-installation";
+  readonly connectionTemplateId?: never;
+  readonly clientId: string;
+  readonly scope: GitHubAppInstallationScope;
+}
+
+/** The selected TokenService creates and owns managed Sources. */
+export type CredentialSource =
+  StaticCredentialSource | OAuthCredentialSource | GitHubAppInstallationCredentialSource;
+
+/** Existing Gateway and Proxy records remain internal to their current runtime owners. */
+export interface LegacyCredentialSource {
+  readonly ownerCapability: "credential_gateway" | "credential_proxy";
+  readonly driverId: string;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -575,20 +700,60 @@ export type CredentialSource = CredentialSourceOwner & {
   readonly secrets: Readonly<Record<string, SecretReference>>;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
-};
+}
 
-export interface CredentialSourceMetadata {
-  readonly ownerCapability: CredentialSourceOwnerCapability;
-  readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
+/** Shared persistence still serves existing runtime owners; it is not the public Source contract. */
+export type StoredCredentialSource = CredentialSource | LegacyCredentialSource;
+
+export type CredentialSourceOwnerCapability = StoredCredentialSource["ownerCapability"];
+
+interface OAuthIssuerMetadata {
+  readonly issuer: string;
+  readonly tokenUrl: string;
+  readonly clientId: string;
+}
+
+export interface OAuthTemplateSourceConsentMetadata
+  extends OAuthTemplateSourceConsent, OAuthIssuerMetadata {
+  readonly destinations: readonly ConnectionEndpoint[];
+  readonly resource?: string;
+  readonly mcpServerUrl?: string;
+}
+
+export type OAuthBuiltinCodexSourceConsentMetadata = OAuthBuiltinCodexSourceConsent;
+export type OAuthSourceConsentMetadata =
+  OAuthTemplateSourceConsentMetadata | OAuthBuiltinCodexSourceConsentMetadata;
+
+interface CredentialSourceMetadataBase {
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
-  readonly type: string;
-  readonly config: Readonly<Record<string, string>>;
-  readonly secrets: Readonly<Record<string, SecretReference>>;
-  readonly state: CredentialSourceState;
+  readonly state: "ready" | "deleting";
+  readonly createdAt: string;
   readonly ref: CredentialSourceReference;
 }
+
+export type CredentialSourceMetadata =
+  | (CredentialSourceMetadataBase & {
+      readonly type: "static";
+      readonly connectionTemplateId?: string;
+      readonly config: Readonly<Record<string, string>>;
+    })
+  | (CredentialSourceMetadataBase & { readonly type: "oauth2-refresh-token" } & (
+        | {
+            readonly connectionTemplateId: string;
+            readonly consent: OAuthTemplateSourceConsentMetadata;
+          }
+        | {
+            readonly connectionTemplateId?: never;
+            readonly consent: OAuthBuiltinCodexSourceConsentMetadata;
+          }
+      ))
+  | (CredentialSourceMetadataBase & {
+      readonly type: "github-app-installation";
+      readonly clientId: string;
+      readonly scope: GitHubAppInstallationScope;
+    });
 
 /**
  * An authorized request to revoke one credential source from one Agent revision. `revoked`
@@ -627,18 +792,35 @@ export interface AgentCredentialSourceBinding {
   readonly sourceId: string;
 }
 
-/** Private admission metadata for one non-model source frozen into a revision. */
+/** Private admission metadata for a credential Source frozen into a revision. */
 export type CredentialSourceSnapshot = {
   readonly sourceId: string;
   readonly sourceType: string;
 } & (
-  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
-  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+  | {
+      readonly credentialGatewayId: string;
+      readonly credentialProxyId?: never;
+      readonly tokenServiceInstanceId?: never;
+      readonly connectionTemplate?: never;
+    }
+  | {
+      readonly credentialProxyId: string;
+      readonly credentialGatewayId?: never;
+      readonly tokenServiceInstanceId?: never;
+      readonly connectionTemplate?: never;
+    }
+  | {
+      readonly tokenServiceInstanceId: string;
+      /** The approved Template version used to admit this Source for a Plugin. */
+      readonly connectionTemplate?: { readonly id: string; readonly version: number };
+      readonly credentialGatewayId?: never;
+      readonly credentialProxyId?: never;
+    }
 );
 
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
-  source: CredentialSource,
+  source: StoredCredentialSource,
   snapshot: CredentialSourceSnapshot | undefined,
 ): boolean {
   if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
@@ -646,15 +828,23 @@ export function credentialSourceMatchesSnapshot(
   }
   switch (source.ownerCapability) {
     case "token_service":
-      // A saved account has no runnable sender until a consumer receives its own binding.
-      return false;
+      return (
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        source.tokenServiceInstanceId !== undefined &&
+        snapshot.tokenServiceInstanceId === source.tokenServiceInstanceId
+      );
     case "credential_gateway":
       return (
-        snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
+        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.credentialGatewayId === source.driverId
       );
     case "credential_proxy":
       return (
-        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+        snapshot.tokenServiceInstanceId === undefined &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId
       );
     default:
       return false;
@@ -698,7 +888,10 @@ export type HarnessAuthSnapshot =
   | {
       readonly method: "codex_pat";
       readonly source: ServiceAccountReference;
-      readonly credential: ServiceAccountCredential & { readonly kind: "access_token" };
+      readonly credential: {
+        readonly kind: "access_token";
+        readonly secretRef: { readonly name: string; readonly key: string };
+      };
       readonly backendBinding: {
         readonly backendId: string;
         readonly driverId: string;
@@ -706,21 +899,36 @@ export type HarnessAuthSnapshot =
         readonly credentialIssued: boolean;
       };
     }
-  | {
+  | ({
       readonly method: "credential_source";
       readonly sourceId: string;
-      readonly credentialGatewayId: string;
       readonly sourceType: string;
-      readonly loginMode: CredentialSourceLoginMode;
-    };
+    } & (
+      | {
+          readonly credentialGatewayId: string;
+          readonly loginMode: CredentialSourceLoginMode;
+          readonly tokenServiceInstanceId?: never;
+        }
+      | {
+          readonly tokenServiceInstanceId: string;
+          readonly credentialGatewayId?: never;
+          readonly loginMode?: never;
+        }
+    ));
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
   | (Extract<HarnessAuthSnapshot, { source: SecretReference }> & {
       readonly backendRef: SecretBackendRef;
     })
-  | (Extract<HarnessAuthSnapshot, { method: "credential_source" }> & {
-      readonly source: Readonly<CredentialSource>;
+  | (Extract<HarnessAuthSnapshot, { method: "credential_source"; credentialGatewayId: string }> & {
+      readonly source: Readonly<LegacyCredentialSource>;
+    })
+  | (Extract<
+      HarnessAuthSnapshot,
+      { method: "credential_source"; tokenServiceInstanceId: string }
+    > & {
+      readonly source?: never;
     })
   | Extract<HarnessAuthSnapshot, { source: ServiceAccountReference } | { method: "runtime" }>;
 
@@ -773,8 +981,10 @@ export interface PluginToolCatalogEntry {
 }
 
 export interface PluginPolicyCapabilities {
-  /** An entry limits this plugin to its master switch. Unlisted plugins use the Driver defaults. */
-  readonly policyScopeByPlugin?: Readonly<Record<string, "enablement_only">>;
+  /** Per-plugin policy scope; unlisted plugins use the Driver defaults. */
+  readonly policyScopeByPlugin?: Readonly<
+    Record<string, "enablement_only" | "tool_human_approval">
+  >;
   readonly approvers?: {
     readonly agent: boolean;
     readonly plugin: boolean;
@@ -793,59 +1003,23 @@ export interface PluginPolicyCapabilities {
   readonly driverPolicySchema: JSONSchema;
 }
 
-/** The account choices the Agent editor offers for a named plugin slot. */
+/** Ready choices for a slot in the saved Agent's plugin picker. */
 export interface AgentPluginCredentialSlot {
   readonly pluginId: string;
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
   readonly toolDiscovery?: true;
-  /** OCC permits the caller to start OAuth consent for this slot. */
-  readonly connectAccount?: true;
-  /** OCC supplies setup details only to Installation administrators when no template can start consent. */
-  readonly templateSetup?: {
-    readonly issuers: readonly string[];
-    readonly mcpServerUrl?: string;
-    readonly unregisteredTemplates: readonly {
-      readonly id: string;
-      readonly displayName: string;
-      readonly namespaceId?: string;
-    }[];
-  };
-  readonly sources: readonly {
-    readonly id: string;
-    readonly name: string;
-    /** The authority OCC can use to list MCP tools for this source and slot. */
-    readonly toolDiscovery?: "caller" | "agent";
-    /** Same issuer, but a new grant is needed for this receiver. */
-    readonly authorization?: "required";
-  }[];
+  readonly issuers?: readonly string[];
+  readonly recipient?:
+    | { readonly mode: "manual"; readonly tokenUrl: string }
+    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly resource: string };
+  readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
 
-/** OCC adds binding eligibility after checking the caller and the saved Agent slot. */
-export type AgentPluginCredentialSlotChoice = Omit<AgentPluginCredentialSlot, "sources"> & {
-  readonly sources: readonly (AgentPluginCredentialSlot["sources"][number] & {
-    /** The Agent may discover tools with this account, but the caller cannot bind it to this slot. */
-    readonly binding?: "discovery_only";
-  })[];
-};
-
-/** A connectable template for one plugin account slot, including its consent scope choices. */
-export interface PluginConnectionTemplateChoice {
-  readonly id: string;
-  readonly displayName: string;
-  readonly version: number;
-  readonly mode: "manual" | "mcp_discovery";
-  readonly scopes: readonly string[];
-  readonly requiredScopes: readonly string[];
-  readonly offeredScopes: readonly string[];
-}
-
-/** Namespace details add the account choices OCC authorizes for a new Agent. */
-export interface NamespaceAgentPluginDetails extends PluginCatalogEntry {
-  readonly credentialSlots?: readonly (AgentPluginCredentialSlotChoice & {
-    readonly connectionTemplates?: readonly PluginConnectionTemplateChoice[];
-  })[];
+/** OCC verifies an existing Agent binding independently of caller-selectable Sources. */
+export interface SavedAgentPluginCredentialSlot extends AgentPluginCredentialSlot {
+  readonly boundSourceId?: string;
 }
 
 export interface PluginCatalogLink {
@@ -874,24 +1048,11 @@ export interface PluginCatalogPage {
   readonly plugins: readonly PluginCatalogEntry[];
   readonly nextCursor: string | null;
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
-}
-
-/** Bind one slot and source to the execution in which OCC admitted them. */
-export function savedAccountBindingId(
-  revisionId: string,
-  pluginId: string,
-  slotId: string,
-  sourceId: string,
-): string {
-  return sha256Hex(JSON.stringify([revisionId, pluginId, slotId, sourceId]));
+  /** OCC adds caller-visible credential choices when browsing a Namespace catalog. */
+  readonly credentialSlots?: readonly AgentPluginCredentialSlot[];
 }
 
 export interface PluginRevisionState {
-  /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
-  readonly savedAccounts?: {
-    readonly driver: DriverRegistrationRef;
-    readonly sourceIds: readonly string[];
-  };
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -952,28 +1113,12 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some(
-      (key) => key !== "driver" && key !== "plugins" && key !== "savedAccounts",
-    )
+    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
   ) {
     return false;
   }
   if (!validPluginDriverIdentity(record.driver) || record.plugins === undefined) {
     return false;
-  }
-  if (record.savedAccounts !== undefined) {
-    const saved = asRecord(record.savedAccounts);
-    if (
-      !saved ||
-      Object.keys(saved).some((key) => key !== "driver" && key !== "sourceIds") ||
-      !validDriverRegistrationRef(saved.driver) ||
-      !Array.isArray(saved.sourceIds) ||
-      saved.sourceIds.length === 0 ||
-      !saved.sourceIds.every(isNonEmptyString) ||
-      new Set(saved.sourceIds).size !== saved.sourceIds.length
-    ) {
-      return false;
-    }
   }
   try {
     normalizePluginDesiredState(record.plugins, (message) => {
@@ -1095,13 +1240,15 @@ export interface ConfigurationReference extends Scope {
   readonly namespaceId: string;
 }
 
-export interface ServiceAccountCredential {
-  readonly kind: "api_key" | "access_token" | "oauth_access_token";
-  readonly secretRef: {
-    readonly name: string;
-    readonly key: string;
-  };
-}
+export type ServiceAccountCredential =
+  | {
+      readonly kind: "access_token";
+      readonly sourceId: string;
+    }
+  | {
+      readonly kind: "api_key" | "oauth_access_token";
+      readonly secretRef: { readonly name: string; readonly key: string };
+    };
 
 export interface ServiceAccount extends Scope {
   readonly id: string;
@@ -1118,6 +1265,10 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  /** Upstream proxy for Gateway channel traffic on future deployments. */
+  readonly networkProxy?: AgentNetworkProxy;
+  /** Installation provider selected for future deployments. */
+  readonly modelProviderId?: string;
   readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;
@@ -1135,7 +1286,6 @@ export interface Agent extends Scope {
   readonly pluginDriver?: PluginDriverIdentity;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryBindings?: readonly RepositoryBindingSelection[];
   readonly repositoryAccess?: RepositoryAccess;
   readonly servicePrincipalId: string;
   readonly activeRevisionId?: string;
@@ -1148,8 +1298,8 @@ export interface ConfigurationReadError {
   readonly field:
     | "plugins"
     | "pluginApprovers"
-    | "repositoryBindings"
     | "repositoryAccess"
+    | "networkProxy"
     | "harnessAuth"
     | "credentialSources"
     | "secretBindings"
@@ -1162,8 +1312,8 @@ export type AgentMetadata = Omit<
   | "pluginDriver"
   | "plugins"
   | "pluginApprovers"
-  | "repositoryBindings"
   | "repositoryAccess"
+  | "networkProxy"
   | "harnessAuth"
   | "credentialSources"
 >;
@@ -1178,6 +1328,7 @@ export interface InstallationDeploymentInventoryAgent {
   readonly executionMode: HarnessExecutionMode;
   readonly activeRevisionId?: string;
   readonly deploymentInProgress: boolean;
+  readonly repositoryWorkerRestart?: RepositoryWorkerRestartDisposition;
 }
 
 export interface InstallationDeploymentInventoryNamespace {
@@ -1197,12 +1348,25 @@ export interface HarnessDescriptor {
 }
 
 export interface RevisionHarnessDescriptor extends HarnessDescriptor {
+  /** Catalog identity at admission; execution uses the saved settings below. */
+  readonly modelProviderId?: string;
   readonly mode: HarnessExecutionMode;
+  /** Requested settings, normalized by the selected Compute Driver. */
+  readonly overrides?: Readonly<Record<string, unknown>>;
+  /** Resolved once at admission; execution must not reconstruct these from defaults. */
+  readonly configuration?: Readonly<Record<string, unknown>>;
 }
 
 export interface AgentRevision extends Scope {
+  /** Gateway channel proxy selection saved for this deployment. */
+  readonly networkProxy?: AgentNetworkProxy;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
+  /** Immutable staged credential and network authority for this revision's selected Proxy. */
+  readonly credentialDeployment?: DeploymentPolicy & {
+    readonly driver: DriverRegistrationRef;
+    readonly proxyDriverId: string;
+  };
   readonly id: string;
   readonly namespaceId: string;
   readonly agentId: string;
@@ -1213,12 +1377,19 @@ export interface AgentRevision extends Scope {
   readonly configurationGeneration: number;
   readonly configuration: OpenClawConfigurationDocument;
   readonly gatewayManagedMode: boolean;
-  readonly harness: RevisionHarnessDescriptor;
+  readonly harness: RevisionHarnessDescriptor & {
+    readonly overrides: Readonly<Record<string, unknown>>;
+    readonly configuration: Readonly<Record<string, unknown>>;
+  };
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
     /** Private, immutable admission state owned by the selected Compute Driver. */
     readonly admission?: string;
+    /** Optional private runtime inputs; separate from authority admission for older readers. */
+    readonly runtimeInputs?: string;
+    /** Private Compute-owned admission for this revision's Gateway channel proxy. */
+    readonly networkProxyAdmission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly sandboxPolicy?: SandboxPolicySnapshot;
@@ -1226,7 +1397,7 @@ export interface AgentRevision extends Scope {
   readonly secretBindings?: SecretBindings;
   readonly plugins?: PluginRevisionState;
   readonly pluginApprovers?: PluginApprovers;
-  readonly repositoryCredentials?: RepositoryRevisionState;
+  readonly repositoryCredentials?: RepositoryRevisionState | SourceBackedRepositoryRevisionState;
   readonly harnessAuth: HarnessAuthSnapshot;
   readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;
@@ -1249,11 +1420,13 @@ export type AgentRevisionMetadata = Pick<
 >;
 
 /**
- * A revision without its saved settings: metadata plus the database-checked fields that tell
- * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ * Revision metadata, its Harness descriptor and any recorded Harness settings. List routes
+ * return this projection without decoding the full admitted snapshot.
  */
 export type AgentRevisionSummary = AgentRevisionMetadata &
-  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "networkProxy"> & {
+    readonly harness: RevisionHarnessDescriptor;
+  };
 
 /** One page of revision summaries, newest first, and the revision number the next page starts below. */
 export interface AgentRevisionSummaryPage {
@@ -1273,7 +1446,16 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.egressPlan === undefined
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
+    ...(revision.credentialDeployment === undefined
+      ? {}
+      : { credentialDeployment: immutableCopy(revision.credentialDeployment) }),
     configuration: immutableCopy(revision.configuration),
+    ...(revision.sandboxPolicy === undefined
+      ? {}
+      : { sandboxPolicy: immutableCopy(revision.sandboxPolicy) }),
+    ...(revision.networkProxy === undefined
+      ? {}
+      : { networkProxy: immutableCopy(revision.networkProxy) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -1284,7 +1466,7 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
     ...(revision.repositoryCredentials === undefined
       ? {}
       : { repositoryCredentials: immutableCopy(revision.repositoryCredentials) }),
-    harness: Object.freeze({ ...revision.harness }),
+    harness: immutableCopy(revision.harness),
     compute: Object.freeze({ ...revision.compute }),
     harnessAuth: immutableCopy(revision.harnessAuth),
     ...(revision.credentialSources === undefined
@@ -1326,6 +1508,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "administer",
   "read_logs",
   "manage_policy",
+  "read_audit",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1356,6 +1539,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "administer",
     "read_logs",
     "manage_policy",
+    "read_audit",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1471,9 +1655,34 @@ export type IdentityLookup = Scope &
   );
 
 /** `access` records an audited read, such as viewing or downloading runtime log text. */
-export type AuditEventKind = "bootstrap" | "mutation" | "access" | "authorization_denial";
+export type AuditEventKind =
+  "bootstrap" | "mutation" | "access" | "authorization_denial" | "api_request";
 
 export type AuditOutcome = "success" | "denied" | "failure";
+
+export const API_REQUEST_AUDIT_ACTIONS = {
+  admitted: "openclaw.api.request.admitted",
+  result: "openclaw.api.request.result",
+} as const;
+
+export const CONTROLLER_WORK_AUDIT_ACTIONS = {
+  queued: "openclaw.controller_work.queued",
+  claimed: "openclaw.controller_work.claimed",
+  deferred: "openclaw.controller_work.deferred",
+  completed: "openclaw.controller_work.completed",
+  provisioningCancelled: "openclaw.agents.provision.cancelled",
+} as const;
+
+export type ApiRequestAuditObservation =
+  | { readonly action: typeof API_REQUEST_AUDIT_ACTIONS.admitted; readonly outcome: "success" }
+  | {
+      readonly action: typeof API_REQUEST_AUDIT_ACTIONS.result;
+      readonly outcome: AuditOutcome;
+      readonly statusCode: number;
+      /** The exact resource returned by a successful, authorized read. */
+      readonly readTarget?: ResourceRef;
+      readonly reasonCode?: "COMMIT_OUTCOME_UNKNOWN";
+    };
 
 export interface AuditEvent extends Scope {
   readonly id: string;
@@ -1530,11 +1739,7 @@ export type {
   IAMConfiguredPolicyChanges,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
-export type {
-  InstallationSecretRef,
-  InstallationSecretStore,
-  SecretDriver,
-} from "./drivers/secret/index.ts";
+export type { PrivateSecretRef, PrivateSecretStore, SecretDriver } from "./drivers/secret/index.ts";
 export type {
   CredentialGatewayDriver,
   CredentialGatewayContext,
@@ -1551,19 +1756,20 @@ export type {
 export type {
   CredentialRefreshDriver,
   CredentialRefreshInput,
-  CredentialRefreshStatus,
-  CredentialSourceDeviceAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "./drivers/credential-refresh/index.ts";
 export type {
   HarnessExecutionModeSupport,
   SandboxDriver,
+  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
   SandboxEnvironmentVariable,
   SandboxWorkloadFile,
   SandboxWorkloadIdentity,
+  HarnessRetainedDirectory,
+  HarnessLaunchDescription,
   HarnessWorkloadRequirements,
   SandboxResourceRef,
   SandboxHarnessEndpoint,
@@ -1578,7 +1784,6 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
-  PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,
 } from "./drivers/plugin/index.ts";
@@ -1589,13 +1794,14 @@ export type {
   ChannelCredentialReader,
 } from "./drivers/channel/index.ts";
 export type {
+  RepositoryWorkerRestartDisposition,
   ComputeDriver,
+  ProtectedRepositoryNetworkPolicySaveContext,
+  AgentChatCompletionsEndpoint,
+  AgentChatCompletionsResolution,
   ComputeRevisionContext,
   WorkloadLaunchContext,
   ComputeLifecycleHooks,
-  NamespaceLifecycleFailure,
-  NamespaceEnsureResult,
-  NamespaceDeleteResult,
   PluginDeploymentWarning,
   RuntimeFailureCause,
   RuntimeFailureEvidence,
@@ -1626,9 +1832,35 @@ export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./se
 
 export * from "./api/common.ts";
 export {
+  AGENT_AUDIT_PAGE_LIMIT,
+  AGENT_AUDIT_PROJECTION_VERSION,
+  type AgentAuditEntry,
+  type AgentAuditPage,
+  type AgentAuditQuery,
+} from "./api/agent-audit.ts";
+export {
   ConnectionTemplateSchema,
   OAuthConnectionTemplateVersionSchema,
+  StaticKeyConnectionTemplateVersionSchema,
 } from "./api/connection-templates.ts";
+export { ModelProviderSchema, ModelProviderModelSchema } from "./api/model-providers.ts";
+export {
+  RegisterGitHubAppTokenServiceSourceBody,
+  RegisterTokenServiceSourceBody,
+  UpdateTokenServiceSourceBody,
+} from "./api/token-service-sources.ts";
+export {
+  PushAgentCredentialsBody,
+  PushAgentCredentialsResponse,
+} from "./api/agent-credential-push.ts";
+export {
+  AgentAutomationParams,
+  CreateAgentAutomationBody,
+  UpdateAgentAutomationBody,
+  DeleteAgentAutomationQuery,
+  AgentAutomationPageQuery,
+  AgentAutomationResponse,
+} from "./api/agent-automations.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 
@@ -1656,11 +1888,13 @@ export {
   validatePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
+  presetValueHasVariables,
   requiredPresetVariables,
 } from "./preset-variables.mts";
 
 export {
   CODEX_FAILURE_OUTPUT_CLASSES,
+  CRASH_LOOP_CHECK,
   PROCESS_EXIT_ERROR_CODES,
   PROCESS_EXIT_MAX_STATUS,
   PROCESS_EXIT_SIGNALS,
@@ -1672,7 +1906,7 @@ export {
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
   WORKSPACE_SETUP_REFUSED,
-} from "./runtime-failure.mjs";
+} from "./runtime-failure.ts";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";
@@ -1680,7 +1914,7 @@ export {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
-} from "./workspace-defaults.mjs";
+} from "./workspace-defaults.ts";
 
 export type {
   ProtectedRepositoryGitAuthority,
@@ -1698,3 +1932,79 @@ export type {
   RepositoryGitOnlineDecision,
   RepositoryGitSendPermit,
 } from "./protected-repository-git.ts";
+
+export type {
+  NamespaceLifecycleFailure,
+  NamespaceEnsureResult,
+  NamespaceDeleteResult,
+  NamespaceDeletionEligibility,
+  NamespaceLifecycleContext,
+  NamespaceLifecycleHooks,
+  NamespaceLifecycleParticipant,
+} from "./drivers/namespace-lifecycle.ts";
+
+export type {
+  CredentialClientPurpose,
+  CredentialClientScope,
+  TokenServiceClientScopes,
+  OAuthClientSecretInstance,
+  GitHubAppClientSecretInstance,
+  CredentialClientSecretInstance,
+  TokenServiceSourceInstance,
+  SourceLifecycleConfig,
+  SourceRegistrationInput,
+  SourceUpdate,
+  ResolvedCredential,
+  CredentialRefreshStatus,
+  SourceRefreshOperation,
+  CredentialSourceDeviceAuthorization,
+  TokenServiceDeviceAuthorizationContext,
+  TokenServiceDeviceAuthorizationResult,
+  TokenServiceDriver,
+} from "./drivers/token-service/index.ts";
+
+export { intersectCredentialRequests } from "./deployment-request-match.ts";
+
+export {
+  credentialProxyRoutingDetails,
+  networkGrantAdmissionDetails,
+  sandboxNetworkGrantsWithinCeiling,
+  validateDeploymentPolicy,
+} from "./deployment-policy.ts";
+export type {
+  CredentialBindingAuthority,
+  CredentialInjectionCapabilities,
+  DeploymentPolicy,
+  DeploymentPolicyValidationContext,
+  NetworkPolicyCapabilities,
+} from "./deployment-policy.ts";
+export { pathCovered } from "./deployment-request-match.ts";
+export { validRequestPath } from "./request-path.ts";
+
+export { isNativeStagedRepositoryRevision } from "./credential-deployment.ts";
+export type {
+  BearerCredentialProjection,
+  CredentialProjection,
+  DeploymentWorkloadRequirement,
+  DeploymentRequestPolicy,
+  DeploymentRequestMatch,
+  NetworkAccessPolicy,
+  CredentialInjectionPolicy,
+  CredentialProxyRouting,
+  CredentialDeploymentRef,
+  CredentialDeploymentTarget,
+  CredentialDeploymentConfiguration,
+  CredentialDeploymentReadiness,
+  DeploymentCredentialBinding,
+} from "./credential-deployment.ts";
+
+export type {
+  PluginDeploymentTool,
+  PluginDeploymentNetworkRequirement,
+  PluginCredentialConnection,
+  PluginDeploymentDescription,
+  PluginDeploymentContract,
+} from "./drivers/plugin/deployment.ts";
+
+export { admitRepositoryNetworkPolicy } from "./repository-network-policy.ts";
+export { admitSandboxRepositoryNetworkPolicy } from "./sandbox-policy.ts";

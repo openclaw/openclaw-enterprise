@@ -6,21 +6,13 @@ import type {
   AcceptedEgressAssociation,
   AuthorizedSend,
 } from "./egress-send-receipts.ts";
-import type { RequestCredentialApproval } from "./ports/request-credential-approvals.ts";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   CapturedEgressUse,
   CredentialProxyExchange,
-  OAuthAccountRef,
-  OAuthConnectionAccessToken,
-  RequestCredentialInput,
-  RequestCredentialGrant,
-  ResolvedToken,
-  TokenResolveOptions,
   EgressExchangeOwner,
   EgressPeer,
-  EgressRef,
   EgressResolution,
   EgressSendDecision,
   EgressStreamLease,
@@ -59,7 +51,13 @@ export interface ExchangeProvider {
   readonly methods: Readonly<
     Pick<
       CredentialProviderDefinition,
-      "classify" | "inject" | "normalizeGrant" | "credentialRejected" | "protectResponse"
+      | "routes"
+      | "normalizeConfig"
+      | "classify"
+      | "inject"
+      | "normalizeGrant"
+      | "credentialRejected"
+      | "protectResponse"
     >
   >;
   readonly isCurrent: () => boolean;
@@ -70,6 +68,11 @@ export interface EgressAuthorityPorts {
   readonly now: () => number;
   installation(peer: EgressPeer): Promise<EgressInstallation | undefined>;
   provider(route: EgressRoute): CredentialProviderDefinition | "ambiguous" | undefined;
+  /** Persist a bounded classification refusal against an authenticated installed route. */
+  classificationRefused?(
+    use: Pick<CapturedEgressUse, "id" | "route" | "installation">,
+    rule: number,
+  ): Promise<void>;
   /**
    * Each call must open a new policy unit, independent of the capture and Secret read.
    * With `stream`, the check runs during a leased response: it is bounded by the lease,
@@ -87,19 +90,6 @@ export interface EgressAuthorityPorts {
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
-  readonly requestCredentials?: {
-    readonly sender: EgressRef;
-    check(
-      request: RequestCredentialInput | RequestCredentialApproval,
-      signal: AbortSignal,
-      selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
-    ): Promise<OAuthAccountRef | "without_credential" | undefined>;
-    consume(grant: RequestCredentialGrant): Promise<RequestCredentialApproval | undefined>;
-    resolve(
-      ref: OAuthAccountRef,
-      options: TokenResolveOptions,
-    ): Promise<OAuthConnectionAccessToken | undefined>;
-  };
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -148,9 +138,8 @@ export const OPERATION_AUTHENTICATION_BUDGET = OPERATION_CAPACITY / 4;
 export const OPERATION_SANDBOX_SHARE = OPERATION_CAPACITY / 4;
 
 /**
- * The request registry's in-memory bounds, per API process. The request-ID bounds also apply
- * independently to saved-account approvals in shared storage. Every value is a count.
- * Installation startup sets them from `drivers.credential_proxy.requestCapacity`.
+ * The request registry's in-memory bounds, per API process. Every value is a count. Installation
+ * startup sets them from `drivers.credential_proxy.requestCapacity`.
  */
 export interface CredentialProxyCapacity {
   /** Operations in progress, all Sandboxes. */
@@ -312,6 +301,17 @@ interface OperationRecord {
   release?: () => void;
 }
 
+// External rotation still uses explicit Secret updates, not managed refresh.
+export function supportsStaticCredentials(
+  type: CredentialProviderDefinition["sourceType"],
+): boolean {
+  return (
+    type.rotation !== "refresh" &&
+    type.deviceAuthorization === undefined &&
+    type.harnessAuth?.loginMode !== "chatgptAuthTokens"
+  );
+}
+
 function captureProvider(
   ports: EgressAuthorityPorts,
   route: EgressRoute,
@@ -321,7 +321,12 @@ function captureProvider(
     return receiver;
   }
   const ref = immutableCopy(receiver.ref);
+  // Pin the facts used to accept a static source, not unrelated catalog metadata.
+  const type = receiver.sourceType.type;
+  const staticLifecycle = supportsStaticCredentials(receiver.sourceType);
   const methods = Object.freeze({
+    routes: receiver.routes,
+    normalizeConfig: receiver.normalizeConfig,
     classify: receiver.classify,
     inject: receiver.inject,
     normalizeGrant: receiver.normalizeGrant,
@@ -340,6 +345,10 @@ function captureProvider(
         current =
           ports.provider(route) === receiver &&
           isDeepStrictEqual(receiver.ref, ref) &&
+          receiver.sourceType.type === type &&
+          supportsStaticCredentials(receiver.sourceType) === staticLifecycle &&
+          receiver.routes === methods.routes &&
+          receiver.normalizeConfig === methods.normalizeConfig &&
           receiver.classify === methods.classify &&
           receiver.inject === methods.inject &&
           receiver.normalizeGrant === methods.normalizeGrant &&
@@ -428,114 +437,11 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.capacity = resolved.capacity;
   }
 
-  private async withRequestCredential<T>(
-    recipientId: string,
-    deadlineAt: string,
-    signal: AbortSignal,
-    operation: (
-      ports: NonNullable<EgressAuthorityPorts["requestCredentials"]>,
-      signal: AbortSignal,
-    ) => Promise<T | undefined>,
-  ): Promise<T | undefined> {
-    const ports = this.ports.requestCredentials;
-    const deadline = Date.parse(deadlineAt);
-    const budget = Math.ceil(deadline - this.ports.now());
-    if (!ports || signal.aborted || !(budget > 0 && budget <= 30_000)) {
-      return undefined;
-    }
-    const charge = this.reserveOperation(JSON.stringify([ports.sender, recipientId]));
-    if (!charge) {
-      return undefined;
-    }
-    try {
-      const lifetime = AbortSignal.any([signal, AbortSignal.timeout(budget)]);
-      const result = await operation(ports, lifetime);
-      return lifetime.aborted || this.ports.now() >= deadline ? undefined : result;
-    } finally {
-      this.releaseCharge(charge);
-    }
-  }
-
-  authorizeRequestCredential(request: RequestCredentialInput, signal: AbortSignal) {
-    return this.withRequestCredential<"credential" | "without_credential">(
-      request.recipient.id,
-      request.deadlineAt,
-      signal,
-      async (ports, lifetime) => {
-        const approved = await ports.check(request, lifetime);
-        return typeof approved === "object" ? "credential" : approved;
-      },
-    );
-  }
-
-  resolveRequestCredential(grant: RequestCredentialGrant, signal: AbortSignal) {
-    return this.withRequestCredential<ResolvedToken>(
-      grant.recipientId,
-      grant.deadlineAt,
-      signal,
-      async (ports, lifetime) => {
-        const approval = await ports.consume(grant);
-        if (!approval || lifetime.aborted) {
-          return undefined;
-        }
-        const deadline = Math.min(Date.parse(approval.deadlineAt), Date.parse(grant.deadlineAt));
-        const remaining = Math.ceil(deadline - this.ports.now());
-        if (!(remaining > 0)) {
-          return undefined;
-        }
-        const approvedLifetime = AbortSignal.any([lifetime, AbortSignal.timeout(remaining)]);
-        const ref = await ports.check(approval, approvedLifetime);
-        if (!ref || ref === "without_credential" || approvedLifetime.aborted) {
-          return undefined;
-        }
-        // Refresh outside the policy transaction. Never release a token for an expired or withdrawn approval.
-        const token = await ports.resolve(ref, {
-          signal: approvedLifetime,
-          deadlineAt: new Date(deadline).toISOString(),
-          minimumValidityMs: remaining,
-        });
-        if (!token || approvedLifetime.aborted || !(Date.parse(token.expiresAt) > deadline)) {
-          return undefined;
-        }
-        const current = await ports.check(approval, approvedLifetime, {
-          version: token.version,
-          grantedScopes: token.grantedScopes,
-        });
-        if (
-          !isDeepStrictEqual(current, ref) ||
-          approvedLifetime.aborted ||
-          this.ports.now() >= deadline
-        ) {
-          return undefined;
-        }
-        return { accessToken: token.accessToken, expiresAt: token.expiresAt };
-      },
-    );
-  }
-
   private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {
     const peer = await this.ports.exchangeOwner.verify(authorization);
     // Driver-owned descriptors may be reused. Detach identity, including sender,
     // before any subsequent Driver, policy or receipt await can change it.
     return peer === undefined ? undefined : immutableCopy(peer);
-  }
-
-  private reserveOperation(authenticatedShare?: string): OperationCharge | undefined {
-    if (
-      this.activeOperations >= this.capacity.operations ||
-      (authenticatedShare === undefined &&
-        this.authenticating >= this.capacity.authenticatingOperations)
-    ) {
-      return undefined;
-    }
-    this.activeOperations += 1;
-    this.authenticating += 1;
-    const charge: OperationCharge = { holds: 1 };
-    if (authenticatedShare !== undefined && !this.chargeShare(charge, authenticatedShare)) {
-      this.releaseCharge(charge);
-      return undefined;
-    }
-    return charge;
   }
 
   private releaseCharge(charge: OperationCharge): void {
@@ -637,10 +543,15 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.pruneReplay(now);
     // Reserve before authentication or any other await. Pending Secret/policy I/O
     // consumes the same capacity as an outstanding material handle.
-    const charge = this.reserveOperation();
-    if (!charge) {
+    if (
+      this.activeOperations >= this.capacity.operations ||
+      this.authenticating >= this.capacity.authenticatingOperations
+    ) {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
+    this.activeOperations += 1;
+    this.authenticating += 1;
+    const charge: OperationCharge = { holds: 1 };
     try {
       // Copy body bytes separately without moving the field: the sender's request digest
       // covers their original serialization order. Uint8Array also detaches a Node Buffer.
@@ -676,7 +587,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
     }
     const deadline = Date.parse(request.deadlineAt);
-    const createdAt = operationCreatedAt(request.id);
+    const requestId = request.id;
+    const createdAt = operationCreatedAt(requestId);
     if (
       createdAt === undefined ||
       createdAt > now + 1000 ||
@@ -688,7 +600,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     ) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, request.id]);
+    const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, requestId]);
     // Refuse a known replay before any I/O; the reservation below checks again.
     if (this.requests.has(replayKey)) {
       return refuse("invalid_handle");
@@ -727,13 +639,26 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
     }
     const matches = [];
+    const refused: { route: EgressRoute; provider: ExchangeProvider; rule: number | undefined }[] =
+      [];
     for (const { route, provider } of candidates) {
       if (!provider.isCurrent()) {
         return refuse("stale_configuration");
       }
       let operation;
+      let rule: number | undefined;
+      let reports = 0;
       try {
-        operation = Reflect.apply(provider.methods.classify, provider.receiver, [route, request]);
+        operation = Reflect.apply(provider.methods.classify, provider.receiver, [
+          route,
+          request,
+          (value: number) => {
+            reports += 1;
+            if (Number.isInteger(value) && value >= 1 && value <= 255) {
+              rule = value;
+            }
+          },
+        ]);
       } catch {
         return refuse("unsupported_operation");
       }
@@ -742,9 +667,30 @@ export class CredentialProxy implements CredentialProxyExchange {
       }
       if (operation) {
         matches.push({ route, provider, operation });
+      } else if (reports > 0) {
+        refused.push({ route, provider, rule: reports === 1 ? rule : undefined });
       }
     }
     if (matches.length !== 1) {
+      // A rule identifies one refused installed route, never a guessed operation.
+      if (matches.length === 0 && refused.length === 1 && !signal.aborted) {
+        const { route, provider, rule } = refused[0]!;
+        if (
+          rule !== undefined &&
+          provider.isCurrent() &&
+          deadline <= createdAt + route.deadlineMs &&
+          this.ports.now() < deadline
+        ) {
+          try {
+            await this.ports.classificationRefused?.(
+              immutableCopy({ id: requestId, route, installation }),
+              rule,
+            );
+          } catch {
+            return { kind: "refused", error: { kind: "unavailable", code: "authority" } };
+          }
+        }
+      }
       return refuse(matches.length > 1 ? "ambiguous_route" : "unsupported_operation");
     }
     const { route, provider, operation } = matches[0]!;
@@ -752,7 +698,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (deadline > createdAt + route.deadlineMs || this.ports.now() >= deadline) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
-    // Reserve after the side-effect-free installation and route refusals, before capture,
+    // Reserve after installation and classification refusals, before operation capture,
     // policy or Secret I/O. From here a failed attempt cannot reuse its request ID.
     const reserved = this.reserveReplay(replayKey, share, createdAt + 30_000);
     if (reserved) {

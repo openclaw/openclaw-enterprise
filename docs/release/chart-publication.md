@@ -1,6 +1,9 @@
 # Publish the OCE Helm chart
 
-The protected [Enterprise Containers workflow](../../.github/workflows/container-publish.yml)
+For a chart release with matching images and OCC CLI binaries, use
+[Release OCE](README.md).
+
+The standalone [Enterprise Containers workflow](../../.github/workflows/container-publish.yml)
 optionally publishes the OpenClaw Control Plane (OCC) chart to public GHCR at
 `oci://ghcr.io/openclaw/charts/openclaw-enterprise`. It also gives the controller
 and runtime images a tag matching the chart. The existing `sha-<source-sha>` tags
@@ -25,9 +28,10 @@ are public and grant this repository Actions access. Then dispatch **Enterprise
 Containers** on `main` with its full `source_sha`, matching `ci_run_id`, and
 `publish: true` and `publish_chart: true` (the latter defaults to false).
 
-The image job publishes and verifies images first. A separate chart job consumes
-that run/attempt's image receipt, checks version tags against its digests, then
-packages and pushes the chart. Both jobs use the protected publication environment.
+Preparation packages the chart with the assembled image digests. The image job
+publishes and verifies both images. A separate chart job downloads that run's
+prepared chart and image receipt, checks the version tags against the image
+digests, then pushes the chart. Both jobs use the protected publication environment.
 The workflow holds the shared publication lock across both jobs, including
 preparation, so overlapping runs cannot replace a pending chart job. The chart job rejects an existing version whose
 packaged files differ. Its `chart-publication-<run-id>-<attempt>` artifact
@@ -35,9 +39,8 @@ records the chart manifest digest, source SHA, and both image digests. The older
 `container-publication` receipt retains its image-only format. If a step fails,
 inspect registry digests before starting a new full dispatch for the same source;
 existing tags with different bytes are never replaced. Rerunning only a failed
-chart job is unsupported: its new attempt has no matching image receipt. There
-is no dedicated chart recovery workflow. A later source commit requires a new
-OCE version for chart publication.
+chart job is unsupported because its new attempt has no matching image receipt.
+A later source commit requires a new OCE version for chart publication.
 
 A chart failure fails the combined run, while the image job and its verified
 images remain successful. Use the separate job results and final run summary to
@@ -76,7 +79,7 @@ operator values take precedence. The production example values contain a
 placeholder image, so replace it before installation.
 
 Prepare the other operator-owned values, database, Secrets, routing, and
-bootstrap volume as described in the [production installation guide](../guides/deploy/production-installation.md).
+bootstrap credential Secret as described in the [production installation guide](../guides/deploy/production-installation.md).
 Public GHCR image pulls need no node pull Secret. Private mirrors still need node
 pull credentials configured by the operator. Use the matching CLI and the reviewed
 local archive for the [first install and handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff):

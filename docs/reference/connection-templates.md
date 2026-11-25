@@ -1,63 +1,78 @@
-# OAuth connection templates and clients
+# Connection templates and OAuth clients
 
-Installation administrators can publish a connection template for the Installation or one Namespace. They can also register an OAuth client in either scope. A registration inherits the selected template’s availability, issuer, token URL and optional revocation URL. A Namespace template can use an Installation client or a client in the same Namespace.
+Installation administrators can create a Connection Template for the Installation or one Namespace. A template defines allowed destinations for static Bearer authentication or settings for OAuth authentication. Open **Credentials → Connection templates** to create, view, edit, or delete either kind.
 
-In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client or choose **Create template and register OAuth client**.
+For OAuth, create a Template and register a compatible OAuth client. The account
+owner selects both when starting consent. A Namespace can use an Installation
+client or a client registered for that Namespace.
 
 ## Register a client
 
-OCC owns OAuth client registrations. It stores confidential client secrets through the Installation’s selected Secret Driver. The Helm chart gives OCC a private Kubernetes namespace for these secrets. A public client needs only its provider-issued client ID. You can register either kind before configuring a Credential Gateway or Token Service.
+In **Credentials → Credential clients → Register client**, select **OAuth 2.0**.
+Enter its availability, issuer, token endpoint, provider-issued client ID, and
+registered authentication method. Register the displayed redirect URI with the
+provider. A Template can prefill the endpoints. For an MCP connection, use
+one of the authentication methods its issuer advertises. If discovery omits
+that list, use `client_secret_basic`.
 
-Use `POST /oauth-clients` with the selected `connectionTemplateId` and `connectionTemplateVersion`, a name, the provider-issued client ID and the authentication method registered for that client ID. For an MCP template, OCE offers the methods it implements that the authorization server advertises. If the server omits the list, use `client_secret_basic`. A public client uses `none`. Confidential clients use `client_secret_basic` or `client_secret_post` and require a write-only client secret. The API rejects `private_key_jwt`; this integration supports client secrets and public clients. Register the callback URI returned in the response metadata with the provider.
+A public client uses `none`. For `client_secret_basic` or `client_secret_post`,
+enter the write-only secret. The selected TokenService keeps the private value.
+An Installation administrator can register either Client kind for the Installation
+or one Namespace. In the Console, choose **Availability**. With
+`POST /credential-clients`, supply `kind: "oauth2"` or `kind: "github-app"` and the
+fields for that kind. Include `namespaceId` for a Namespace Client. Omit it for
+Installation-wide use. The registration keeps that scope through rotation.
+`GET /credential-clients` lists registered Clients.
 
-Open **Credentials → OAuth clients → Register OAuth client**. Select a saved template or choose **Create connection template**. The editor can discover an MCP server or accept manual settings. Saving a new template returns you to the registration. Register the displayed redirect URI with the provider, then enter the client details it issued. Choose the **Client type** registered at the provider. For **Public**, OCE sets **Token endpoint authentication method** to `none`. For **Confidential**, select the registered method and enter the secret. The first registration becomes the default for a template without a client. When a template already has a default, edit it to select a different registration.
+Use **Rotate OAuth client secret** or
+`POST /credential-clients/{credentialClientId}/rotate` to replace the secret for the
+same client ID. Include `kind: "oauth2"` and the write-only `clientSecret` in the API
+request. Later code exchanges and renewals use the new value. Before
+retrying an operation with an unknown outcome, refresh the list. A pending
+consent attempt or a Source that uses the client blocks its removal.
 
-List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. To remove a registration, select the trash icon beside it in **Credentials → OAuth clients** or use `DELETE /oauth-clients/{oauthClientId}`. A template version that still references the client blocks deletion, including an older version of a template.
-
-MCP consent uses the scopes the account owner selects. Include all scopes required by the resource challenge. If the template limits scopes, choose at least one from its approved list. Without a limit or required scopes, the request can use provider defaults. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt. OCC saves the account with separate requested and granted lists even when the provider approves fewer, more or different scopes. If the provider omits `scope`, OCC uses the requested list. An explicit empty `scope` records zero grants. Token Service uses the last granted set when renewing. OCC accepts Slack’s comma-separated scope format at its MCP user-token endpoint.
-
-An Agent’s plugin policy still applies to its requests. Slack MCP checks selected tool names. The Google request guard considers the provider’s actual scopes on allowed routes. For example, a grant that includes Gmail send can make sending eligible on an approved Gmail route even if this consent request listed only read scopes. [Google request guard](../guides/credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker).
+For GitHub App registration, see the [repository access guide](../guides/repository-credentials.md#select-a-github-source-for-an-openshell-agent).
 
 ## Create a template
 
-In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
+In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. The authentication method (**Static Bearer** or **OAuth**) and availability are fixed after creation. Create a new template to change either.
+
+For a static Bearer template, set **Authentication method** to **Static Bearer**. Enter the **Template name**, choose availability, and add each allowed HTTP **Method**, **Host**, **Port**, and **Path** under **API destinations**. A terminal `/**` includes the path subtree. Choose **Create template**. The catalog shows the authentication method and current version. Choose **Edit** to rename the template or change destinations, then choose **Save changes**. A rename keeps the current version; changing destinations creates a new version. Static templates do not use OAuth clients.
 
 Each Installation starts with a **Google OAuth** template and no registered client. Choose **Edit Google OAuth** and expand **API destinations** to review the Google Workspace plugin’s default hosts, ports and paths. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Save edits to change these destinations or set a scope limit. Google connections request offline access for refresh after consent.
 
-A new template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. There is no scope-count limit. Required MCP scopes still apply at consent.
+A new OAuth template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. The issuer can grant additional scopes; the Source records the actual grant. Refresh cannot add scopes. There is no scope-count limit. Required MCP scopes still apply at consent.
 
 Use `POST /connection-templates` with one of these setup methods.
 
-- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. A credentialed request must match all three in one row. The plugin and deployed request policy determine the allowed operations.
-- With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
+- With `mode: static_bearer`, supply 1 to 128 allowed HTTP destinations. Each row must contain an exact DNS host or private IPv4 address, port, path and uppercase HTTP method, for example `{"host":"service.example.test","port":443,"path":"/reports/**","method":"GET"}`. Use an absolute exact path or a terminal `/**` subtree. Dot segments and other wildcard forms are rejected. The mode specifies Bearer authentication. The template stores no credential material and needs no OAuth client.
+- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. Each row describes an allowed destination. Agent delivery of saved OAuth credentials is not yet supported.
+- With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the selected issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
-A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. To remove a template, select the trash icon beside it in **Credentials → Connection templates**. Check its name and availability, then choose **Delete connection template**. Its OAuth client stays registered.
+Use `GET /connection-templates` to list templates and `GET /connection-templates/{connectionTemplateId}` to read one. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change settings. A change creates an immutable version; changing only `displayName` renames the template without creating a version. Use `DELETE /connection-templates/{connectionTemplateId}` to remove it. These operations require Installation administration.
 
-Existing accounts use the current manual destinations for their template and issuer. Adding a host can send existing accounts’ access tokens there for requests their plugin and Agent policy permit. Running Agents apply changes when their senders reconcile. To use a different issuer or switch between manual and MCP setup, connect the account again. An MCP account also retains its exact server and protected resource.
+To remove a template in Console, select its trash icon, check the name and availability, then choose **Delete connection template**. An OAuth template may be saved before a client exists. Deleting an OAuth template leaves its clients registered.
 
-Changing the template’s default OAuth client applies to future connections. Existing grants continue to refresh with their original registration and its current secret.
+An OAuth Source keeps the Template version and client selected at consent. Updating a Template does not change that grant or deliver it to an Agent. To use a different issuer or switch between manual and MCP setup, connect again. An MCP grant remains tied to its consented server and protected resource.
 
 See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-OCC handles browser consent and the callback. After exchange, OCC registers the grant with the Token Service. It returns a stable account reference and renews the access token using the original client registration. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
+OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Delivery through a running Plugin Agent remains unqualified.
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
-   `credential_source:create` for that Namespace. A template appears here once
-   its current version has an OAuth client.
-2. Send the chosen `connectionTemplateId` and `connectionTemplateVersion` to
-   `POST /namespaces/{namespaceId}/connections`. If the current template version changed, OCC returns `409` before starting consent; refresh the template and choose again. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
-   `authorizationUrl` in the same browser and approve the request.
+   `credential_source:create` for that Namespace. The list can include static
+   Bearer templates. For OAuth consent, select a template whose `current.mode`
+   is `manual` or `mcp_discovery`.
+2. List compatible clients with `GET /namespaces/{namespaceId}/connections/oauth-clients`
+   and the `connectionTemplateId` query parameter. Send the chosen template and
+   `oauthClientId` to `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
+   `authorizationUrl` in the same browser and approve the request. The response does not contain a Source ID: no Source exists until the callback completes.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
-3. After the redirect, look up the saved account with
-   `GET /namespaces/{namespaceId}/connections`. Other users see it only if
-   they have permission to read the source. Keep the credential source ID to
-   refer to the account. The response names the selected OAuth client, issuer,
-   effective destinations, and requested and granted scopes. An empty destination list means the current template is unavailable or incompatible. MCP accounts also record the
-   approved server URL and protected resource. The Token Service keeps the tokens
-   and uses the pinned client method and protected resource when it renews them.
+3. After the redirect, find the OAuth Source with
+   `GET /namespaces/{namespaceId}/credential-sources`. The list requires Namespace read and includes only Sources the caller can read. Use its ID with `GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}` to inspect all nonsecret OAuth metadata with exact Source read. The Source records the original consent version, client, principal, and requested and granted scopes. TokenService keeps the tokens private and uses the original consent settings for renewal.
 
 The native Namespace role API currently rejects `create` permissions. Installation
 administrators can connect with the built-in administrator role. See
@@ -69,22 +84,4 @@ code once. If the provider rejects the client secret, an administrator can corre
 the Token Service retries the same grant. If the provider rejects the user’s
 refresh grant, the user reconnects.
 
-Use `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}` to
-disconnect the account. OCC records the request before retiring the credential
-and the worker can finish an interrupted disconnect.
-
-## Use a saved account in an Agent plugin
-
-In the Agent's plugin settings, select an account for each named slot. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template, the dialog initially selects its configured scopes. If the template has no scope limit, it selects the advertised scopes and accepts additional scope names. The user can clear optional scopes before consent. The provider and the plugin's request policy enforce operations.
-
-A slot offers consent through templates that match its issuer and destination and have a registered OAuth client. When no template is ready, the plugin picker lets an Installation administrator finish a matching template or create one for that slot. The template editor controls availability and client registration.
-
-On the Create Agent form, consent saves the account for the user. The form holds its credential source ID for the selected release and slot. OCC checks the caller, account and slot again when it creates the Agent, then commits the Agent, slot binding and use grant together. Provisioning applies that grant when its worker creates the Agent. Leaving the form keeps the account available to its owner.
-
-Updating a saved Agent requires permission to update that Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
-
-To detach a saved account, clear the plugin slots that use it on that Agent. Then call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC removes that Agent’s grant. Other Agents can still use their own grants.
-
-A person with permission to use a saved MCP account can **Load tools** before creating an Agent. On a saved Agent, its editor can also use the Agent’s existing grant to discover tools. If the editor cannot grant the account to a new plugin slot, the Console offers a read-only tool preview and keeps the draft binding unchanged.
-
-To use a saved account from a dedicated OpenClaw worker, select an OpenShell Credential Proxy and a supervisor that supports the [saved-account request contract](drivers/credential-proxy.md#saved-oauth-accounts). OCC checks the deployed slot and the Agent’s current grant on each request. The Token Service supplies the current access token, and the supervisor injects it for that send. Stock OpenShell v0.1.7 supports saved-account delivery with the pre-credentials middleware and runtime token grant configured. A model key or another authorized Credential Gateway source can use its existing delivery alongside the saved account. See [Credential Proxy configuration](drivers/credential-proxy.md#saved-oauth-accounts).
+Disconnect the OAuth Source with the [Source DELETE operation](credential-sources.md#delete-a-source). OCC records the request and retires Proxy delivery copies before TokenService removes the grant.

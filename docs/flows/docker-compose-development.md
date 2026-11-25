@@ -1,27 +1,34 @@
 ---
 created: 2026-08-24
-updated: 2026-11-06
-last_updated_session: authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f
+updated: 2026-11-23
+last_updated_session: authoring-run/6fb5b1fd-3462-4afa-b59a-da8a6412cdfe
 ---
 
 # Compose development flow
 
 ## Overview
 
-`./bin/occ dev up` starts local OpenClaw Enterprise development from a checkout.
-The `scripts/dev-up` entry point selects the same profile. By default OCC and
-PostgreSQL run in Compose with Docker Compute. Operators can explicitly select
-Kubernetes Compute with either the Compose control plane or the
-[local k3d-only profile](../guides/deploy/local-kubernetes-development.md). The
+`./bin/occ dev up` and `scripts/dev-up` start checkout-local development.
+`internal/occdev/profile.go:ResolveProfile` defaults to
+[local k3d](../guides/deploy/local-kubernetes-development.md): Kubernetes Compute
+and control plane. Operators can select the Compose
+control plane, or Docker Compute with OCC and PostgreSQL in Compose. The
 Kubernetes profile can select the OpenShell Sandbox Driver for its fail-closed
 path; it prepares pinned OpenShell infrastructure and reconciles rendered
 workspace-chart resources before reporting readiness.
-Compose-backed profiles perform host preflight, select Docker Engine or Podman,
-prepare runtime images, start Compose, and wait for PostgreSQL migration,
-Installation bootstrap, API health, and worker readiness. The Kubernetes-only
-profile performs the equivalent readiness checks inside its owned cluster.
-Startup proves authenticated Installation access with a protected local
-bootstrap service key; it does not create an Agent or prove model execution.
+Compose profiles select Docker or Podman, prepare images, and wait for migration,
+bootstrap, API and worker readiness. Kubernetes-only runs equivalent checks
+inside its owned cluster.
+All profiles prepare HTTPS Console/Agent hosts and the loopback TLS proxy,
+even without Agent native access. Cookie scope derives from those hosts;
+cookie-domain settings are refused.
+For Docker Compute, `scripts/dev-up` calls the hidden CLI adapter backed by
+`internal/occdev/docker_browser.go:DockerBrowserEnvironment`. It reuses the
+TLS generator and keeps private per-checkout certificates in the system
+temporary directory across stop/start. The launcher prints the Console
+URL and CA certificate path. `occ dev down` reloads the same proxy settings.
+Startup proves Installation access with the retained key, not Agent deployment
+or model execution.
 
 For Docker Compute, the worker can reconcile Namespace infrastructure, but
 Agent deployment stops at harness authentication admission because Docker
@@ -33,8 +40,7 @@ selected Kubernetes Compute Driver and the
 
 - Trigger: `./bin/occ dev up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]`
   from the repository root, followed by authenticated Namespace operations.
-- Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
-  `internal/occdev/openshell.go:prepareOpenShell`.
+- Source: `scripts/dev-up:require_command` and `internal/occdev/up.go:Up`.
 - Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
@@ -42,54 +48,64 @@ selected Kubernetes Compute Driver and the
 
 The Kubernetes profile additionally uses `compose.kubernetes.yaml`,
 `internal/occdev`, k3d, and kubectl. `./bin/occ dev down` owns profile cleanup;
-`scripts/dev-down` dispatches to it. The local Kubernetes development guide
-owns the operator procedure and destructive cleanup boundary.
+`scripts/dev-down` dispatches to it. Without a Compute Driver selection,
+`internal/occdev/profile.go:chooseDownStack` sends cleanup to the stack
+recorded in the state directory, and to Docker only when that directory is
+absent or Compose options follow `--`; it refuses another checkout's stack.
+The local Kubernetes development guide owns the operator procedure and
+destructive cleanup boundary.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Checkout{"Nearest checkout uses LF?"}
+  A["./bin/occ dev up"] --> Checkout{"Valid checkout markers<br/>and LF module?"}
   Checkout -->|No| Refuse["Refuse before startup"]
   Checkout -->|Yes| Guard{"Development settings valid?"}
   Guard -->|No| Refuse
   Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
-  Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
-  KPre --> KControl{"Control-plane profile"}
-  KControl -->|Kubernetes| KOwned["Create owned cluster,<br/>verify DNS/API and select kubeconfig"]
+  Profile -->|Kubernetes default| KPre["Pin engine endpoint<br/>reject existing resources"]
+  KPre --> KControl{"Control plane"}
+  KControl -->|Kubernetes default| KOwned["Create cluster<br/>check DNS and API<br/>select kubeconfig"]
   KOwned --> KDriver{"Sandbox Driver"}
-  KDriver -->|none| KCodex["Import runtime and verify<br/>the normal Codex sandbox"]
-  KCodex -->|success| KRoutingFirst["Install routing controllers<br/>and remaining images"]
-  KCodex -->|failure| KRollback
-  KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
-  KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KDriver -->|none default| KRuntime["Import runtime"]
+  KRuntime --> KCodex["Verify Codex sandbox<br/>if workspace-write (default)"]
+  KCodex --> KRouting["Install routing"]
+  KRuntime --> KImages["Import images<br/>check network isolation"]
+  KRouting --> KJoin["Join setup"]
+  KImages --> KJoin
+  KDriver -->|OpenShell| KOpenPrep["Import images and runtime<br/>prepare assets and routing<br/>check network isolation"]
+  KOpenPrep --> KJoin
+  KJoin -->|OpenShell| KGateway["Install authenticated Gateway"]
+  KJoin -->|none| KOnly["Install and wait for<br/>control plane"]
   KGateway --> KOnly
-  KOnly --> KWait["Complete control-plane readiness gates"]
-  KWait --> KWorkspace
-  KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
-  KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
-  KStart --> KReady["Import runtime and start<br/>API and Kubernetes worker"]
-  KReady --> KSandbox{"Sandbox profile"}
-  KSandbox -->|none| KProof
-  KSandbox -->|OpenShell| KOpenShell["Install pinned Agent Sandbox, RuntimeClass,<br/>Gateway, and render workspace resources"]
-  KOpenShell -->|Compose| KRouting["Install private Envoy route and project<br/>its service key and public CA"]
-  KRouting --> KWorkspace["Driver applies workspace resources and creates<br/>the default Namespace's owned Workspace"]
-  KOpenShell -->|Kubernetes| KWorkspace
-  KWorkspace --> KFailClosed["Default Namespace ready;<br/>Agent projection remains fail closed"]
-  KFailClosed --> KProof
-  KProof["Prove authenticated<br/>Installation access"]
-  KProof --> KDown["./bin/occ dev down reuses<br/>recorded endpoint and project"]
-  KStart -->|failure| KRollback["Roll back owned resources<br/>retain state if cleanup fails"]
-  KReady -->|failure| KRollback
-  KProof -->|failure| KRollback
+  KOnly --> KProof
+  KControl -->|Compose| KConfig["Claim Compose snapshot"]
+  KConfig --> KStart["Default cold build or Podman<br/>bootstrap database<br/>create cluster"]
+  KStart --> KSandbox{"Sandbox Driver"}
+  KSandbox -->|none default| KComposeCodex["Import runtime<br/>verify Codex sandbox<br/>if workspace-write (default)"]
+  KComposeCodex --> KReady["Start API and worker"]
+  KSandbox -->|OpenShell| KOpenShell["Import runtime<br/>prepare Gateway<br/>and routing controllers"]
+  KOpenShell --> KPrivate["Prepare private route<br/>and key/CA mounts"]
+  KPrivate --> KReady
+  KReady -->|OpenShell| KFinalize["Finalize routing"]
+  KReady -->|none| KProof["Verify authenticated<br/>Installation"]
+  KFinalize --> KProof
+  KProof -->|Kubernetes only or Compose OpenShell| KNamespace["Wait for Namespace<br/>OpenShell worker ensures Workspace"]
+  KNamespace -->|Kubernetes only| KPost["Check gateway isolation"]
+  KNamespace -->|Compose OpenShell| KRunning["Running"]
+  KPost --> KRunning
+  KProof -->|Compose none| KRunning
+  KRunning -->|operator runs dev down| KDown["Reuse recorded endpoint<br/>and project"]
   KDown --> KRemove["Stop reconcilers and delete<br/>owned cluster and volumes"]
   KRemove -->|success| KDone["Remove private state"]
   KRemove -->|failure| KRetain["Keep state for recovery"]
+  KFailure["Kubernetes setup failure<br/>after ownership"] --> KRollback["Roll back by default<br/>retain on request or<br/>incomplete cleanup"]
   B --> C["Select quickstart runtime image or validate custom images"]
-  C --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
-  D --> E["Copy bootstrap service-key response to private local file"]
+  C --> Cred["Prepare private input files and local CLI key JSON"]
+  Cred --> D["Selected Compose starts PostgreSQL, migrate, bootstrap, API, and worker"]
+  D --> E["Use retained key; no container extraction"]
   E --> F["./bin/occ installation get proves authenticated access"]
   F --> G["Operator creates Namespace through authenticated API"]
   G --> H["Worker claims durable Namespace operation"]
@@ -113,10 +129,12 @@ graph TD
 `internal/occdev/egress_k3d.go:CheckDevelopmentProfile`, `scripts/dev-up`
 
 `internal/occcli/dev.go:developmentRepository` selects the nearest enclosing
-checkout with an OCE module declaration and `compose.yaml`. A matching checkout
-with CRLF in `go.mod` stops both `up` and `down` with an LF repair error before
-profile dispatch. It cannot fall through to an outer checkout and target that
-checkout's stack or volumes.
+checkout with an OCE module declaration and a regular `compose.yaml` file,
+including a symlink to one. An absent Compose marker allows the ancestor search
+to continue. A present marker that is not a regular file or cannot be resolved
+stops both `up` and `down` with its exact path before profile dispatch. CRLF in
+`go.mod` also stops both commands with an LF repair error. These invalid markers
+cannot fall through to an outer checkout and target its stack or volumes.
 
 Before Compute dispatch, the CLI checks protected-egress, database, and host-gateway
 selectors through the existing development validators. Direct Docker script startup
@@ -139,23 +157,26 @@ engine selection, database initialization, local API admission and worker startu
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
 traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
-The Driver rejects Docker API responses above 4 MiB from either a declared
-content length or the bytes received before buffering the complete body.
+The Driver rejects Docker API responses above 4 MiB, by declared length or
+bytes received, before buffering the body.
+For in-flight aborts, `DockerComputeDriver.request` preserves the error and adds
+[request diagnostics](../reference/drivers/docker-compute.md#troubleshooting)
+to its message. Preflight cancellation remains unchanged.
 
 ### 3. Clean up Docker or Podman Compose
 
 `internal/occdev/down.go:Down`, `internal/occdev/down.go:podmanComposeArgs`
 
 `occ dev down` uses the selected engine and forwarded Compose project and file
-options, including after partial startup. Podman retains the caller's selected
-connection. Its reported API socket supplies `OCC_CONTAINER_ENGINE_SOCKET` only
-to resolve the worker mount; a socket inside a macOS VM is not substituted for
-the host connection. An unavailable engine or invalid socket fails cleanup.
+options, including after partial startup. Podman keeps the caller's connection;
+its reported API socket sets `OCC_CONTAINER_ENGINE_SOCKET` only to resolve the
+worker mount, never replacing the host connection with a macOS VM socket. An
+unavailable engine or invalid socket fails cleanup.
 
-Compose removes its project containers and network. Named database,
-Configuration, and bootstrap volumes remain unless `--volumes` is explicit.
-Agent-owned containers and Namespace networks remain the responsibility of
-their platform deletion workflows; follow [safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
+Compose removes its project containers and network. With `--volumes`, it also
+removes project volumes. Down leaves local service-key copies and Docker Compute Namespace
+networks in place because the Compose project does not own them. See
+[safe development shutdown](../guides/deploy/local-operations.md#stop-development-safely).
 
 ### 4. Start and clean up Kubernetes development
 
@@ -165,16 +186,20 @@ their platform deletion workflows; follow [safe development shutdown](../guides/
 follows profile selection, the private Compose snapshot, k3d creation, runtime
 import, authenticated readiness, and cleanup through the recorded engine.
 
-For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
-creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
-With Sandbox Driver `none`, it then imports the runtime image and runs
-`prepareDevelopmentCodexSandbox` before installing private routing controllers.
-Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
-image, then checks network isolation while importing PostgreSQL and, when
-configured, repository images. The first independent failure cancels the others
-and is reported. A sandbox refusal or failed check rolls back the owned cluster
-before Installation setup or credential delivery. Both paths install
-the platform only after the check, then gate on authenticated readiness.
+`internal/occdev/openshell_k3d.go:upK3d` creates the owned cluster, checks DNS
+and selects its kubeconfig. Sandbox Driver `none` imports runtime, verifies
+[Codex confinement](docker-compose-development/startup.md#kubernetes-only-startup),
+then installs private routing. Explicit full-access mode skips this check.
+Controller import precedes network checks, which overlap PostgreSQL and optional
+repository image imports. Failure cancels siblings and triggers default rollback
+of owned resources.
+`OCC_DEVELOPMENT_KEEP_ON_FAILURE` retains the failed stack for `occ dev down`.
+Both Drivers join before platform installation and authenticated readiness.
+Gateway Namespace isolation follows bootstrap Namespace readiness.
+
+Compose cold builds and Podman bootstrap before cluster preparation. With a selected
+runtime image, Docker overlaps bootstrap and cluster preparation, and OpenShell
+controllers with runtime preparation. Private routing joins all branches. See [startup details](docker-compose-development/startup.md#13-bootstrap-occ-create-k3d-and-prepare-runtime-configuration).
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
 image to its own temporary archive, with an explicit Linux platform on Docker.
@@ -188,12 +213,13 @@ the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
 owned k3d network; Compose uses its exact recorded Compose network and selects
 only a runtime image with the current checkout label. Both detach after imports
 and on rollback, including recovery after interrupted startup.
-For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
-in their existing concurrent branch. OpenShell asset preparation follows those
-imports while network probes finish. This installs the Agent Sandbox controller
-and CRDs and imports images; platform installation and credential delivery still
-wait for every branch, including successful network verification. Image builds
-remain serial, and the large runtime import precedes smaller OpenShell assets.
+State rewrites set mode `0600` before writing so recovery can read
+`state.json` under a restrictive umask.
+For Kubernetes-only OpenShell, the image branch imports runtime after PostgreSQL
+and optional repository images, then prepares the Agent Sandbox controller, CRDs
+and images while network checks finish. Platform installation and credential
+delivery wait for every branch. Image builds remain serial, with the large runtime
+import before smaller OpenShell assets.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -205,13 +231,13 @@ With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
 publishes only an admitted API proxy on host loopback. The source archive and all three
-OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
+OpenShell images select 0.1.9 together, including the paired sandbox/supervisor
 control protocol and compromised-key rejection. The observed-hook repository
 credential preview admits 0.1.6 through its existing opt-in, held-launcher and
 recipient checks. Repository-scoped access uses the separate
 [protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
-By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
+With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
 `openshell-system` and exposes its fixed NodePort only to the owned container
 network. Before starting the API and worker, the launcher installs pinned
@@ -220,11 +246,9 @@ routing resources, and copies the generated public CA and a dedicated service
 key into the private state directory. The Installation uses the k3d node name
 and Envoy HTTPS NodePort. After Compose starts, the launcher reapplies Envoy
 ingress with the controller, Kubernetes worker, and k3d node `/32` addresses.
-In both modes, the worker
-creates the bootstrap Namespace through the regular Compute workflow. The
-Sandbox Driver applies rendered workspace resources and the operator label
-before creating the corresponding Gateway Workspace. Startup waits until the
-OCC Namespace becomes ready. See the
+In both modes, the worker reconciles the bootstrap Namespace through Compute.
+The OpenShell Sandbox Driver applies rendered workspace resources and the operator
+label, then ensures its owned Gateway Workspace. Startup waits for Namespace readiness. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
 <a id="6-start-protected-openshell-transport"></a>
@@ -265,36 +289,41 @@ Pods can reach that listener through narrow NetworkPolicies. See the
 `selectedDevelopmentDatabase` validates an optional disposable database name
 before effects. `installKubernetesControlPlane` uses that name in creation, readiness,
 migrator and application URLs. Bootstrap, API and worker share the limited
-application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
-Helm waits for both. Unselected profiles retain the existing database and
+application-role URL. `internal/occdev/bootstrap.go:prepareBootstrapCredentials`
+creates private inputs and CLI JSON outside the checkout.
+`installKubernetesControlPlane` precreates the bootstrap Secret;
+`verifyBootstrapKey` discovers the Installation ID through the API. See
+[startup](docker-compose-development/startup.md#3-initialize-before-starting-the-api-or-worker)
+for projection and key-export boundaries. Unselected profiles retain the existing database and
 transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
 describes accepted selectors.
 
 ## Debugging and Verification
 
-- `./scripts/dev-up` should show PostgreSQL readiness, migration completion,
-  API listening on `127.0.0.1:${OPENCLAW_DEV_PORT:-3000}`,
-  fresh-database initialization, `worker.started` with `computeDriverId` set to
-  `compute-docker-development`, a private copied service-key path, and a
-  successful authenticated `/installation` proof.
-- With `OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes`, startup should instead
-  report Kubernetes Compute, a private kubeconfig, and the disposable k3d
-  context; it does not mount the engine socket into the Kubernetes worker.
+- Default `./scripts/dev-up` reports
+  `Deployment: Kubernetes only`, `Compute Driver: Kubernetes`,
+  `Sandbox Driver: none`, a private kubeconfig and the k3d context. The
+  Kubernetes worker has no engine socket mount.
+- `OCC_DEVELOPMENT_COMPUTE_DRIVER=docker ./scripts/dev-up` reports
+  `Compute Driver: Docker (control-plane preview; it cannot deploy Agents)`,
+  the API URL, Installation ID and service key file. The printed command checks
+  authenticated access.
 - With `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell` and
-  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup should also report
-  Kubernetes-only deployment, one ready `oce-system/openshell-gateway` Service, the
-  `openshell-sandbox` RuntimeClass, the Agent Sandbox CRD, and workspace
-  resources in the bootstrap Namespace. The selected real dev-up case also
-  reads the owned Workspace through the Gateway API. This proves infrastructure
-  readiness, not a model turn. The expected Agent result is the explicit
-  unsupported `secretKeyRef` projection failure with no Sandbox or Agent Pod.
-- With the default Compose control plane, OpenShell startup should report
-  `Control plane: Compose`, retain a private Compose snapshot, install the
-  Gateway in `openshell-system`, program
-  `oce-system/openclaw-enterprise-agent-gateways`, and create the bootstrap
-  Namespace's operator-mode Workspace. `installation.yaml` must contain the
-  Envoy NodePort endpoint, while only the controller and `worker-kubernetes`
-  receive `gateway-api-key` and `gateway-ca.crt` mounts.
+  `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, startup reports the deployment and Sandbox
+  Driver. Startup checks infrastructure readiness. The
+  [Kubernetes-only integration test](../testing/openshell.md#test-setup-and-cleanup)
+  inspects the ready `oce-system/openshell-gateway` Service, Agent Sandbox CRD
+  and bootstrap Namespace workspace resources. It reads the owned Workspace
+  through the Gateway API and checks a real model reply with an OIDC fixture and
+  sandboxed browser. OpenShell rejects Agent deployments with unsupported
+  `secretKeyRef` environment variables.
+- With `OCC_DEVELOPMENT_CONTROL_PLANE=compose`, OpenShell startup reports
+  `Control plane: Compose`. The launcher retains the private Compose snapshot,
+  installs the Gateway in `openshell-system` and programs
+  `oce-system/openclaw-enterprise-agent-gateways`. The worker ensures the bootstrap Namespace's operator-mode
+  Workspace during reconciliation. `installation.yaml` contains the Envoy NodePort endpoint. Only
+  the controller and `worker-kubernetes` receive `gateway-api-key` and
+  `gateway-ca.crt` mounts.
 - Docker Compute on Podman startup verification should show Podman as the
   selected engine, mount only its reported API socket into the worker, and
   complete the same authenticated Installation proof without a `docker` alias.
@@ -326,6 +355,18 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-23 06:11: Correct startup ordering, defaults and OpenShell verification. (authoring-run/6fb5b1fd-3462-4afa-b59a-da8a6412cdfe - 7e51be77638e6784b75a12f2b4b5c6fc3c0222c4)
+
+- 2026-11-16 13:04: Remove RuntimeClass and PSA setup. (01a1e535-91ca-7273-913f-aaacfd69c1c2 - edbe5ec43)
+
+- 2026-11-16 09:42: Trace local credential preparation instead of bootstrap-volume extraction in the accompanying uncommitted implementation. (authoring-run/e8039d10-1e3b-41aa-82f2-0d2c709b421f - 81ab0a9fbe38cd2eea88f599a5e0ac9aad9c4f92)
+
+- 2026-11-11 03:59: Limit Compose shutdown to its project. (authoring-run/f416a831-2d60-4973-af5c-9f0bf35a8899 - 5ee1a6b2650e988ddd2f03ded0142dba685ca504)
+
+- 2026-11-10 22:18: Identify in-flight Docker request aborts while preserving caller cancellation and cleanup. (authoring-run/a9d9f372-a4a3-4832-9356-328d27967ab2 - ee73157fdf2982a8e0eab3dcb22d8ff9cf87fbd0)
+
+- 2026-11-08 05:18: Reject invalid or unresolvable Compose markers before development dispatch. (authoring-run/2c3fb5d2-955a-471d-a236-332a4bdb34c2 - 2b6201f1bd74549ffb38bfa910d00b49e6ebc07c)
 
 - 2026-11-06 20:03: Refuse a nearest CRLF checkout before startup or cleanup can select an outer stack. (authoring-run/b63d4772-19f9-4e46-8f8e-bd52bd2ea26f - 7cc3f1b9f2b372bf6da57a980d03eeebf8256506)
 

@@ -19,7 +19,11 @@ import type {
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
-import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
+import {
+  ConfigurationOwnershipError,
+  ConfigurationValidationError,
+} from "../../../configuration-errors.ts";
+import { validateModelCredentialReferences } from "../model-auth.ts";
 import {
   type PreprovisionedKubernetesNamespace,
   resolveKubernetesControlNamespace,
@@ -47,8 +51,7 @@ interface KubernetesConfigurationDriverSelection {
   readonly implementation?: string;
 }
 
-export { ConfigurationValidationError } from "../model-auth.ts";
-export class ConfigurationOwnershipError extends Error {}
+export { ConfigurationOwnershipError, ConfigurationValidationError };
 export class ConfigurationConflictError extends ResourceConflictError {}
 export class ConfigurationBackendUnavailableError extends DependencyUnavailableError {}
 

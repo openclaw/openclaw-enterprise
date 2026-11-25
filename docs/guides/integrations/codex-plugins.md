@@ -6,7 +6,7 @@ last_verified: "2026-11-02"
 
 # Add Codex plugins to an OpenShell Agent
 
-Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear.
+Enable Linear on the Codex Agent you created during setup (`fred` in this example), then ask it to list teams. You can [add Git](../repository-credentials/openshell-git-push.md) to the same Agent before or after Linear. For dedicated OpenClaw Agents using managed CLI or hosted MCP plugins, see [Get started with managed OpenClaw plugins](../topics/openclaw-plugins.md).
 
 ## Before you start
 
@@ -32,7 +32,7 @@ Copy the deployment ID from the Console URL’s `revision` parameter. Run `wait_
 
 ### Discover Linear in the account catalog
 
-Use the ready Credential Gateway source for the connected service account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready TokenService Source for the connected account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
 # POST $base/agents/plugins: use the model Secret reference to search this account.
@@ -131,13 +131,13 @@ read -r gateway_ns gateway_pod < <(
       select(length==1) | first | [.metadata.namespace,.metadata.name] | @tsv'
 )
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$gateway_ns" \
-  exec -i "$gateway_pod" -c gateway -- node --input-type=module - \
+  exec -i "$gateway_pod" -c gateway -- node --input-type=module-typescript - \
   "$linear_marker" "$linear_run_id" \
-  < "$RUN_DIR/inspect-linear-transcript.mjs" \
+  < "$RUN_DIR/inspect-linear-transcript.mts" \
   > "$RUN_DIR/linear-transcript.json"
 cat "$RUN_DIR/linear-transcript.json"
 ```
 
-The [transcript reader](../../snippets/openshell-quickstart/inspect-linear-transcript.mjs) opens the database read-only, finds the marked prompt, and matches a direct `codex_apps.linear.list_teams` call or its `dispatch_action` envelope to a successful result by tool-call ID in the same run. It returns that result and the terminal reply. Compare the team count (Console) or IDs (CLI) in `results[].content` with `reply`. Keep this file private because it contains connected-account data. Code Mode calls are not decoded by this reader. Missing evidence is not success; check the selected Pod and marker without replaying the turn.
+The [transcript reader](../../snippets/openshell-quickstart/inspect-linear-transcript.mts) opens the database read-only, finds the marked prompt, and matches a direct `codex_apps.linear.list_teams` call or its `dispatch_action` envelope to a successful result by tool-call ID in the same run. It returns that result and the terminal reply. Compare the team count (Console) or IDs (CLI) in `results[].content` with `reply`. Keep this file private because it contains connected-account data. Code Mode calls are not decoded by this reader. Missing evidence is not success; check the selected Pod and marker without replaying the turn.
 
 A successful turn includes `codex_apps.linear.list_teams` and a reply matching its result. If plugin installation fails, check the [plugin installation requirements](../../testing/openshell.md#codex-plugin-installation). You can now [add Git](../repository-credentials/openshell-git-push.md) to this same Agent, or [delete the Agent](../deploy/quickstart-delete-agent.md) and clean up the selected Installation.

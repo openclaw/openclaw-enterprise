@@ -1,6 +1,7 @@
 import { click } from "../create-agent-form-data.mts";
 import type { StoryAction } from "../../story-action.mts";
 
+const editGoogle = { selector: '[aria-label="Edit Google OAuth"]', click: true } as const;
 const openTemplate = [click("Create connection template")];
 const discoverMcp = [
   ...openTemplate,
@@ -9,27 +10,65 @@ const discoverMcp = [
   click("Discover OAuth settings"),
 ];
 export const connectionTemplateScenarios = {
+  credentialsPluginTemplatePrefill: {
+    group: "Pages/Credentials",
+    name: "Create an OAuth Template from a Plugin slot",
+    path: "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000001&create=1&mcpServerUrl=https%3A%2F%2Fmcp.example.com%2Fmcp&issuer=https%3A%2F%2Fidentity.example.com",
+    oauthCatalog: "ready",
+    description:
+      "An Installation admin arrives from a Plugin slot in a separate tab. The editor preselects this Namespace and the slot's MCP server URL without saving or discovering anything automatically.",
+  },
+  credentialsPluginTemplateEdit: {
+    group: "Pages/Credentials",
+    name: "Configure an existing OAuth Template from a Plugin slot",
+    path: "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000001&edit=ctp_00000000-0000-4000-8000-000000000003",
+    oauthCatalog: "ready",
+    description:
+      "An Installation admin follows the Plugin slot link to edit the existing installation-wide Google OAuth Template and can register or select a client without creating a duplicate.",
+  },
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
-    name: "OAuth connection templates",
+    name: "Connection templates",
     steps: [
-      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either row and check the selected template.",
+      "Compare the authentication method, availability, details, and version for Google OAuth, Support MCP, and the static Bearer Reporting API template.",
+      "Open Edit on Reporting API to inspect its HTTP method, host, port, and exact path or subtree. Static templates do not have OAuth clients.",
       "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     description:
-      "An Installation-wide Google template and a Namespace MCP template with an assigned OAuth client.",
+      "A mixed catalog shows static Bearer and OAuth templates through the same resource workflow.",
+  },
+  credentialsStaticTemplateCreate: {
+    group: "Pages/Credentials",
+    name: "Create static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      click("Create connection template"),
+      { selector: "#connection-template-authentication", value: "static_bearer" },
+    ],
+    description:
+      "Configure each HTTP method, host, port, and exact path or subtree without registering an OAuth client.",
+  },
+  credentialsStaticTemplateEdit: {
+    group: "Pages/Credentials",
+    name: "Edit static Bearer template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [{ selector: 'button[aria-label="Edit Reporting API"]', click: true }],
+    description:
+      "Review the current destination. Saving destination changes creates a new immutable version; renaming preserves the current version.",
   },
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
-    name: "OAuth client catalog",
-    path: "/console/credentials/oauth-clients",
-    oauthCatalog: "ready",
-    description: "Public and confidential OAuth clients with different issuers and availability.",
+    name: "Credential client catalog",
+    path: "/console/credentials/credential-clients?namespace=ns_00000000-0000-4000-8000-000000000001",
+    oauthCatalog: "github-app-namespaces",
+    description: "The administrator sees Installation-wide and Engineering clients in one catalog.",
     steps: [
-      "Compare each client’s issuer, availability, and token endpoint authentication method. Open a delete confirmation and check the name and availability, then cancel.",
-      "Choose Register OAuth client and select the connection template that defines its issuer.",
+      "Compare the Availability cells for Repository automation and Engineering repository App.",
+      "Choose Register client. Switch between OAuth 2.0 and GitHub App and inspect each kind's write-only fields and shared Availability picker.",
     ],
   },
   credentialsDeleteTemplate: {
@@ -46,53 +85,89 @@ export const connectionTemplateScenarios = {
   credentialsReferencedClient: {
     group: "Pages/Credentials",
     name: "OAuth client in use",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
       { selector: 'button[aria-label^="Delete Support service ("]', click: true },
-      click("Delete OAuth client"),
+      click("Delete credential client"),
     ],
     description:
-      "A saved version of the Support MCP template references this client. Close the message to return to the client list.",
+      "The simulated Source still references this client, so deletion is refused. Close the message to return to the catalog.",
   },
   credentialsRegisterOAuthClient: {
     group: "Pages/Credentials",
     name: "Register OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
-    actions: [click("Register OAuth client")],
+    actions: [click("Register client")],
     description:
-      "Choose a saved template or create one. Its availability and OAuth endpoints determine where OCE can use the registration.",
+      "Register an OAuth client with its own scope, issuer, endpoints, and authentication method, independently of a Template.",
   },
   credentialsRegisterGoogleClient: {
     group: "Pages/Credentials",
     name: "Register a Google OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
-      click("Register OAuth client"),
-      {
-        selector: "#oauth-registration-template",
-        value: "ctp_00000000-0000-4000-8000-000000000003",
-      },
+      click("Register client"),
+      { selector: "#credential-client-issuer", value: "https://accounts.google.com" },
+      { selector: "#credential-client-token-url", value: "https://oauth2.googleapis.com/token" },
     ],
     description:
-      "The Google template defaults to client_secret_post for confidential clients. Selecting Public sets the method to none.",
+      "OAuth registration owns its provider endpoints. The authentication method controls whether a write-only secret is required.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
     name: "Register an MCP OAuth client",
-    path: "/console/credentials/oauth-clients",
+    path: "/console/credentials/credential-clients",
     oauthCatalog: "ready",
     actions: [
-      click("Register OAuth client"),
-      {
-        selector: "#oauth-registration-template",
-        value: "ctp_00000000-0000-4000-8000-000000000004",
-      },
+      click("Register client"),
+      { selector: "#credential-client-issuer", value: "https://identity.example.com" },
+      { selector: "#credential-client-token-url", value: "https://identity.example.com/token" },
     ],
     description:
-      "This MCP server advertises client_secret_basic for confidential clients and none for public clients. Select a client type to see its method.",
+      "An MCP OAuth client can be registered before selecting it for consent against a compatible Template.",
+  },
+  credentialsRegisterGitHubApp: {
+    group: "Pages/Credentials",
+    name: "Register GitHub App",
+    path: "/console/credentials/credential-clients?namespace=ns_00000000-0000-4000-8000-000000000001",
+    oauthCatalog: "ready",
+    actions: [
+      click("Register client"),
+      { selector: "#credential-client-kind", value: "github-app" },
+    ],
+    description: "The App ID is immutable and the private key file contents are write-only.",
+    steps: [
+      "Choose Namespace · Engineering in Availability. Enter a sample name and App ID, select an inert .pem file, and register.",
+      "Confirm the catalog shows Namespace · Engineering for the new GitHub App Client.",
+    ],
+  },
+  credentialsGitHubAppVerificationFailed: {
+    group: "Pages/Credentials",
+    name: "GitHub App verification failed",
+    path: "/console/credentials/credential-clients",
+    oauthCatalog: "github-app-verification-failed",
+    actions: [
+      click("Register client"),
+      { selector: "#credential-client-kind", value: "github-app" },
+    ],
+    description:
+      "The simulated verifier refuses registration and leaves the form open for correction.",
+    steps: [
+      "Enter a sample client name and App ID. Select an inert .pem file and choose Register client.",
+      "Read the verification message. The form stays open and clears the file before retry.",
+    ],
+  },
+  credentialsRotateGitHubApp: {
+    group: "Pages/Credentials",
+    name: "Rotate GitHub App key",
+    path: "/console/credentials/credential-clients",
+    oauthCatalog: "ready",
+    actions: [{ selector: 'button[aria-label="Rotate Repository automation"]', click: true }],
+    description:
+      "The administrator supplies a replacement key; the App ID and cached installation tokens remain unchanged.",
   },
   credentialsMemberAccess: {
     group: "Pages/Credentials",
@@ -100,16 +175,29 @@ export const connectionTemplateScenarios = {
     path: "/console/secrets",
     readOnlyPermissionSummary: true,
     description:
-      "A Namespace member can open Secrets. Only Installation administrators see Connection templates and OAuth clients.",
+      "A Namespace member can open Secrets. Only Installation administrators see Connection templates and Credential clients.",
   },
   credentialsGoogleTemplate: {
     group: "Pages/Credentials",
     name: "Edit Google OAuth",
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
-    actions: [click("Edit Google OAuth")],
+    actions: [editGoogle],
     description:
       "Edit the Installation-wide Google template. Expand API destinations to change its HTTPS routes. This preview includes sample Gmail, Calendar and Drive routes.",
+  },
+  credentialsUnconfirmedTemplate: {
+    group: "Pages/Credentials",
+    name: "Unconfirmed template save",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "unconfirmed-save",
+    actions: [editGoogle, click("Save new version")],
+    description:
+      "The catalog saved version 2 of Google OAuth, but the save response omitted the version.",
+    steps: [
+      "Check that the editor explains how to recover, Save new version is disabled and Close has focus.",
+      "Press Enter on Close. Check that the refreshed catalog lists Google OAuth once at version 2.",
+    ],
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -166,10 +254,17 @@ export const connectionTemplateScenarios = {
     path:
       | "/console/secrets"
       | "/console/credentials/connection-templates"
-      | "/console/credentials/oauth-clients";
+      | `/console/credentials/connection-templates?${string}`
+      | "/console/credentials/credential-clients"
+      | `/console/credentials/credential-clients?${string}`;
     actions?: StoryAction[];
     emptyNamespaces?: true;
-    oauthCatalog?: "ready" | "error";
+    oauthCatalog?:
+      | "ready"
+      | "error"
+      | "unconfirmed-save"
+      | "github-app-verification-failed"
+      | "github-app-namespaces";
     readOnlyPermissionSummary?: true;
     description: string;
     steps?: readonly string[];

@@ -15,6 +15,11 @@ branch check before merge; complete the authorized publication after merge.
 
 ## Before merge
 
+Run focused checks and the required browser/runtime scenarios first. Fix failures
+and settle the candidate before dispatching the two-architecture image workflow.
+Do not dispatch it after every intermediate test-only correction. Passing focused
+checks does not replace final image qualification.
+
 1. Identify every consumer of the changed default: Dockerfiles, upstream source
    and lockfiles, workspace templates, version and sandbox gates, startup checks,
    and current documentation. Update the affected consumers together. Use the
@@ -57,7 +62,9 @@ branch check before merge; complete the authorized publication after merge.
    or existing `latest` image does not satisfy this requirement.
 5. Record the candidate SHA, run URL, all four image/architecture outcomes, and
    relevant version/probe results. Confirm the run SHA still equals the final
-   PR head; rerun after further commits. State any remaining real-cluster or
+   PR head. If further commits are needed, repeat the affected focused checks and
+   required browser/runtime scenarios first, then qualify the new final head once.
+   State any remaining real-cluster or
    model verification gap separately; native startup proof is not deployment
    proof. Identify the publication owner and whether publication is authorized
    before handing off the merge.

@@ -100,10 +100,10 @@ requests and limits, defaulting to `100m` CPU/`128Mi` memory requests and
 
 The controller worker declares a writable `emptyDir` with a `1Mi` size limit for
 its readiness marker. Installation startup YAML, Better Auth signing material, and other
-mounted controller Secret data remain read-only. The initialization Job writes
-the generated bootstrap password and service-key JSON only to its operator-provided
-protected output volume. Neither output is mounted into the API, worker, or tenant
-Pods. See [bootstrap credential handling](authentication.md#installation-and-account-ownership).
+mounted controller Secret data remain read-only. On fresh installation, the bootstrap container reads the operator-supplied
+password and service key from a read-only Secret projection. Migration, API,
+worker, and tenant containers receive neither input. Bootstrap writes no
+credential output; upgrades need no retained input. See [bootstrap credential handling](authentication.md#installation-and-account-ownership).
 A configured ChatGPT admin key
 is mounted read-only only in the API Pod; the worker, initialization Job, and
 tenant Pods never receive it.
@@ -203,6 +203,9 @@ can interpolate chat text, keep the event name; other Codex warnings are dropped
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
 request, work, Namespace, Agent, and Agent revision IDs remain attributes.
+Local approved scalar strings reject recognized URL and connection-string credentials.
+The Collector omits recognized key or token shapes from diagnostic codes and cleanup
+cause codes while retaining ordinary uppercase codes and SQLSTATE.
 
 A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
 no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message

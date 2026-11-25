@@ -139,6 +139,7 @@ export const CredentialsSlackPartial = {
   name: "One Slack token missing",
 };
 export const AuthMissing = { ...story("authMissing"), name: "No authentication source" };
+export const ExistingCredentialSource = story("credentialsExistingSource");
 export const AuthApiKeySwitch = {
   ...story("authApiKeySwitch"),
   name: "API key Secret switch",
@@ -147,6 +148,8 @@ export const AuthRuntime = { ...story("authRuntime"), name: "Operator-managed au
 export const AuthService = { ...story("authService"), name: "ChatGPT service account" };
 export const AuthServiceEmpty = story("authServiceEmpty");
 export const AuthServiceDenied = story("authServiceDenied");
+export const AuthOAuthPollDenied = story("authOAuthPollDenied");
+
 export const AuthOAuthReconnect = story("authOAuthReconnect");
 
 export const AuthSecretReplacement = {

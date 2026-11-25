@@ -3,13 +3,13 @@
 ## Invocation and destination
 
 Use `plan <description>` for implementation planning, whether or not an RFC
-exists. Use `plan RFC-0001 <description>` or an explicit RFC path when the caller
+exists. Use `plan RFC-20261119-runtime-trust <description>` or an explicit RFC path when the caller
 selects its architectural owner.
 
 Read `AGENTS.md`, `docs/contributing/specifications.md`, and `specs/README.md`.
-Follow the specification process for numbering and historical exceptions:
+Follow the specification process for naming and historical exceptions:
 
-- For the first plan of an owning RFC, reuse its number and topic under
+- For the first plan of an owning RFC, reuse its full filename stem under
   `specs/plans/`, unless an existing task already owns that work. Keep that
   task’s ID and path when making it the primary plan.
 - Update an active plan within its scope. For materially different follow-up
@@ -23,12 +23,12 @@ Follow the specification process for numbering and historical exceptions:
 - An existing task plan that later gains an RFC keeps its ID and path. Link the
   relationship in frontmatter and preserve the work instead of duplicating or
   relocating it.
-- Use document IDs to identify the numbering sequence; all plans share one directory.
+- Use document IDs to distinguish RFC-linked plans from independent tasks; all plans share one directory.
 
 Use one Markdown file by default. When companions are needed, use
-`specs/plans/<number>-<topic>/index.md` and put companions beside it. When converting an existing single file, preserve its ID and content,
+`specs/plans/<stem>/index.md` and put companions beside it. When converting an existing single file, preserve its ID and content,
 update incoming and relative links, and remove the former top-level file.
-Recheck number and path collisions before writing. Do not change the archive
+Recheck ID and path collisions before writing. Do not change the archive
 during normal plan authoring.
 
 ## Gather evidence
@@ -53,7 +53,7 @@ Set `rfc` in YAML frontmatter to the relevant RFC's path relative to the plan
 file. Include `index.md` for an RFC in a folder. Omit the key (and an otherwise
 empty frontmatter block) when no RFC applies. Preserve other existing metadata.
 Adjust this link when moving either document; do not infer a relationship merely
-from matching numbers. Keep additional RFC dependencies as body links.
+from matching names. Keep additional RFC dependencies as body links.
 
 1. State the observable outcome and selected scope. Link the RFC's requirements
    instead of repeating its rationale and complete design. For an independent
