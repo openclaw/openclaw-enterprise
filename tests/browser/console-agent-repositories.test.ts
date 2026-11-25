@@ -1785,9 +1785,14 @@ for (const viewport of consoleViewports) {
         }).observe(note, { childList: true });
         return count;
       });
+    await search.focus();
     for (const direction of ["goBack", "goForward"] as const) {
-      await search.focus();
+      // Scroll back to the choices without moving focus away from the explanation.
       await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+      if (direction === "goForward") {
+        assert.ok(await hasFocus(status));
+        assert.equal(await inViewport(status), false);
+      }
       const before = await changes.evaluate((count) => count.value);
       await page[direction]({ waitUntil: "commit" });
       await afterReturn();
@@ -1805,9 +1810,9 @@ for (const viewport of consoleViewports) {
         );
       }
       assert.ok(await choice.isChecked());
-      await page.keyboard.press("Shift+Tab");
-      assert.ok(await hasFocus(cancel));
     }
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await hasFocus(cancel));
     // A reader who returns to search before the inverse traversal keeps focus there.
     await search.focus();
     await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
@@ -1829,6 +1834,25 @@ for (const viewport of consoleViewports) {
     await afterReturn();
     assert.ok(await hasFocus(search), "Keep the reader’s later focus choice");
     assert.ok(await inViewport(search));
+    // Cancel only the inverse traversal. A later manual Forward reaches the same entry,
+    // but must not deliver the canceled request's feedback.
+    await page.evaluate(() => {
+      const { navigation } = globalThis;
+      navigation.addEventListener(
+        "navigate",
+        () =>
+          navigation.addEventListener("navigate", (event) => event.preventDefault(), {
+            once: true,
+          }),
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await nextFrames(page);
+    assert.equal(page.url(), configuration);
+    await page.goForward({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search));
     await cancel.click();
     await waitForEnabled(page.getByRole("tab", { name: "Configuration" }));
     await page.goBack({ waitUntil: "commit" });

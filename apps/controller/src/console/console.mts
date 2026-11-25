@@ -1776,7 +1776,15 @@ function revealAfterReturn(feedback: HTMLElement) {
         feedback.isConnected &&
         feedback.firstChild === message
       ) {
-        shellUI.focusLeaveFeedback(feedback);
+        // Calling focus() again does not reveal a message the reader scrolled away from.
+        if (document.activeElement === feedback) {
+          const { top, bottom } = feedback.getBoundingClientRect();
+          if (top < 0 || bottom > window.innerHeight) {
+            feedback.scrollIntoView({ block: "center" });
+          }
+        } else {
+          shellUI.focusLeaveFeedback(feedback);
+        }
       }
     });
   };
