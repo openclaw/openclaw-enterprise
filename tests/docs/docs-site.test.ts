@@ -93,6 +93,7 @@ test("docs build renders every authored page and preserves repository ownership"
     join(published, "guides/repository-credentials/openshell-enrollment/index.html"),
     "utf8",
   );
+  // Existing enrollment bookmarks must lead to the guide for Source-backed Git access.
   assert.ok(
     enrollment.includes(
       'rel="canonical" href="/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent"',

@@ -5482,6 +5482,21 @@ export async function renderAgentDetail(
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
+        // Detaching the live editor keeps its selection but resets its internal scroll.
+        const editor =
+          mountedTab.id === "configuration"
+            ? content.querySelector<HTMLTextAreaElement>("#configuration-json")
+            : null;
+        if (editor) {
+          const { scrollTop, scrollLeft, scrollHeight } = editor;
+          mountedTab.resumeDrafts = () => {
+            resumeDrafts();
+            // If lines rewrapped while away, the old offset can hide the selection.
+            if (content.contains(editor) && editor.scrollHeight === scrollHeight) {
+              editor.scrollTo(scrollLeft, scrollTop);
+            }
+          };
+        }
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);

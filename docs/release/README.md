@@ -46,9 +46,42 @@ the following results before announcing the release.
 | OCC CLI                | The public GitHub Release at `v<version>` identifies the source commit and provides four macOS/Linux binaries and `SHA256SUMS`. See [CLI setup](../guides/cli.md).                          |
 | Selected image alias   | Both images have the selected alias at their verified digests. The workflow moves the alias after it verifies the chart and CLI.                                                            |
 
+## Publish images only
+
+To publish controller and runtime images while Full Integration is failing or
+unavailable, dispatch **Release OCE** on `main`. Set `source_sha` to the
+reviewed commit, select both `publish` and `images_only`, and leave
+`recovery_run_id` empty. Set `image_tag` for a custom alias or leave it blank
+to move `latest`. Approve the run through `integration-main-approval`.
+
+This mode skips Full Integration. Both images must still pass their native
+Linux AMD64 and ARM64 checks. The publisher verifies both `sha-<source_sha>`
+tags before moving the selected alias. Compare the digests for both aliases
+with the `container-publication-<run-id>-1` receipt in GitHub Actions.
+
+The receipt covers the two images. Version tags, the Helm chart, the OCC CLI,
+and the GitHub Release require the full release procedure above.
+
+### Recover an image-only publication
+
+If the image-only publisher fails, times out, or is cancelled after it starts writing,
+check both source tags and both aliases. Use digest references while the
+aliases point to different publications.
+
+1. Keep the original publication run at attempt 1. Its prepared images and
+   `release-image-baseline-<run-id>-1` artifact expire after seven days.
+   The baseline records the expected images and the previous state of both aliases.
+2. Dispatch **Release OCE** on `main` with the original `source_sha` and
+   `image_tag`. Select both `publish` and `images_only`. Set `recovery_run_id`
+   to the original image-only publication run ID and approve the new run.
+3. Check the receipt and both aliases. Recovery reuses the original image
+   bytes. It accepts each alias at its previous state or at the intended
+   image digest. A conflicting source tag or alias stops recovery. Preserve
+   the evidence and refer a conflict to a release maintainer.
+
 ## Recover a partial release
 
-If publication stops, inspect the run summary, the GitHub Release or draft,
+If full release publication stops, inspect the run summary, the GitHub Release or draft,
 and each registry digest. Record which assets are already public. Writes to GitHub and GHCR are separate. Even a
 failure between the two alias updates can leave different versions active.
 Use digest references while recovering.
@@ -69,8 +102,8 @@ maintainer.
 **Enterprise Containers** and **Release OCC CLI** also support independent
 publication. Their release gates apply only to the outputs they own. Before the
 first versioned rollout, maintainers must decide whether to require the combined
-workflow or verified recovery for versioned releases and reserve `latest` for
-complete releases. Coordinate writers until that decision takes effect.
+workflow or verified recovery for versioned releases. Coordinate updates to
+`latest` across all image publishers.
 
 ## Release guides
 
