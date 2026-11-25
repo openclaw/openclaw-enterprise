@@ -207,7 +207,7 @@ export function registerSandboxDriverStartupWiringCases() {
         (configuration) => {
           Object.assign(configuration.drivers, { [key]: { id: "retired", configuration: {} } });
         },
-        new RegExp(key),
+        new RegExp(`drivers\\.${key} is retired\\. Select TokenService and Credential Proxy`),
       );
     }
     await rejectsAtStartup(
