@@ -33,8 +33,21 @@ turn that caused it. Use a new call ID for each attempt.
 - Dedicated OpenClaw runs in a Sandbox. The worker reports each model call on
   its authenticated connection to the Gateway. The Gateway uses its admitted
   turn assignment to attach the session and turn IDs.
-- Dedicated Codex sends model requests from the App Server. It reports each
-  observed attempt to the Gateway over the App Server connection.
+- Dedicated Codex sends model requests from the App Server. Its connection
+  to the Gateway reports responses but can omit retries.
+
+On a dedicated Codex Pod on the control cluster, propose using the existing
+private worker status port for HTTP request attempts. The worker receives
+Codex traces on loopback only when audit is on. It extracts request IDs,
+the model, time, attempt number and HTTP status. It discards the trace.
+The Gateway matches the native turn ID to a saved prompt on that revision.
+It must omit ambiguous matches. An HTTP status alone cannot establish
+whether the model finished a response.
+
+Use the existing App Server credential to protect this private exchange.
+Keep the OCC credential on the Gateway. Neither chat nor a model request
+waits for delivery. Pending observations in worker memory can be lost.
+Changing the audit setting may restart the worker as well as the Gateway.
 
 Compute gives the credential to the Gateway. The credential identifies one
 revision. OCC trusts that revision to report its own activity. Code with the
