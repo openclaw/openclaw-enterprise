@@ -7351,12 +7351,13 @@ export async function renderAgentDetail(
       reloadRequired = false;
       updateState();
     });
-    showDraftEditorNavigationBlock = () => {
+    showDraftEditorNavigationBlock = (focusFeedback) => {
       if (draftEditorNavigationBlock) {
         setStatusTone(feedback, null);
         feedback.setAttribute("role", "status");
         feedback.textContent = draftEditorNavigationBlock;
         feedbackLocked = true;
+        focusFeedback?.(feedback);
       }
     };
 
