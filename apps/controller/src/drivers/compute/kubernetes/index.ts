@@ -120,6 +120,7 @@ import type {
   NetworkingV1Api,
   VersionApi,
   V1ConfigMap,
+  V1Container,
   V1EnvVar,
   V1NetworkPolicyPeer,
   V1NetworkPolicySpec,
@@ -738,6 +739,7 @@ interface DeploymentInput {
   readonly nativeRuntime?: NativeRuntimeSnapshot | undefined;
   readonly providerEndpoint?: SandboxHarnessEndpoint | undefined;
   readonly codexLaunch?: CodexLaunch | undefined;
+  readonly codexAttemptAudit?: boolean;
   readonly scratch?: KubernetesScratchVolume | undefined;
 }
 
@@ -1398,6 +1400,7 @@ const DEFAULT_NATIVE_OPENCLAW_SESSION_CAPACITY = 8;
 const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compile";
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const APP_TOKEN_SHA = "APP_TOKEN_SHA";
+const CODEX_ATTEMPT_AUDIT = "OCE_CODEX_ATTEMPT_AUDIT";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const BROWSER_DELEGATION_KEY = "browser-key";
 const BROWSER_DELEGATION_HEADER = "x-occ-browser-key";
@@ -7908,6 +7911,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           : "secret",
       ),
     );
+    const codexAttemptAudit = this.codexAttemptAuditEnabled(revision, deliveredHarnessAuth);
     const gatewaySecretEnvironment = await this.prepareRevisionStage(
       "gateway_secret_environment",
       () =>
@@ -7977,6 +7981,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               images: this.workloadImages(revision, "gateway"),
               serviceAccountName: gatewayAccountName,
               role: "gateway",
+              codexAttemptAudit,
               environment,
               loggingLevel: configuration.loggingLevel,
               configuration,
@@ -8768,6 +8773,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         images: this.workloadImages(revision, "agent"),
         serviceAccountName: agentName,
         role: "agent",
+        codexAttemptAudit,
         environment: launch.environment,
         loggingLevel: configuration.loggingLevel,
         harnessAuth: deliveredHarnessAuth,
@@ -9224,6 +9230,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
         : harnessAuth;
     const codexLaunch = this.codexLaunch(revision, sandboxDriver);
+    const codexAttemptAudit = this.codexAttemptAuditEnabled(revision, activatedHarnessAuth);
     const renderAgentDeployment = (
       environment: Readonly<Record<string, string>>,
       withNode = false,
@@ -9235,6 +9242,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         images: this.workloadImages(revision, "agent"),
         serviceAccountName: agentName,
         role: "agent",
+        codexAttemptAudit,
         environment,
         loggingLevel: configuration.loggingLevel,
         harnessAuth: activatedHarnessAuth,
@@ -9249,10 +9257,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const harnessRuntime = this.harnessForRevision(revision);
     if (harnessRuntime.kind === "kubernetes") {
       await harnessRuntime.activate({ revision, namespace }, async (deployment) => {
+        // Refresh the same worker revision when the installation audit switch changes.
+        const pod = asRecord(asRecord(deployment.spec?.template)?.spec);
+        const containers = pod?.containers as V1Container[] | undefined;
+        const worker = containers?.find(({ name }) => name === "agent");
+        const auditing =
+          worker?.env?.some(({ name, value }) => name === CODEX_ATTEMPT_AUDIT && value === "1") ??
+          false;
         if (
-          repositoryMaterial === undefined ||
-          deployment.metadata.annotations?.[REPOSITORY_MATERIAL_GENERATION] ===
-            repositoryMaterial.generation
+          auditing === codexAttemptAudit &&
+          (repositoryMaterial === undefined ||
+            deployment.metadata.annotations?.[REPOSITORY_MATERIAL_GENERATION] ===
+              repositoryMaterial.generation)
         ) {
           return false;
         }
@@ -9387,6 +9403,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         images: this.workloadImages(revision, "gateway"),
         serviceAccountName: gatewayName,
         role: "gateway",
+        codexAttemptAudit,
         environment: {},
         loggingLevel: configuration.loggingLevel,
         configuration,
@@ -11405,6 +11422,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   private generateRuntimeCredentialToken(): string {
     return randomBytes(32).toString("base64url");
+  }
+
+  private codexAttemptAuditEnabled(revision: AgentRevision, auth: PreparedHarnessAuth): boolean {
+    // Only an ordinary local Codex Pod and its Gateway share the transport token
+    // and can use the private status port without going through a proxy.
+    return (
+      this.gatewayRuntimeAuditTarget !== undefined &&
+      this.options.runtime !== undefined &&
+      this.options.executionCluster === undefined &&
+      revision.harness.mode === "dedicated" &&
+      revision.harness.id === "codex" &&
+      this.harnessNetworkProfile(revision) === ORDINARY_NETWORK_PROFILE &&
+      !auth.environment.some(({ name }) => name === APP_TOKEN_SHA)
+    );
   }
 
   private runtimeAuditTargetInNamespace(namespace: KubernetesNamespaceAddress) {
@@ -18625,6 +18656,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     nativeRuntime,
     providerEndpoint,
     codexLaunch,
+    codexAttemptAudit,
     scratch,
   }: DeploymentInput): ManagedKubernetesObject {
     const image = images.runtime;
@@ -19358,6 +19390,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (harness !== undefined) {
       variables.push(...harness.environment);
+    }
+    if (variables.some(({ name }) => name === CODEX_ATTEMPT_AUDIT)) {
+      throw new ConfigurationFailure(
+        `Workload environment variable ${CODEX_ATTEMPT_AUDIT} is reserved.`,
+      );
+    }
+    if (codexAttemptAudit) {
+      variables.push({ name: CODEX_ATTEMPT_AUDIT, value: "1" });
     }
     this.requireDistinctEnvironment(variables);
     const port =

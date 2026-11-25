@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createServer } from "node:https";
@@ -108,6 +108,7 @@ function answerText(request) {
 }
 
 const failedAuditNonces = new Set();
+const auditToolResults = new Map();
 
 function auditFault(transport, model, request, caller) {
   if (!codexAuditFailures || caller !== "codex") {
@@ -115,14 +116,33 @@ function auditFault(transport, model, request, caller) {
   }
   const text = answerText(request);
   const fault = /^OCE_SMOKE_(retry|cancel|restart)-[0-9a-f-]{36}$/u.exec(text)?.[1];
-  if (fault === undefined || (fault === "retry" && failedAuditNonces.has(text))) {
+  if (fault === undefined) {
     return undefined;
   }
-  emit({ event: `audit-provider-${fault}`, transport, caller, text });
   if (fault === "retry") {
+    const expected = auditToolResults.get(text);
+    if (!expected) {
+      return undefined;
+    }
+    const result = JSON.parse(request).input.findLast(
+      (item) => item.type === "function_call_output" && item.call_id === text,
+    );
+    const verified = JSON.stringify(result?.output ?? "").includes(expected);
+    emit({ event: "audit-tool-result", transport, caller, text, verified });
+    if (!verified || failedAuditNonces.has(text)) {
+      return undefined;
+    }
     failedAuditNonces.add(text);
+    emit({
+      event: "audit-provider-retry",
+      transport,
+      caller,
+      text,
+      status: transport === "https" ? 503 : undefined,
+    });
     return { fault };
   }
+  emit({ event: `audit-provider-${fault}`, transport, caller, text });
   const events = answerEvents(model, text);
   const started = events[0];
   const completed = events.at(-1);
@@ -204,6 +224,24 @@ function answerEvents(model, text) {
   ];
 }
 
+// A real tool must join the pieces before we refuse the next request. An error
+// that echoes the command cannot pass this check. Never log the tool output.
+function auditToolEvents(model, text, caller) {
+  if (
+    !codexAuditFailures ||
+    caller !== "codex" ||
+    !/^OCE_SMOKE_retry-[0-9a-f-]{36}$/u.test(text) ||
+    auditToolResults.has(text)
+  ) {
+    return undefined;
+  }
+  const expected = randomUUID();
+  auditToolResults.set(text, expected);
+  const command = `printf '%s%s' '${expected.slice(0, 18)}' '${expected.slice(18)}'`;
+  // A continuation can carry just the tool output. Its call ID identifies the turn.
+  return execCommandEvents(model, nextResponseId(text), text, command);
+}
+
 // The smoke's model stand-in requests a real Codex tool call. The command reads
 // the endpoint from the managed skill; the provider-only title is never supplied
 // to the model or the command before the tool output returns.
@@ -243,14 +281,18 @@ function publicReadEvents(model, request) {
     'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
     'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
   ].join("\n");
+  return execCommandEvents(model, "resp_public_read", "public-read-call", command);
+}
+
+function execCommandEvents(model, responseId, callId, command) {
   const item = {
     type: "function_call",
-    call_id: "public-read-call",
+    call_id: callId,
     name: "exec_command",
     arguments: JSON.stringify({ cmd: command }),
   };
   const base = {
-    id: "resp_public_read",
+    id: responseId,
     object: "response",
     model,
     created_at: Math.floor(Date.now() / 1000),
@@ -371,6 +413,7 @@ function turn(transport, model, request, respond, closed, caller) {
     }
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
+        auditToolEvents(model, text, caller) ??
         publicReadEvents(model, request) ??
         workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),

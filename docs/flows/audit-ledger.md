@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 15:07"
-last_updated_session: "authoring-run/03d51d83-3016-48c4-8ca8-f10d451e24eb"
+updated: "2026-11-24 16:06"
+last_updated_session: "authoring-run/7db9d106-49fe-478e-be1d-69a8a1709b11"
 ---
 
 # Audit ledger flow
@@ -70,7 +70,8 @@ graph TD
   Linked["Open a linked turn"] -->|Both grants| Lookup["Read the saved message"]
   Lookup -->|Recheck access| Disclose["Commit the disclosure"]
   Disclose -->|Confirmed| Text["Return message text"]
-  Gateway["Gateway observes a turn"] --> Local{"Queue event on disk?"}
+  Codex["Worker filters Codex traces"] -->|Gateway matches turn| Gateway
+  Gateway["Gateway reports runtime activity"] --> Local{"Queue event on disk?"}
   Local -->|Yes| Continue["Continue chat"]
   Local -->|Yes| Deliver["Send to OCC in background"]
   Local -->|No| Warn["Warn of missing record"]
@@ -234,20 +235,16 @@ copies and array are immutable.
 `packages/occ/src/agent-audit-reader.ts:listAgentAuditEvents`, and
 `apps/controller/src/composition/control-plane-audit.ts:postgresAgentAuditState`
 
-The PostgreSQL audit reader requires enabled audit and a Native IAM Driver
-that shares State with OCC. OCC holds the caller's session in a transaction.
-Native IAM requires a direct `read_audit` binding for the human Principal,
-Agent, and Namespace. It applies the same rule to an account or service-key
-manager. The reader locks the active Agent, its ready Namespace, and policy
-tables through commit. It checks the grant again under lock. It selects
-approved events for the Agent and limits the time window and page size.
+Audit must be on. Native IAM and OCC must share PostgreSQL State.
+Every reader needs a human session and a direct `read_audit` grant on
+the Agent. OCC holds the session and locks the active Agent, ready
+Namespace and policy tables through commit. It rechecks access under lock.
 
-State selects named fields and derives a public work ID from the stored key.
-Lifecycle records show the saved action. Each included revision ID belongs to
-the Agent. The transaction appends `openclaw.audit.agent.read` with the actor,
-Agent, request ID, time window, projection version, and record count. The API
-releases the page after commit. The encrypted cursor requires the same session,
-Agent, and window.
+State selects [approved records](../guides/topics/audit-log.md#read-an-agents-audit-events)
+and derives public work IDs. Before releasing each page, OCC commits
+`openclaw.audit.agent.read` with the actor, Agent, request ID, window,
+projection version and count. The encrypted cursor binds the session,
+Agent and window.
 
 ### 7. A Gateway reports work for one revision
 
@@ -260,14 +257,27 @@ and stores the token hash in PostgreSQL. It revokes the grant after stop
 and deletes the Secret at retirement.
 
 `PostgresWorkQueue.scheduleGatewayAuditMaintenance` queues up to eight
-Gateway updates per check when grants differ from the setting. Maintenance
-checks the original deployer’s authority. With audit off, Compute removes
-the grant after replacing the Gateway.
+updates per check when grants differ from the setting. Maintenance checks
+the original deployer's authority and can restart the Gateway and Codex
+worker. With audit off, Compute revokes
+the grant after Gateway replacement.
 
 The plugin records new sessions when OpenClaw emits `session_start`.
 `deploy/runtime/managed-runtime-audit/index.mjs:recordLifecycle` records
 turn starts and results from lifecycle events with session and run IDs.
-It needs no prior session record. Chat continues without OCC confirmation.
+It needs no session record or OCC confirmation.
+
+In a managed dedicated Codex Pod on the control cluster,
+`deploy/runtime/managed-runtime-audit/codex-worker.mjs:startAttemptAudit`
+receives traces on loopback. It extracts HTTP attempts for the selected
+model and discards the traces. The worker keeps the latest 512 attempts
+in memory. `deploy/runtime/managed-runtime-audit/codex.mjs:subscribeCodexAttempts`
+polls the worker's private status port.
+`codex-transport.mjs` authenticates and encrypts the exchange with a key
+derived from the App Server token and revision ID. The OCC token stays
+on the Gateway. The Gateway holds up to 512 pending attempts in memory.
+It queues an attempt only when a saved prompt uniquely links the Codex
+turn ID to a Gateway session and run.
 
 `deploy/runtime/managed-runtime-audit/sink.mjs:createAuditSink` keeps queued
 events in `/home/node/.openclaw/state/pending-runtime-audit/observations.sqlite`
@@ -291,25 +301,19 @@ It matches OpenClaw HTTP inputs by the `openai-http` channel and `<turn ID>:user
 The plugin and reader use `runtimeAuditReference` to match turn IDs that need
 a hash. The link requires the original session and message IDs.
 
-1. The analyst supplies the audit event ID. In a PostgreSQL transaction,
-   `packages/occ/src/agent-audit-reader.ts:selectAgentAuditMessage` checks the human
-   session and direct `read_audit` and `read_audit_content` grants on
-   this Agent. State selects a linked turn event from the preceding 24 hours.
-   Its revision must match `activeRevisionId`, and the Agent's desired state
-   must be `running`.
-2. After this transaction, OCC opens the [private path for the revision](../reference/gateway-routing.md#endpoint-and-route).
-   Envoy checks the OCC service key and sets the scope to `operator.sessions.read`.
-   OCC checks that the Gateway grants exactly this scope. OCC calls `sessions.resolve`
-   with the stored session ID, then calls `chat.message.get` with the
-   returned session key and the stored session and message IDs. OCC checks
-   the message ID, user role and turn ID. OCC accepts up to 64 KiB of
-   text from the visible message. Each API process allows four concurrent
-   lookups. The Gateway has five seconds to respond. Exceeding either limit
-   returns HTTP `503`.
-3. OCC repeats the first check in a new transaction. It records
-   `openclaw.audit.agent.message.read` with the analyst and event ID.
-   After PostgreSQL confirms the commit, OCC sends the event and the text
-   with `Cache-Control: no-store`.
+1. In a PostgreSQL transaction, `packages/occ/src/agent-audit-reader.ts:selectAgentAuditMessage`
+   requires a human session and direct `read_audit` and `read_audit_content`
+   grants on this Agent. The requested event must identify a linked turn
+   within 24 hours and match `activeRevisionId`. The desired state must be `running`.
+2. Afterward, Envoy checks the OCC service key on the [private route](../reference/gateway-routing.md#endpoint-and-route).
+   OCC requires exactly the `operator.sessions.read` scope. It resolves
+   the session ID with `sessions.resolve` and calls `chat.message.get`
+   with the returned key, session ID and message ID. It checks message ID, user role,
+   turn ID and visible text (maximum 64 KiB). Exceeding four concurrent
+   lookups per API process or five seconds per lookup returns HTTP `503`.
+3. OCC repeats step 1 and records `openclaw.audit.agent.message.read`
+   with the analyst and event ID. After confirmed commit, OCC returns
+   the event and text with `Cache-Control: no-store`.
 
 ## Debugging and Verification
 
@@ -343,6 +347,8 @@ a hash. The link requires the original session and message IDs.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 16:06: Trace Codex HTTP attempts through the worker and Gateway. (authoring-run/7db9d106-49fe-478e-be1d-69a8a1709b11 - 3d5608cc7f1cf05a79b460fa3b208ab2560fc567)
 
 - 2026-11-24 15:07: Trace turn records independent of session starts. (authoring-run/03d51d83-3016-48c4-8ca8-f10d451e24eb - 338c8a4102dfd13457c5714ff78f7af3ae5c9ac1)
 

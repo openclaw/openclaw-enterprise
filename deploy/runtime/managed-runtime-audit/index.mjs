@@ -3,7 +3,7 @@ import {
   resolveAgentRunLifecycleTerminalFacts,
 } from "openclaw/plugin-sdk/agent-lifecycle";
 
-import { subscribeCodexResponses } from "./codex.mjs";
+import { subscribeCodexAttempts, subscribeCodexResponses } from "./codex.mjs";
 import { createAuditSink } from "./sink.mjs";
 
 const id = "oce-runtime-audit";
@@ -59,11 +59,11 @@ function inputRunId(message, source) {
   }
 }
 
-function recordInput(inputs, source, { target, messageId, message }) {
+function recordInput({ inputs, sink, attempts }, { target, messageId, message }) {
   if (!target?.sessionId || !messageId || message?.role !== "user") {
     return;
   }
-  const runId = inputRunId(message, source);
+  const runId = inputRunId(message, sink.source);
   if (!runId) {
     return;
   }
@@ -77,6 +77,10 @@ function recordInput(inputs, source, { target, messageId, message }) {
     (message.provenance && message.provenance.kind !== "external_user");
   const ambiguous = inputs.has(key) && inputs.get(key) !== messageId;
   remember(inputs, key, unavailable || ambiguous ? null : messageId);
+  if (attempts && metadata?.runId && metadata.mirrorOrigin === "codex-app-server") {
+    const nativeTurnId = metadata.mirrorIdentity.slice(0, -":prompt".length);
+    attempts.link(nativeTurnId, unavailable || ambiguous ? null : key);
+  }
 }
 
 function recordLifecycle({ sessionId, runId, ts, data }) {
@@ -95,6 +99,7 @@ function recordLifecycle({ sessionId, runId, ts, data }) {
   }
   // Repeated starts share the active run. A start after settlement opens it again.
   remember(turns, key, started);
+  active.attempts?.wake();
   const messageId = inputs.get(key);
   const identity = {
     sessionId,
@@ -152,13 +157,17 @@ function createService(runtime) {
       setup.defer(sink.close);
       const inputs = new Map();
       const owner = { sink, turns: new Map(), inputs };
-      setup.defer(
-        runtime.events.onSessionTranscriptUpdate((update) =>
-          recordInput(inputs, sink.source, update),
-        ),
-      );
+      setup.defer(runtime.events.onSessionTranscriptUpdate((update) => recordInput(owner, update)));
       if (sink.source === "codex") {
         setup.defer(subscribeCodexResponses(sink.emit));
+        if (process.env.OCE_CODEX_ATTEMPT_AUDIT === "1") {
+          try {
+            owner.attempts = subscribeCodexAttempts(sink.emit);
+            setup.defer(owner.attempts.close);
+          } catch {
+            process.emitWarning("Codex HTTP attempt reporting is unavailable.");
+          }
+        }
       }
       active = owner;
       setup.defer(() => {

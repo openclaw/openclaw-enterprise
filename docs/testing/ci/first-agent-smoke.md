@@ -145,8 +145,8 @@ For Codex, the test makes OCC reject the Gateway audit credential during
 a third HTTP turn. The Gateway must hold the events after HTTP 401.
 The test restores access and runs the
 [retry command](../../guides/topics/audit-log.md#recover-delayed-runtime-events)
-for each held event. The API must then show the turn start, result and
-provider response without another model request.
+for each held event. The API must then show the turn start, result,
+HTTP attempt and provider response without another model request.
 
 In both OpenClaw modes, the test also sends two user messages in one
 HTTP request. The turn must finish. Its audit event must omit the message
@@ -155,11 +155,13 @@ ID because the turn has two inputs. The message lookup must return HTTP 404.
 For embedded OpenClaw, the smoke test finds the model call and its result
 by turn ID.
 
-For dedicated Codex, the test matches the response ID from the test provider
-to its hash in the audit API. It repeats this check after the provider rejects
-the first request and Codex retries. For a new Gateway chat, it checks
-the session records from `chat.send` and `sessions.delete`. It also checks
-the turn result after cancellation.
+For dedicated Codex, the simulated provider requests a tool. It returns
+HTTP 503 when Codex sends the tool result, then accepts the retry.
+The test compares the provider log with the audit API for that turn.
+Expect three distinct attempt IDs and two response ID hashes. Only the
+503 and its 200 retry share a call ID, with attempt numbers 1 and 2.
+The test also checks session records from `chat.send` and
+`sessions.delete` and the result of a cancelled turn.
 
 To test recovery, PostgreSQL temporarily rejects the record for the start of
 one Codex turn. The provider receives the request. The test restarts the Gateway

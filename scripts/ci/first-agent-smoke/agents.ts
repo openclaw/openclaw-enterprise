@@ -364,6 +364,19 @@ export async function assertAgentTurnAudit(
         ) {
           return false;
         }
+        // Attempt delivery can lag the reply. Wait before rejecting the credential
+        // or disabling audit so an earlier request cannot enter the next fault.
+        if (
+          runtimeSource === "codex" &&
+          !events.some(
+            (event) =>
+              event.action === "openclaw.runtime.model_attempt.observed" &&
+              event.details.sessionId === turn.sessionId &&
+              event.details.turnId === turn.turnId,
+          )
+        ) {
+          return false;
+        }
         if (responseIdHash !== undefined) {
           return events.some(
             (event) =>
@@ -598,10 +611,10 @@ async function recoverCodexTurn(
   const { turnId, ids } = await withRejectedAuditCredential(stack, revisionId, async () => {
     const turnId = await send();
     const ids = await waitFor(
-      "Codex turn start, model response and result held after HTTP 401",
+      "Codex turn start, model attempt, response and result held after HTTP 401",
       async () => {
         const held = await heldIds();
-        return { done: held.length >= 3, value: held, state: { held: held.length } };
+        return { done: held.length >= 4, value: held, state: { held: held.length } };
       },
       minute,
     );
@@ -849,6 +862,85 @@ export async function checkLinkedChat(
   return first;
 }
 
+async function checkCodexRetry(
+  label: string,
+  {
+    nonce,
+    runId,
+    events,
+  }: {
+    nonce: string;
+    runId: string;
+    events: () => Promise<AgentAuditPage["events"]>;
+  },
+) {
+  // Count actual provider requests independently of the Gateway observations.
+  // The failed request and its retry must both contain the real tool result.
+  const provider = (await modelEvents()).filter(
+    (event) => event.caller === label && event.text === nonce,
+  );
+  const requests = provider.filter(
+    (event) => event.event === "request" || event.event === "audit-provider-retry",
+  );
+  assert.deepEqual(
+    requests.map((e) => e.transport),
+    ["https", "https", "https"],
+  );
+  assert.deepEqual(
+    provider.flatMap((e) => (e.status === undefined ? [] : [e.status])),
+    [200, 503, 200],
+  );
+  assert.deepEqual(
+    provider.filter((e) => e.event === "audit-tool-result").map((e) => wireField(e, "verified")),
+    [true, true],
+  );
+
+  // The attempt records can arrive after the turn has settled.
+  const recorded = await waitFor(
+    "three Codex model attempts and two responses on the retried turn",
+    async () => {
+      const turn = (await events())
+        .filter((event) => event.event === "runtime_activity")
+        .filter(({ details }) => "turnId" in details && details.turnId === runId);
+      const attempts = turn
+        .filter((e) => e.action === "openclaw.runtime.model_attempt.observed")
+        .map((e) => e.details);
+      const responses = turn
+        .filter((e) => e.action === "openclaw.runtime.model_response.observed")
+        .map((e) => e.details);
+      return {
+        done: attempts.length >= 3 && responses.length >= 2,
+        state: { attempts: attempts.length, responses: responses.length },
+        value: { attempts, responses },
+      };
+    },
+    minute,
+  );
+  assert.ok(recorded);
+  const { attempts, responses } = recorded;
+  assert.equal(attempts.length, 3);
+  assert.equal(new Set(attempts.map((e) => e.modelAttemptId)).size, 3);
+  assert.ok(attempts.every((e) => e.provider === "codex" && e.model === defaultAgentModel));
+  // The tool request belongs to its own model call. Only the HTTP 503 and
+  // the subsequent 200 share a call ID, with consecutive attempt numbers.
+  const tool = attempts.find((e) => e.attempt === 1 && e.httpStatus === 200);
+  const refused = attempts.find((e) => e.attempt === 1 && e.httpStatus === 503);
+  const retry = attempts.find((e) => e.attempt === 2 && e.httpStatus === 200);
+  assert.ok(
+    tool && refused && retry,
+    "expected one HTTP 200 and a second request retried after HTTP 503",
+  );
+  assert.notEqual(tool.modelCallId, refused.modelCallId);
+  assert.equal(refused.modelCallId, retry.modelCallId);
+  const first = codexResponse(nonce);
+  assert.ok(responses.every((e) => e.provider === "codex" && e.model === first.model));
+  assert.deepEqual(
+    responses.map((e) => e.responseIdHash).sort(),
+    [first.responseIdHash, codexResponse(nonce, 2).responseIdHash].sort(),
+  );
+  log(`${label}: three model attempts and two response IDs matched the same tool turn`);
+}
+
 export async function proveCodexAuditInterruptions(
   stack: SmokeStack,
   agent: SmokeAgent,
@@ -866,7 +958,10 @@ export async function proveCodexAuditInterruptions(
     const admitted = await rpc("chat.send", {
       sessionKey,
       idempotencyKey: randomUUID(),
-      message: `Reply with exactly ${nonce} and no other text. Do not use tools.`,
+      message:
+        fault === "retry"
+          ? `Run the requested printf once, then reply with exactly ${nonce}.`
+          : `Reply with exactly ${nonce} and no other text. Do not use tools.`,
     });
     const runId = wireField(admitted, "runId");
     assert.ok(typeof runId === "string" && runId.length > 0);
@@ -896,7 +991,7 @@ export async function proveCodexAuditInterruptions(
     return { sessionId, sessionKey, nonce, runId, events };
   }
 
-  // A failed request followed by a successful response belongs to the same turn.
+  // Codex calls a tool, then retries a refused request with its result.
   const retried = await start("retry");
   await assertAgentTurnAudit(readAudit, {
     label: agent.label,
@@ -904,9 +999,9 @@ export async function proveCodexAuditInterruptions(
     runtimeSource: "codex",
     sessionId: retried.sessionId,
     turnId: retried.runId,
-    ...codexResponse(retried.nonce),
+    ...codexResponse(retried.nonce, 2),
   });
-  await assertModelAnswered(retried.nonce, agent.label);
+  await checkCodexRetry(agent.label, retried);
 
   // Match both explicit session hooks to the ID returned by chat.history.
   await rpc("sessions.delete", { key: retried.sessionKey, expectedSessionId: retried.sessionId });

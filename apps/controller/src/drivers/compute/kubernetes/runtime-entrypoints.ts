@@ -696,6 +696,7 @@ function pluginRuntimeHelpers(
   includeOpenClawInstaller: boolean,
   includeWorkspaceProbeTransport = false,
   inspectedWorkspace = false,
+  computeOwnedCodex = false,
 ): string {
   // Keep the shared OpenShell launcher within its command size limit.
   const transport = includeWorkspaceProbeTransport
@@ -1209,7 +1210,20 @@ function startPluginRuntimeStatusServer(readiness) {
       await answerRuntimeReadiness(response, readiness);
       return;
     }
-    const remote = pathname === REMOTE_PLUGIN_STATUS_PATH && process.env.OPENCLAW_REMOTE_PLUGIN_STATUS === "true";
+${
+  computeOwnedCodex
+    ? `    if (request.method === "GET" && pathname === "/runtime/codex-attempts" && attemptAudit) {
+      try {
+        await attemptAudit.serve(request, response);
+      } catch {
+        if (!response.headersSent) response.writeHead(503);
+        response.end();
+      }
+      return;
+    }
+`
+    : ""
+}    const remote = pathname === REMOTE_PLUGIN_STATUS_PATH && process.env.OPENCLAW_REMOTE_PLUGIN_STATUS === "true";
     if (remote) {
       const expected = Buffer.from(remotePluginStatusAuthorization());
       const supplied = Buffer.from(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
@@ -4478,7 +4492,7 @@ const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(!withNode)}
+${pluginRuntimeHelpers(!withNode, false, false, computeOwned)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -4557,7 +4571,7 @@ ${
 }
 }
 
-startPluginRuntimeStatusServer(agentRuntimeReady);
+${computeOwned ? "let attemptAudit;\n" : ""}startPluginRuntimeStatusServer(agentRuntimeReady);
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
@@ -5106,14 +5120,37 @@ ${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_re
       return;
     }
   }
-  publishRuntimeReady();
+${
+  computeOwned
+    ? `  const servingEnvironment = codexChildEnvironment();
+  if (process.env.OCE_CODEX_ATTEMPT_AUDIT === "1") {
+    try {
+      // The serving process and its Gateway now share the final transport token.
+      const { startAttemptAudit } = require("/app/oce-plugins/oce-runtime-audit/codex-worker.mjs");
+      attemptAudit = await startAttemptAudit({
+        token: process.env.APP_SERVER_TOKEN,
+        revisionId: process.env.OPENCLAW_AGENT_REVISION_ID,
+      });
+      // Only the serving process exports traces. Keep the destination and headers local.
+      for (const name of Object.keys(servingEnvironment)) {
+        if (name.startsWith("OTEL_EXPORTER_OTLP")) delete servingEnvironment[name];
+      }
+      Object.assign(servingEnvironment, attemptAudit.env);
+      nativeArguments.splice(-1, 0, ...attemptAudit.args);
+    } catch {
+      console.warn("Codex request audit is unavailable.");
+    }
+  }
+`
+    : ""
+}  publishRuntimeReady();
   // Preparation, when required, has exited before the serving process starts.
   logStartupPhase("native-spawn", startupPhaseOrigin);
   const child = spawn(
     "codex",
     [...nativeArguments, "--listen", "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
       "--ws-auth", "capability-token", "--ws-token-sha256", digest],
-    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
+    { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: ${computeOwned ? "servingEnvironment" : "codexChildEnvironment()"} },
   );
   forwardTermination(child);
   const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();

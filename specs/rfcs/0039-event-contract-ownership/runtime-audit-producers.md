@@ -27,7 +27,8 @@ Compute revokes the registration when it stops or retires the revision.
 
 Use the existing runtime image for each mode. Add a recorder where the
 runtime starts a turn or sends a model request. Link each request to the
-turn that caused it. Use a new call ID for each attempt.
+turn that caused it. Give each attempt a distinct ID. When the runtime
+reports a retry within a call, keep the call ID for both attempts.
 
 - Embedded OpenClaw runs the turn and sends model requests inside the Gateway.
 - Dedicated OpenClaw runs in a Sandbox. The worker reports each model call on

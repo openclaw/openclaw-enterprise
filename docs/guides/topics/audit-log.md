@@ -96,23 +96,24 @@ on a Helm installation with managed Gateway routing. OCE supplies the
 `oce-runtime-audit` plugin and a credential for each Agent revision whose
 Gateway runs on the control cluster. Disabling this plugin prevents setup.
 
-Changing the setting restarts affected Gateways. The Agent revision and chat
-history remain. During restart, turns can fail or use the previous setting.
-Check the next turn in the audit API. If missing, check maintenance.
+Changing the audit setting can restart Gateways and dedicated Codex workers without changing
+revisions or chat history. Turns can fail or use the old setting.
+If the next turn is missing, check maintenance.
 The original deployer needs permission to deploy. After permanent failure,
 correct the cause and deploy the Agent.
 
 The API returns these `runtime_activity` records.
 
-| Action                                     | What the Gateway observed                                                                                             |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `openclaw.runtime.session.started`         | OpenClaw reported a new session. This event can be missing for an empty chat or a session created by a first message. |
-| `openclaw.runtime.session.ended`           | OpenClaw reported that it deleted the session.                                                                        |
-| `openclaw.runtime.turn.started`            | The Gateway observed the start of a run with an identified session.                                                   |
-| `openclaw.runtime.turn.completed`          | The Gateway observed a final result for the run. Read `details.outcome`.                                              |
-| `openclaw.runtime.model_call.started`      | Embedded OpenClaw reported that it started a model call.                                                              |
-| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw reported the result of the call. The same `modelCallId` links the two records.                      |
-| `openclaw.runtime.model_response.observed` | The Codex connection reported a provider response. `responseIdHash` identifies the response without storing its text. |
+| Action                                     | What the Gateway observed                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `openclaw.runtime.session.started`         | New session. Empty chats and sessions created by a first message can lack this record. |
+| `openclaw.runtime.session.ended`           | Session deletion.                                                                      |
+| `openclaw.runtime.turn.started`            | Start of a turn.                                                                       |
+| `openclaw.runtime.turn.completed`          | Final turn result in `details.outcome`.                                                |
+| `openclaw.runtime.model_call.started`      | Start of an embedded OpenClaw model call.                                              |
+| `openclaw.runtime.model_call.completed`    | Embedded OpenClaw result for the same `modelCallId`.                                   |
+| `openclaw.runtime.model_attempt.observed`  | Codex HTTP request attempt.                                                            |
+| `openclaw.runtime.model_response.observed` | Codex provider response. `responseIdHash` identifies it without storing its text.      |
 
 Each turn record includes `sessionId` and `turnId`, even without a session
 start record. Recovery can reuse a turn ID. A missing result means
@@ -120,8 +121,23 @@ the outcome is unknown. OCE hashes IDs that fail format checks or exceed
 256 characters. [Message links](#open-the-message-for-a-turn) require
 original session and message IDs but allow hashed turn IDs.
 
-Dedicated OpenClaw omits individual model calls. Codex can miss requests
-without responses. Embedded OpenClaw can miss retries within a call.
+Dedicated OpenClaw omits individual calls. Embedded OpenClaw can miss retries.
+
+HTTP attempt records require an OCE-managed dedicated Codex Pod on the
+control cluster with a direct Gateway connection. Within a revision,
+group attempts by `sessionId`, `turnId` and `modelCallId`. Each identifies
+the `model`, `provider` (`codex`) and a distinct `modelAttemptId`. Within a call,
+`attempt` starts at 1. A retry after HTTP 503 can share the call ID.
+A retry after a stream interruption starts a new call. The optional
+`httpStatus` reports the status from the response headers. HTTP 200
+alone cannot confirm stream completion.
+
+Attempts can arrive after the turn result. These records omit WebSocket
+requests and can miss failures before Codex sends a request. Missing or
+unrecognized traces and missing or ambiguous turn IDs can leave gaps.
+Restart or overflow can erase attempts before the
+[Gateway queues them](../../flows/audit-ledger.md#7-a-gateway-reports-work-for-one-revision).
+Check Gateway logs for Codex reporting warnings.
 
 The Gateway queues events locally and sends them in the background.
 Chat continues if PostgreSQL cannot save a runtime event.
@@ -164,16 +180,12 @@ Find recent turns by revision, session and turn ID.
 
 ### Agent runtime logs
 
-Reading an Agent's container output has a separate access record. Each
-[runtime log view](agent-logs.md) records one `openclaw.agents.runtime_logs.view`
-event before any output is read, with the version, source, Pod, container,
-previous-instance flag, line count and a view ID, never the log text. Follow
-polls within the view are not recorded again; a poll that has to read another
-Pod, because the view's Pod is gone, records a new view. If the event cannot be written,
-no output is returned. Each log download records one
-`openclaw.agents.runtime_logs.download` event with the same details, before the
-read. Both use the audit event kind `access`, which marks an audited read. The
-event names the permission that admitted the reader, `read_logs` or `administer`.
+Before reading [container logs](agent-logs.md), OCC records
+`openclaw.agents.runtime_logs.view` or `openclaw.agents.runtime_logs.download`.
+If the write fails, OCC withholds output. Follow polls reuse the view until
+the Pod changes. Both `access` events identify the permission (`read_logs`
+or `administer`), version, source, Pod, container, previous-instance flag,
+line count and view ID. They omit log text.
 
 ## Manage audit storage
 

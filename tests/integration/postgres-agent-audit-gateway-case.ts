@@ -168,13 +168,30 @@ export async function checkGatewayAudit(
   // Each grant can report only the model events its runtime observes.
   const codex = credential(input.codex, "codex");
   await state.registerGatewayRuntimeGrant(codex.grant);
-  const details = {
+  const model = {
     sessionId: randomUUID(),
     turnId: randomUUID(),
     provider: "codex",
     model: "gpt-4.1",
-    responseIdHash: "sha256:4ee3d95d9f2d7b7b",
   };
+  const attemptDetails = {
+    ...model,
+    modelCallId: randomBytes(32).toString("hex"),
+    modelAttemptId: randomBytes(32).toString("hex"),
+    attempt: 1,
+    httpStatus: 503,
+  };
+  const codexAttempt = {
+    ...envelope(),
+    action: "openclaw.runtime.model_attempt.observed",
+    ...attemptDetails,
+  };
+  assert.equal(await post(codexAttempt, token), 403);
+  assert.equal(await post(codexAttempt, codex.token, "codex"), 204);
+  // A Gateway restart can queue the same provider attempt with a new delivery ID.
+  // Both deliveries must succeed and the audit page must show just one attempt.
+  assert.equal(await post({ ...codexAttempt, eventId: randomUUID() }, codex.token, "codex"), 204);
+  const details = { ...model, responseIdHash: "sha256:4ee3d95d9f2d7b7b" };
   const observed = {
     ...envelope(),
     action: "openclaw.runtime.model_response.observed",
@@ -183,12 +200,24 @@ export async function checkGatewayAudit(
   assert.equal(await post(completed, codex.token, "codex"), 403);
   assert.equal(await post(observed, token), 403);
   assert.equal(await post(observed, codex.token, "codex"), 204);
+  // A later response in this turn must not hide the earlier HTTP failure.
   const codexPage = await input.readPage(input.codex.agentId);
   assert.deepEqual(
     codexPage.events
       .filter((entry) => entry.event === "runtime_activity")
-      .map((entry) => [entry.action, entry.details]),
-    [[observed.action, { ...details, agentRevisionId: input.codex.id, runtimeSource: "codex" }]],
+      .map((entry) => [entry.action, entry.outcome, entry.details]),
+    [
+      [
+        observed.action,
+        "success",
+        { ...details, agentRevisionId: input.codex.id, runtimeSource: "codex" },
+      ],
+      [
+        codexAttempt.action,
+        "failure",
+        { ...attemptDetails, agentRevisionId: input.codex.id, runtimeSource: "codex" },
+      ],
+    ],
   );
 
   // A revocation waits for an append that has already authenticated on this credential.

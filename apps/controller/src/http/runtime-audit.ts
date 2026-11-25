@@ -40,6 +40,10 @@ function auditId(installationId: string, grant: GatewayRuntimeAuditGrant, eventI
 }
 
 function eventOutcome(event: RuntimeAuditObservation) {
+  if (event.action === "openclaw.runtime.model_attempt.observed") {
+    // HTTP headers describe this request only. The turn has its own result.
+    return event.httpStatus !== undefined && event.httpStatus >= 400 ? "failure" : "success";
+  }
   if (!("outcome" in event) || event.outcome === "succeeded") {
     return "success";
   }
@@ -52,9 +56,12 @@ function auditEvidence(
   event: RuntimeAuditObservation,
 ) {
   const { action, eventId, occurredAt, ...details } = event;
+  // Repeated trace exports and queue retries refer to the same HTTP attempt.
+  const identity =
+    event.action === "openclaw.runtime.model_attempt.observed" ? event.modelAttemptId : eventId;
   const factory = new AuditEventFactory({
     clock: () => occurredAt,
-    idGenerator: () => auditId(installationId, grant, eventId),
+    idGenerator: () => auditId(installationId, grant, identity),
   });
   const evidence = factory.create({
     installationId,
@@ -164,7 +171,8 @@ export function registerGatewayRuntimeAudit(
           );
         }
         if (
-          (event.action === "openclaw.runtime.model_response.observed" &&
+          ((event.action === "openclaw.runtime.model_response.observed" ||
+            event.action === "openclaw.runtime.model_attempt.observed") &&
             grant.runtimeSource !== "codex") ||
           ((event.action === "openclaw.runtime.model_call.started" ||
             event.action === "openclaw.runtime.model_call.completed") &&

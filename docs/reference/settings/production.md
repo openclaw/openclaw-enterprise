@@ -124,9 +124,9 @@ Audit is off by default. Set Helm `controlPlaneAudit.enabled: true` or
 Restrict API access. [Check ledger capacity](../../guides/topics/audit-log.md)
 before enablement. Rejected requests can fill the ledger.
 
-With Helm-managed routing, changing the switch starts maintenance for affected
-Gateways. A Gateway restart can interrupt a turn. The Gateway queues
-runtime events locally and delivers them in the background. See
+With Helm-managed routing, changing the setting can restart affected
+Gateways and dedicated Codex workers on the control cluster.
+A restart can interrupt a turn. See
 [Agent runtime audit](../../guides/topics/audit-log.md#agent-runtime-activity).
 
 ### External sign-in and trusted proxies

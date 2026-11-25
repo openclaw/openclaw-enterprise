@@ -22,6 +22,7 @@ const model = {
   provider: reference,
 };
 const outcome = Type.Enum(["succeeded", "failed", "cancelled", "unknown"]);
+const digest = Type.String({ pattern: "^[a-f0-9]{64}$" });
 
 function runtimeEvent<const Action extends string, Fields extends TProperties>(
   action: Action,
@@ -82,6 +83,16 @@ const schemas = [
   ...turnSchemas(turn),
   runtimeEvent("openclaw.runtime.model_call.started", model),
   runtimeEvent("openclaw.runtime.model_call.completed", { ...model, outcome }),
+  runtimeEvent("openclaw.runtime.model_attempt.observed", {
+    sessionId: reference,
+    turnId: reference,
+    model: reference,
+    provider: Type.Literal("codex"),
+    modelCallId: digest,
+    modelAttemptId: digest,
+    attempt: Type.Integer({ minimum: 1, maximum: 1000 }),
+    httpStatus: Type.Optional(Type.Integer({ minimum: 100, maximum: 599 })),
+  }),
   runtimeEvent("openclaw.runtime.model_response.observed", {
     ...turn,
     model: reference,

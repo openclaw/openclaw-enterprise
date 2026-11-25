@@ -493,7 +493,7 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
 When Control Plane audit is enabled, it also records covered API requests,
 worker activity, and disclosures of Agent audit records. It stores the session,
-turn, model call, and model response events that registered Gateways report.
+turn, model call, HTTP model attempt and model response events that registered Gateways report.
 See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
