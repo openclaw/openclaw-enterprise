@@ -2656,9 +2656,9 @@ test("a version editor without Agent update can recover a failed deployment from
     "Draft · Editable Configuration",
   );
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery
-    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
-    .waitFor();
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  const probe = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED");
+  await recovery.getByText(`${probe.message} ${probe.code}`, { exact: true }).waitFor();
   // This caller may edit the Configuration, so recovery opens it as such (finding 2450).
   await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).click();
   await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).waitFor();

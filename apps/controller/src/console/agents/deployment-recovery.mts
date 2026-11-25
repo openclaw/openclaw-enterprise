@@ -319,11 +319,11 @@ export function createDeploymentRecovery(
     setHidden(accessNote, !access);
     setText(recoveryCode, code ?? "");
     setHidden(recoveryCode, !code);
-    // The outage label names the version and the generic probe message names the failed
-    // check. A tailored model remedy or missing diagnosis still needs the introduction.
-    if (servingImpact && code === "RUNTIME_MODEL_PROBE_FAILED" && errorMessage && !unavailable) {
-      setText(beforeCode, `${diagnosis} (`);
-      setText(afterCode, ")");
+    // The heading or label names the version. OCC's probe messages already name the
+    // startup check, but the tailored model remedy and fallback do not.
+    if (modelCheck && errorMessage?.trim() && !unavailable) {
+      setText(beforeCode, `${diagnosis} `);
+      setText(afterCode, "");
     } else {
       setText(beforeCode, code ? `${lead} (` : `${lead}.`);
       setText(afterCode, `${code ? ")." : ""}${diagnosis ? ` ${diagnosis}` : ""}`);
@@ -377,7 +377,7 @@ export function createDeploymentRecovery(
       }
       recoveryActions.hidden = actions.length === 0;
     }
-    setHidden(recoveryNext, !access && recoveryActions.hidden);
+    setHidden(recoveryNext, !access && recoveryActions.childElementCount === 0);
     // The Logs view uses one standalone sentence and has no separate service heading.
     const text = [`${lead}.`, service, diagnosis, access].filter(Boolean).join(" ");
     return { revisionId: latest.id, version, text };

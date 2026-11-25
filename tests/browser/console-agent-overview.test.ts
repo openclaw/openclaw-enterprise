@@ -226,6 +226,7 @@ function runtimeLogs() {
 
 // The API's message for the model probe failure the recovery tests below record.
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
+const PROBE_DIAGNOSIS = `${PROBE_FAILED_MESSAGE} RUNTIME_MODEL_PROBE_FAILED`;
 
 function routeFailedRecord(
   page: Page,
@@ -2205,10 +2206,8 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await routeFailedRecord(page, fixture, namespace, agent, revision);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  const diagnosis = recovery.getByText(
-    `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). ${PROBE_FAILED_MESSAGE}`,
-    { exact: true },
-  );
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  const diagnosis = recovery.getByText(PROBE_DIAGNOSIS, { exact: true });
   await diagnosis.waitFor();
   // Revoke log access after the permission check, before the Controller handles the read.
   const logPath = new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`);
@@ -2310,10 +2309,7 @@ test("A replaced current version still says who can check the logs once Logs is 
   assert.ok(
     await recovery.getByText(`This Agent may be offline. ${service}`, { exact: true }).isVisible(),
   );
-  assert.equal(
-    await recovery.locator(".status-body").innerText(),
-    `${PROBE_FAILED_MESSAGE} (RUNTIME_MODEL_PROBE_FAILED)`,
-  );
+  assert.equal(await recovery.locator(".status-body").innerText(), PROBE_DIAGNOSIS);
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
 });
 
@@ -2353,9 +2349,8 @@ test("Recovery waits for the caller's permission answer before offering the draf
   assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
 
   permissions.release();
-  await recovery
-    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
-    .waitFor();
+  await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+  await recovery.getByText(PROBE_DIAGNOSIS, { exact: true }).waitFor();
   assert.equal(
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
     "button button--primary",
@@ -3012,11 +3007,8 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-    await recovery
-      .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
-        exact: false,
-      })
-      .waitFor();
+    await recovery.getByRole("heading", { name: "v2 deployment failed", exact: true }).waitFor();
+    await recovery.getByText(PROBE_DIAGNOSIS, { exact: true }).waitFor();
     await page
       .locator(".agent-current-summary")
       .getByText("v2 · Failed", { exact: true })
@@ -4067,8 +4059,10 @@ for (const viewport of [
     const read = page.waitForResponse(recordUrl);
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await read;
-    const failure = "v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).";
-    await recovery.getByText(failure, { exact: false }).waitFor();
+    const heading = recovery.getByRole("heading", { name: "v2 deployment failed", exact: true });
+    const diagnosis = recovery.getByText(PROBE_DIAGNOSIS, { exact: true });
+    await heading.waitFor();
+    await diagnosis.waitFor();
     await waitForIdleFetches(page);
     // Where the card sits, whether the details are open, and how often the error shows.
     const layout = () =>
@@ -4112,7 +4106,8 @@ for (const viewport of [
     // A failed record is not polled, so the clock may run again for the reload.
     await page.clock.resume();
     await page.reload();
-    await recovery.getByText(failure, { exact: false }).waitFor();
+    await heading.waitFor();
+    await diagnosis.waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await waitForIdleFetches(page);
     await page.evaluate(() => globalThis.document.fonts.ready);
