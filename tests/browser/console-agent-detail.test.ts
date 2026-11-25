@@ -1418,7 +1418,8 @@ test("Returning from v1 resumes typing at the active end of an unsaved Configura
   await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
   await openAdvancedSettings(page);
   const editor = page.getByLabel("Configuration JSON", { exact: true });
-  const draft = '{ "note": "first draft here" }';
+  const notes = JSON.stringify(Array<string>(60).fill("note"), null, 2);
+  const draft = `{ "notes": ${notes},\n"note": "first draft here" }`;
   const start = draft.indexOf("draft");
   await editor.fill(draft);
   // Moving the selection after the last edit changes where typing should resume.
@@ -1459,6 +1460,40 @@ test("Returning from v1 resumes typing at the active end of an unsaved Configura
   assert.ok(await hasFocus(editor));
   await page.keyboard.type("Y");
   assert.equal(await editor.inputValue(), draft.replace("draft", "Ydraft"));
+
+  // The direct action must reveal the caret before typing scrolls it into view.
+  await chooser.selectOption(revision.id);
+  await editor.waitFor({ state: "detached" });
+  await waitForChosenVersion(page, 1);
+  await page
+    .getByRole("button", { name: "Edit current Configuration", exact: true })
+    .press("Enter");
+  await editor.waitFor();
+  await nextFrames(page);
+  assert.ok(await hasFocus(editor));
+  const returned = await editor.evaluate((node) => {
+    if (!(node instanceof HTMLTextAreaElement)) {
+      throw new Error("Configuration JSON must be a textarea");
+    }
+    // The insertion point is on the last short line, just above the bottom padding.
+    const style = getComputedStyle(node);
+    const top = node.getBoundingClientRect().top + node.clientTop;
+    const lineBottom = top + node.scrollHeight - node.scrollTop - parseFloat(style.paddingBottom);
+    return {
+      selection: [node.selectionStart, node.selectionEnd],
+      lineTop: lineBottom - parseFloat(style.lineHeight),
+      lineBottom,
+      visibleTop: Math.max(top, 0),
+      visibleBottom: Math.min(top + node.clientHeight, window.innerHeight),
+    };
+  });
+  assert.deepEqual(returned.selection, [start + 1, start + 1]);
+  assert.ok(
+    returned.lineTop >= returned.visibleTop && returned.lineBottom <= returned.visibleBottom,
+    `Restored caret line must be visible: ${JSON.stringify(returned)}`,
+  );
+  await page.keyboard.type("Z");
+  assert.equal(await editor.inputValue(), draft.replace("draft", "YZdraft"));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

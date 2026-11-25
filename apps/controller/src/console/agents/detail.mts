@@ -2039,13 +2039,15 @@ export async function renderAgentDetail(
       );
     }
     if (editStart && !editStart.disabled) {
-      // Entering the editor focuses it without scrolling; the editor is then brought into view.
-      if (editStart.id === "configuration-json") {
-        editStart.focus({ preventScroll: true });
-      } else {
+      const resume = editStart instanceof HTMLTextAreaElement;
+      if (!resume) {
         editStart.click();
       }
-      const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
+      const editor = detailPane.querySelector<HTMLTextAreaElement>("#configuration-json");
+      if (!resume) {
+        editor?.setSelectionRange(0, 0);
+      }
+      const field = editor?.closest(".form-field");
       if (field) {
         // The draft's "New version" notice comes to the top with the editor below it, so the
         // screen says this is now the draft (finding 2086). When the notice is too far above for
@@ -2055,10 +2057,21 @@ export async function renderAgentDetail(
         const below = notice
           ? field.getBoundingClientRect().top - notice.getBoundingClientRect().top
           : -1;
-        scrollToVersionDetail(
-          options,
-          notice && below >= 0 && below + 160 <= window.innerHeight ? notice : field,
-        );
+        const anchor = notice && below >= 0 && below + 160 <= window.innerHeight ? notice : field;
+        scrollToVersionDetail(options, anchor);
+        // Fit the last line below the notice on return. Leave manual resizing available.
+        if (resume && anchor === notice && !editStart.style.height) {
+          const box = editStart.getBoundingClientRect();
+          const available = Math.floor(window.innerHeight - box.top - 8);
+          if (available >= 80 && available < box.height) {
+            editStart.style.minHeight = "80px";
+            editStart.style.height = `${available}px`;
+          }
+        }
+        // Reveal the restored caret after positioning the notice, even in a long draft.
+        if (resume) {
+          editStart.focus();
+        }
         return;
       }
     }
