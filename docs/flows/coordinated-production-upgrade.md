@@ -210,7 +210,12 @@ Recheck Helm status and terminal initializers before submission.
 
 For [same-candidate recovery](../guides/deploy/production-helm-recovery.md),
 `scripts/upgrade-helm-state.py:recover` checks Helm payload, ownership, completed
-Job and Pod, and security contexts. `pod_matches` compares resource quantities.
+Job and Pod, and security contexts. Security contexts remain exact, except that
+the retained Pod may independently add an SELinux level of the form `s0:cN,cM`
+with distinct categories, or one supplemental group that equals the template
+Pod's integer `runAsGroup` and each regular and init container's effective group,
+when the template omits them. The level check validates shape, not category
+allocation. `pod_matches` compares resource quantities.
 Reads use manifest namespaces and release ownership. `check-recovery` checks the
 original attempt before preflight and both application identities before rollback.
 Repeat admission before exclusive intent and dispatch. Accepted or uncertain
@@ -391,6 +396,8 @@ requires no Agents or Secrets.
 
 - 2026-11-20 03:27: Check writer identity across the one-off Agent Stop phase. (authoring-run/835f8811-dc27-47d1-b27d-5d20413085f7 - 0e158e5f10ed1e65be1f6d64ff0f62cffb6f3283)
 
+- 2026-11-19 20:33: Accept an admission-assigned SELinux level and Pod group on the retained initializer Pod. (authoring-run/62a4c901-7066-4e94-bb84-e010a1f89f1d - 46b193ba5b9a45386faa747c53886c43f08ccc7b)
+
 - 2026-11-19 20:21: Require the worker stop receipt before migration and retry. (authoring-run/418defcd-00b7-4596-95cb-96610a0a2343 - 88f7c7a3b3f3430d89bcb82803c89c6dfbea2bbb)
 
 - 2026-11-19 16:56: Distinguish fenced migration handoff from other recovery. (authoring-run/cf9ae9aa-8bb0-4bc8-af2c-326adebf9112 - abd7da2dbd99369b523fe93ec052842c77e9cd2d)
@@ -415,17 +422,5 @@ requires no Agents or Secrets.
 - 2026-11-19 11:30: Trace candidate rehearsal when retained Agents require the original worker. (authoring-run/099c1a03-0e25-4504-9cf7-2f62d1cfa035 - 6679017155741810c2ae1bcbacba05a3eb59f3ec)
 
 - 2026-11-19 10:56: Refuse active kuberc. (authoring-run/9c893cda-96dc-4a06-9e08-ad2aeca46de7 - 5f425af517e8ee120c7721e7559a846ce70120e9)
-
-- 2026-11-19 10:26: Trace kubeconfig decoding and snapshot authentication. (authoring-run/8620ea2f-2212-49a6-b45b-0c6b44bf7fa2 - b0171d98e4470aaad0ba5b7ddb4e16a27fb9de7a)
-
-- 2026-11-19 09:57: Trace the Helm release store guard. (authoring-run/d4ce1b5c-3a22-44f3-b1ad-40e8a771c331 - 2455e61e32e8f97a6dfb505608a665e2eca59f20)
-
-- 2026-11-19 09:47: Trace profile TLS checks. (authoring-run/2a1d437b-87cc-4839-a06a-12b3d255450f - 2455e61e32e8f97a6dfb505608a665e2eca59f20)
-
-- 2026-11-19 05:13: Trace upgrade approval, trust, and evidence. (authoring-run/def34421-d123-4fd1-bde1-e8d966d6bcad - 8bc5fe2fc916765024493c981308179a04a0e716)
-
-- 2026-11-18 19:45: Tighten the upgrade trace. (authoring-run/9b947cd8-0275-4e7f-ac7f-5dce4b0f8965 - aed2f7edd530ab336bbd6cb8c7389b24cb83e397)
-
-- 2026-11-18 19:27: Trace migration-only compatibility checks through the Helm hook and Job journal. (authoring-run/7ae70bae-f8ac-425d-abbf-7039b71997b7 - 71334bb9b104662870798a29814e7171e8905baf)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { asRecord } from "../../packages/utils/src/index.ts";
@@ -736,6 +736,59 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
     }
   });
 
+  test("recovery accepts a supplemental group only if it is redundant for every initializer container", async (t) => {
+    for (const [placement, group] of [
+      ["containers", 1001],
+      ["initContainers", 1001],
+      ["containers", 1000],
+    ] as const) {
+      await t.test(`${placement} runAsGroup=${group}`, async (subtest) => {
+        const f = await fixture(subtest, { recoveryHooks: true });
+        const helm = join(f.directory, "bin", "helm");
+        // Change the fixture's JSON Job at render time so the recorded attempt,
+        // retained Job and Pod all have the same override before admission.
+        await rename(helm, `${helm}-original`);
+        await writeFile(
+          helm,
+          `#!/bin/bash
+set -eo pipefail
+if [[ "$1" != template ]]; then exec "$0-original" "$@"; fi
+"$0-original" "$@" | jq -Rr '
+  if startswith("{") and (fromjson | .kind == "Job" and .metadata.name == "oce-initialization")
+  then fromjson | .spec.template.spec.${placement}[0].securityContext.runAsGroup = ${group} | tojson
+  else . end'
+`,
+          { mode: 0o700 },
+        );
+        const state = await loseHelmResponseWithCompletedHook(f);
+        const jobSpec = templateSpec(resource(state, "Job/oce-initialization").spec);
+        assert.deepEqual(state.recoveryPod.spec, jobSpec);
+        assert.equal(
+          requiredRecord(
+            firstContainer(jobSpec, placement).securityContext,
+            "expected the container security context",
+          ).runAsGroup,
+          group,
+        );
+        const context = requiredRecord(
+          state.recoveryPod.spec.securityContext,
+          "expected the Pod security context",
+        );
+        assert.equal(context.runAsGroup, 1000);
+        assert.equal(context.fsGroup, undefined);
+        context.supplementalGroups = [1000];
+        if (group !== 1000) {
+          await assertRecoveryRefusedBeforeRollback(f, state, /initializer Pod identity/);
+          return;
+        }
+        context.seLinuxOptions = { level: "s0:c34,c12" };
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await f.run(...recoverHelm);
+        assert.equal((await f.state()).rollbackSubmissions, 1);
+      });
+    }
+  });
+
   test("recovery compares initializer resource quantities by value and refuses changed limits", async (t) => {
     const { f, state: original } = await interruptedUpgradeWithCompletedHook(t, {
       requests: { cpu: "0.1", memory: "128Mi" },
@@ -802,6 +855,88 @@ export function registerHelmRollbackCases({ fixture }: { fixture: RecoveryFixtur
           ];
         }
         await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
+      });
+    }
+    // Recovery accepts one narrow admission result on the retained Pod: a Pod
+    // SELinux level with two distinct categories and one supplemental group equal
+    // to the template runAsGroup. Each refusal starts from that shape and breaks
+    // one field, so a wider exception or a coupled check fails here.
+    const { f, state: original } = await interruptedUpgradeWithCompletedHook(t);
+    const level = { level: "s0:c34,c12" };
+    const refusals: [string, (spec: Record<string, unknown>) => void][] = [
+      [
+        "Pod SELinux type",
+        (spec) => {
+          spec.seLinuxOptions = { ...level, type: "spc_t" };
+        },
+      ],
+      [
+        "Pod extra group",
+        (spec) => {
+          spec.supplementalGroups = [1000, 0];
+        },
+      ],
+      [
+        "Pod group other than the template group",
+        (spec) => {
+          spec.supplementalGroups = [1001];
+        },
+      ],
+    ];
+    for (const [change, mutate] of refusals) {
+      await t.test(change, async () => {
+        const state = structuredClone(original);
+        const context = requiredRecord(
+          requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec")
+            .securityContext,
+          "expected the Pod security context",
+        );
+        context.seLinuxOptions = level;
+        context.supplementalGroups = [1000];
+        mutate(context);
+        await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
+      });
+    }
+    await t.test("container SELinux level", async () => {
+      const state = structuredClone(original);
+      const spec = requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec");
+      const context = requiredRecord(spec.securityContext, "expected the Pod security context");
+      context.seLinuxOptions = level;
+      context.supplementalGroups = [1000];
+      requiredRecord(
+        firstContainer(spec, "containers").securityContext,
+        "expected the container security context",
+      ).seLinuxOptions = level;
+      await assertRecoveryRefusedBeforeRollback(f, state, /Pod identity/);
+    });
+  });
+
+  test("recovery accepts an admission-assigned Pod SELinux level or template group alone", async (t) => {
+    // Admission can assign only one of the two fields, so neither exception may
+    // depend on the other. The fixture stands in for admission: this proves the
+    // decision through the real recovery command, not live admission.
+    const admitted: [string, Record<string, unknown>][] = [
+      // Ascending categories here; the Installation completion case accepts a
+      // descending pair, so the check cannot depend on category order.
+      ["SELinux level", { seLinuxOptions: { level: "s0:c12,c34" } }],
+      ["template group", { supplementalGroups: [1000] }],
+    ];
+    for (const [name, fields] of admitted) {
+      await t.test(name, async (subtest) => {
+        const { f, state } = await interruptedUpgradeWithCompletedHook(subtest);
+        // state.recoveryPod is also the stored Pod resource, so one edit
+        // updates both reads the recovery makes.
+        Object.assign(
+          requiredRecord(
+            requiredRecord(state.recoveryPod.spec, "expected the initializer Pod spec")
+              .securityContext,
+            "expected the Pod security context",
+          ),
+          fields,
+        );
+        await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+        await f.run(...recoverHelm);
+        assert.equal((await f.state()).rollbackSubmissions, 1);
       });
     }
   });
