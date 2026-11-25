@@ -624,7 +624,7 @@ export function registerRetainedFleetPreflightTests(
         );
         await assert.rejects(
           f.run("--resume"),
-          /restore the existing API under exclusive maintenance only after verifying compatibility.*#restore-incumbent-api-access-after-partial-quiescence/u,
+          /cannot read the complete deployment inventory before stopping the worker.*restore the existing API under exclusive maintenance only after verifying compatibility/u,
         );
         assert.equal((await f.state()).api, 0);
         assert.equal((await f.state()).worker, 1);

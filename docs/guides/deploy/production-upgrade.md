@@ -276,8 +276,8 @@ Stderr shows phases with UTC timestamps when available. Numbered Doctor checks
 include memory waits. Stdout confirms completion. `--verbose` shows native
 output. Private evidence retains scale/rollout logs. Reconcile uncertain writes.
 
-Repository-enabled releases require immutable `--broker-image "$BROKER_IMAGE"`
-and unchanged protected values. The helper preserves the broker hostname,
+Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
+Keep protected values equal to live values. The helper preserves the broker hostname,
 qualifies the pair before mutation, and verifies deployment and capability.
 
 To check one running Agent, add `--verify-agent AGENT_ID --verify-agent-namespace NAMESPACE_ID`.
@@ -308,44 +308,54 @@ scripts/upgrade-production-images "${target[@]}" \
   --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
-With repository credentials, also pass the current `--controller-image` and
-selected `--broker-image` digests. The worker and broker restart.
+With repository credentials, also pass `--controller-image` (current
+digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
-Check preflight warnings. The controller image checks saved drafts if it supports
-validation and the drafts fit the temporary Secret. If any recorded Agent
-authenticates its Harness through a Credential Source, an oversized combined draft
-payload stops the upgrade before quiescence. Otherwise, OCC can check drafts at
-deployment. Correct refusals or stop their Agents before retrying. Deployment
-checks Drivers, credentials, plugins and repositories.
+A runtime upgrade cannot replace an active revision that uses staged credentials
+or deploy a draft that selects a TokenService Harness source over an active revision.
+For each refusal, plan an interruption. Stop the Agent, wait for Stop to complete
+and prepare the upgrade with fresh evidence. Deploy the stopped Agent separately
+after the upgrade.
 
-The complete authorized inventory must show no deployment in progress. Each
-running Agent needs a readable selected revision in a ready Namespace. The
-command stops before mutation if a running Agent lacks one. It lists up to ten
-affected Agents by ID, name and Namespace. Stop, delete or successfully deploy
-each, then start again with fresh evidence.
+Check preflight warnings. The controller image checks saved Agent Configurations
+if it supports draft validation and the drafts fit in the temporary Secret.
+Otherwise, OCC checks them at deployment. Correct refused drafts or stop their
+Agents before retrying. Deployment checks Drivers, credentials, plugins and repositories.
 
-The command sets both Kubernetes Compute image fields to the runtime digest and
-selects the mutable Installation Secret or its staged immutable successor. After
-OCC quiesces, the command updates mutable Secret data if needed and runs Helm.
-The Installation checksum restarts the API and worker on the current controller image.
+Before mutation, the command requires a complete authorized inventory with no
+deployment in progress. Every running Agent must have a readable selected version
+in a ready Namespace. A running Agent without one, usually a failed initial
+deployment, stops the command before any change; the refusal lists up to ten
+by ID, name and Namespace. Stop, delete or successfully deploy each, then start
+again with a new evidence directory.
 
-After OCC recovers, the command deploys every recorded running Agent. It waits
-for durable success, then checks the new revision and `Running` and `Ready` Pods
-on the requested digest. Correct any named refusal and
+The command writes the runtime digest to both Kubernetes Compute image fields,
+updates the mutable Installation Secret or selects its staged immutable successor,
+and runs Helm after quiescing OCC with the
+current controller image.
+The Installation checksum restarts API and worker to load the new configuration
+without changing their software version.
+
+After OCC recovers, the command deploys every recorded running Agent, waits for
+durable success, confirms each new selected version, and requires its Pods to be
+`Running` and `Ready` on the requested runtime digest. If OCC refuses an
+Agent's deployment, the command names the Agent and the refusal; correct it and
 [resume](production-upgrade-recovery.md#correct-a-refused-agent-deployment).
 Stopped and deleting Agents remain untouched. An empty fleet updates the saved
 runtime selection without proving image startup.
 
-OpenClaw runs startup-safe migrations and plugin convergence before gateway
-readiness. The command replaces immutable images and runs read-only
-`openclaw doctor --lint --json --severity-min error` inside each replacement
-gateway in sequence, with `--timeout-seconds` per gateway. Doctor waits for free
-memory within the gateway's limit. Memory can still run out. A Doctor error,
-eviction, replacement, restart, or failed readiness after Doctor fails the upgrade.
-The command saves output under `status/*.doctor.*`. See
+OpenClaw runs startup-safe migrations and plugin convergence before each gateway
+becomes ready. This workflow replaces immutable images instead of running
+`openclaw update`, so the command then runs
+`openclaw doctor --lint --json --severity-min error` inside every replacement
+gateway, one at a time, each within `--timeout-seconds`. Doctor shares the
+gateway's memory limit, so it first waits for free gateway memory; this cannot
+reserve memory or guarantee no OOM kill. Doctor is read-only here; a reported
+error, or a gateway evicted, replaced, restarted, or not `Ready` after the last
+Doctor, fails the upgrade. Doctor output is saved under `status/*.doctor.*`; see
 [Doctor recovery](production-upgrade-recovery.md#correct-a-doctor-failure).
-Gateways run `doctor --fix` themselves only for
-[older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+Gateways run `doctor --fix` themselves only
+for [older state](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
 
 ```text
 Upgraded runtime image; controller image remained unchanged and <count> running Agents selected new revisions.

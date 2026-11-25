@@ -29,7 +29,6 @@ import {
   assertHelmIntent,
   assertPrivateReceipt,
   assertStoppedBeforeWriters,
-  restoreIncumbentApi,
   runWithInjectedFault,
 } from "../helpers/production-upgrade-recovery-evidence.ts";
 import type {
@@ -379,7 +378,12 @@ exec "$real_python" "$@"
 
           // Represent an operator restoring only the same compatible API and no
           // release, Secret or database changes. No helper action restores it.
-          await restoreIncumbentApi(f, partial);
+          partial.api = 1;
+          const identities = record(partial.deploymentIdentities, "Deployment identities");
+          const restoredApi = record(identities.api, "API Deployment identity");
+          restoredApi.generation = 3;
+          restoredApi.resourceVersion = "4";
+          await writeFile(join(f.directory, "state.json"), JSON.stringify(partial));
           await run("--resume");
           assert.deepEqual(
             (await f.events()).filter((event) =>
@@ -596,64 +600,56 @@ exec "$real_python" "$@"
     );
 
     const stateFile = join(f.directory, "state.json");
-    // A concurrent edit during preflight or drain leaves both writers
+    // A concurrent edit after the earlier Deployment reads leaves both writers
     // stopped and the Worker receipt valid. The API generation still fences Helm.
     const originalSettings = await settings();
     const originalMigrationCheck = await f.readEvidence("preflight-migration.log");
+    await f.failNext("edit-stopped-api-after-drain");
+    const apiDrift = await expectUpgradeFailure(
+      f.run(...resume),
+      "API generation drift after drain must block the first Helm submission",
+    );
+    assert.equal(apiDrift.code, 1);
+    assert.match(
+      apiDrift.stderr,
+      /the api Deployment changed during the separate database deployment/u,
+    );
+
+    const heldAfterDrift = await f.state();
     const originalIdentities = record(
       stopped.deploymentIdentities,
       "stopped Deployment identities",
     );
-    for (const fault of ["edit-stopped-api-during-preflight", "edit-stopped-api-after-drain"]) {
-      await f.failNext(fault);
-      const apiDrift = await expectUpgradeFailure(
-        f.run(...resume),
-        `API generation drift (${fault}) must block the first Helm submission`,
-      );
-      assert.equal(apiDrift.code, 1);
-      assert.match(
-        apiDrift.stderr,
-        /the api Deployment changed during the separate database deployment/u,
-      );
+    const apiBefore = record(originalIdentities.api, "stopped API Deployment identity");
+    const finalApi: unknown = JSON.parse(await f.readEvidence("quiescence-api-deployment.json"));
+    const finalApiMetadata = field(finalApi, "metadata");
+    assert.deepEqual(
+      [
+        field(finalApiMetadata, "uid"),
+        field(finalApiMetadata, "generation"),
+        field(field(finalApi, "spec"), "replicas"),
+      ],
+      [apiBefore.uid, Number(apiBefore.generation) + 1, 0],
+    );
+    const finalPods: unknown = JSON.parse(await f.readEvidence("quiescence-pods.json"));
+    assert.deepEqual(field(finalPods, "items"), []);
+    assert.deepEqual([heldAfterDrift.api, heldAfterDrift.worker], [0, 0]);
+    assert.deepEqual(
+      field(heldAfterDrift.deploymentIdentities, "worker"),
+      originalIdentities.worker,
+    );
+    assert.equal(heldAfterDrift.helmSubmissions ?? 0, 0);
+    assert.equal(heldAfterDrift.version, stopped.version);
+    assert.deepEqual(heldAfterDrift.secret, stopped.secret);
+    assert.deepEqual(await settings(), originalSettings);
+    assert.deepEqual(await f.events(), stoppedEvents);
+    assert.deepEqual(await readFile(receipt), originalReceipt);
+    assert.deepEqual(await readFile(handoff), originalHandoff);
+    assert.equal(await f.readEvidence("preflight-migration.log"), originalMigrationCheck);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    assert.equal(existsSync(migrationJournal), false);
 
-      const heldAfterDrift = await f.state();
-      const apiBefore = record(originalIdentities.api, "stopped API Deployment identity");
-      const finalApi: unknown = JSON.parse(await f.readEvidence("quiescence-api-deployment.json"));
-      const finalApiMetadata = field(finalApi, "metadata");
-      assert.deepEqual(
-        [
-          field(finalApiMetadata, "uid"),
-          field(finalApiMetadata, "generation"),
-          field(field(finalApi, "spec"), "replicas"),
-        ],
-        [apiBefore.uid, Number(apiBefore.generation) + 1, 0],
-      );
-      const finalPods: unknown = JSON.parse(await f.readEvidence("quiescence-pods.json"));
-      assert.deepEqual(field(finalPods, "items"), []);
-      assert.deepEqual([heldAfterDrift.api, heldAfterDrift.worker], [0, 0]);
-      assert.deepEqual(
-        field(heldAfterDrift.deploymentIdentities, "worker"),
-        originalIdentities.worker,
-      );
-      assert.equal(heldAfterDrift.helmSubmissions ?? 0, 0);
-      assert.equal(heldAfterDrift.version, stopped.version);
-      assert.deepEqual(heldAfterDrift.secret, stopped.secret);
-      assert.deepEqual(await settings(), originalSettings);
-      assert.deepEqual(await f.events(), stoppedEvents);
-      assert.deepEqual(await readFile(receipt), originalReceipt);
-      assert.deepEqual(await readFile(handoff), originalHandoff);
-      assert.equal(await f.readEvidence("preflight-migration.log"), originalMigrationCheck);
-      assert.equal(existsSync(join(f.evidence, "helm-started")), false);
-      assert.equal(existsSync(migrationJournal), false);
-
-      // Reset only the simulated edit to test the next interleaving independently.
-      await writeFile(
-        stateFile,
-        JSON.stringify({ ...heldAfterDrift, deploymentIdentities: originalIdentities }),
-      );
-    }
-
-    // A replacement with the same labels and replica count does not own this handoff.
+    // Exercise replacement separately from the simulated API generation change.
     await writeFile(
       stateFile,
       JSON.stringify({
@@ -961,7 +957,6 @@ exec "$real_python" "$@"
   test("an interrupted quiescence never starts migration while the worker still runs", async (t) => {
     let databaseId = "ins_test";
     const f = await fixture(t, {
-      controllerOnly: true,
       chart: { installation: (installation) => installation },
       databaseAnswer: () => ({ rows: [{ id: databaseId }] }),
     });
@@ -1025,7 +1020,7 @@ exec "$real_python" "$@"
     // Arm the real signal only after a partial stop. Signalling the process group
     // would hide a resume subshell that continues running after its parent is signalled.
     const fault: { mode: "interrupt" | null } = { mode: null };
-    const f = await fixture(t, { controllerOnly: true, preflightFault: fault });
+    const f = await fixture(t, { preflightFault: fault });
     await runWithInjectedFault(f, "fail-scale-worker");
     const before = await f.state();
     const originalCheck = await readFile(join(f.evidence, "preflight-migration.log"));
@@ -1089,7 +1084,7 @@ exec "$real_python" "$@"
   });
 
   test("a lost resumed migration acknowledgement preserves the original recovery path", async (t) => {
-    const f = await fixture(t, { controllerOnly: true });
+    const f = await fixture(t);
     await runWithInjectedFault(f, "fail-scale-worker");
     const before = await f.state();
     const originalParameters = await readFile(join(f.evidence, "parameters.json"));
@@ -1165,14 +1160,10 @@ exec "$real_python" "$@"
           await f.readEvidence("native-command-failures.tsv"),
           "quiescence-scale\tworker\t1\n",
         );
-        // Runtime preparation requires the restored incumbent API to refresh its draft checks.
-        await assert.rejects(f.run("--resume"), /OCC API is stopped during partial quiescence/u);
-        assert.deepEqual(await f.events(), ["scale-api"]);
-        assert.equal((await f.state()).worker, 1);
-        await restoreIncumbentApi(f, state);
+        // After the operator reconciles the conflict, resume observes the current
+        // worker and the already-stopped API instead of replaying stale preconditions.
         await f.run("--resume");
         assert.deepEqual(await f.events(), [
-          "scale-api",
           "scale-api",
           "scale-worker",
           "secret-replaced",
@@ -1337,7 +1328,6 @@ exec "$real_python" "$@"
           assert.equal((await f.state()).dispatches, 0);
           if (change === "move") {
             await rename(moved, f.evidence);
-            await restoreIncumbentApi(f, await f.state());
             await f.run("--resume");
             assert.equal((await f.state()).dispatches, 1);
           }
@@ -1381,8 +1371,6 @@ exec "$real_python" "$@"
           );
           assert.equal(f.commands.length, calls);
           await rm(lock, { recursive: true });
-          // The runtime attempt needs the compatible incumbent API to forecast again.
-          await restoreIncumbentApi(f, await f.state());
           await f.run("--resume", "--evidence-dir", evidence);
           assert.equal((await f.state()).dispatches, 1);
           assert.equal(existsSync(lock), false);
@@ -1418,7 +1406,6 @@ exec "$real_python" "$@"
       // A lock held by the sibling must neither block this resume nor be removed.
       const siblingLock = join(f.evidence, ".upgrade-lock");
       await mkdir(siblingLock);
-      await restoreIncumbentApi(f, await f.state());
       await f.run("--resume", "--evidence-dir", evidence);
       assert.equal((await f.state()).dispatches, 1);
       assert.equal(existsSync(lock), false);

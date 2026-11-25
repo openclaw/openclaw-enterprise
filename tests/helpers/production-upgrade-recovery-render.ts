@@ -271,7 +271,9 @@ export async function runPreflight(
       );
     return {
       phase: "Succeeded",
-      log: (drafts ? "agent-drafts-accepted\n" : "") + "installation-startup-ready\n",
+      log:
+        (drafts ? "agent-drafts-accepted\n" : "") +
+        "agent-replacements-checked\ninstallation-startup-ready\n",
     };
   }
   const work = mkdtempSync(join(root, "preflight-"));

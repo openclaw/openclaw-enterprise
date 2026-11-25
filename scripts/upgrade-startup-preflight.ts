@@ -3,6 +3,7 @@
 // before it stops OCC: the selected controller image loads the candidate
 // Installation and runs the bundled Kubernetes Compute preflight exactly as the
 // API and worker do at startup, and checks migration compatibility against the database.
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { gzipSync } from "node:zlib";
@@ -24,6 +25,7 @@ const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
 // the temporary Secret, gzipped, under this key and path.
 const draftsKey = "agent-drafts.json.gz";
 const draftsDirectory = "/var/run/openclaw/upgrade-preflight";
+const replacementVariable = "OCC_UPGRADE_PREFLIGHT_REPLACEMENTS";
 const draftsVariable = "OCC_UPGRADE_PREFLIGHT_AGENT_DRAFTS";
 const channelTargetsFilename = "channel-targets.json.gz";
 
@@ -39,7 +41,37 @@ const draftRefusal = "Agent draft refused:";
 // Kubernetes refuses a Secret whose values exceed 1 MiB in total.
 const secretLimitBytes = 1024 * 1024;
 
-const identityCheck = (afterIdentity = "") => `
+// Runtime upgrades replace the complete running fleet. Compare only public
+// selection fields before reporting refusals for any Agent. This also fits when
+// the optional draft values exceed the Secret limit.
+function replacementDigest(targets: JsonObject[]): string {
+  const keys = targets.map(
+    ({ namespaceId, agentId, baselineRevisionId, executionMode, configurationId, generation }) =>
+      JSON.stringify([
+        namespaceId,
+        agentId,
+        baselineRevisionId,
+        executionMode,
+        configurationId,
+        String(generation),
+      ]),
+  );
+  return createHash("sha256").update(keys.sort().join("\n")).digest("hex");
+}
+
+const replacementQuery = `SELECT a.namespace_id AS "namespaceId", a.id AS "agentId", a.name,
+    r.id AS "baselineRevisionId", a.execution_mode AS "executionMode",
+    c.id AS "configurationId", c.generation::text AS generation,
+    r.admitted_spec #>> '{execution_admission,version}' AS version,
+    COALESCE(s.owner_capability, '') AS owner
+  FROM occ.agents a
+  JOIN occ.namespaces n ON n.id = a.namespace_id AND n.status = 'ready' AND n.deleted_at IS NULL
+  JOIN occ.agent_revisions r ON (r.namespace_id, r.agent_id, r.id) = (a.namespace_id, a.id, a.active_revision_id)
+  JOIN occ.configurations c ON (c.namespace_id, c.id) = (a.namespace_id, a.configuration_id)
+  LEFT JOIN occ.credential_sources s ON (s.namespace_id, s.id) = (a.namespace_id, a.harness_auth_credential_source_id)
+  WHERE a.status = 'active' AND a.desired_runtime_state = 'running'`;
+
+const identityCheck = `
 // Use the candidate's connection owner, including its TLS and credential handling.
 // This module predates the upgrade helper. Do not bootstrap or construct State:
 // this check must also work before the candidate's migrations have been applied.
@@ -86,7 +118,36 @@ try {
     identityMismatch = true;
     throw new Error();
   }
-  ${afterIdentity}
+  if (process.env.${replacementVariable} !== undefined) {
+    try {
+      // Before migration 0085 neither a managed TokenService instance nor a
+      // version 8 admission can exist. Avoid querying a newer schema there.
+      const { rows: [schema] } = await identityClient.query(
+        "SELECT (to_regclass('occ.token_service_instances') IS NOT NULL)::text AS supported",
+      );
+      if (schema.supported === "true") {
+        const { rows: fleet } = await identityClient.query(${JSON.stringify(replacementQuery)});
+        const { createHash } = await import("node:crypto");
+        ${replacementDigest.toString()}
+        if (replacementDigest(fleet) !== process.env.${replacementVariable}) throw new Error();
+        let refused = false;
+        for (const { namespaceId, agentId, name, version, owner } of fleet) {
+          if (version !== "8" && owner !== "token_service") continue;
+          const message = version === "8"
+            ? "The active revision uses staged credentials. Complete Stop before replacing it."
+            : "The draft selects a TokenService Harness source. Complete Stop before deploying it.";
+          process.stdout.write(${JSON.stringify(draftRefusal)} + " " +
+            JSON.stringify({ namespaceId, agentId, name, message }) + "\\n");
+          refused = true;
+        }
+        if (refused) throw new Error();
+      } else if (schema.supported !== "false") throw new Error();
+      process.stdout.write("agent-replacements-checked\\n");
+    } catch {
+      process.stderr.write("Runtime replacement preflight failed.\\n");
+      process.exit(1);
+    }
+  }
   await identityClient.query("ROLLBACK");
   identityClient.release(true);
   identityClient = undefined;
@@ -97,146 +158,6 @@ try {
   identityFailure();
 }
 clearTimeout(identityDeadline);
-`;
-
-// The only input to this query is the caller's recorded selection. The joined
-// rows must still match the exact active revision, draft and Harness binding.
-// Read the draft's sources, which can differ from the active revision's snapshots.
-// Before migration 0050, the Harness source was the only stored binding.
-// Older sources lack owner_capability. Leave ownership and grants to admission.
-// An older valid Harness summary omitted overrides when none were recorded.
-const destinationQuery = `SELECT r.namespace_id, r.agent_id, r.id AS revision_id,
-    cs.id AS source_id, cs.type AS source_type, cs.driver_id,
-    CASE WHEN jsonb_typeof(r.admitted_spec #> '{harness,id}') = 'string'
-      AND jsonb_typeof(r.admitted_spec #> '{harness,version}') = 'string'
-      AND r.admitted_spec #>> '{harness,mode}' IN ('embedded', 'dedicated')
-      AND COALESCE(jsonb_typeof(r.admitted_spec #> '{harness,configuration}'), 'object') = 'object'
-      THEN COALESCE((r.admitted_spec #> '{harness,overrides}')::text, '{}')
-    END AS overrides,
-    (SELECT COALESCE(jsonb_agg(CASE
-        WHEN bound.state = 'ready' AND jsonb_typeof(bound.config) = 'object' THEN (
-          (CASE WHEN bound.config ? 'base_url' THEN jsonb_build_object('base_url', bound.config -> 'base_url') ELSE '{}'::jsonb END) ||
-          (CASE WHEN bound.config ? 'authorized_base_url' THEN jsonb_build_object('authorized_base_url', bound.config -> 'authorized_base_url') ELSE '{}'::jsonb END)
-        ) END ORDER BY attachment.position), '[]'::jsonb)::text
-      FROM jsonb_array_elements(COALESCE(to_jsonb(a) -> 'credential_sources',
-        jsonb_build_array(jsonb_build_object('sourceId', cs.id))))
-        WITH ORDINALITY AS attachment(binding, position)
-      JOIN occ.credential_sources bound ON bound.namespace_id = a.namespace_id
-        AND bound.id = attachment.binding ->> 'sourceId'
-      WHERE bound.type = 'openai') AS openai_configs
-  FROM jsonb_to_recordset($1::jsonb) AS target(
-    namespace_id text, agent_id text, revision_id text, source_id text,
-    configuration_id text, generation bigint, execution_mode text
-  )
-  JOIN occ.namespaces n ON n.id = target.namespace_id AND n.status = 'ready' AND n.deleted_at IS NULL
-  JOIN occ.agents a ON a.namespace_id = n.id AND a.id = target.agent_id
-    AND a.active_revision_id = target.revision_id AND a.execution_mode = target.execution_mode
-    AND a.status = 'active' AND a.desired_runtime_state = 'running'
-    AND a.harness_auth_credential_source_id = target.source_id
-  JOIN occ.configurations c ON c.namespace_id = a.namespace_id AND c.id = a.configuration_id
-    AND c.id = target.configuration_id AND c.generation = target.generation
-  JOIN occ.agent_revisions r ON r.namespace_id = a.namespace_id AND r.agent_id = a.id
-    AND r.id = a.active_revision_id
-  JOIN occ.credential_sources cs ON cs.namespace_id = a.namespace_id AND cs.id = target.source_id
-  WHERE cs.type <> 'openai' OR cs.state = 'ready'`;
-
-// Runs in the candidate API Job inside the original read-only identity transaction.
-const harnessDestinationCheck = `
-async function checkHarnessDestinations(client) {
-  const agents = drafts?.agents.filter((agent) => Object.hasOwn(agent, "destination")) ?? [];
-  if (agents.length === 0) return;
-  if (!kubernetesCompute) {
-    process.stdout.write("harness-destinations-not-applicable\\n");
-    return;
-  }
-  try {
-    const targets = agents.map(({ namespaceId, agentId, configurationId, destination }) => ({
-      namespace_id: namespaceId, agent_id: agentId, configuration_id: configurationId,
-      revision_id: destination.revisionId, source_id: destination.sourceId,
-      generation: destination.generation, execution_mode: destination.mode,
-    }));
-    const { rows } = await client.query(${JSON.stringify(destinationQuery)}, [JSON.stringify(targets)]);
-    const byAgent = new Map(rows.map((row) => [row.agent_id, row]));
-    if (rows.length !== agents.length || byAgent.size !== rows.length) throw new Error();
-    const openAiAgents = [];
-    for (const agent of agents) {
-      const row = byAgent.get(agent.agentId);
-      if (!row || row.namespace_id !== agent.namespaceId || row.revision_id !== agent.destination.revisionId ||
-          row.source_id !== agent.destination.sourceId || typeof row.source_type !== "string" || !row.source_type ||
-          typeof row.openai_configs !== "string") {
-        throw new Error();
-      }
-      const configs = JSON.parse(row.openai_configs);
-      if (!Array.isArray(configs) || (row.source_type === "openai" && configs.length === 0)) throw new Error();
-      if (configs.length > 0) openAiAgents.push({ agent, row, configs });
-    }
-    if (openAiAgents.length > 0) {
-      await checkOpenAiHarnessDestinations(openAiAgents);
-      process.stdout.write("harness-destinations-checked\\n");
-    } else {
-      process.stdout.write("harness-destinations-not-applicable\\n");
-    }
-  } catch {
-    process.stderr.write("Harness destination forecast could not complete.\\n");
-    process.exit(1);
-  }
-}
-
-async function checkOpenAiHarnessDestinations(targets) {
-  const gateway = drivers.credentialGatewayDriver;
-  if (!gateway || targets.some(({ row }) => row.driver_id !== gateway.id)) throw new Error();
-  const sourceTypes = await gateway.listSourceTypes({ signal: AbortSignal.timeout(5000) });
-  if (sourceTypes.find((type) => type.type === "openai")?.harnessAuth?.loginMode !== "api_key") {
-    throw new Error();
-  }
-  const { resolveConfiguredHarnessId } = await import("/app/packages/occ/src/configured-harness.ts");
-  const { resolveApprovedProductionHarness } = await import("/app/apps/controller/src/composition/production-harness.ts");
-  const { requireModelSourceDestination, savedModelProvider } = await import(
-    "/app/apps/controller/src/drivers/compute/model-provider.ts"
-  );
-  const { StoredCredentialSourceConfigError } = await import("/app/packages/occ/src/errors.ts");
-  const { asRecord } = await import("/app/packages/utils/src/index.ts");
-  let refused = false;
-  for (const { agent, row, configs } of targets) {
-    const overrides = typeof row.overrides === "string" && asRecord(JSON.parse(row.overrides));
-    const sourceType = sourceTypes.find((type) => type.type === row.source_type);
-    if (!overrides || !sourceType?.harnessAuth) throw new Error();
-    const values = drafts.configurations[agent.configurationId];
-    const harness = resolveApprovedProductionHarness(resolveConfiguredHarnessId(values), agent.destination.mode);
-    if (!harness) throw new Error();
-    const resolved = kubernetesCompute.resolveHarnessConfiguration(
-      { ...harness, mode: agent.destination.mode, overrides },
-      {
-        method: "credential_source",
-        sourceId: agent.destination.sourceId,
-        credentialGatewayId: gateway.id,
-        sourceType: sourceType.type,
-        loginMode: sourceType.harnessAuth.loginMode,
-      },
-      values,
-    );
-    const provider = savedModelProvider(resolved);
-    for (const value of configs) {
-      const config = asRecord(value);
-      if (!config || Object.entries(config).some(([key, field]) =>
-        (key !== "base_url" && key !== "authorized_base_url") || typeof field !== "string")) {
-        throw new Error();
-      }
-      try {
-        requireModelSourceDestination(config, provider);
-      } catch (error) {
-        if (!(error instanceof StoredCredentialSourceConfigError)) throw error;
-        const message = error.field === "base_url"
-          ? "A bound OpenAI source still has config.base_url. Review its replacement and config.authorized_base_url before upgrading."
-          : "A bound OpenAI source's config.authorized_base_url does not authorize the retained Harness destination. Remove unintended bindings or deploy and settle a revision with a destination that every bound OpenAI source authorizes, or stop and settle this Agent.";
-        reportDraftRefusal(agent, message);
-        refused = true;
-        break;
-      }
-    }
-  }
-  if (refused) process.exit(1);
-}
 `;
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
@@ -355,14 +276,8 @@ if (process.env.${channelTargetsVariable} !== undefined && kubernetesCompute &&
 // resolver and values-only rules on the stored Configuration, so a
 // draft saved before one of this image's rules would stop the fleet deploy after the controller
 // moved. Every refused Agent is printed. An image without the shared rules skips the check.
-function reportDraftRefusal({ namespaceId, agentId, name, configurationId }, message) {
-  // Do not log the source binding or retained settings.
-  process.stdout.write(${JSON.stringify(draftRefusal)} + " " +
-    JSON.stringify({ namespaceId, agentId, name, configurationId, message }) + "\\n");
-}
-let drafts;
-let draftsAccepted = false;
 if (process.env.${draftsVariable} !== undefined) {
+  let drafts;
   try {
     drafts = await readPreflightInput(process.env.${draftsVariable});
   } catch (error) {
@@ -399,19 +314,19 @@ if (process.env.${draftsVariable} !== undefined) {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        reportDraftRefusal(agent, message);
+        process.stdout.write(
+          ${JSON.stringify(draftRefusal)} + " " + JSON.stringify({ ...agent, message }) + "\\n",
+        );
         refused = true;
       }
     }
     if (refused) {
       process.exit(1);
     }
-    draftsAccepted = true;
+    process.stdout.write("agent-drafts-accepted\\n");
   }
 }
-${harnessDestinationCheck}
-${identityCheck("await checkHarnessDestinations(identityClient);")}
-if (draftsAccepted) process.stdout.write("agent-drafts-accepted\\n");
+${identityCheck}
 process.stdout.write("installation-startup-ready\\n");
 `;
 
@@ -423,7 +338,6 @@ type AgentDraftIdentity = {
   agentId: JsonValue | undefined;
   name: JsonValue | undefined;
   configurationId: JsonValue | undefined;
-  destination?: JsonObject;
 };
 
 type NamedReference = JsonObject & { name: string };
@@ -642,17 +556,9 @@ function drafts([draftsPath, installationPath, outputPath, channelTargetsPath]: 
     if (draft == null) {
       fail("cannot read a recorded Agent draft.");
     }
-    const { namespaceId, agentId, name, configurationId, executionMode, values, destination } =
+    const { namespaceId, agentId, name, configurationId, executionMode, values } =
       object(draft) ?? {};
-    const agent: AgentDraftIdentity = { namespaceId, agentId, name, configurationId };
-    if (destination !== undefined) {
-      const scope = object(destination);
-      if (!scope) {
-        fail("cannot read the retained Harness destination selection.");
-      }
-      agent.destination = selectFields(scope, ["revisionId", "sourceId", "generation", "mode"]);
-    }
-    agents.push(agent);
+    agents.push({ namespaceId, agentId, name, configurationId });
     configurations[String(configurationId)] = values;
 
     const channels = object(object(values)?.channels);
@@ -1122,6 +1028,7 @@ type JobArguments = [
   timeoutSeconds: number,
   storedInstallationPath: string,
   withDrafts: string,
+  replacements: string | undefined,
 ];
 
 function job(
@@ -1137,6 +1044,7 @@ function job(
     timeoutSeconds,
     storedInstallationPath,
     withDrafts,
+    replacements,
   ]: JobArguments,
   check = startupCheck,
 ): JobManifest {
@@ -1196,6 +1104,7 @@ function job(
           idVariable,
           componentVariable,
           draftsVariable,
+          replacementVariable,
           channelTargetsVariable,
         ].includes(variable.name),
     ),
@@ -1203,6 +1112,12 @@ function job(
     { name: idVariable, value: JSON.stringify(storedId).replaceAll("$", () => "$$") },
     { name: componentVariable, value: component },
   ];
+  if (replacements) {
+    container.env.push({
+      name: replacementVariable,
+      value: replacementDigest(documents(replacements)),
+    });
+  }
   const mounted = new Set(
     [container, ...plan.initContainers].flatMap((item) =>
       (item.volumeMounts ?? []).map((mount) => mount.name),
@@ -1490,6 +1405,7 @@ function parseCommand([action, ...input]: string[]): Command {
   switch (action) {
     case "job":
     case "identity-job": {
+      const replacements = input.length === 12 ? input.pop() : undefined;
       const [
         rendered,
         component,
@@ -1517,6 +1433,7 @@ function parseCommand([action, ...input]: string[]): Command {
           Number(timeout),
           stored,
           draftSelection,
+          replacements,
         ],
       };
     }
@@ -1587,7 +1504,7 @@ function run(command: Command): string | number {
       return JSON.stringify(
         job(
           command.input,
-          identityCheck() + 'process.stdout.write("installation-startup-ready\\n");',
+          identityCheck + 'process.stdout.write("installation-startup-ready\\n");',
         ),
       );
     case "child":

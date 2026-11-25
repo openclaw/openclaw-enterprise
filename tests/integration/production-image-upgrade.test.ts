@@ -839,7 +839,7 @@ if (args.includes("create")) {
 } else if (args.includes("logs")) {
   result = value("--container") === "migration"
     ? JSON.stringify({ event: "migration.checked", history: "completed" }) + "\\n"
-    : "agent-drafts-accepted\\ninstallation-startup-ready\\n";
+    : "agent-drafts-accepted\\nagent-replacements-checked\\ninstallation-startup-ready\\n";
 } else if (args.includes("pods")) {
   const uid = args.includes("--selector")
     ? value("--selector").slice("batch.kubernetes.io/controller-uid=".length) : undefined;
@@ -937,7 +937,7 @@ case "$*" in
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get deployments,statefulsets,pods,persistentvolumeclaims '*|*'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
-  *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
+  *' logs pod/'*) printf 'agent-drafts-accepted\\nagent-replacements-checked\\ninstallation-startup-ready\\n' ;;
 esac
 `,
     { interpreter: "bash" },
@@ -956,7 +956,7 @@ case "$*" in
     if grep -q ' agent deploy ' "$COMMAND_LOG"; then revision=rev_candidate; fi
     printf '{"id":"agt_test","namespaceId":"ns_test","name":"Test","activeRevisionId":"%s","configurationId":"cfg_test","executionMode":"dedicated","harnessAuth":null}\\n' "$revision"
     ;;
-  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","values":{}}' ;;
+  *'configuration get'*) printf '%s\\n' '{"id":"cfg_test","generation":1,"values":{}}' ;;
   *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,

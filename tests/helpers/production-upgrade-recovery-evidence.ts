@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import type { RecoveryFixture } from "./production-upgrade-recovery-fixture.ts";
 import { yamlFile } from "./production-upgrade-recovery-render.ts";
-import {
-  record,
-  requireRecoveryPreflight,
-  type RecoveryState,
-} from "./production-upgrade-recovery-state.ts";
+import { requireRecoveryPreflight } from "./production-upgrade-recovery-state.ts";
 import { injectedFault } from "./production-upgrade-recovery-tools.ts";
 
 export function evidenceFiles(evidence: string) {
@@ -25,19 +21,6 @@ export async function runWithInjectedFault(
 ) {
   await fixture.failNext(name);
   await assert.rejects(fixture.run(...args), injectedFault);
-}
-
-// Model an operator restoring the same API Deployment against the incumbent release.
-export async function restoreIncumbentApi(
-  fixture: RecoveryFixture,
-  state: RecoveryState,
-): Promise<void> {
-  state.api = 1;
-  const identities = record(state.deploymentIdentities, "Deployment identities");
-  const api = record(identities.api, "API Deployment identity");
-  api.generation = Number(api.generation) + 1;
-  api.resourceVersion = String(Number(api.resourceVersion) + 1);
-  await writeFile(join(fixture.directory, "state.json"), JSON.stringify(state));
 }
 
 export async function assertPrivateReceipt(path: string, expected: string) {

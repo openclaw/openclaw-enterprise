@@ -1,6 +1,6 @@
 import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
 import assert from "node:assert/strict";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants, existsSync, readFileSync } from "node:fs";
 import {
   chmod,
@@ -2562,6 +2562,57 @@ exec "$0.fixture" "$@"
     await assertStoppedBeforeWriters(f);
   });
 
+  // The API Job evaluates current PostgreSQL metadata. The wire fixture supplies
+  // rows, not admission decisions. It does not exercise SQL or installed workloads.
+  for (const staged of [true, false]) {
+    test(
+      staged
+        ? "runtime preflight refuses a staged active revision after the Harness selection changes"
+        : "runtime resume rechecks the selected Harness source and recorded Configuration before shutdown",
+      async (t) => {
+        if (skipWithoutHelm(t, realHelm)) {
+          return;
+        }
+        const agent = {
+          namespaceId: "ns_test",
+          agentId: "agt_test",
+          name: "Mail triage",
+          baselineRevisionId: "rev_old",
+          executionMode: "embedded",
+          configurationId: "cfg_agt_test",
+          generation: "1",
+          version: staged ? "8" : "2",
+          owner: "",
+        };
+        const f = await fixture(t, {
+          agent: true,
+          chart: { installation: (installation) => installation },
+          databaseAnswer: () => ({ rows: [{ id: "ins_test", supported: "true", ...agent }] }),
+        });
+        if (staged) {
+          await assert.rejects(
+            f.run("--preflight-only"),
+            /Agent agt_test .*active revision uses staged credentials/,
+          );
+          await assertStoppedBeforeWriters(f);
+          return;
+        }
+        // Preparation succeeds. Refuse the Worker preview before either writer stops.
+        await f.failNext("nonzero-worker-patch-preview");
+        await assert.rejects(f.run(), /Server-side dry-run did not confirm zero replicas/);
+        agent.owner = "token_service";
+        await assert.rejects(
+          f.run("--resume"),
+          /Agent agt_test .*draft selects a TokenService Harness source/,
+        );
+        agent.owner = "";
+        agent.generation = "2";
+        await assert.rejects(f.run("--resume"), /Cannot replace the recorded Agent revisions/);
+        await assertStoppedBeforeWriters(f);
+      },
+    );
+  }
+
   // A draft saved before the selected release retired one of its settings: deploy admission
   // refuses it, so before finding 2809 the upgrade moved the controller and then stopped at the
   // fleet deploy with the Agents on the old runtime. The API preflight Pod runs the selected
@@ -3335,307 +3386,6 @@ exec "$0.fixture" "$@"
           const log = await f.readEvidence("preflight-api.log");
           assert.doesNotMatch(log, /synthetic-|agent-drafts-accepted/);
         }
-      });
-    }
-  });
-
-  async function retainedHarnessFixture(
-    t: TestContext,
-    scenarios: readonly {
-      name: string;
-      override?: string;
-      allowed: string;
-      additionalOpenAi?: string;
-    }[],
-  ) {
-    const provider = (baseUrl: string) => ({ protocol: "openai-responses", baseUrl });
-    const { backend, drivers } = createCredentialProxyInstallationConfiguration();
-    const gateway = drivers.credential_gateway;
-    const tenant = restartInventory().namespaces[0]!;
-    let includeExtra = true;
-    const entries = scenarios.map(({ name, override, allowed, additionalOpenAi }) => {
-      const agent = {
-        ...tenant.agents[0]!,
-        id: `agt_${name}`,
-        activeRevisionId: `rev_${name}`,
-        executionMode: "dedicated",
-      };
-      const row = {
-        namespace_id: tenant.id,
-        agent_id: agent.id,
-        revision_id: agent.activeRevisionId,
-        source_id: `cs_${randomUUID()}`,
-        source_type: "openai",
-        driver_id: gateway.id,
-        overrides: JSON.stringify(override ? { modelProvider: provider(override) } : {}),
-      };
-      const primary = { id: row.source_id, config: { authorized_base_url: allowed } };
-      const extra = additionalOpenAi
-        ? { id: `cs_${randomUUID()}`, config: { authorized_base_url: additionalOpenAi } }
-        : undefined;
-      const sources = () => (includeExtra && extra ? [primary, extra] : [primary]);
-      return { agent, row, sources };
-    });
-    const agents = entries.map(({ agent }) => agent);
-    const values = {
-      agents: { defaults: { model: "codex/gpt-5.1" } },
-      models: { providers: { codex: { agentRuntime: { id: "codex" } } } },
-    };
-    const forecasts: string[] = [];
-    const f = await fixture(t, {
-      agent: true,
-      chart: {
-        installation: (installation) => {
-          installation.drivers.compute.configuration.runtime.modelProvider =
-            provider(retainedHarnessDefaultUrl);
-          installation.backend = [
-            {
-              ...backend[0],
-              configuration: {
-                ...backend[0].configuration,
-                auth: {
-                  mode: "mtls",
-                  certificatePath: "/synthetic/tls.crt",
-                  privateKeyPath: "/synthetic/tls.key",
-                },
-              },
-              drivers: { sandbox: drivers.sandbox.id, credential_gateway: gateway.id },
-            },
-          ];
-          installation.drivers.sandbox = drivers.sandbox;
-          installation.drivers.credential_gateway = gateway;
-          return installation;
-        },
-      },
-      inventoryNamespaces: [{ ...tenant, agents }],
-      inventoryRequiresApi: true,
-      configurationValues: Object.fromEntries(agents.map(({ id }) => [`cfg_${id}`, values])),
-      databaseAnswer: (_query, { textParameter }) => {
-        if (textParameter !== undefined) {
-          forecasts.push(textParameter);
-          return {
-            rows: entries.map((entry) => ({
-              ...entry.row,
-              openai_configs: JSON.stringify(entry.sources().map(({ config }) => config)),
-            })),
-          };
-        }
-        return { rows: [{ id: "ins_test" }] };
-      },
-    });
-    async function setAgentBindings({
-      attachExtra = true,
-      ...overrides
-    }: { attachExtra?: boolean; harnessAuth?: unknown } = {}) {
-      includeExtra = attachExtra;
-      const seed = await f.state();
-      seed.agentDrafts = Object.fromEntries(
-        entries.map(({ agent, row, sources }) => [
-          agent.id,
-          {
-            ...agent,
-            namespaceId: tenant.id,
-            name: "Mail triage",
-            configurationId: `cfg_${agent.id}`,
-            harnessAuth: { method: "credential_source", sourceId: row.source_id },
-            credentialSources: sources().map(({ id }) => ({ sourceId: id })),
-            ...overrides,
-          },
-        ]),
-      );
-      await writeFile(join(f.directory, "state.json"), JSON.stringify(seed));
-    }
-    await setAgentBindings();
-    return { f, entries, setAgentBindings, forecasts, forecastCount: () => forecasts.length };
-  }
-
-  const retainedHarnessDefaultUrl = "https://provider.example.test/v1";
-  const retainedHarnessExplicitUrl = "https://evaluation.example.test/v1";
-
-  test("the runtime upgrade refuses unauthorized retained Harness destinations before stopping writers", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    // The active revision used the primary source. A second source was saved on the draft.
-    const { f, entries, forecasts } = await retainedHarnessFixture(t, [
-      {
-        name: "mismatch",
-        allowed: retainedHarnessDefaultUrl,
-        additionalOpenAi: retainedHarnessExplicitUrl,
-      },
-      { name: "matching", allowed: retainedHarnessDefaultUrl },
-      {
-        name: "explicit",
-        allowed: retainedHarnessExplicitUrl,
-        override: retainedHarnessExplicitUrl,
-      },
-    ]);
-    // Bound the failure if a regression lets the upgrade reach Helm.
-    await f.failNext("reject-helm-submission");
-
-    const { stderr, error } = await runForFailure(f.run);
-    assert.match(
-      stderr,
-      /refuses to deploy 1 recorded Agent draft\(s\):\n {2}- Agent agt_mismatch "Mail triage" in Namespace ns_test: [^\n]*config\.authorized_base_url[^\n]*retained Harness destination/,
-    );
-    assert.match(stderr, /No OCC writer was stopped; the old release keeps serving\./);
-    const log = await f.readEvidence("preflight-api.log");
-    assert.equal(log.match(/^Agent draft refused: /gm)?.length, 1);
-    // Check what the Job sent to PostgreSQL. The wire fixture does not execute the SQL.
-    assert.deepEqual(
-      forecasts.map((value) => JSON.parse(value)),
-      [
-        entries.map(({ agent, row }) => ({
-          namespace_id: "ns_test",
-          agent_id: agent.id,
-          configuration_id: `cfg_${agent.id}`,
-          revision_id: agent.activeRevisionId,
-          source_id: row.source_id,
-          generation: 1,
-          execution_mode: "dedicated",
-        })),
-      ],
-    );
-    const diagnostics = commandStdout(error) + stderr + log;
-    for (const value of [
-      retainedHarnessDefaultUrl,
-      retainedHarnessExplicitUrl,
-      ...entries.flatMap(({ sources }) => sources().map(({ id }) => id)),
-    ]) {
-      assert.ok(!diagnostics.includes(value), "destination details must remain private");
-    }
-    const state = await assertStoppedBeforeWriters(f);
-    assert.equal(state.helmSubmissions ?? 0, 0);
-    assert.equal(state.dispatches, 0);
-  });
-
-  test("runtime upgrade resume checks OpenAI sources added to the draft before cutover", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    const { f, forecastCount, setAgentBindings } = await retainedHarnessFixture(t, [
-      {
-        name: "retained",
-        allowed: retainedHarnessDefaultUrl,
-        additionalOpenAi: retainedHarnessExplicitUrl,
-      },
-    ]);
-    await setAgentBindings({ attachExtra: false });
-
-    // Interrupt after a positive preparation, at the first attempted writer stop.
-    await runWithInjectedFault(f, "fail-scale-api");
-    assert.equal(existsSync(join(f.evidence, "prepared")), true);
-    assert.match(await f.readEvidence("preflight-api.log"), /harness-destinations-checked/);
-    assert.equal(forecastCount(), 1);
-    await assertStoppedBeforeWriters(f);
-
-    // Source authorizations are immutable. Attach a second source to the draft
-    // without changing either the Harness source or the active revision.
-    await setAgentBindings();
-    await f.failNext("reject-helm-submission");
-    const { stderr } = await runForFailure(f.run, "--resume");
-    assert.match(stderr, /config\.authorized_base_url[^\n]*retained Harness destination/);
-    assert.equal(forecastCount(), 2);
-    const state = await assertStoppedBeforeWriters(f);
-    assert.equal(state.helmSubmissions ?? 0, 0);
-    assert.equal(state.dispatches, 0);
-
-    // Removing the incompatible extra binding lets this attempt resume.
-    await setAgentBindings({ attachExtra: false });
-    await runWithInjectedFault(f, "reject-helm-submission", "--resume");
-    assert.equal(forecastCount(), 3);
-    assert.deepEqual(await f.events(), ["scale-api", "scale-worker", "secret-replaced"]);
-    assert.equal((await f.state()).helmSubmissions, 1);
-  });
-
-  test("runtime upgrade resume forecasts a newly bound Harness source before cutover", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    const { f, forecastCount, setAgentBindings } = await retainedHarnessFixture(t, [
-      { name: "retained", allowed: retainedHarnessExplicitUrl },
-    ]);
-    // The initial draft has no Harness authentication. Binding a source later
-    // still requires a forecast, even when the active revision is unchanged.
-    await setAgentBindings({ harnessAuth: null });
-    await runWithInjectedFault(f, "fail-scale-api");
-    assert.equal(forecastCount(), 0);
-    await assertStoppedBeforeWriters(f);
-
-    await setAgentBindings();
-    await f.failNext("reject-helm-submission");
-    const { stderr } = await runForFailure(f.run, "--resume");
-    assert.match(stderr, /config\.authorized_base_url[^\n]*retained Harness destination/);
-    assert.equal(forecastCount(), 1);
-    const state = await assertStoppedBeforeWriters(f);
-    assert.equal(state.helmSubmissions ?? 0, 0);
-    assert.equal(state.dispatches, 0);
-  });
-
-  test("runtime upgrade resume preserves fenced recovery without a serving API", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    const { f, forecastCount } = await retainedHarnessFixture(t, [
-      { name: "retained", allowed: retainedHarnessDefaultUrl },
-    ]);
-
-    await runWithInjectedFault(f, "reject-helm-submission");
-    const stopped = await f.state();
-    assert.equal(stopped.api, 0);
-    assert.equal(stopped.worker, 0);
-    assert.equal(stopped.helmSubmissions, 1);
-    assert.equal(forecastCount(), 1);
-    const stoppedEvents = await f.events();
-    assert.deepEqual(stoppedEvents, ["scale-api", "scale-worker", "secret-replaced"]);
-
-    // With OCC unavailable, the existing guarded recovery needs neither a new
-    // prospective forecast nor a repeated stop to reach the reconciled Helm attempt.
-    await runWithInjectedFault(
-      f,
-      "reject-helm-submission",
-      "--resume",
-      "--migration-history-checked",
-    );
-    const resumed = await f.state();
-    assert.equal(resumed.helmSubmissions, 2);
-    assert.equal(resumed.inventoryReadCount, stopped.inventoryReadCount);
-    assert.equal(forecastCount(), 1);
-    assert.deepEqual(await f.events(), stoppedEvents);
-    assert.equal(resumed.dispatches, 0);
-  });
-
-  test("runtime upgrade preparation requires a readable Harness authentication binding", async (t) => {
-    if (skipWithoutHelm(t, realHelm)) {
-      return;
-    }
-    for (const [name, harnessAuth] of [
-      ["missing", undefined],
-      ["unrecognized method", { method: "unexpected" }],
-      ["missing source ID", { method: "credential_source" }],
-      ["explicit null", null],
-    ] as const) {
-      await t.test(name, async (t) => {
-        const { f, setAgentBindings, forecastCount } = await retainedHarnessFixture(t, [
-          { name: "retained", allowed: retainedHarnessDefaultUrl },
-        ]);
-        await setAgentBindings({ harnessAuth });
-        if (harnessAuth === null) {
-          assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
-          await assertStoppedBeforeWriters(f);
-        } else {
-          await assert.rejects(
-            f.run("--preflight-only"),
-            /recorded draft or Harness source binding/,
-          );
-          const state = await f.state();
-          assert.equal(state.preflight, undefined);
-          assert.equal(state.api, 1);
-          assert.equal(state.worker, 1);
-          assert.equal(state.helmSubmissions ?? 0, 0);
-          assert.deepEqual(await f.events(), []);
-        }
-        assert.equal(forecastCount(), 0);
       });
     }
   });

@@ -146,13 +146,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
     const persisted: unknown = JSON.parse(readFileSync(stateFile, "utf8"));
     const state = record(persisted, "upgrade recovery fixture state.json");
     const save = () => writeFileSync(stateFile, JSON.stringify(state));
-    const editStoppedApi = () => {
-      // Another actor updates the stopped API Deployment's spec without starting Pods.
-      const api = record(field(state.deploymentIdentities, "api"), "API Deployment identity");
-      api.generation = journalInteger(api.generation, "API Deployment generation", 1) + 1;
-      api.resourceVersion = String(Number(api.resourceVersion) + 1);
-      save();
-    };
     const log = (value: string) => appendFileSync(join(root, "events"), value + "\n");
     const take = (name: string) => {
       const path = join(root, name);
@@ -175,14 +168,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       const value = fileArg(name);
       assert.ok(value !== undefined, `expected a value for ${name}`);
       return value;
-    };
-    const findInventoryAgent = (namespaceId: string | undefined, agentId: string) => {
-      const namespace = list(state.inventoryNamespaces ?? [], "inventory namespaces").find(
-        (entry) => optionalField(entry, "id") === namespaceId,
-      );
-      return list(optionalField(namespace, "agents") ?? [], "namespace agents").find(
-        (entry) => optionalField(entry, "id") === agentId,
-      );
     };
     // The replacement revision's ready gateway Pod; an OOM kill shows in its restart history.
     const gatewayPod = () =>
@@ -1018,14 +1003,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             (record(preflight, "preflight state").logRequests ??= []),
             "preflight log requests",
           ).push(component);
-          if (
-            selected === "migration" &&
-            state.api === 0 &&
-            state.worker === 0 &&
-            take("edit-stopped-api-during-preflight")
-          ) {
-            editStoppedApi();
-          }
           if (state.replaceInstallationDuringPreflight) {
             // A separately accepted Secret replacement happens while the temporary
             // startup Job runs, after the upgrade captured both immutable identities.
@@ -1574,7 +1551,11 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             ) &&
             take("edit-stopped-api-after-drain")
           ) {
-            editStoppedApi();
+            // Another actor updates the stopped API Deployment's spec without starting Pods.
+            const api = record(field(state.deploymentIdentities, "api"), "API Deployment identity");
+            api.generation = journalInteger(api.generation, "API Deployment generation", 1) + 1;
+            api.resourceVersion = String(Number(api.resourceVersion) + 1);
+            save();
           }
           if (
             state.api === 0 &&
@@ -1894,31 +1875,30 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         log("read " + args.at(-1));
         const id = args[args.length - 1];
         assert.ok(id !== undefined);
-        const name = field(state.names, id);
+        const home = list(state.inventoryNamespaces ?? [], "inventory namespaces").find(
+          (namespace) =>
+            list(field(namespace, "agents"), "namespace agents").some(
+              (agent) => field(agent, "id") === id,
+            ),
+        );
+        const name =
+          args.includes("agent") &&
+          (!args.includes("--namespace") || fileArg("--namespace") !== optionalField(home, "id"))
+            ? undefined
+            : field(state.names, id);
         if (name === undefined) {
           return fail(1, "permission denied");
         }
-        if (args.includes("agent")) {
-          if (!args.includes("--namespace")) {
-            return fail(1, "permission denied");
-          }
-          const namespaceId = fileArg("--namespace");
-          const agent = findInventoryAgent(namespaceId, id);
-          if (!agent) {
-            return fail(1, "permission denied");
-          }
-          out({
-            id,
-            namespaceId,
-            name,
-            configurationId: `cfg_${id}`,
-            activeRevisionId: field(agent, "activeRevisionId"),
-            executionMode: field(agent, "executionMode"),
-            harnessAuth: null,
-          });
-        } else {
-          out({ id, name });
-        }
+        out({
+          id: args.at(-1),
+          name,
+          ...(args.includes("agent")
+            ? {
+                configurationId: `cfg_${args.at(-1)}`,
+                activeRevisionId: state.activeRevision ?? "rev_old",
+              }
+            : {}),
+        });
       } else if (args.includes("agent") && args.includes("revision")) {
         log("revision-read " + args.at(-1));
         if (state.activeRevisionResponse === "denied") {
@@ -1947,7 +1927,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         out({
           id,
           kind: "agent",
-          namespaceId: fileArg("--namespace"),
           generation: 1,
           values: optionalField(state.configurationValues, String(id)) ?? {},
         });
@@ -1973,21 +1952,13 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const id = field(deploymentReply, "id");
         const status = field(deploymentReply, "status");
         delete state.nextDeployment;
-        const namespaceId = fileArg("--namespace");
         if (status === "succeeded") {
           state.activeRevision = id;
-          if (state.names) {
-            // A successful dispatch advances this Agent's revision, including when its reply is lost.
-            const agent = findInventoryAgent(namespaceId, agentId);
-            if (agent) {
-              record(agent, "inventory Agent").activeRevisionId = id;
-            }
-          }
           if (state.channelStopCase) {
             state.channelAgentStopped = false;
           }
         }
-        const deployment = [namespaceId, agentId, id].join("/");
+        const deployment = [fileArg("--namespace"), agentId, id].join("/");
         if (state.deployments == null) {
           throw new TypeError(
             `Cannot set properties of ${state.deployments} (setting '${deployment}')`,
@@ -2000,23 +1971,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         if (take("lost-agent-response")) {
           return fail(9);
         }
-        out(state.channelStopCase ? { id, agentId, namespaceId } : { id });
+        out(state.channelStopCase ? { id, agentId, namespaceId: fileArg("--namespace") } : { id });
       } else if (args.includes("agent") && args.includes("get")) {
-        const id = requiredArg("get");
-        const namespaceId = fileArg("--namespace");
-        const agent = findInventoryAgent(namespaceId, id);
-        out(
-          optionalField(state.agentDrafts, id) ?? {
-            id,
-            namespaceId,
-            name: "Mail triage",
-            configurationId: `cfg_${id}`,
-            activeRevisionId:
-              state.activeRevision ?? optionalField(agent, "activeRevisionId") ?? "rev_old",
-            executionMode: optionalField(agent, "executionMode") ?? "embedded",
-            harnessAuth: null,
-          },
-        );
+        out({
+          id: "agt_test",
+          name: "Mail triage",
+          configurationId: "cfg_agt_test",
+          activeRevisionId: state.activeRevision ?? "rev_old",
+        });
       } else if (args.includes("deployment-status")) {
         const namespaceId = fileArg("--namespace");
         const agentId = args.at(-2);

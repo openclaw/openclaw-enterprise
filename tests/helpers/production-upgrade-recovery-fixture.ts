@@ -460,7 +460,7 @@ export function createRecoveryFixture(tools: RecoveryTools) {
       candidatePluginDrivers,
       olderDraftRules = false,
       unavailableDraftResolver = false,
-      databaseAnswer = () => ({ rows: [{ id: "ins_test" }] }),
+      databaseAnswer = () => ({ rows: [{ id: "ins_test", supported: "false" }] }),
       migrationSecrets = false,
       afterDeploy,
       environment = {},
