@@ -11,16 +11,17 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 **Since**.
 
 **First deployment creates credentials** accepts **Deploy new version** without
-a separate credential action. Its initial state is not a Stop request; OCC
-generation is simulated.
+a separate credential action. No Stop was requested. The fixture admits a
+version without simulating credential creation, delivery or runtime readiness.
 
 Choose a Preset, fill its variables, review seeded workspace files, and create
 a Codex-harness Agent: the Console submits inline Configuration and Secret
 references, then follows simulated provisioning. Another flow uses the default
 Preset with OpenAI Codex, a new or existing model Secret, and a model, editing
 IDENTITY.md and clearing USER.md first.
-OpenClaw and unsupported-runtime stories keep the draft workflow: provision
-credentials and deploy from Agent detail.
+**OpenAI with dedicated OpenClaw** simulates provisioning on creation.
+**Unsupported provisioning** saves a Codex draft for later deployment.
+Some unsupported OpenClaw profiles disable **Create Agent**.
 
 **Plugins Curated** exercises token-free discovery against simulated Driver
 responses, leaving access unverified. Hosted discovery requires an eligible Codex

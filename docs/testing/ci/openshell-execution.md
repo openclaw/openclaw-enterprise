@@ -45,7 +45,9 @@ same approach for a selected source-build file or a whole lane containing one.
 Source-build preparation materializes layers on that builder even when the
 host engine already holds an identical image. The model-provider installation
 fixture uses the same selected builder for its checkout images. Cache credentials
-are not passed to tests. Other OpenShell files
+are not passed to tests. When run individually, `openshell-git-retention-real.test.ts`
+and `openshell-git-finite-removal-real.test.ts` also build from source and provision
+their own stacks. Other OpenShell files
 prepare their required cluster, database server, routing, and images; their image
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the

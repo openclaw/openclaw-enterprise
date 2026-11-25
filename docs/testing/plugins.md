@@ -24,7 +24,18 @@ The discovery fixture uses simulated provider responses. These checks do not pro
 
 ### Kubernetes status transport
 
-Prepare a [disposable Kubernetes fixture](kubernetes.md), a worker node, and a migrated `openclaw_k8s_*` database. Set `OCC_TEST_KUBERNETES_KUBECONFIG`, `OCC_TEST_KUBERNETES_CONTEXT`, `OCC_TEST_KUBERNETES_IMAGE`, `OCC_TEST_DATABASE_URL`, and `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` to the comma-separated API-server proxy source CIDRs from the [networking reference](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+Add `--agents 1` to `k3d cluster create` in the [Kubernetes HTTP fixture](kubernetes.md#kubernetes-http-fixture).
+Follow that setup through image import. This standalone test needs a ready,
+schedulable worker node and does not require PostgreSQL.
+
+Export these variables before running it.
+
+| Variable                                        | Value                                                                                                                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OCC_TEST_KUBERNETES_KUBECONFIG`                | Path to the fixture’s kubeconfig                                                                                                                             |
+| `OCC_TEST_KUBERNETES_CONTEXT`                   | Context for the disposable cluster                                                                                                                           |
+| `OCC_TEST_KUBERNETES_IMAGE`                     | Imported fixture image name                                                                                                                                  |
+| `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS` | Comma-separated IPv4 CIDRs for the [API server’s Pod proxy source addresses](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking) |
 
 ```sh
 node --test tests/integration/kubernetes-plugin-status-real.test.ts

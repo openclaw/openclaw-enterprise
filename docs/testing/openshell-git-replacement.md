@@ -24,12 +24,11 @@ Gateway-owned model Credential Source in the selected Namespace, with no `egress
 The scenario binds both Agents to that source through the API and grants their
 service principals permission to use it.
 
-The Git-only Credential Proxy currently refuses new model source registration.
-Reuse a source registered before enabling the Proxy, as described in
-[model source enrollment](../guides/repository-credentials/openshell-enrollment.md#register-the-harness-model-source-first).
-The normal Console API-key creation flow registers a new source even when you
-select an existing Secret, so use this API scenario for now. It does not test
-model source registration or replacement.
+Keep a separate OCE Credential Gateway selected. You can
+[register the static Harness model source](../guides/repository-credentials/openshell-enrollment.md#register-the-harness-model-source-first)
+before or after enabling the validated bundled `repository.openShell` Git-only
+transport. This scenario reuses the source and does not test its registration
+or replacement.
 
 Add this object to the input file, replacing the example references and URLs:
 

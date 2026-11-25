@@ -247,12 +247,11 @@ credential rejection from a transport error or a restarted process. The
 
 ### QA matrix selector
 
-The explicit `sandbox-policy` scenario runs the complete network-policy lifecycle
-with this real OpenShell setup and production API/worker. It selects
-`OCC_TEST_OPENSHELL_SCENARIO=network-policy`, which provisions no unrelated OAuth
-refresh sources and excludes the separate filesystem, credential rotation, and
-outage qualification phases. The default `full` scenario retains those phases
-and the policy lifecycle. This selector is separate from the matrix's default
+The `sandbox-policy` matrix scenario selects `OCC_TEST_OPENSHELL_SCENARIO=network-policy`.
+It requires Codex and runs the policy lifecycle without unrelated OAuth refresh
+sources. With Codex and the default `full` scenario, the Sandbox policy file
+also checks filesystem and network enforcement. Separate files test credential
+rotation and outages. This selector is separate from the matrix's default
 Sandbox-free installations. Prepare the
 OpenShell lane and its Sandbox test file first, then provide that file's private
 `--github-env` output as `OCC_TEST_QA_SANDBOX_ENV` and the authorized token file as

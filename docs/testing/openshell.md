@@ -215,10 +215,11 @@ node scripts/ci/cleanup.ts --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
 For scratch, select `tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts`
-with preparation `--selected-file` and execution `--file`. Both require
-`OCC_TEST_OPENSHELL_HARNESS=codex`,
-`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`,
-`OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
+with preparation `--selected-file` and execution `--file`. Scratch requires
+Codex (default). Both commands need `OCC_TEST_OPENAI_MODEL` and either
+`CODEX_ACCESS_TOKEN` (default endpoint) or `OPENAI_API_KEY`
+(`OCC_TEST_OPENSHELL_MODEL_BASE_URL=https://api.openai.com/v1`).
+Execution requires `OPENAI_API_KEY` even with token authentication.
 The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
 The [prepared TokenService Git Agent lane](manual-tests.md) checks a model turn and scoped Git on the same Agent.

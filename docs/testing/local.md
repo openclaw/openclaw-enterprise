@@ -185,8 +185,8 @@ Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
 fails if no browser is available; it does not install one. Do not change managed
 browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
 
-The three native Agent admin cases use Linux Chromium's NSS trust store. The
-Console browser command reports these three as skipped on macOS and Windows.
+Console browser tests that use the native Agent HTTPS fixture require Linux
+Chromium's NSS trust store. The suite skips these tests on macOS and Windows.
 For the full suite, use a disposable Ubuntu VM with Chromium sandbox support and
 `libnss3-tools`. Set up the checkout as above,
 then run the Console browser command or just the Agent detail cases:

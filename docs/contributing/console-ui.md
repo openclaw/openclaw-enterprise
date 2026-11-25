@@ -49,7 +49,9 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   checkbox, select or text field, call `setUnavailable(control, unavailable, reason)`
   wherever its state or reason changes. While the reason shows, the control stays in the
   Tab order (`aria-disabled`), is described by the reason, and ignores clicks, Enter,
-  Space and edits. With no reason it is natively disabled. For other controls, link the
+  Space and edits. Without a visible reason, the control is natively disabled unless
+  it already has focus. Use `isUnavailable(control)` to check either state.
+  For other controls, link the
   reason with `describeDisabled(control, reason)`.
 
 ## Extend the shared styles
