@@ -1,6 +1,6 @@
 # Agent identity and deployment
 
-Select an [Agent](../agents.md) execution mode. Creating or editing an Agent does not start a workload.
+Select an [Agent](../agents.md) execution mode. Saving a draft alone does not start a workload.
 
 ## Agent service principal and workload credentials
 
@@ -18,17 +18,15 @@ responses expose this internal `servicePrincipalId` as a read-only identifier
 so administrators can bind exact IAM policy to the Agent-owned principal.
 Create and update requests cannot set or replace it.
 
-Workload identity is execution credential evidence, not a third platform
-principal. For a `dedicated` Agent, the
-[Kubernetes Compute Driver](../drivers/kubernetes-compute.md) uses separate
-gateway and Codex ServiceAccounts. Only Codex receives the short-lived,
-audience-scoped projected token for its exact Agent's existing
-`servicePrincipalId`; production requires this projection. An `embedded`
-gateway necessarily shares its exact Agent's projected workload identity and
-Agent-specific model credential because that same process runs the built-in
-Harness. Both modes are supported in production. OCC token verification,
-identity exchange, and ServicePrincipal
-authentication through the controller API remain deferred.
+The [Kubernetes Compute Driver](../drivers/kubernetes-compute.md) can project a
+short-lived, audience-scoped token for the Agent's existing `servicePrincipalId`.
+For dedicated Codex without a Sandbox Driver, the gateway and Codex use separate
+ServiceAccounts. Only Codex receives the projected token.
+
+Production Kubernetes requires `servicePrincipalCredentials.mode` to be
+`projectedServiceAccountToken` unless the Installation selects a Sandbox Driver.
+OpenShell requires `disabled`. OCC token verification, identity exchange, and
+ServicePrincipal authentication through the controller API remain deferred.
 
 An Agent may also reference one same-Namespace, OCC-owned
 [service account](../service-accounts.md) through
@@ -40,22 +38,22 @@ replace its ServicePrincipal or Kubernetes ServiceAccount.
 
 Each Agent explicitly records how its selected Harness runs:
 
-- `embedded` starts one OpenClaw gateway with its built-in Harness. It is the
-  default when creation omits `executionMode` and is supported in development
-  and production; the combined workload receives its own Agent identity and
-  model key.
-- `dedicated` starts an Agent-owned gateway and a separate Codex app-server.
-  Production uses separate workload identities, authenticated gateway-to-Codex
-  transport, and either an operator-owned model API key or an associated
-  account's directly projected access token mounted only into Codex.
+- `embedded` (default on creation) runs the built-in OpenClaw Harness in the gateway.
+  They share the Agent's workload identity and model credential.
+- `dedicated` runs the Harness separately. Codex uses an authenticated
+  app-server connection. The gateway does not receive the selected Harness model
+  credential. A selected Sandbox requires dedicated execution.
 
-The Agent's native Configuration selects a Harness through model/provider
-`agentRuntime.id` policy. The [Harness execution reference](../harness-execution.md)
-owns supported runtime selections, model catalogs, transport, and credential
-boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
-selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with a reason that names the setting to change. A selected SandboxDriver currently requires
-`dedicated` Codex execution; it does not support embedded OpenClaw.
+Kubernetes supports embedded OpenClaw and dedicated Codex in production.
+[OpenShell](../drivers/openshell-sandbox.md#qualification-contract) is for development only.
+Dedicated native OpenClaw is experimental and requires a compatible Sandbox
+and native worker support.
+
+Model or provider policy selects the [Harness](../harness-execution.md) through
+`agentRuntime.id`. If a required ID is missing or a configured ID is unknown,
+conflicting, or incompatible with the execution mode, OCC rejects deployment
+before creating a version. For these policy errors, deploy returns
+`400 INVALID_REQUEST` and names the setting to change.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
@@ -103,7 +101,8 @@ Deployment saves the Agent `name` as the sole roster entry's `identity.name`,
 under `agents.entries.main` if no roster exists. The native admin UI shows up to
 50 characters. OCC preserves configured names and does not name larger rosters.
 
-The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` accepts an optional body.
+Deployment requires a
 `ready` Namespace, exact-Agent `deploy`, exact
 Configuration `read`, and, for managed credentials, the selected
 [harness source permissions](../agents.md#harness-authentication). If the selected
@@ -170,12 +169,17 @@ startup failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
 convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
-A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
-apply its workspace node, so activation fails at once with
-`AGENT_GATEWAY_UNAUTHORIZED`. Check that the Agent's Configuration sets
-`gateway.auth.password` to `OPENCLAW_GATEWAY_PASSWORD` (**Enable gateway password
-access**) and deploy again; the gateway log's `runtime.workspace_node` line names
-OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
+On Kubernetes, dedicated Codex activation fails with
+`AGENT_GATEWAY_UNAUTHORIZED` if the gateway permanently rejects in-Pod CLI
+credentials while applying the workspace node. Retryable refusals, including
+rate limits and pairing, leave activation pending. Check the gateway container
+log for `runtime.workspace_node` and its optional `reason`.
+
+Check that `gateway.auth.password` is an environment SecretRef for
+`OPENCLAW_GATEWAY_PASSWORD`. In an [editable Console draft](../../guides/console/configuration-plugins-and-files.md#configuration-tab),
+fix and save any flagged settings, including the reference if required.
+If still needed, select **Enable gateway password access**, then
+**Save Configuration**. Apply saved changes with **Deploy new version**.
 
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
@@ -239,9 +243,10 @@ console shows it as **Cause**, and `occ agent deployment-status` prints it.
 
 `activeRevisionId` names the version the worker last committed to run. Stop
 shuts it down first, coordinated runtime upgrades require it, and runtime
-inspection reads its containers. It is not a health result; each version's [deployment status](../agents.md#deployment-status)
-is. Unless Compute activates before commit, the worker sets the pointer before
-activation finishes.
+inspection reads its containers. Unless Compute activates before commit, the
+worker sets the pointer before activation finishes. Check that version’s
+[deployment status](../agents.md#deployment-status) for the recorded outcome.
+Use [runtime diagnostics](../agents.md#current-runtime-diagnostics) for fresh checks.
 
 Failure before the worker sets the pointer leaves it unchanged: unset for a
 first deployment.

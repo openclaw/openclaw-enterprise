@@ -12,7 +12,7 @@ last_updated_session: authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388
 
 ## Entry Points
 
-- Browser entry: `apps/controller/src/console/console.mjs` composes the session,
+- Browser entry: `apps/controller/src/console/console.mts` composes the session,
   request client, view lifetime, navigation, and shell.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.
 - Startup: `apps/controller/src/composition/production.ts:composeProduction`
@@ -251,17 +251,17 @@ channels and credentials; [workspace files](platform-console/agent-workspace-fil
 [stop and deletion](platform-console/agent-stop-and-deletion.md) trace those operations;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 
-`channels/slack.mjs:supportSlack` rejects shapes the editor cannot preserve. The
+`channels/slack.mts:supportSlack` rejects shapes the editor cannot preserve. The
 [editing flow](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tabs
-with `console.mjs:loadPage`. Within one Agent, Namespace and version, tabs replace
+with `console.mts:loadPage`. Within one Agent, Namespace and version, tabs replace
 content; shell, native-admin and version controls remain mounted. Configuration
 and revision reads are shared; direct Workspace URLs start neither. Refresh,
 version changes and successful channel/authentication edits reload fully.
-`console.mjs:deniedReadsFor` remembers audited Configuration/revision `403` paths
+`console.mts:deniedReadsFor` remembers audited Configuration/revision `403` paths
 in owner-scoped tab `sessionStorage`. Later views show **Configuration unavailable**
 without rereading; **Retry** forgets and rereads. Logout clears denials.
 
@@ -297,7 +297,7 @@ rejected cursors clear rows.
 
 ### 7. Commit only the current response, or clear the view
 
-`apps/controller/src/console/console.mjs:loadPage`, `logout`
+`apps/controller/src/console/console.mts:loadPage`, `logout`
 
 After navigation, `loadPage` focuses the destination heading from the body with
 `preventScroll`. Agents opened from the list focus their heading. Controls keep
@@ -344,13 +344,13 @@ this client never infers it from a network error.
 
 ## Deploy the new version
 
-**Deploy new version** on the **Create new version** draft sends bodyless
-`POST /namespaces/:namespaceId/agents/:agentId/deploy` after the checks and
-uncertain-response handling that [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels) traces.
-**Operator-managed credentials** (`{ "method": "runtime" }`) skip managed setup; OCC
-does not validate host credentials. The server saves the version; its read-only
-details open while **Deployment activity** follows it. Workspace reads check
-gateway startup and file availability.
+**Deploy new version** checks the **Create new version** draft before sending
+`POST /namespaces/:namespaceId/agents/:agentId/deploy` with `harnessOverrides`
+and optional `expectedRepositoryPolicyVersion`. [Agent editing](platform-console/agent-editing.md#4-render-draft-revision-or-channels)
+covers uncertain outcomes.
+**Operator-managed credentials** (`{ "method": "runtime" }`) skip managed setup
+and host credential validation. Success opens read-only details.
+**Deployment activity** tracks the version. Workspace reads check gateway startup and file availability.
 
 ## Debugging and Verification
 
@@ -380,6 +380,7 @@ gateway startup and file availability.
 
 - 2026-11-24 10:55: Trace Secret consumer return. (authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
+- 2026-11-24 04:34: Document deployment inputs. (authoring-run/c18adb53-c759-42e0-a930-ff768e9075d0 - 8975a292b01b6ddbf7c01be8b3f70878085a772d)
 - 2026-11-22 11:39: Trace Namespace cleanup and keyboard focus. (authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095 - 5768ebdac724be812904dba59ae1c31f749f6bec)
 
 - 2026-11-22 11:28: Clarify Namespace list results. (authoring-run/d86bdf09-8b77-410f-8646-4feb7a9071cf - 5aa97a22d8d7d1ed8ca31a18d9892ad0313e24c6)

@@ -23,7 +23,7 @@ Enter `fred` for **Agent name**. Choose **OpenAI** as the provider and **Codex**
 
 To save a new credential, choose **Create new Secret...**, paste the key or token into **Value**, and click **Create Secret**.
 
-Choose a **Model** your credential can access. If it’s missing from the list, click **Enter model ID manually** and enter its ID. Check **Enable Native admin UI** so you can open `fred`’s chat after deployment.
+Choose a **Model** your credential can access. If it’s missing from the list, click **Enter model ID manually** and enter its ID. Check **Enable browser chat** to open `fred`’s chat after deployment. The screenshot shows the old label, **Enable Native admin UI**.
 
 <Frame caption="In this example, fred uses the fred-linear service account Secret. Use the Secret and model for your own account.">
 

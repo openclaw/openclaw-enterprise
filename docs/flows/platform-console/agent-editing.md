@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-11-24
-last_updated_session: authoring-run/0e68027f-b229-42d4-8639-87267b4b6363
+updated: "2026-11-24 21:14"
+last_updated_session: "authoring-run/b770071f-a9c8-4726-8278-51870f444984"
 ---
 
 # Console Agent editing and runtime requests
@@ -102,8 +102,8 @@ versions retain their results.
 **Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
-**Deploy new version** admits the saved draft's Configuration and plugins.
-**Edit current Configuration** never copies historical values. Missing `operate`
+From a snapshot, **Open draft**. **Deploy new version** uses saved Configuration
+and plugins. **Edit current Configuration** never copies history. Missing `operate`
 on a bound Secret disables deployment. Permissions list readable Secrets lacking
 `operate` and count the rest without names (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
@@ -117,13 +117,12 @@ numbers like `1e400`.
 Configuration/Namespace identity, newer generation, and submitted values/bindings.
 Reload before retrying unknown outcomes.
 
-Focused **Save Configuration** passes focus to **Checking Configuration…**.
-Success focuses **Edit Configuration** unless focus moved.
-ID/generation mismatches or stale `409` responses require **Reload draft**.
-Keep edits, focus the marked button, and reveal the alert.
-During [tab return](../platform-console.md#2-resolve-the-session-before-private-reads),
-`console.mts:revalidateMountedAgent` first reconfirms access to that inert view.
-Newer focus or selection cancels restoration and scrolling.
+Focused **Save Configuration** transfers focus to **Checking Configuration…**.
+Success focuses **Edit Configuration** unless focus moved. ID/generation conflicts
+or stale `409` require **Reload draft**. Keep edits. Unless focus moved, focus
+it and reveal the alert. On [tab return](../platform-console.md#2-resolve-the-session-before-private-reads),
+`console.mts:revalidateMountedAgent` rechecks access. Newer focus or selection
+cancels restoration and scrolling.
 
 **Enable gateway password access** and **Collaboration and safety**
 (`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access
@@ -164,18 +163,19 @@ access unverified.
 Deployment rereads Agent and Configuration, requires authentication and
 Slack bindings, and blocks Teams. Reload if association, generation,
 authentication, plugins, execution mode, Backend, or repository access change.
-Pending requests lock controls. Snapshot views deploy current settings. Failed
-reads prevent the bodyless deploy POST. Success opens the version. Read history
-before retrying an uncertain POST. Browser reads are separate from admission.
+Pending requests lock controls. Failed reads block the [POST](../../reference/api.md#post-namespacesnamespaceidagentsagentiddeploy).
+Console sends `harnessOverrides` and the reviewed `expectedRepositoryPolicyVersion`.
+Without review, a `github-repository` binding and empty readable history yield
+`null`. Otherwise Console omits the field. Admission rechecks independently.
+Success opens the version. Uncertainty disables Deploy. Don’t resubmit. [Follow the identified revision or ask an administrator to reconcile](../../guides/topics/agent-revisions.md#update-and-deploy).
 
-`apps/controller/src/console/drafts.mts:createDraftStore` holds document-local drafts.
-`console.mjs:resetReads` and `detail.mjs:renderTab` capture fields before teardown,
-excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
-user change, logout, exit, and reload clear them. Nothing enters browser storage
-or URLs. Configuration, authentication, and channel baselines prevent stale saves;
-channel snapshots include controls and staged Secret metadata. Reload draft reapplies
-only the reader's edits, naming overlaps and skipped choices. Save and Cancel
-clear captures; pending saves retain recovery guards.
+`apps/controller/src/console/drafts.mts:createDraftStore` isolates in-memory drafts by Namespace
+and Agent. `console.mts:resetReads` and `detail.mts:renderTab` exclude passwords.
+Session expiry, user change, logout, exit or browser reload clears drafts.
+Baselines guard saves. Channel snapshots include staged Secret metadata.
+**Reload draft** can reapply edits after conflicts, flagging overlaps and skips.
+After **Outcome unknown**, it discards edits. Success or Cancel clears captures.
+Pending saves retain guards.
 
 `dom.mts:dismissOnBackdrop` requires press and click outside the topmost editor.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
@@ -195,7 +195,7 @@ Editing returns once the required grants are confirmed.
 
 `agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
-version. `agents/secret-picker.mjs:renderSecretReference` checks the source Namespace.
+version. `agents/secret-picker.mts:renderSecretReference` checks the source Namespace.
 Without Installation administrator access, it reads the readable Namespace's
 Secret list once per Agent view before exact metadata reads. Omitted Secrets show as unavailable
 without audited exact-read denials (2619). Successful reads show names and IDs.
@@ -220,10 +220,10 @@ selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
-bindings and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
+bindings and Credentials URL to `channels/slack.mts:credentialReferenceField`.
 `GET /namespaces/:namespaceId/secrets` requires Namespace read.
 `packages/occ/src/secret-operations.ts:listSecrets` filters exact Secret read without the Secret Driver.
-`agents/secret-picker.mjs:createSecretReferenceField` filters names and IDs. Arrows
+`agents/secret-picker.mts:createSecretReferenceField` filters names and IDs. Arrows
 navigate, Enter stages a reference, Escape restores, and Cancel discards.
 Typing stages nothing.
 **Refresh Secret list** rereads metadata without saving and preserves query, focus, staged fields,
@@ -263,13 +263,12 @@ says access was not verified until **Reload draft**. An administrator's console 
 bound Secret's grant, as deployment does, with Slack on or off; Deploy waits for those reads and
 rechecks before its POST, and a save or Retry during one reads again before naming Deploy. With
 Slack off, the section shows only while a bound Secret's grant waits, with only Retry (3018),
-whose success names the granted access. A Retry carries no Secret choices into **Reload draft** (3021).
-A Retry's warning names only the grant, and a later save's names the Configuration save (3023,
-3029); after **Reload draft** the section waits for its grant read instead of restating that outcome.
-If it finds nothing outstanding, the section says access is confirmed and focuses that line (3030).
-`agents/credentials.mjs:missingChannelCredentialGroups` reads token keys as the Slack Channel
+whose success names the grant. Retry carries no Secret choices into **Reload draft** (3021).
+Warnings distinguish grant retries from Configuration saves (3023, 3029).
+**Reload draft** waits for a fresh grant read. If nothing remains, it focuses the access confirmation (3030).
+`agents/credentials.mts:missingChannelCredentialGroups` reads token keys as the Slack Channel
 Driver does; pickers appear only for standard keys. A 400 that
-`agents/list.mjs:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
+`agents/list.mts:channelBindingRefusal` matches shows the API's message. An uncertain PATCH
 blocks another channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent.
 
@@ -288,7 +287,7 @@ grants the Agent service principal exact Secret (`api_key` or imported `codex_pa
 or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
-Grant failure preserves saved authentication and freezes controls. `credentials.mjs:grantWarning`
+Grant failure preserves saved authentication and freezes controls. `credentials.mts:grantWarning`
 names the outcome; members send no grant and get no retry. **Retry credential access**
 rechecks identity and bindings before granting. Uncertain PATCH requires **Reload authentication
 source**. Pending access survives navigation and holds deployment until confirmed or reloaded;
@@ -345,14 +344,12 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 - Run `node --test tests/browser/console-deployment-activity.test.ts`: Controller-backed
   disclosure, overlap, and refusal checks, not runtime proof.
 
-- A denied Secret list requires collection `read`; a missing menu entry may lack
-  exact Secret `read`.
+- Listing requires Namespace `read`. Entries require individual Secret `read`.
 - After a partial save, inspect Configuration, Secret metadata, and Agent IAM
   bindings before retrying; storage and binding do not prove runtime delivery.
 - After a plugin edit, compare saved `Agent.plugins` with the version's plugin
   snapshot; an Agent update installs or activates no plugin until a deployment.
-- [Console failures](../../reference/console.md#failures-and-logout) covers session,
-  permission, and network recovery.
+- [Console recovery](../../reference/console.md#failures-and-logout)
 
 ## Related docs
 
@@ -366,7 +363,11 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-24 21:14: Reconcile uncertain deployments. (authoring-run/b770071f-a9c8-4726-8278-51870f444984 - 1a01465bed4be5f374bfc3b4cb86eee604907ab6)
+- 2026-11-24 16:36: Reconcile Channels and reload. (authoring-run/1a56db49-0f69-4836-8921-ba746a9bd026 - ad89333393b92bf2c7020d5fa3b480a74ab4dbec)
 - 2026-11-24 15:51: Trace draft Channels access confirmation. (authoring-run/0e68027f-b229-42d4-8639-87267b4b6363 - fccad45bda2c0004ecf6ee4cdd93a3cefbfd089e)
+- 2026-11-24 15:51: Distinguish draft reload outcomes. (authoring-run/acb5e9f3-ca5f-443d-ba44-31a213dffc65 - 7b0d04f59c01e53e3f19e1e744daee1e428e851c)
 - 2026-11-24 06:58: Guard Settings during pending saves. (authoring-run/261aa429-df62-4285-b574-5417ff787bdc - 4d4681144427368743596e0379b28dbadfef8c58)
+- 2026-11-24 04:34: Correct deployment and access checks. (authoring-run/c18adb53-c759-42e0-a930-ff768e9075d0 - 8975a292b01b6ddbf7c01be8b3f70878085a772d)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
