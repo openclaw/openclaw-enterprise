@@ -632,7 +632,7 @@ const openshellCodexBinaries = Object.freeze([
   "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
 ]);
 
-export function createOpenShellInstallationConfiguration({
+function createOpenShellSandboxConfiguration({
   authentication,
   platformNamespace,
   gatewayImage,
@@ -673,16 +673,9 @@ export function createOpenShellInstallationConfiguration({
       type: "openshell",
       // The fixture gateway is in-cluster HTTP isolated by the suite's NetworkPolicies.
       configuration: { endpoint: "http://127.0.0.1:1", insecureTransport: "network-policy" },
-      drivers: {
-        sandbox: "sandbox-openshell-kubernetes",
-        credential_gateway: "credential-gateway-openshell-kubernetes",
-      },
+      drivers: { sandbox: "sandbox-openshell-kubernetes" },
     },
   ];
-  configuration.drivers.credential_gateway = {
-    id: "credential-gateway-openshell-kubernetes",
-    configuration: { binaries: [...openshellCodexBinaries] },
-  };
   configuration.sandboxNetworkPolicyCeiling = [
     {
       id: "python-demo",
@@ -749,6 +742,23 @@ export function createOpenShellInstallationConfiguration({
     "ephemeral-storage"
   ] = "1Gi";
   return configuration;
+}
+
+export function createOpenShellTokenServiceInstallationConfiguration(options) {
+  const installation = createOpenShellSandboxConfiguration(options);
+  installation.drivers.token_service = { id: "occ", configuration: {} };
+  return installation;
+}
+
+// TODO(TokenService qualification): port the remaining Gateway-owned refresh and policy proofs.
+export function createOpenShellInstallationConfiguration(options) {
+  const installation = createOpenShellSandboxConfiguration(options);
+  installation.backend[0].drivers.credential_gateway = "credential-gateway-openshell-kubernetes";
+  installation.drivers.credential_gateway = {
+    id: "credential-gateway-openshell-kubernetes",
+    configuration: { binaries: [...openshellCodexBinaries] },
+  };
+  return installation;
 }
 
 export function openShellChartImageValues(prefix, image) {
