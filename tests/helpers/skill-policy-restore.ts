@@ -1,9 +1,10 @@
 import { redactedQaTail } from "./qa-secrets.ts";
 
-const stageSummaries = new WeakMap();
+const stageSummaries = new WeakMap<object, string[]>();
 
-function failureSummaries(error, limit) {
-  const previous = stageSummaries.get(error);
+function failureSummaries(error: unknown, limit: number): string[] {
+  const previous =
+    typeof error === "object" && error !== null ? stageSummaries.get(error) : undefined;
   if (previous) {
     return previous.slice(0, limit);
   }
@@ -20,24 +21,24 @@ function failureSummaries(error, limit) {
   }
 }
 
-export async function withSkillPolicyRestore(run, restore, combinedMessage) {
-  let result;
+export async function withSkillPolicyRestore<T>(
+  run: () => T | PromiseLike<T>,
+  restore: () => unknown,
+  combinedMessage: string,
+): Promise<T> {
+  let result: T;
   try {
     result = await run();
   } catch (cause) {
-    const errors = [cause];
     try {
       await restore();
-    } catch (error) {
-      errors.push(error);
-    }
-    if (errors.length > 1) {
+    } catch (restorationError) {
       // Node's reporter retains only the outer message. Keep at most three bounded
       // stage summaries so both nested restores fit its 600-character message limit.
       const exercise = failureSummaries(cause, 2);
-      const restoration = failureSummaries(errors[1], 1);
+      const restoration = failureSummaries(restorationError, 1);
       const message = `${combinedMessage}\nExercise: ${exercise.join(" | ")}\nRestoration: ${restoration.join(" | ")}`;
-      const combined = new AggregateError(errors, message, { cause });
+      const combined = new AggregateError([cause, restorationError], message, { cause });
       stageSummaries.set(combined, [...exercise, ...restoration]);
       throw combined;
     }
