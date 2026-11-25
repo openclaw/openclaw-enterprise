@@ -96,7 +96,6 @@
     "tests/conformance/occ-api-security.test.ts": 2100,
     "tests/conformance/occ-read.test.ts": 300,
     "tests/conformance/occ-runtime-logs-security.test.ts": 1600,
-    "tests/conformance/openshell-codex-device.test.mjs": 400,
     "tests/conformance/openshell-gateway-wire.test.ts": 13700,
     "tests/conformance/openshell-git-runtime.test.mjs": 2800,
     "tests/conformance/openshell-harness-status.test.mjs": 2400,

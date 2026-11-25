@@ -59,6 +59,9 @@ graph TD
 
 OCC checks `credential_source:create` and validates any static Template. TokenService creates the Source and stores the credential privately. OCC grants the creator access, audits completion, and returns nonsecret metadata. See the [custody flow](token-service-static-custody.md) for failures between commits.
 
+Installation startup rejects retired `credential_gateway` and `credential_refresh`
+Backend members (`packages/occ/src/backends.ts:validateOpenShellBackend`).
+
 The OpenShell TokenService checks a static credential against the [native size limit](../reference/credential-sources/managed-static.md#preview-openshell-custody) before importing a Provider profile or changing a Provider.
 
 The deprecated legacy Proxy still exposes a separate [protected metadata Source](../reference/credential-sources/protected-repository-metadata.md). Credential 1.0 retires it; ordinary metadata reads have only a Sandbox network rule.

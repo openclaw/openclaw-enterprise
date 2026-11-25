@@ -91,7 +91,6 @@
     "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-managed-bootstrap.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
-    "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/token-service-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/conformance/strands-box-status.test.ts",
@@ -389,9 +388,6 @@
     },
     {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
-    },
-    {
-      "path": "tests/conformance/openshell-codex-device.test.mjs"
     },
     {
       "path": "tests/conformance/token-service-codex-device.test.mjs"

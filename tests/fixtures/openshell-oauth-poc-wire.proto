@@ -4,8 +4,6 @@ package openshell.v1;
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
 service OpenShell {
-  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest) returns (ConfigureProviderRefreshResponse);
-  rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
   rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
   rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
@@ -15,43 +13,6 @@ message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope 
 message ProviderResponse { Provider provider = 1; }
 message Provider { ObjectMeta metadata = 1; string type = 2; map<string, string> config = 4; }
 message ObjectMeta { string name = 2; map<string, string> labels = 4; uint64 resource_version = 5; }
-message ConfigureProviderRefreshRequest {
-  // Workspace scope. Only a named workspace selection is accepted.
-  WorkspaceSelector workspace_scope = 7;
-  reserved 6;
-  reserved "expires_at_ms";
-  string provider = 1;
-  string credential_key = 2;
-  ProviderCredentialRefreshStrategy strategy = 3;
-  map<string, string> material = 4;
-  // Additional material names the caller requests be stored as secrets. Every
-  // name must be present in material. The server also classifies secrets from
-  // the authoritative provider profile and refresh strategy.
-  repeated string secret_material_keys = 5;
-  google.protobuf.Timestamp expiration_time = 106;
-  // Optional nonzero UUID for durable at-most-once admission. Successful results
-  // can be replayed for 24 hours; see the API errors and retries reference.
-  string request_id = 8;
-}
-
-message ConfigureProviderRefreshResponse {
-  ProviderCredentialRefreshStatus status = 1;
-}
-
-message RotateProviderCredentialRequest {
-  // Workspace scope. Only a named workspace selection is accepted.
-  WorkspaceSelector workspace_scope = 3;
-  string provider = 1;
-  string credential_key = 2;
-  // Optional nonzero UUID for durable at-most-once admission. Successful results
-  // can be replayed for 24 hours; see the API errors and retries reference.
-  string request_id = 4;
-}
-
-message RotateProviderCredentialResponse {
-  ProviderCredentialRefreshStatus status = 1;
-}
-
 message GetProviderRefreshStatusRequest {
   // Workspace scope. Only a named workspace selection is accepted.
   WorkspaceSelector workspace_scope = 3;

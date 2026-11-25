@@ -7,7 +7,10 @@ import { InstallationFieldError } from "../../apps/controller/src/composition/in
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import type { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
+import type {
+  ConfigurationValidationError,
+  OpenShellBackendConfiguration,
+} from "../../packages/contracts/src/index.ts";
 import {
   CredentialProxyRepositoryOnlyError,
   ResourceStateConflictError,
@@ -390,7 +393,7 @@ test("repository.openShell names each unmet requirement, including ones earlier 
       endpoint: "https://gateway.example.test:8443",
       auth: { mode: "mtls", certificatePath: "/c", privateKeyPath: "/k" },
     },
-    drivers: { sandbox: "sandbox", credential_gateway: "gateway" },
+    drivers: { sandbox: "sandbox" },
   } satisfies NonNullable<Parameters<typeof validateOpenShellRepositoryTransport>[1]["backend"]>;
   const met = {
     prepared: true,
@@ -512,5 +515,71 @@ test("repository.openShell with another GitHub origin starts and refuses Git at 
       control.assertAvailable(AbortSignal.timeout(5_000)),
       CredentialProxyRepositoryOnlyError,
     );
+  }
+});
+
+test("the OpenShell Backend names its gateway's namespace only from Service-shaped hosts", () => {
+  const placement = (configuration: OpenShellBackendConfiguration, namespace?: string) =>
+    createOpenShellBackend({
+      id: "openshell",
+      type: "openshell",
+      configuration,
+      drivers: { sandbox: "s" },
+    }).client.placement(namespace);
+  const named = { service: "openshell-gateway", namespace: "openshell-system" };
+  for (const configuration of [
+    { endpoint: "https://openshell-gateway.openshell-system.svc:8080" },
+    { endpoint: "http://openshell-gateway.openshell-system.svc.cluster.local:8080" },
+    { endpoint: "openshell-gateway.openshell-system.svc.example.internal:8080" },
+    { endpoint: "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc:8080" },
+    // CoreDNS answers a port and protocol before the Service name like the Service (finding 1369).
+    { endpoint: "https://grpc.tcp.openshell-gateway.openshell-system.svc:8080" },
+    { endpoint: "http://_grpc._tcp.openshell-gateway.openshell-system.svc.cluster.local:8080" },
+    { serviceName: "openshell-gateway.openshell-system" },
+    { serviceName: "openshell-gateway.openshell-system.svc.cluster.local" },
+    { serviceName: "openshell-gateway-0.openshell-gateway-peer.openshell-system.svc" },
+    // DNS names are case-insensitive, and token_url hosts are compared after URL parsing.
+    { serviceName: "OpenShell-Gateway.OpenShell-System" },
+    { serviceName: "OpenShell-Gateway.OpenShell-System.SVC.Cluster.Local" },
+    { serviceName: "GRPC.TCP.OpenShell-Gateway.OpenShell-System.SVC" },
+  ]) {
+    assert.deepEqual(
+      placement(configuration, "oce-0123456789abcde"),
+      named,
+      JSON.stringify(configuration),
+    );
+  }
+  // A Service name, with or without a port and protocol, is kept as written.
+  for (const endpoint of [
+    "https://openshell-gateway-peer.openshell-system.svc:8080",
+    "https://_grpc._tcp.openshell-gateway-peer.openshell-system.svc:8080",
+  ]) {
+    assert.deepEqual(
+      placement({ endpoint }),
+      { service: "openshell-gateway-peer", namespace: "openshell-system" },
+      endpoint,
+    );
+  }
+  // Only a trailing `-peer` names the peer Service of the gateway Service.
+  assert.deepEqual(
+    placement({ endpoint: "https://gateway-0.gateway-peering.openshell-system.svc:8080" }),
+    { service: "gateway-peering", namespace: "openshell-system" },
+  );
+  // A bare Service name resolves in each tenant namespace, so only a tenant names it.
+  assert.equal(placement({ serviceName: "openshell-gateway" }), undefined);
+  assert.deepEqual(placement({ serviceName: "openshell-gateway" }, "oce-0123456789abcde"), {
+    service: "openshell-gateway",
+    namespace: "oce-0123456789abcde",
+  });
+  for (const endpoint of [
+    "http://127.0.0.1:1",
+    "http://[::1]:8080",
+    "http://k3d-occ-dev-server-0:30080",
+    "https://openshell.example.com",
+    "openshell-gateway.openshell-system:8080",
+    // CoreDNS answers at most two labels before the Service name.
+    "https://a.grpc.tcp.openshell-gateway.openshell-system.svc:8080",
+  ]) {
+    assert.equal(placement({ endpoint }, "oce-0123456789abcde"), undefined, endpoint);
   }
 });

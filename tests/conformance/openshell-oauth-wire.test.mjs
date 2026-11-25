@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -17,7 +16,7 @@ const grpc = require("@grpc/grpc-js");
 const loader = require("@grpc/proto-loader");
 
 // Real TLS proves client identity and header separation; the RPC bodies below are
-// controlled protocol fixtures, not proof of OpenShell's refresh implementation.
+// controlled protocol fixtures.
 async function wireCertificates(t) {
   const directory = await temporaryDirectory(t, "openshell-oauth-wire-");
   const ca = await certificateAuthority(directory, { caName: "OpenShell wire test CA", days: 1 });
@@ -54,7 +53,7 @@ async function wireCertificates(t) {
 }
 
 test(
-  "OpenShell OAuth RPCs preserve workspace/key scope and isolate operator credential reads",
+  "OpenShell Provider reads preserve Workspace scope and isolate operator credentials",
   { timeout: 20_000 },
   async (t) => {
     const certificates = await wireCertificates(t);
@@ -77,6 +76,7 @@ test(
     const workspace = "oauth-poc";
     const sourceId = "source-fixture";
     const provider = openShellProviderName(sourceId);
+    const missingProvider = openShellProviderName("missing-source");
     const key = "CODEX_ACCESS_TOKEN";
     const expiry = new Date(Date.now() + 3_600_000);
     const expiryWire = { seconds: String(Math.floor(expiry.getTime() / 1000)), nanos: 0 };
@@ -86,8 +86,6 @@ test(
     let pendingRead = false;
     const received = Promise.withResolvers();
     const cancelled = Promise.withResolvers();
-    let rotations = 0;
-    const requests = [];
     const status = {
       provider,
       credential_key: key,
@@ -96,27 +94,22 @@ test(
     };
     const server = new grpc.Server();
     server.addService(OpenShell.service, {
-      ConfigureProviderRefresh(call, callback) {
-        assertBearer(call);
-        requests.push(call.request);
-        callback(null, { status: { ...status, status: "configured" } });
-      },
-      RotateProviderCredential(call, callback) {
-        assertBearer(call);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
-        assert.equal(call.request.provider, provider);
-        assert.equal(call.request.credential_key, key);
-        rotations++;
-        callback(null, { status });
-      },
       GetProviderRefreshStatus(call, callback) {
         assertBearer(call);
+        assert.deepEqual(call.request.workspace_scope, { workspace });
         assert.equal(call.request.credential_key, key);
-        callback(null, { credentials: [status] });
+        if (call.request.provider === missingProvider) {
+          callback({ code: grpc.status.NOT_FOUND });
+          return;
+        }
+        assert.equal(call.request.provider, provider);
+        callback(null, {
+          credentials: [{ ...status, credential_key: "OTHER_TOKEN", status: "failed" }, status],
+        });
       },
       GetProvider(call, callback) {
         assertBearer(call);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
+        assert.deepEqual(call.request, { workspace_scope: { workspace }, name: provider });
         callback(null, {
           provider: {
             type: provider,
@@ -179,40 +172,27 @@ test(
       server.forceShutdown();
     });
     const signal = AbortSignal.timeout(10_000);
-    await client.configureProviderRefresh(
-      {
-        workspace,
-        provider,
-        credentialKey: key,
-        strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
-        material: { client_id: "synthetic-client", refresh_token: "synthetic-refresh" },
-        requestId: randomUUID(),
-        expirationTime: expiry.toISOString(),
-      },
-      signal,
-    );
-    assert.equal(requests[0].strategy, "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN");
-    assert.equal(requests[0].workspace_scope.workspace, workspace);
-    assert.equal(requests[0].credential_key, key);
-    assert.equal(requests[0].material.refresh_token, "synthetic-refresh");
-    assert.equal(requests[0].expiration_time.seconds, String(Math.floor(expiry.getTime() / 1000)));
-    await client.rotateProviderCredential(workspace, provider, key, randomUUID(), signal);
     assert.equal(
       (await client.getProviderRefreshStatus(workspace, provider, key, signal)).status,
       "refreshed",
     );
+    assert.equal(
+      await client.getProviderRefreshStatus(workspace, missingProvider, key, signal),
+      undefined,
+    );
 
     const backend = createOpenShellBackend({
       id: "openshell",
-      implementation: "openshell",
+      type: "openshell",
       configuration,
-      drivers: {
-        sandbox: "sandbox",
-        credential_gateway: "credential-gateway-openshell",
-        credential_refresh: "credential-refresh-openshell",
-      },
+      drivers: { sandbox: "sandbox" },
     });
     t.after(() => backend.client.close());
+    // Ordinary inventory and the operator export share an endpoint but use different identities.
+    const listed = await backend.client
+      .clientForNamespace(workspace)
+      .getProvider(workspace, provider, signal);
+    assert.equal(listed?.name, provider);
     assert.deepEqual(
       await backend.client
         .credentialClientForNamespace(workspace)
@@ -222,13 +202,9 @@ test(
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({
       id: "openshell-ip",
-      implementation: "openshell",
+      type: "openshell",
       configuration: { ...configuration, endpoint: `https://127.0.0.1:${port}` },
-      drivers: {
-        sandbox: "sandbox",
-        credential_gateway: "credential-gateway-openshell",
-        credential_refresh: "credential-refresh-openshell",
-      },
+      drivers: { sandbox: "sandbox" },
     });
     t.after(() => ipBackend.client.close());
     const readCredential = (operationSignal = signal) =>
@@ -247,7 +223,6 @@ test(
     // The fixture models an already-published replacement. A fresh RPC reads that value.
     current = "synthetic-access-replacement";
     assert.equal((await readCredential()).value, current);
-    assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
     denyRead = true;
     await assert.rejects(readCredential(), (error) => {
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
@@ -286,7 +261,7 @@ test(
       "credentials without declared expiry remain valid",
     );
 
-    // Cancellation still bounds a read that may be waiting on gateway-owned refresh.
+    // Cancellation bounds a stalled credential read.
     pendingRead = true;
     const abort = new AbortController();
     const reason = new Error("credential discovery cancelled");

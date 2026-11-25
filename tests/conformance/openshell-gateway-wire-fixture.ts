@@ -229,15 +229,6 @@ type WireMethods = {
     { detached?: boolean; receipt?: ProviderReceipt },
   ];
   GetProviderRefreshStatus: [ScopedProvider, { credentials?: RefreshStatus[] }];
-  ConfigureProviderRefresh: [
-    ScopedProvider & { strategy?: string; material?: Labels; request_id?: string },
-    { status?: RefreshStatus },
-  ];
-  RotateProviderCredential: [ScopedProvider & { request_id?: string }, { status?: RefreshStatus }];
-  DeleteProviderRefresh: [
-    ScopedProvider & { allow_missing?: boolean; request_id?: string },
-    DeletionReply,
-  ];
   GetSandboxLogs: [
     ScopedSandbox & { lines?: number; since_time?: WireTime },
     { logs?: WireSandboxLogLine[]; buffer_total?: number },

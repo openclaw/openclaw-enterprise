@@ -4,7 +4,6 @@ import type {
   NamespaceDeletionEligibility,
 } from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
-import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
 import type {
   CredentialDeploymentConfiguration,
   CredentialProjection,
@@ -261,6 +260,12 @@ export interface ProtectedRepositoryNetworkPolicySaveContext {
     ownerCapability: "credential_gateway" | "credential_proxy";
     driverId: string;
   }>;
+}
+
+export interface CredentialAttachmentStatus {
+  readonly sourceId: string;
+  readonly state: "ready" | "pending" | "withheld" | "failed" | "revoked" | "absent";
+  readonly reason?: string;
 }
 
 export interface ComputeDriver extends Driver {

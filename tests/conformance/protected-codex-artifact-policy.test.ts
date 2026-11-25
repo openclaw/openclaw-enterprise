@@ -45,7 +45,6 @@ function newBackend() {
     configuration: { endpoint: "http://127.0.0.1:9", insecureTransport: "network-policy" },
     drivers: {
       sandbox: "artifact-sandbox",
-      credential_gateway: "artifact-credentials",
       credential_proxy: "artifact-sandbox",
     },
   });

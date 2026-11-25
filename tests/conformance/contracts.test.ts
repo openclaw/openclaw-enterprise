@@ -211,8 +211,6 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "plugin",
     "channel",
     "repo",
-    "credential_gateway",
-    "credential_refresh",
     "credential_proxy",
     "credential_proxy_delivery",
     "token_service",
@@ -228,6 +226,8 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "providers",
     "legacy",
     "repository_credentials",
+    "credential_gateway",
+    "credential_refresh",
     "",
     undefined,
   ]) {

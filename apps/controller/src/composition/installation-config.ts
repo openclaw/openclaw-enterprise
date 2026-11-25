@@ -758,14 +758,6 @@ function backendConfiguration(
   }
   for (const backend of backends) {
     if (backend.type === "openshell") {
-      if (
-        backend.drivers.credential_gateway !== undefined ||
-        backend.drivers.credential_refresh !== undefined
-      ) {
-        throw new Error(
-          `backend[${backend.id}] selects retired credential Drivers. Select TokenService and Credential Proxy in the Installation configuration.`,
-        );
-      }
       if (backend.drivers.credential_proxy !== credentialProxyId) {
         throw new Error(
           `backend[${backend.id}].drivers.credential_proxy must match the selected drivers.credential_proxy.id; configure both or omit both.`,

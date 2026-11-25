@@ -19,11 +19,7 @@ import type {
   ConfigurationValidationError,
   OpenShellBackendConfiguration,
 } from "../../packages/contracts/src/index.ts";
-import {
-  ConfigurationHarnessError,
-  DriverSelectionError,
-  OpenClawController,
-} from "../../packages/occ/src/index.ts";
+import { ConfigurationHarnessError, OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { reservedPortArgs } from "../helpers/available-port.ts";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -148,10 +144,7 @@ export function registerSandboxDriverStartupWiringCases() {
 
   test("startup selects native credential delivery without a legacy Credential Gateway", async (t) => {
     const configuration = sandboxInstallation();
-    // A Gateway service remains configured, but neither the backend nor startup selects the
-    // legacy CredentialGatewayDriver as a credential Source owner.
-    Reflect.deleteProperty(configuration.drivers, "credential_gateway");
-    Reflect.deleteProperty(configuration.backend[0]!.drivers, "credential_gateway");
+    // Native delivery uses the Sandbox registration and its OpenShell connection.
     Object.assign(configuration.drivers, { token_service: { id: "occ", configuration: {} } });
     const runtime = await loadInstallationFile(t, configuration);
     const owner = runtime!.credentialDeliveryRegistration!;
@@ -170,7 +163,6 @@ export function registerSandboxDriverStartupWiringCases() {
     installSelectedSandboxDrivers(controller, runtime!);
     await controller.validateBackendConfiguration();
     assert.equal(controller.selectedDriver("credential_proxy_delivery"), proxy);
-    assert.throws(() => controller.selectedDriver("credential_gateway"), DriverSelectionError);
   });
 
   test("startup keeps the protected OpenShell owner when native delivery is selected", async (t) => {
@@ -209,14 +201,14 @@ export function registerSandboxDriverStartupWiringCases() {
         },
         new RegExp(key),
       );
+      await rejectsAtStartup(
+        t,
+        (configuration) => {
+          Object.assign(firstBackend(configuration).drivers, { [key]: "retired" });
+        },
+        new RegExp(`drivers\\.${key}`),
+      );
     }
-    await rejectsAtStartup(
-      t,
-      (configuration) => {
-        Object.assign(firstBackend(configuration).drivers, { credential_gateway: "retired" });
-      },
-      /selects retired credential Drivers/,
-    );
   });
 
   test("startup rejects an OpenShell Backend whose Sandbox is not selected", async (t) => {

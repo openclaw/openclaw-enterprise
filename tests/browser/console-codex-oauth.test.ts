@@ -4,7 +4,6 @@ import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
 import type { Agent, HarnessAuthBinding, Namespace } from "@openclaw-enterprise/contracts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.ts";
 import {
   controlDeviceIssuer,
   installDeviceTokenService,
@@ -689,76 +688,65 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   );
 });
 
-// A legacy Gateway does not offer the TokenService-owned device authorization capability.
 const DEVICE_LOGIN_NOT_OFFERED =
   "ChatGPT sign-in needs a selected TokenService that supports device authorization. Choose another authentication method.";
 
 for (const savedAgent of [false, true]) {
-  for (const drivers of ["none", "Credential Gateway only"]) {
-    test(`Codex sign-in on ${savedAgent ? "Agent credentials" : "Create Agent"} with ${drivers === "none" ? "no device-login Drivers" : "a Credential Gateway only"} is unavailable and says why`, async (t) => {
-      const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
-      if (drivers !== "none") {
-        const { gateway } = createDeviceCredentialDrivers();
-        fixture.controller.registerDriver(gateway);
-        fixture.controller.selectDriver(gateway.capability, gateway.id);
-      }
-      const agent = savedAgent
-        ? agentIdentity(
-            await fixture.createAgent(
-              namespace.id,
-              "OAuth unavailable",
-              nativeValues("oauth-unavailable", { harnessId: "codex" }),
-              { executionMode: "dedicated" },
-            ),
-          )
-        : null;
-      const { page } = await newPage(t, fixture);
-      const requests = apiRequests(page, fixture.origin);
-      await login(
-        page,
-        fixture,
-        agent
-          ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
-          : `/console/agents/new?namespace=${namespace.id}`,
-      );
-      if (!agent) {
-        await page.getByRole("button", { name: "Start without Preset" }).click();
-      }
-      await page
-        .getByLabel(agent ? "Authentication source" : "Authentication method")
-        .selectOption(agent ? "device_login" : "credential_source");
-      if (!agent) {
-        await page.getByLabel("Model credential", { exact: true }).selectOption("new");
-      }
-      const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
-      const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
-      const starts = () =>
-        requests.filter(({ method, path }) => method === "POST" && path === beginPath).length;
-      const reason = DEVICE_LOGIN_NOT_OFFERED;
-      await page.getByText(reason, { exact: true }).waitFor();
-      assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
-      // Sign in stays in the Tab order, described by the reason, and starts nothing.
-      assert.equal(await start.getAttribute("aria-disabled"), "true");
-      await start.focus();
-      assert.equal(
-        await start.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-      );
-      assert.equal(
-        await start.evaluate((node) =>
-          (node.getAttribute("aria-describedby") ?? "")
-            .split(/\s+/)
-            .map((id) => globalThis.document.getElementById(id)?.textContent)
-            .join(" "),
-        ),
-        reason,
-      );
-      await page.keyboard.press("Enter");
-      await start.dispatchEvent("click");
-      await settlePageRequests(page);
-      assert.equal(starts(), 0);
-    });
-  }
+  test(`Codex sign-in on ${savedAgent ? "Agent credentials" : "Create Agent"} with no device-login Driver is unavailable and says why`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
+    const agent = savedAgent
+      ? agentIdentity(
+          await fixture.createAgent(
+            namespace.id,
+            "OAuth unavailable",
+            nativeValues("oauth-unavailable", { harnessId: "codex" }),
+            { executionMode: "dedicated" },
+          ),
+        )
+      : null;
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      agent
+        ? `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`
+        : `/console/agents/new?namespace=${namespace.id}`,
+    );
+    if (!agent) {
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+    }
+    await page
+      .getByLabel(agent ? "Authentication source" : "Authentication method")
+      .selectOption(agent ? "device_login" : "credential_source");
+    if (!agent) {
+      await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+    }
+    const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+    const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
+    const starts = () =>
+      requests.filter(({ method, path }) => method === "POST" && path === beginPath).length;
+    const reason = DEVICE_LOGIN_NOT_OFFERED;
+    await page.getByText(reason, { exact: true }).waitFor();
+    assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
+    // Sign in stays in the Tab order, described by the reason, and starts nothing.
+    assert.equal(await start.getAttribute("aria-disabled"), "true");
+    await start.focus();
+    assert.equal(await start.evaluate((node) => node === globalThis.document.activeElement), true);
+    assert.equal(
+      await start.evaluate((node) =>
+        (node.getAttribute("aria-describedby") ?? "")
+          .split(/\s+/)
+          .map((id) => globalThis.document.getElementById(id)?.textContent)
+          .join(" "),
+      ),
+      reason,
+    );
+    await page.keyboard.press("Enter");
+    await start.dispatchEvent("click");
+    await settlePageRequests(page);
+    assert.equal(starts(), 0);
+  });
 }
 
 test("Codex sign-in cannot repeat a start with an unreadable confirmation", async (t) => {

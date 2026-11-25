@@ -60,7 +60,6 @@ import {
   openShellNamespaceObjects,
   openShellWorkspaceProtocol,
 } from "../helpers/openshell-workspace-protocol.ts";
-import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
 import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
@@ -226,8 +225,6 @@ async function modelSourceFixture(
   let runtime: Awaited<ReturnType<typeof loadSelectedOpenShellAgentInstallation>> | undefined;
   if (withDelivery) {
     const installation = buildSandboxInstallation();
-    Reflect.deleteProperty(installation.drivers, "credential_gateway");
-    Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
     runtime = await loadSelectedOpenShellAgentInstallation(t, {
       installation,
       computeId: "console-source-compute",
@@ -1585,15 +1582,13 @@ test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model
     ),
     runtime: { nativeWorkerSupport: "custom-image" as const },
   };
-  Reflect.deleteProperty(installation.drivers, "credential_gateway");
-  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
   const core = new FakeSecretCoreV1Api();
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-pat-replacement-compute",
     tokenServiceId: "occ",
     core,
-    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
+    gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
   });
   assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
   let state: PlatformStateStore | undefined;

@@ -1,5 +1,4 @@
 import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
-import type { CredentialSourceAttachment } from "../credential-gateway/index.ts";
 import type { EgressInstallation, ProxyWiring } from "../credential-proxy/index.ts";
 import type {
   CredentialDeploymentTarget,
@@ -30,6 +29,34 @@ import type {
 export type ProtectedRepositoryNetworkPolicyContext = Readonly<AgentRevision>;
 
 export type KubernetesNamespacedResource = Readonly<Record<string, unknown>>;
+
+/** Codex account context and a placeholder for the Sandbox to resolve. */
+export interface ExternalChatgptAuth {
+  /** Placeholder only: copy unchanged for the paired Sandbox to resolve; never a real token. */
+  readonly accessTokenPlaceholder: string;
+  readonly accountId: string;
+  readonly planType: string;
+  readonly userId?: string;
+  /** Membership identity from the access token, distinct from the global user ID. */
+  readonly accountUserId?: string;
+  readonly email?: string;
+  readonly isFedramp?: boolean;
+}
+
+/** Credential attachment whose opaque grant reference the Sandbox consumes. */
+export interface CredentialSourceAttachment {
+  readonly sourceId: string;
+  readonly ref: string;
+  /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
+  readonly requestScope?: {
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly scopes: readonly string[];
+  };
+  /** External Codex authentication carries no refresh token into the workload. */
+  readonly externalChatgptAuth?: ExternalChatgptAuth;
+}
 
 export interface SandboxWorkspaceMount {
   readonly claimName: string;

@@ -117,33 +117,6 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ] satisfies DriverConfigurationDescriptor[])
         : []),
       {
-        capability: "credential_gateway",
-        driverId: "credential-gateway-openshell",
-        implementation: "openshell",
-        scope: "installation",
-        key: "startup",
-        binding: "installation-startup",
-        configurationSchema: {
-          type: "object",
-          ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
-          required: ["binaries"],
-          additionalProperties: false,
-          properties: {
-            binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-            toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
-          },
-        },
-        ...(scenario.installationValuesUnavailable
-          ? {}
-          : {
-              startupConfiguration: {
-                binaries: ["/usr/bin/git", "/usr/bin/curl"],
-                toolBinaries: ["/usr/bin/python3"],
-              },
-            }),
-        actions: {},
-      },
-      {
         capability: "sandbox",
         driverId: "sandbox-openshell",
         implementation: "openshell",
