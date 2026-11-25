@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
 updated: "2026-11-25"
-last_updated_session: authoring-run/ee533e3c-94ac-4b41-8155-e9b2afede620
+last_updated_session: authoring-run/3a63e1a9-f687-4e19-9a63-f0b30ad5c0b2
 ---
 
 # Managed OpenShell workload flow
@@ -178,7 +178,11 @@ Gateway image in the Agent worker role. The Sandbox verifies the node setup
 against that URL and checks the exact Workspace rule during policy readback.
 For staged Repository delivery, its creation digest binds the fixed baseline
 while excluding Proxy-owned dynamic rules; observation separately verifies the
-complete configured and loaded credential policy. The Worker revalidates the
+complete configured and loaded credential policy. While OpenShell loads an
+approved Repository policy, the Credential Proxy leaves activation pending.
+The Worker rechecks the same Sandbox. Credential delivery requires an active,
+approved policy, and Harness release requires the combined policy and ready Providers.
+The Worker revalidates the
 saved Repository binding before preparation and activation. A shared Source may cover other repositories. Only the Agent's admitted grants enter its Sandbox policy. Withdrawal removes
 that Agent's effective Repository binding without retiring a shared Source.
 The generated Gateway pairs the node identified by the revision's binding.
@@ -253,6 +257,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-25 15:17: Trace activation while OpenShell loads the approved Repository policy. (authoring-run/3a63e1a9-f687-4e19-9a63-f0b30ad5c0b2 - 2c1e993be144fa534cedf292aa82c5e54455b9eb)
 
 - 2026-11-25 06:17: Trace Compute placement and per-Agent grants for shared Git Sources. (authoring-run/ee533e3c-94ac-4b41-8155-e9b2afede620 - 2b7559218658c2260ae534e96a86d956df100c04)
 
