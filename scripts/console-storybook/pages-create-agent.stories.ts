@@ -140,6 +140,9 @@ export const ExistingCredentialSourceListFailure = story("createExistingSourceLi
 export const ExistingCredentialSourceNoMatch = story("createExistingSourceNoMatch");
 export const CreateExistingCredentialSourceDenied = story("createExistingSourceDenied");
 export const CreateWithExistingCredentialSource = story("createWithExistingCredentialSource");
+export const ExistingSourceDestinationMismatch = story(
+  "createExistingSourceUnsupportedDestination",
+);
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
 export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");

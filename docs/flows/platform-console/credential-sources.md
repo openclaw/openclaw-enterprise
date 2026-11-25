@@ -53,7 +53,7 @@ The dialog requests the Namespace's usable Connection Templates. This operation 
 
 Submission sends the write-only credential string with either the approved model preset or Template ID to the Source POST route, then clears the input. The Source API authorizes the collection operation; TokenService accepts or rejects registration. Console confirms the returned public Source identity, resource scope, type, state and purpose before showing success. A denied or uncertain result blocks resubmission; Refresh rechecks the inventory before another attempt. A Template-associated Source cannot authenticate a model or be admitted directly to an Agent.
 
-The next owner is [Agent creation](agent-creation.md), which binds an eligible model Source and checks exact Source `operate` during Agent save.
+The next owner is [Agent creation](agent-creation.md), which refuses an incompatible configured model destination before saving Configuration or Agent state. Agent save then checks exact Source `operate` and binds the eligible Source.
 
 ## Debugging and Verification
 

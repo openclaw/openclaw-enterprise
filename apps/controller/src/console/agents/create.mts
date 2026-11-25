@@ -45,6 +45,7 @@ import {
   credentialSourceOperateDenial,
   createModelCredentialSourceField,
   harnessAuthDescription,
+  modelSourceProvider,
 } from "./harness-auth.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
@@ -4027,6 +4028,12 @@ function renderAgentForm(
     ) {
       feedback.textContent =
         "Configuration must use the selected provider and model. Update the JSON or reset the template before saving.";
+      focusConfiguration();
+      return;
+    }
+    if (usesExistingModelSource() && !modelSourceProvider(values, harness.value, mode.value)) {
+      feedback.textContent =
+        "The existing Credential Source cannot be used with this model provider or destination. Update the Configuration JSON or choose compatible authentication.";
       focusConfiguration();
       return;
     }

@@ -1009,6 +1009,24 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
   await picker.locator(`option[value="${replacement}"]`).waitFor({ state: "attached" });
   assert.equal(await picker.inputValue(), original);
   assert.equal(pathRequests(requests, "GET", sourcePath).length, 3);
+  // Advanced settings can change the endpoint after Source selection. Refuse a mismatch
+  // before saving Configuration or an Agent draft that deployment cannot admit.
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const originalConfiguration = await configuration.inputValue();
+  const custom = object(JSON.parse(originalConfiguration));
+  object(object(object(custom.models).providers).openai).baseUrl = "https://models.example.test/v1";
+  await configuration.fill(JSON.stringify(custom, null, 2));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page
+    .getByText(
+      "The existing Credential Source cannot be used with this model provider or destination.",
+      { exact: false },
+    )
+    .waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  await configuration.fill(originalConfiguration);
   const response = await submitCreateAgent(page, fixture, namespace.id, {
     path: "agents",
     status: 201,

@@ -79,6 +79,36 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 type AuthBinding = HarnessAuthBinding | null | undefined;
 type ModelSourcePreset = "openai" | "codex-pat";
 
+/** Return the configured model provider only when its approved static Source presets can apply. */
+export function modelSourceProvider(
+  configuration: unknown,
+  harnessId: string | undefined,
+  executionMode: string | undefined,
+): "openai" | "codex" | undefined {
+  if (executionMode !== "dedicated") {
+    return undefined;
+  }
+  const selection = responseFields(
+    responseFields(responseFields(configuration).agents).defaults,
+  ).model;
+  const primary = typeof selection === "string" ? selection : responseFields(selection).primary;
+  const providerId = typeof primary === "string" ? primary.split("/", 1)[0] : undefined;
+  if (harnessId === "codex" && (providerId === "codex" || providerId === "openai")) {
+    return providerId;
+  }
+  const provider = responseFields(
+    responseFields(responseFields(configuration).models).providers,
+  ).openai;
+  const nativeOpenAI = responseFields(provider);
+  return harnessId === "openclaw" &&
+    providerId === "openai" &&
+    nativeOpenAI.api === "openai-responses" &&
+    typeof nativeOpenAI.baseUrl === "string" &&
+    /^https:\/\/api\.openai\.com(?::443)?\/v1\/?$/.test(nativeOpenAI.baseUrl)
+    ? "openai"
+    : undefined;
+}
+
 export function credentialSourceOperateDenial(cause: unknown, id: string, current = false) {
   const denial = namedDenial(cause);
   const target = `CredentialSource ${id}`;
@@ -347,22 +377,8 @@ export function createHarnessAuthFields(
     onStartSettled?(): void;
   } = {},
 ) {
-  const defaults = responseFields(responseFields(options.configuration).agents).defaults;
-  const selection = responseFields(defaults).model;
-  const primary = typeof selection === "string" ? selection : responseFields(selection).primary;
-  const providerId = typeof primary === "string" ? primary.split("/", 1)[0] : undefined;
-  const provider = responseFields(
-    responseFields(responseFields(options.configuration).models).providers,
-  )[providerId ?? ""];
-  const nativeOpenAI = responseFields(provider);
-  const sourceCompatible =
-    options.executionMode === "dedicated" &&
-    ((harnessId === "codex" && (providerId === "codex" || providerId === "openai")) ||
-      (harnessId === "openclaw" &&
-        providerId === "openai" &&
-        nativeOpenAI.api === "openai-responses" &&
-        typeof nativeOpenAI.baseUrl === "string" &&
-        /^https:\/\/api\.openai\.com(?::443)?\/v1\/?$/.test(nativeOpenAI.baseUrl)));
+  const providerId = modelSourceProvider(options.configuration, harnessId, options.executionMode);
+  const sourceCompatible = providerId !== undefined;
   const method = element(
     "select",
     { id: "harness-auth-method" },

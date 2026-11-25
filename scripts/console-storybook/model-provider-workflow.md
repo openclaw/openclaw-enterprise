@@ -50,6 +50,8 @@ Inspect these list and failure stories:
   bound to its previous Source.
 - **Model Source unavailable without an approved destination** preserves the current Source
   and disables replacement for a Configuration that cannot use the approved model preset.
+- **Pages/Create Agent → Existing Source destination mismatch** refuses an incompatible
+  Advanced settings route before saving Configuration or Agent state.
 
 ## Correct an edited model catalog
 

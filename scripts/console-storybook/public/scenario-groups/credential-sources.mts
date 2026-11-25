@@ -134,6 +134,52 @@ export const credentialSourceScenarios = {
       "Select Refresh Source list and confirm Research model stays selected before creating the Agent.",
     ],
   },
+  createExistingSourceUnsupportedDestination: {
+    group: "Pages/Create Agent",
+    name: "Existing Source destination mismatch",
+    path: create,
+    initialCredentialSources: previewModelSources,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+      { selector: "#execution-mode", value: "dedicated" },
+      { selector: "#agent-name", value: "Custom destination Agent" },
+      click("Enter model ID manually"),
+      { selector: "#agent-model-manual", value: "gpt-5.1" },
+      { selector: "#model-credential-storage", value: "existing_source" },
+      { selector: "#agent-model-existing-source", value: sourceId },
+      { selector: ".launch-advanced summary", click: true },
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local" },
+            agents: {
+              defaults: {
+                model: "openai/gpt-5.1",
+                models: { "openai/gpt-5.1": { agentRuntime: { id: "openclaw" } } },
+              },
+            },
+            models: {
+              providers: {
+                openai: {
+                  api: "openai-responses",
+                  baseUrl: "https://models.example.test/v1",
+                  models: [{ id: "gpt-5.1" }],
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      click("Create Agent"),
+    ],
+    description:
+      "The selected Source preset does not authorize the custom destination in Advanced settings. The form refuses the save before writing Configuration or Agent state.",
+  },
   createExistingSourceDenied: {
     group: "Pages/Create Agent",
     name: "Existing Source operate denied after Configuration save",
