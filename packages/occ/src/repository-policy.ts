@@ -51,6 +51,7 @@ import {
 import {
   DependencyUnavailableError,
   DriverSelectionError,
+  InstallationRepositoryAccessRetiredError,
   RepositoryBindingSelectionError,
   RepositoryDriverNotConfiguredError,
   RepositoryOptionsUnavailableError,
@@ -215,6 +216,14 @@ function includesBinding(
         binding.repositoryRef === expected.repositoryRef && binding.profile === expected.profile,
     ) === true
   );
+}
+
+export function validateRepositoryDeliveryProfiles(
+  bindings: readonly Pick<RepositoryBindingSelection, "profile">[],
+): void {
+  if (bindings.some(({ profile }) => isInstallationRepositoryProfile(profile))) {
+    throw new InstallationRepositoryAccessRetiredError();
+  }
 }
 
 // An Agent with repository bindings reaches the repository credential broker through the
@@ -840,13 +849,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     if (resolved === undefined) {
       return undefined;
     }
-    if (
-      resolved.resolution.bindings.some(({ profile }) => isInstallationRepositoryProfile(profile))
-    ) {
-      throw new ResourceStateConflictError(
-        "Installation-wide repository access (profile github-installation) is unavailable. Select the approved repositories individually.",
-      );
-    }
+    validateRepositoryDeliveryProfiles(resolved.resolution.bindings);
     let requests: readonly DeploymentRequestMatch[] | undefined;
     const stagedPolicy =
       staged && stagedRepositoryAuthority(agent.namespaceId, staged.source, resolved);

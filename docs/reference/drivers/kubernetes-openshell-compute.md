@@ -69,11 +69,10 @@ podSelector:
     openshell.ai/boundary-role: supervisor
 ```
 
-Protected Git verifies execution ownership and readiness through OpenShell's API.
-The worker does not need Kubernetes Pod-read access in OpenShell-managed namespaces.
-OpenShell owns the workload identities and reports them through its authenticated
-supervisor and Provider status. See the
-[Git execution trust boundary](../repository-credentials/protected-openshell-git.md#execution-identity).
+The Worker does not need Kubernetes Pod-read access in OpenShell-managed
+namespaces. For Source-backed Git, Compute checks delivery readiness through
+the Sandbox and Credential Proxy. See the
+[Source delivery flow](../../flows/credential-source-lifecycle.md).
 
 Build a Harness image containing `/opt/oce/runtime/openshell-bootstrap.cjs` and
 select it by immutable reference. See the [OpenShell development and CI pin](openshell-sandbox.md).
@@ -154,9 +153,6 @@ failure handling.
   credential delivery. To remove Git from a running Agent, clear its saved
   repository selection and verify withdrawal. Files already fetched remain in
   the workspace. See [native Git proof](https://github.com/openclaw/openclaw-enterprise/pull/7224).
-- For [prepared Git](../repository-credentials/protected-openshell-git.md), retire
-  the previous route and any standing approval before changing the bound
-  repository. Its protected sender requires its own durable route store.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
   operations. See [stop and replacement ordering](../../flows/openshell-managed-workload.md#stop-and-replacement-ordering)
   for the cancellation argument. Provider credential mutations and exposure

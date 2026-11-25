@@ -769,6 +769,14 @@
       "tag": "0096_namespace_github_app_clients",
       "breakpoints": true,
       "sha256": "6ea0d9ed1c8f2fa502c53f3ea0442cfd5162f0b34a9dd8d9978a248466a8cd4e"
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1787000000097,
+      "tag": "0097_retire_legacy_proxy_sources",
+      "breakpoints": true,
+      "sha256": "0090a7f22908e98c431b5508c8b6fb198f18c7a17acd0b2aec07623d00fca094"
     }
   ],
   "initialSchemaStates": {
@@ -1078,7 +1086,8 @@
     "preAgentRepositoryApiLimits": "38db6291bcefdfd438f397b5dac550104c9f322aa2aec119ca0cc4c7c31acebf",
     "preTokenServiceSourceBackendRef": "3142f5cd7ac198011875f0a0b26e23a9a795a1541acb7a67cf2eea62473088b9",
     "preTokenServiceCredentialSources": "f643644ede20df1495b56b330f7b12997d659ae29807484f16a546a160ec8f3e",
-    "preNamespaceGitHubAppClients": "dfc903e1ed8df94391bca529422e32db936c4ea5f0106b3297f3a6359f832334"
+    "preNamespaceGitHubAppClients": "dfc903e1ed8df94391bca529422e32db936c4ea5f0106b3297f3a6359f832334",
+    "preLegacyProxySourceRetirement": "e5206b563b039db975bc282dd4c620dcaa1453eaab4a64049a6652200e9f02aa"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

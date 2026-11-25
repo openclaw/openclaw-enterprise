@@ -124,7 +124,7 @@ test(
       secrets: {},
     });
     assert.equal(oldEnrollment.statusCode, 400, oldEnrollment.body);
-    assert.match(oldEnrollment.body, /through TokenService/);
+    assert.equal(oldEnrollment.json().error.code, "INVALID_REQUEST");
 
     const pat = "at-codex-pat-integration";
     const enrolled = await request("POST", `${base}/credential-sources`, {

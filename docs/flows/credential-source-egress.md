@@ -11,12 +11,11 @@ protected egress implementation. Use [Credential Design 1.0](https://github.com/
 
 ## Overview
 
-This flow records the deprecated legacy credential-egress Driver. Its protected
-metadata and repository exchanges remain in the code but are retired from the
-Credential 1.0 design and pending removal. An ordinary credential-free metadata
-GET uses an admitted Sandbox network rule and returns the upstream response. It
-does not use a Source, response filter, or request-time OpenClaw Control Plane
-(OCC) exchange. Native Credential Proxy delivery also does not use this flow. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+The legacy credential-egress Driver and its protected metadata and repository
+exchanges are retired. An ordinary credential-free metadata GET uses an
+admitted Sandbox network rule and returns the upstream response. In earlier
+releases, OpenClaw Control Plane (OCC) authorized each protected exchange. See the
+[legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points

@@ -1232,7 +1232,7 @@ test(
   "Channel credential handoff respects a concurrent Secret permission revocation",
   requiresPostgres,
   async (t) => {
-    await verifyChannelPolicyHandoff(await createPolicyApp(t));
+    await verifyChannelPolicyHandoff(t, await createPolicyApp(t));
   },
 );
 
@@ -1244,7 +1244,6 @@ for (const boundary of /** @type {const} */ (["channel", "admission"])) {
       const fixture = await createPolicyApp(t, true, {
         poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" },
       });
-      Object.assign(fixture.sandboxDriver, { admitRepositoryNetworkPolicy: () => ({}) });
       await verifyDeploymentAuthorityAfterWait(fixture, boundary);
     },
   );

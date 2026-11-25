@@ -113,18 +113,17 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`,
-then reads the current Repo catalog if Compute supports it. Installation
-administrators see access limits. A missing selection adds `meta.notConfigured`.
-Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
+before reading the Repo catalog. Without a Repo selection, it adds
+`meta.notConfigured`. Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-The catalog accepts 1,000 repositories plus the Installation option. Overflow
-returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
-`repositorySettings` resolves explicit and inherited selections. PostgreSQL
-checks bindings. Empty drafts save during catalog outages.
+The catalog accepts 1,000 repositories plus the Installation option. The editor
+allows 16 selections. `repositorySettings` resolves profiles. PostgreSQL checks
+bindings. Empty drafts save during catalog outages.
+`packages/occ/src/repository-policy.ts:validateRepositoryDeliveryProfiles`
+refuses retired `github-installation` at provisioning, Worker admission, and retry.
 
-Reuse a saved Configuration after an Agent rejection. Reload choices before
-retrying a scope failure. Read both resources after an uncertain save.
+After a scope failure, reload choices and reuse the saved Configuration.
 
 Requests carry Repository references and optional profiles. TokenService Git saves
 a Client and access per Repository. Legacy GitHub defaults to `git-write`.

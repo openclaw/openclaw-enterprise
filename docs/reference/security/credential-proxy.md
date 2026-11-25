@@ -1,9 +1,8 @@
 # Protected metadata sender threat model
 
-Credential Design 1.0 retires the protected metadata exchange described here.
-This threat model applies only to the deprecated legacy credential-egress code
-until its removal. Ordinary network-only metadata reads return the upstream
-response; they do not provide this exchange's field filtering or live OCC checks.
+This page records the threat model for the retired protected metadata exchange
+in earlier releases. Ordinary network-only metadata reads return the upstream
+response without the historical exchange's field filtering or live OCC checks.
 
 Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,

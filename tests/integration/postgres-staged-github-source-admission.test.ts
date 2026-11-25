@@ -1279,7 +1279,8 @@ test(
     const creatorRevision = await state.read((view) =>
       view.revisions.findRevision(namespaceId, creatorAgentId, creatorDeploy.json().data.id),
     );
-    const creatorGitSourceId = creatorRevision?.credentialSources?.find(
+    assert.ok(creatorRevision && isNativeStagedRepositoryRevision(creatorRevision));
+    const creatorGitSourceId = creatorRevision.credentialSources?.find(
       ({ sourceType }) => sourceType === "github-app-installation",
     )?.sourceId;
     assert.ok(creatorGitSourceId);
@@ -1313,17 +1314,27 @@ test(
       revisionId: id,
       ready: true,
     });
+    let creatorPrepareStarted = false;
+    const permitCreatorPrepare = Promise.withResolvers<void>();
     t.mock.method(compute, "preflight", async () => ({ warnings: [] }));
     const prepare = t.mock.method(
       compute,
       "prepareRevision",
       async (revision: AgentRevision, context?: ComputeRevisionContext) => {
         assert.equal(typeof context?.configureCredentialDeployment, "function");
+        if (revision.id === creatorRevision.id) {
+          creatorPrepareStarted = true;
+          await permitCreatorPrepare.promise;
+        }
         return ready(revision);
       },
     );
     t.mock.method(compute, "observeRevision", async () => ({ state: "running" as const }));
-    t.mock.method(compute, "activateRevision", async () => {});
+    const activate = t.mock.method(
+      compute,
+      "activateRevision",
+      async (_revision: AgentRevision) => {},
+    );
     const stop = t.mock.method(compute, "stopRevision", async (_revision: AgentRevision) => {});
     t.mock.method(compute, "retireRevision", async () => {});
     const withdraw = t.mock.method(
@@ -1346,9 +1357,17 @@ test(
     const cleanupPrefix = `agent_revision:${agedRevision.id}:repository_cleanup:`;
     await pool.query(
       `UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour'
-       WHERE namespace_id=$1 AND idempotency_key<>$2 AND state='queued'`,
-      [namespaceId, workKey],
+       WHERE namespace_id=$1 AND state='queued'`,
+      [namespaceId],
     );
+    async function resumeDeployment(key: string) {
+      const resumed = await pool.query(
+        `UPDATE occ.controller_work SET available_at=clock_timestamp()
+         WHERE namespace_id=$1 AND idempotency_key=$2 AND state='queued'`,
+        [namespaceId, key],
+      );
+      assert.equal(resumed.rowCount, 1);
+    }
     const work = (key: string) => state.read((view) => view.operations.findWork(key));
     const succeed = (key: string) =>
       waitFor(key, async () => {
@@ -1369,8 +1388,13 @@ test(
       },
       secretDriver: driver,
     };
+    const workerPool = new pg.Pool({
+      connectionString: databaseUrl,
+      max: 1,
+      options: "-c default_transaction_isolation=repeatable\\ read",
+    });
     const worker = createControllerWorker({
-      pool: new pg.Pool({ connectionString: databaseUrl }),
+      pool: workerPool,
       drivers,
       pollIntervalMs: 15,
       maxAttempts: 1,
@@ -1378,7 +1402,71 @@ test(
     });
     const mintsBeforeWorker = github.issuesOfTokens.length;
     try {
-      await worker.start();
+      const peerId = agents[1]!;
+      const { peerRevision, peerPolicy } = await state.read(async (view) => ({
+        peerRevision: (await view.revisions.listRevisions(namespaceId, peerId)).at(-1),
+        peerPolicy: await view.sandboxPolicies.find(namespaceId, peerId),
+      }));
+      assert.ok(peerRevision && isNativeStagedRepositoryRevision(peerRevision));
+      assert.ok(peerPolicy);
+      const peerWork = `agent_revision:${peerRevision.id}:reconcile`;
+      const {
+        rows: [workerSession],
+      } = await workerPool.query<{ pid: number; isolation: string }>(
+        "SELECT pg_backend_pid() AS pid, current_setting('default_transaction_isolation') AS isolation",
+      );
+      assert.equal(workerSession?.isolation, "repeatable read");
+
+      // PostgreSQL can take a Repeatable Read snapshot before the writer commits. The Worker
+      // must reauthorize with the committed policy before handing the revision to Compute.
+      const writer = await pool.connect();
+      try {
+        await writer.query("BEGIN");
+        const {
+          rows: [writerSession],
+        } = await writer.query<{ pid: number }>(
+          "SELECT pg_backend_pid() AS pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
+          ["occ:iam-configuration"],
+        );
+        assert.ok(writerSession);
+        await resumeDeployment(peerWork);
+        await worker.start();
+        await waitFor("Worker waits on the IAM policy writer", async () => {
+          const result = await pool.query(
+            `SELECT 1 FROM pg_locks
+             WHERE pid=$1 AND locktype='advisory' AND mode='ShareLock' AND NOT granted
+               AND $2 = ANY(pg_blocking_pids(pid))`,
+            [workerSession.pid, writerSession.pid],
+          );
+          return result.rowCount === 1 || undefined;
+        });
+        assert.equal((await work(peerWork))?.state, "claimed");
+        await writer.query(
+          `INSERT INTO occ.iam_restrictions
+            (id, namespace_id, action, resource_kind, resource_id, effect)
+            VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespaceId, peerPolicy.id],
+        );
+        await writer.query("COMMIT");
+      } finally {
+        await writer.query("ROLLBACK").finally(() => writer.release());
+      }
+      const deniedBeforePreparation = await waitFor(
+        "peer's native revision is denied",
+        async () => {
+          const result = await work(peerWork);
+          return result?.state === "failed_permanent" ? result : undefined;
+        },
+      );
+      assert.equal(deniedBeforePreparation.reasonCode, "AUTHORIZATION_DENIED");
+      assert.equal(prepare.mock.callCount(), 0);
+      assert.equal(activate.mock.callCount(), 0);
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, peerId)))?.activeRevisionId,
+        undefined,
+      );
+
+      await resumeDeployment(workKey);
       await succeed(workKey);
       assert.ok(
         prepare.mock.calls.some(({ arguments: [revision] }) => revision.id === agedRevision.id),
@@ -1425,7 +1513,42 @@ test(
       assert.equal(running?.activeRevisionId, agedRevision.id);
       assert.equal(running?.desiredRuntimeState, "running");
       assert.equal(github.issuesOfTokens.length, mintsBeforeWorker);
+
+      // The creator was authorized when Compute began preparing its native Repository
+      // revision. Revocation during preparation must still prevent activation.
+      const creatorWork = `agent_revision:${creatorRevision.id}:reconcile`;
+      await resumeDeployment(creatorWork);
+      await waitFor(
+        "creator's admitted native revision enters preparation",
+        () => creatorPrepareStarted || undefined,
+      );
+      const policy = await state.read((view) =>
+        view.sandboxPolicies.find(namespaceId, creatorAgentId),
+      );
+      assert.ok(policy);
+      await pool.query(
+        `INSERT INTO occ.iam_restrictions
+          (id, namespace_id, action, resource_kind, resource_id, effect)
+          VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+        [`restriction-${randomUUID()}`, namespaceId, policy.id],
+      );
+      permitCreatorPrepare.resolve();
+      const denied = await waitFor("creator's native revision refuses activation", async () => {
+        const result = await work(creatorWork);
+        return result?.state === "failed_permanent" ? result : undefined;
+      });
+      assert.equal(denied.reasonCode, "AUTHORIZATION_DENIED");
+      assert.equal(
+        activate.mock.calls.some(({ arguments: [revision] }) => revision.id === creatorRevision.id),
+        false,
+      );
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, creatorAgentId)))
+          ?.activeRevisionId,
+        undefined,
+      );
     } finally {
+      permitCreatorPrepare.resolve();
       await worker.stop();
     }
 

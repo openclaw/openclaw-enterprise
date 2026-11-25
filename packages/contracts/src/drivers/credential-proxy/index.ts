@@ -374,60 +374,6 @@ export interface CredentialSourceControl {
   >;
 }
 
-/** An older Driver may silently ignore a new profile argument. Only an explicit confirmation
- * qualifies it to attempt installation-wide Git (Basic) and GitHub API (Bearer) delivery,
- * and a v4 sender must enforce the original send cutoff. Online authorization requires a
- * distinct positive response; discovery is not proof of the installed enforcement. */
-export async function repositoryGitAuthorization(
-  control: CredentialSourceControl,
-  signal: AbortSignal,
-  profile?: RepositoryGitDeliveryProfile,
-  nativeGit?: "v1",
-): Promise<
-  "exact-dispatch" | NonNullable<ProxyPlan["repositoryGitAuthorization"]> | "unavailable"
-> {
-  if (nativeGit !== undefined) {
-    if (nativeGit !== "v1" || profile !== "github_repository") {
-      return "unavailable";
-    }
-    const confirmed = await control.assertAvailable(signal, profile, nativeGit);
-    return confirmed &&
-      typeof confirmed === "object" &&
-      confirmed.profile === profile &&
-      confirmed.authorization === "network-policy"
-      ? "network-policy"
-      : "unavailable";
-  }
-  const confirmed = await control.assertAvailable(signal, profile);
-  if (profile && typeof confirmed === "object" && confirmed !== null) {
-    if (
-      profile === "github_installation" &&
-      confirmed.profile === profile &&
-      confirmed.authorization === "request-hook-observed"
-    ) {
-      return "request-hook-observed";
-    }
-    return confirmed.profile === profile && confirmed.authorization === "online-request"
-      ? "online-request"
-      : "unavailable";
-  }
-  return (confirmed === undefined &&
-    profile !== "github_installation" &&
-    profile !== "github_repository") ||
-    (profile === "github_installation" && confirmed === profile)
-    ? "exact-dispatch"
-    : "unavailable";
-}
-
-/** Compatibility query for a sender that implements the v4 exact-dispatch contract. */
-export async function repositoryGitProfileAvailable(
-  control: CredentialSourceControl,
-  signal: AbortSignal,
-  profile?: RepositoryGitDeliveryProfile,
-): Promise<boolean> {
-  return (await repositoryGitAuthorization(control, signal, profile)) === "exact-dispatch";
-}
-
 export interface ProxyWiring {
   readonly plan: ProxyPlan;
   /** Nonsecret adapter-owned configuration; only the paired Sandbox interprets it. */

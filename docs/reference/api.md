@@ -4169,30 +4169,10 @@ Example response
 {
   "data": {
     "capabilities": {
-      "credentialSources": {
-        "types": [
-          {
-            "config": [
-              {
-                "name": "authorized_base_url",
-                "required": false
-              }
-            ],
-            "harnessAuth": {
-              "loginMode": "api_key",
-              "modelProvider": "openai"
-            },
-            "rotation": "external",
-            "secrets": [
-              {
-                "name": "api_key",
-                "required": true
-              }
-            ],
-            "type": "openai"
-          }
-        ]
-      },
+      "modelCredentialSourcePresets": [
+        "openai",
+        "codex-pat"
+      ],
       "openclaw": {
         "executionModes": [
           "dedicated"

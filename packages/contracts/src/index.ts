@@ -131,8 +131,6 @@ export {
   assertExecutionReleaseAllowed,
   repositoryGitRecipientFields,
   validRepositoryGitRecipient,
-  repositoryGitAuthorization,
-  repositoryGitProfileAvailable,
   protectedRepositoryGitAdmission,
 } from "./drivers/credential-proxy/index.ts";
 
@@ -379,8 +377,6 @@ export interface InstallationCapabilities {
   readonly deviceAuthorization?: true;
   /** Model presets that enroll credentials through the selected TokenService and native delivery. */
   readonly modelCredentialSourcePresets?: readonly import("./model-providers.ts").SourceProviderPresetId[];
-  /** Source types offered by independently selected protected request transports. */
-  readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
   /** Plugin catalogs by Harness. */
   readonly pluginCatalogs?: readonly {
     readonly harnessId: "openclaw" | "codex";

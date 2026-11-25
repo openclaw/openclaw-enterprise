@@ -741,6 +741,16 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/** Installation-wide repository delivery relied on the retired protected Proxy. */
+export class InstallationRepositoryAccessRetiredError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "Installation-wide repository access (profile github-installation) is unavailable. Select the approved repositories individually.",
+    );
+    this.name = "InstallationRepositoryAccessRetiredError";
+  }
+}
+
 /** The Channel preview can relay these fixed deployment recovery instructions. */
 export class RepositoryPolicyDeploymentConflict extends ResourceStateConflictError {
   constructor(reason: "unscoped_history" | "incompatible_compute") {

@@ -19,7 +19,6 @@ type InstallationScenario = {
   openclawExecutionModes?: NonNullable<InstallationCapabilities["openclaw"]>["executionModes"];
   openclawSettingRefusal?: string;
   sandboxDriverUnavailable?: boolean;
-  credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
   deviceAuthorization?: true;
   modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
@@ -207,9 +206,6 @@ export function installationFixture(
       ...(scenario.modelCredentialSourcePresets === undefined
         ? {}
         : { modelCredentialSourcePresets: scenario.modelCredentialSourcePresets }),
-      ...(scenario.credentialSourceTypes !== undefined
-        ? { credentialSources: { types: scenario.credentialSourceTypes } }
-        : {}),
       pluginCatalogs:
         scenario.pluginCatalogs ??
         (scenario.pluginCapabilities

@@ -56,6 +56,7 @@ import {
   ComputeRepositoryCredentialsUnsupportedError,
   ConfigurationHarnessError,
   DependencyUnavailableError,
+  InstallationRepositoryAccessRetiredError,
   ModelProviderSettingError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -151,6 +152,7 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       error instanceof ServiceAccountBackendBindingError ||
       // Fixed, id-free text naming the missing repository settings (finding 2362).
       error instanceof RepositoryDriverNotConfiguredError ||
+      error instanceof InstallationRepositoryAccessRetiredError ||
       // Fixed, ID-free refusals for unsupported Compute and unapproved repository selections.
       error instanceof ComputeRepositoryCredentialsUnsupportedError ||
       error instanceof RepositoryBindingSelectionError ||
