@@ -530,12 +530,11 @@ function lifecycleCommand(
       args.some((arg) => arg.startsWith("label=com.docker.compose.service="))
     ) {
       if (state.compose) {
-        output(
-          args
-            .find((arg) => arg.startsWith("label=com.docker.compose.service="))
-            .split("=")
-            .at(-1) + "-container-id",
+        const serviceLabel = args.find((arg) =>
+          arg.startsWith("label=com.docker.compose.service="),
         );
+        assert.ok(serviceLabel !== undefined);
+        output(serviceLabel.split("=").at(-1) + "-container-id");
       }
     } else if (args[0] === "compose" && args.includes("--quiet") && args.at(-1) === "bootstrap") {
       output("bootstrap-container-id");
