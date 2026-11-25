@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { rm, writeFile } from "node:fs/promises";
+
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
@@ -12,18 +13,19 @@ const harnessId = process.env.OCC_K3D_HARNESS ?? "codex";
 
 async function main() {
   assert.ok(demoStatePath, "OCC_K3D_DEMO_STATE is required");
-  const cleanups = [];
+  const cleanups: (() => unknown)[] = [];
   const context = {
-    after: (cleanup) => cleanups.push(cleanup),
-    diagnostic: (message) => process.stderr.write(`[k3d:demo] ${message}\n`),
+    after(cleanup: () => unknown): void {
+      cleanups.push(cleanup);
+    },
+    diagnostic(message: string): void {
+      process.stderr.write(`[k3d:demo] ${message}\n`);
+    },
   };
-  let stopDemo;
-  const stopping = new Promise((resolve) => {
-    stopDemo = resolve;
-  });
+  const { promise: stopping, resolve: stopDemo } = Promise.withResolvers<void>();
   process.once("SIGINT", stopDemo);
   process.once("SIGTERM", stopDemo);
-  let failure;
+  let failure: unknown;
   try {
     assert.ok(harnessId === "codex" || harnessId === "openclaw", "invalid k3d Harness");
     const harnessName = harnessId === "codex" ? "Codex" : "native OpenClaw";
@@ -52,6 +54,9 @@ async function main() {
     assert.equal(topology.controllerUrl, `http://127.0.0.1:${consolePort}`);
     assert.equal(topology.gatewayUrl, `http://127.0.0.1:${controlUiPort}`);
     assert.ok(topology.gatewayPassword, "the demo requires a direct Control UI password");
+    assert.ok(topology.workspaceGateway, "the demo requires a workspace gateway");
+    const { agent } = topology;
+    assert.ok(agent && typeof agent === "object" && "id" in agent && typeof agent.id === "string");
     await topology.workspaceGateway.connect(topology);
 
     process.stderr.write("[k3d:demo] Running a real model turn before exposing the demo.\n");
@@ -63,7 +68,7 @@ async function main() {
       `${JSON.stringify({
         namespace: topology.placement,
         namespaceId: topology.namespaceId,
-        agentId: topology.agent.id,
+        agentId: agent.id,
         processId: String(process.pid),
         controlUiUrl,
         gatewayPassword: topology.gatewayPassword,
@@ -89,7 +94,7 @@ async function main() {
         "Kubernetes",
         `  Namespace:     ${topology.placement}`,
         `  Namespace ID:  ${topology.namespaceId}`,
-        `  Agent ID:      ${topology.agent.id}`,
+        `  Agent ID:      ${agent.id}`,
         `  Kubeconfig:    ${process.env.OCC_TEST_KUBERNETES_KUBECONFIG}`,
         `  Context:       ${process.env.OCC_TEST_KUBERNETES_CONTEXT}`,
         "",
