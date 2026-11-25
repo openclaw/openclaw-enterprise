@@ -332,15 +332,19 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
           }
           return "";
         }
-        if (attrs.lang !== undefined) {
-          const actual = path.relative(fs.realpathSync(root), fs.realpathSync(target));
-          if (actual.startsWith("..") || path.isAbsolute(actual)) {
+        const actualTarget = fs.realpathSync(target);
+        const actual = path.relative(fs.realpathSync(root), actualTarget);
+        if (actual === ".." || actual.startsWith(".." + path.sep) || path.isAbsolute(actual)) {
+          if (attrs.lang !== undefined) {
             throw new Error(`Code snippet outside the documentation root in ${sourceFile}: ${ref}`);
           }
+          return "";
+        }
+        if (attrs.lang !== undefined) {
           if (!/^[a-z0-9_+-]+$/i.test(attrs.lang)) {
             throw new Error(`Invalid snippet language in ${sourceFile}: ${attrs.lang}`);
           }
-          const raw = fs.readFileSync(target, "utf8");
+          const raw = fs.readFileSync(actualTarget, "utf8");
           // Keep source code literal, including imports, component tags and embedded fences.
           let fence = "```";
           while (raw.includes(fence)) {
@@ -349,7 +353,7 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
           const newline = raw.endsWith("\n") ? "" : "\n";
           return `\n${stash(`${fence}${attrs.lang}\n${raw}${newline}${fence}`)}\n`;
         }
-        const content = parseFrontmatter(fs.readFileSync(target, "utf8")).content;
+        const content = parseFrontmatter(fs.readFileSync(actualTarget, "utf8")).content;
         return `\n${prepareDocument(content, { sourceFile: target, root, seen: new Set([...seen, target]) }).text.trim()}\n`;
       },
       false,
