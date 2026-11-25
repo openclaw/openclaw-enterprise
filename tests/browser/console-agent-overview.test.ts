@@ -1272,6 +1272,119 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
   }
 });
 
+for (const state of ["lost", "running"] as const) {
+  test(`A failed replacement rechecks the selected Sandbox once when it is ${state}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+    const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+    const pending = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser });
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const statusUrl = `${agentUrl}/harness-status`;
+    const statusPath = new URL(statusUrl).pathname;
+    const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+    await page.route(recordUrl, (route) =>
+      route.fulfill(deploymentStatusResponse(pending, { status: "queued" })),
+    );
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await trackSettledFetches(page);
+    await page.clock.install();
+    sandbox.state.harness = { state: "running" };
+    const initial = nextOverviewRead(page, statusUrl);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
+    );
+    const activity = await expectDeploymentOutcome(page, "Queued");
+    const serving = liveServing(page);
+    const running = "Sandbox running.";
+    assert.deepEqual(await sandboxObservation(await initial), [revision.id, "running"]);
+    await serving.getByText(running, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+    const refresh = activity.getByRole("button", { name: "Refresh deployment" });
+    async function readDeployment(via: "poll" | "refresh") {
+      const response = nextOverviewRead(page, recordUrl);
+      if (via === "refresh") {
+        await refresh.click();
+      } else {
+        await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      }
+      assert.equal((await response).status(), 200);
+      await waitForIdleFetches(page);
+    }
+    await readDeployment("poll");
+    assert.equal(await settledFetches(page, statusPath), 1, "unchanged poll");
+
+    // A dedicated replacement can stop v1 before failing to start v2. Selection alone
+    // cannot tell us whether v1 lost its Sandbox, and a running Sandbox cannot prove serving.
+    if (state === "lost") {
+      sandbox.state.harness = { state, code: "SANDBOX_STOPPED" };
+    }
+    await routeFailedListing(page, fixture, namespace, agent, pending);
+    await routeFailedRecord(page, fixture, namespace, agent, pending);
+    const reread = nextOverviewRead(page, agentUrl);
+    const observation = nextOverviewRead(page, statusUrl);
+    await readDeployment(state === "lost" ? "poll" : "refresh");
+    const response = await reread;
+    assert.equal(response.status(), 200);
+    const fresh = record(record(await response.json()).data);
+    assert.equal(fresh.activeRevisionId, revision.id);
+    assert.equal(fresh.desiredRuntimeState, "running");
+    await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+    assert.equal(await settledFetches(page, statusPath), 2, "recheck v1 after v2 fails");
+    assert.deepEqual(await sandboxObservation(await observation), [revision.id, state]);
+    const note = state === "lost" ? "Deploy a new version." : running;
+    await serving.getByText(note, { exact: true }).waitFor();
+    assert.equal(
+      await serving.locator(".badge").textContent(),
+      state === "lost" ? "Sandbox lost" : "May be offline",
+    );
+
+    await openDeploymentActivity(page);
+    await readDeployment("refresh");
+    assert.equal(await settledFetches(page, statusPath), 2, "the same failure needs no new read");
+  });
+}
+
+test("A failed replacement on the first version list supersedes an earlier Sandbox read", async (t) => {
+  const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+  const replacement = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const statusUrl = `${agentUrl}/harness-status`;
+  await routeFailedListing(page, fixture, namespace, agent, replacement);
+  await routeFailedRecord(page, fixture, namespace, agent, replacement);
+  sandbox.state.harness = { state: "running" };
+  const initial = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  // The replacement interrupts the Sandbox between the two entry reads.
+  await page.route(
+    (url) => url.origin + url.pathname === `${agentUrl}/revisions`,
+    async (route) => {
+      await initial.requested;
+      sandbox.state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+      await route.fallback();
+    },
+  );
+  await trackSettledFetches(page);
+  const fresh = nextOverviewRead(page, statusUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  assert.deepEqual(await sandboxObservation(required(await initial.requested)), [
+    revision.id,
+    "running",
+  ]);
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  assert.deepEqual(await sandboxObservation(await fresh), [revision.id, "lost"]);
+  const serving = liveServing(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  initial.release();
+  await waitForIdleFetches(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+});
+
 test("Refocus refreshes the same Sandbox and preserves the open draft", async (t) => {
   const setup = await sandboxOverviewFixture(t);
   const { fixture, namespace, agent, revision, sandbox } = setup;

@@ -1222,12 +1222,14 @@ export async function renderAgentDetail(
   const liveServingNote = element("p", { className: "stat-help" });
   // A failed deployment that probably left nothing serving (see renderLatestDeployment).
   let mayBeOfflineAfterFailure = false;
-  // Read the Sandbox Driver's record on entry, on a serving change and on admitted refocus.
+  // A failed replacement can stop the Sandbox without changing the selected version.
+  let failedReplacementId: string | undefined;
   // Nothing restarts a lost Sandbox, so Live serving names the next step when it observes loss.
   let harnessRead: { revisionId: string; status: AgentHarnessStatusRead | null } | null = null;
   // The current version the read in flight or answered is for, or null when none is wanted.
   let harnessRequested: string | null = null;
   let harnessAbort: AbortController | undefined;
+  let harnessGeneration = 0;
   let servingProjectionPending = false;
   // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
   // mode decides once the version list shows it; the Agent's saved mode can differ from it.
@@ -1239,18 +1241,22 @@ export async function renderAgentDetail(
     Boolean(currentRevisionId) &&
     (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
       currentAgent.executionMode) === "dedicated";
-  function syncHarnessRead(recheck?: ForegroundAgentRecheck) {
+  function syncHarnessRead(refresh?: ForegroundAgentRecheck | "replacement-failed") {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
-    if (wanted === harnessRequested && (!recheck || wanted === null)) {
+    if (wanted === harnessRequested && (wanted === null || !refresh)) {
       return;
     }
-    // Retire an obsolete observation before its response can reach the shared client.
-    harnessAbort?.abort();
+    const recheck = refresh === "replacement-failed" ? undefined : refresh;
+    // A replacement failure supersedes the displayed answer, but an in-flight foreground
+    // read of the same version must still be able to report a refusal to admission.
+    if (wanted !== harnessRequested || recheck) {
+      harnessAbort?.abort();
+      harnessAbort = undefined;
+    }
     harnessRequested = wanted;
     // Keep the loss warning and recovery step visible while rechecking the same version.
     const previous = harnessRead?.status;
     if (
-      !recheck ||
       previous?.status !== "observed" ||
       previous.revisionId !== wanted ||
       previous.harness?.state !== "lost"
@@ -1258,11 +1264,11 @@ export async function renderAgentDetail(
       harnessRead = null;
     }
     if (wanted === null) {
-      harnessAbort = undefined;
       return;
     }
-    const abort = new AbortController();
+    const abort = harnessAbort ?? new AbortController();
     harnessAbort = abort;
+    const generation = ++harnessGeneration;
     const isCurrent = () =>
       harnessAbort === abort &&
       wanted === currentRevisionId &&
@@ -1270,8 +1276,10 @@ export async function renderAgentDetail(
       context.isCurrent() &&
       (recheck?.isCurrent() ?? true);
     const finish = (status: AgentHarnessStatusRead | null) => {
-      harnessRead = { revisionId: wanted, status };
-      renderLiveServing();
+      if (generation === harnessGeneration) {
+        harnessRead = { revisionId: wanted, status };
+        renderLiveServing();
+      }
     };
     if (recheck) {
       renderLiveServing();
@@ -2990,6 +2998,11 @@ export async function renderAgentDetail(
       setText(latestDeploymentNote, note);
     }
     const mayBeOffline = replacementFailed || selectedFailed;
+    // Even the entry read may have started before this failure. Check once per replacement.
+    if (replacementFailed && failedReplacementId !== latest.id) {
+      failedReplacementId = latest.id;
+      void syncHarnessRead("replacement-failed");
+    }
     setLiveServing(mayBeOffline);
     const outcome = newerHidden || acceptedHidden ? "" : (latestDeploymentStatus ?? "");
     if (latestDeploymentValue.dataset.outcome !== outcome) {
