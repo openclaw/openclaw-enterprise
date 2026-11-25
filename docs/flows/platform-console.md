@@ -286,10 +286,11 @@ Late names preserve state/focus; metadata failures keep IDs; unknown grants stay
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
 
-**Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
-Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
-the tab leaves visible output in place. Recovery links scroll their version tab into view
-and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
+**Open vN Logs** opens the failed version from any draft or version. Recovery omits
+it when both log and runtime status reads are denied. Logs reserves space so Stop
+and Delete stay put. Direct navigation focuses and scrolls to output. Selecting the
+tab preserves visible output. Recovery links focus and scroll to the tab, smoothly
+unless the page rebuilds or motion is reduced.
 
 [Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
 permission answer skips the audited log read. Status `403` hides Pod details, not
