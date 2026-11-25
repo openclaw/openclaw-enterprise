@@ -232,7 +232,7 @@ export class OpenShellDeploymentFailedError extends Error {
 export function waitForOpenShellRevisionActivation(
   /** @type {(description: string | (() => string), read: () => Promise<unknown>) => Promise<unknown>} */ waitFor,
   /** @type {{
-   *   request: (method: string, path: string) => Promise<{status: number, data: unknown}>,
+   *   request: (method: "GET", path: string) => Promise<{status: number, data: unknown}>,
    *   agentPath: string,
    *   revisionId: string,
    *   workerEvents?: readonly Readonly<Record<string, unknown>>[],

@@ -29,7 +29,7 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
-import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.ts";
 import {
   developmentBootstrapEnvironment,
   runBootstrapInstallation,

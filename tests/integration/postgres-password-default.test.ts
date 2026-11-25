@@ -18,7 +18,7 @@ import {
   productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
   app as validatedApp,
   responseData,
