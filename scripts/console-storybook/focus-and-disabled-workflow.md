@@ -206,12 +206,12 @@ expiry. Use the late Stop response story to inspect its generic result.
 ## Keep your place in the Configuration editor
 
 Open **Pages / Agent detail / Plugins Prefetch Return** and choose
-**Edit Configuration**. Enter enough lines of JSON to scroll. Hold Shift and
-press Left Arrow until you select a word in the middle of the text. Choose
-**Plugins**, then **Configuration**. While focus is still on the Configuration
-tab, check that the same lines are visible. Tab back into **Configuration JSON**
-and type `X`. Check that only the selected word changes. Repeat at desktop
-width and at 390 px.
+**Edit Configuration**. Enter enough lines of JSON to scroll. Place the caret
+after a word in the middle of the text. Hold Shift and press Left Arrow until
+you select that word. Choose **Plugins**, then **Configuration**. While focus is
+still on the Configuration tab, check that the same lines are visible. Tab back
+into **Configuration JSON** and type `X`. Check that only the selected word
+changes. Repeat at desktop width and at 390 px.
 
 ## Configuration save conflict
 
