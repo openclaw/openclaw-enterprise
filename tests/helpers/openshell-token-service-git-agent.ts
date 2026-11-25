@@ -201,7 +201,11 @@ export async function verifyNativeGitAgent(t: TestContext, harness: "openclaw" |
 
   const configuration = await data<{ id: string }>("POST", `${base}/configurations`, 201, {
     kind: "agent",
-    values: createHarnessConfiguration(harness, model),
+    values: {
+      ...createHarnessConfiguration(harness, model),
+      // This test asks the OpenClaw worker to invoke exec directly.
+      ...(openClaw ? { tools: { allow: ["exec"], codeMode: false, toolSearch: false } } : {}),
+    },
   });
   const newGitSources = new Set<string>();
   const agentIds: string[] = [];
