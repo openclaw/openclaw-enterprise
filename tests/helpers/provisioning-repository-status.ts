@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 
-import type {
-  ComputeDriver,
-  RepositoryBindingRequest,
-  RepositoryPolicyDriver,
-} from "../../packages/contracts/src/index.ts";
+import type { ComputeDriver, RepositoryPolicyDriver } from "../../packages/contracts/src/index.ts";
 import type { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { repositoryBoundary } from "./postgres-worker-revision-support.mjs";
@@ -38,7 +34,13 @@ export async function assertProvisioningRepositoryStatus(
         resolveBindings: RepositoryPolicyDriver["resolve"];
       };
     },
-    overrides: { repositoryBindings: RepositoryBindingRequest[]; pluginApprovers: [] },
+    overrides: {
+      repositoryAccess: {
+        defaultProfile: string;
+        repositories: { repositoryRef: string; profile: string }[];
+      };
+      pluginApprovers: [];
+    },
   ) => Promise<Target>,
 ) {
   const boundary = repositoryBoundary({ backendId: "provisioning-repositories" });
@@ -60,7 +62,10 @@ export async function assertProvisioningRepositoryStatus(
   const { fixture, namespace, admitted, failed } = await setup(
     { computeDriver, repoDriver },
     {
-      repositoryBindings: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+      },
       pluginApprovers: [],
     },
   );

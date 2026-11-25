@@ -161,6 +161,11 @@ export function documentApiExamples<T>(document: T): T {
               'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello."},"index":0}]}\n\ndata: [DONE]\n\n',
               "Native SSE completion",
             );
+          } else if (name === "completeNamespaceConnection" && mediaType === "text/html") {
+            content.examples = example(
+              "<!doctype html><html>Account connected</html>",
+              "Browser consent completion page",
+            );
           } else if (mediaType === "text/plain") {
             content.examples = example(
               "2026-10-01T12:00:00.000Z Agent ready\n",

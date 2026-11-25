@@ -2,11 +2,11 @@ import {
   checkedSandboxPolicySnapshot,
   defaultDeploymentSandboxPolicy,
 } from "./sandbox-policy-admission.ts";
-import { assertScopedRepositoryHistory } from "./repository-network-policy.ts";
 
 import type { HarnessResolver } from "./agent-harness-topology.ts";
 import {
   type repositoryPolicySaveValidator,
+  assertScopedRepositoryHistory,
   bindRepositoryPolicyAuthorization,
 } from "./repository-network-policy.ts";
 
@@ -56,7 +56,6 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { DriverConfigurationRegistry } from "./configuration-registry.ts";
-import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
 import {
@@ -77,6 +76,7 @@ interface SandboxPolicyDependencies {
     version: number,
     canRead: (target: ResourceRef) => Promise<boolean>,
     resolveHarness: HarnessResolver | undefined,
+    additions?: readonly SandboxNetworkGrant[],
   ) => Promise<
     ReturnType<NonNullable<ReturnType<typeof repositoryPolicySaveValidator>>> | undefined
   >;
@@ -88,12 +88,8 @@ interface SandboxPolicyDependencies {
     ControllerAuthority,
     "authorize" | "authorizationDecision" | "holdAuthority" | "authorizationAuthority"
   >;
-  readonly egressAdmission: Pick<
-    ReturnType<typeof createCredentialEgressAdmission>,
-    "ordinaryModelBinding"
-  >;
   readonly hasCredentialProxy: () => boolean;
-  readonly allowsOrdinaryCredentialGateway: () => boolean;
+  readonly hasCredentialProxyDelivery: () => boolean;
   readonly record: (
     state: PlatformUnitOfWork,
     operation: Parameters<PlatformUnitOfWork["operations"]["append"]>[0],
@@ -150,24 +146,17 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
     }
   }
 
-  async function protectedExecutionApplies(
-    state: PlatformReadView,
+  function protectedExecutionApplies(
     agent: Readonly<Agent>,
     activeRevision: Readonly<AgentRevision> | undefined,
-  ): Promise<boolean> {
-    if (activeRevision !== undefined && !unprotectedPolicyRevision(activeRevision)) {
-      return true;
+  ): boolean {
+    if (activeRevision !== undefined) {
+      return !unprotectedPolicyRevision(activeRevision);
     }
-    if (!dependencies.hasCredentialProxy()) {
-      return false;
-    }
-    if (
-      !dependencies.allowsOrdinaryCredentialGateway() ||
-      (agent.repositoryBindings?.length ?? 0) > 0
-    ) {
-      return true;
-    }
-    return !(await dependencies.egressAdmission.ordinaryModelBinding(state, agent));
+    const stagedModel =
+      agent.harnessAuth?.method === "credential_source" &&
+      dependencies.hasCredentialProxyDelivery();
+    return dependencies.hasCredentialProxy() && !stagedModel;
   }
 
   async function authorizePolicyEdit(principalId: string, namespaceId: string, agentId: string) {
@@ -302,14 +291,14 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       }
       try {
         const snapshot = admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-          repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+          repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
         });
         if (snapshot.additions.length > 0) {
           const active =
             agent.activeRevisionId === undefined
               ? undefined
               : await state.revisions.findRevision(namespaceId, agentId, agent.activeRevisionId);
-          if (await protectedExecutionApplies(state, agent, active)) {
+          if (protectedExecutionApplies(agent, active)) {
             throw new ProtectedExecutionNetworkPolicyError("save");
           }
         }
@@ -386,10 +375,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       const storesRepositoryPolicy = state.sandboxPolicies.supportsRepositoryNetworkPolicy === true;
       const canWithdraw = storesRepositoryPolicy && policy.repositoryNetworkPolicy !== undefined;
       const edit =
-        storesRepositoryPolicy &&
-        unavailableReason === undefined &&
-        (canWithdraw ||
-          (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0)
+        storesRepositoryPolicy && unavailableReason === undefined
           ? await dependencies.qualifyRepositoryEdit(
               state,
               agent,
@@ -397,10 +383,15 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
               async (ref) =>
                 (await authorizationDecision(principalId, "read", ref)).decision.allowed,
               resolveHarness,
+              policy.additions,
             )
           : undefined;
       const repositoryNetworkPolicyCeiling = dependencies.repositoryCeiling(namespaceId);
-      const supported = edit?.supports(repositoryNetworkPolicyCeiling) === true;
+      const supported =
+        edit !== undefined &&
+        (canWithdraw ||
+          (await state.revisions.listRevisionMetadata(namespaceId, agentId)).length === 0) &&
+        edit.supports(repositoryNetworkPolicyCeiling);
       const repositoryApiMaxima = supported
         ? edit.apiMaxima(repositoryNetworkPolicyCeiling)
         : undefined;
@@ -414,8 +405,7 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
           facet,
         ),
         editingEnabled: agent.sandboxPolicyEditing === true,
-        protectedExecution:
-          revision === null ? null : await protectedExecutionApplies(state, agent, revision),
+        protectedExecution: revision === null ? null : protectedExecutionApplies(agent, revision),
         capability: revision === null ? null : (driver?.networkPolicy ?? null),
         ...(unavailableReason === undefined ? {} : { unavailableReason }),
         ceiling: dependencies.ceiling,
@@ -633,25 +623,29 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       if (active === null) {
         throw new ResourceStateConflictError(unreadableRevisionReason);
       }
-      if (edit) {
-        assertScopedRepositoryHistory(await state.revisions.listRevisions(namespaceId, agentId));
-      }
-      const admittedEdit =
-        repositoryOnly && !withdrawal && networkPolicyUnavailable() === undefined
-          ? (
-              await dependencies.qualifyRepositoryEdit(
-                state,
-                agent,
-                expectedVersion + 1,
-                async (ref) =>
-                  (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
-                    .allowed,
-                resolveHarness,
-              )
-            )?.admit(repositoryNetworkPolicy)
+      const qualifiedEdit =
+        explicitList &&
+        (!withdrawal || additions.length > 0) &&
+        networkPolicyUnavailable() === undefined
+          ? await dependencies.qualifyRepositoryEdit(
+              state,
+              agent,
+              expectedVersion + 1,
+              async (ref) =>
+                (await authorizationDecision(principalId, "read", ref, iam, decide)).decision
+                  .allowed,
+              resolveHarness,
+              additions,
+            )
           : undefined;
+      if (edit) {
+        assertScopedRepositoryHistory(
+          await state.revisions.listRevisionsForBrowsing(namespaceId, agentId),
+        );
+      }
+      const admittedEdit = explicitList ? qualifiedEdit?.admit(repositoryNetworkPolicy) : undefined;
       if (!admittedEdit && (edit || additions.length > 0)) {
-        if (await protectedExecutionApplies(state, agent, active)) {
+        if (protectedExecutionApplies(agent, active)) {
           throw new ProtectedExecutionNetworkPolicyError(
             repositoryNetworkPolicy === undefined ? "save" : "saveRepository",
           );
@@ -665,10 +659,10 @@ export function createSandboxPolicyOperations(dependencies: SandboxPolicyDepende
       const repositoryGrants =
         admittedEdit?.grants ?? (withdrawal ? [] : previous.repositoryNetworkPolicy);
       const admittedAdditions =
-        clearsAll || admittedEdit
+        clearsAll || (admittedEdit && additions.length === 0)
           ? []
           : admitAgentNetworkPolicy(additions, expectedVersion + 1, undefined, {
-              repositoryCredentials: (agent.repositoryBindings?.length ?? 0) > 0,
+              repositoryCredentials: (agent.repositoryAccess?.repositories.length ?? 0) > 0,
             }).additions;
       admittedEdit?.assertCurrent();
       authority?.assertCurrent();
@@ -984,12 +978,17 @@ export async function deploymentSandboxPolicy(
   namespaceId: string,
   agentId: string,
   expectedRepositoryPolicyVersion?: number | null,
+  hasDesiredRepositoryAccess = false,
 ): Promise<Readonly<SandboxPolicy> | undefined> {
   const policy = await state.sandboxPolicies.find(namespaceId, agentId);
   const savedVersion = policy?.repositoryNetworkPolicy === undefined ? null : policy.version;
   // Expecting no list must preserve legacy deploy permissions. Authorize read
   // before reporting any mismatch, including a newly saved deny-all list.
-  if (savedVersion !== null || typeof expectedRepositoryPolicyVersion === "number") {
+  if (
+    hasDesiredRepositoryAccess ||
+    savedVersion !== null ||
+    typeof expectedRepositoryPolicyVersion === "number"
+  ) {
     const target = { kind: "agent", id: agentId, namespaceId } as const;
     const resource = policyResource(namespaceId, agentId);
     await authority.authorize(principalId, "read", resource);

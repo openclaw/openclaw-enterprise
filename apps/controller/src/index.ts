@@ -18,6 +18,7 @@ import {
   ModelProviderModelSchema,
   CredentialSourceResponse,
   RegisterTokenServiceSourceBody,
+  RegisterGitHubAppTokenServiceSourceBody,
   UpdateTokenServiceSourceBody,
   PushAgentCredentialsBody,
   PushAgentCredentialsResponse,
@@ -51,7 +52,6 @@ import {
   type SandboxDriver,
   type SandboxFacet,
   type SecretDriver,
-  type SecretReference,
   type CredentialSourceReference,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -502,6 +502,7 @@ function operationTarget(
     (operation.operationId === "createCredentialSource" ||
       operation.operationId === "listCredentialSources" ||
       operation.operationId === "listUsableConnectionTemplates" ||
+      operation.operationId === "listEligibleOAuthClients" ||
       operation.operationId === "startNamespaceConnection") &&
     namespaceId
   ) {
@@ -749,6 +750,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   app.addSchema(ModelProviderModelSchema);
   app.addSchema(ModelProviderSchema);
   app.addSchema(RegisterTokenServiceSourceBody);
+  app.addSchema(RegisterGitHubAppTokenServiceSourceBody);
   app.addSchema(UpdateTokenServiceSourceBody);
   app.addSchema(PushAgentCredentialsBody);
   app.addSchema(PushAgentCredentialsResponse);
@@ -761,6 +763,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           schema.title ??= schema.$id;
           switch (schema.$id) {
             case "RegisterTokenServiceSourceBody":
+            case "RegisterGitHubAppTokenServiceSourceBody":
             case "UpdateTokenServiceSourceBody":
             case "PushAgentCredentialsBody":
             case "PushAgentCredentialsResponse":
@@ -1248,7 +1251,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ...createDeviceAuthorizationHandlers({
       auditSink: options.auditSink,
       // Start phases belong in the factory input, before audit details are sanitized and frozen.
-      startEvent: ({ context, request }, resource, details) =>
+      transitionEvent: ({ context, request }, resource, details) =>
         event(context.operation, request, resource, "mutation", context, undefined, {
           outcome: "success",
           details,
@@ -1362,6 +1365,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "stopAgent" &&
       operation.operationId !== "listAgentRevisions" &&
       operation.operationId !== "listAgentAuditEvents" &&
+      operation.operationId !== "listEligibleOAuthClients" &&
       operation.operationId !== "listAgentAutomations" &&
       operation.operationId !== "listAgentAutomationRuns" &&
       operation.operationId !== "deleteAgentAutomation" &&
@@ -1788,7 +1792,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           actorId: context.actorId,
           request,
           reply,
-          mutationEvent: (resourceId) =>
+          mutationEvent: (details) =>
             event(
               operation,
               request,
@@ -1798,9 +1802,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               undefined,
               {
                 outcome: "success",
-                details: resourceId.startsWith("ccr_")
-                  ? { oauthClientId: resourceId }
-                  : { connectionTemplateId: resourceId },
+                details,
               },
             ),
         });
@@ -1974,9 +1976,6 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         ...(body?.credentialSource === undefined
           ? {}
           : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        ...(body?.secretRef === undefined
-          ? { accessToken: body?.accessToken as string }
-          : { secretRef: body.secretRef as SecretReference }),
       };
       const result =
         operation.operationId === "discoverAgentPlugins"
@@ -1993,8 +1992,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : await controller.discoverAgentPluginDetails(
               context.actorId,
               namespaceId,
-              { ...input, pluginId: body?.pluginId as string },
+              {
+                ...input,
+                pluginId: body?.pluginId as string,
+                ...(body?.managedConnection === undefined
+                  ? {}
+                  : {
+                      managedConnection: body.managedConnection as {
+                        slot: string;
+                        sourceId: string;
+                      },
+                    }),
+              },
               pluginDiscoveryRequestSignal(reply),
+              options.readManagedMcpToolNames ?? listManagedMcpToolNames,
             );
       reply.header("cache-control", "no-store");
       reply.send({ data: result, meta: { requestId: request.id } });
@@ -3921,7 +3932,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        boundary: "credential_refresh",
+        boundary: "token_service",
         reason: error.reason,
         failure: error.failure,
       });

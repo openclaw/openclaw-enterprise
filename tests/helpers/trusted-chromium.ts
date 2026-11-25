@@ -39,7 +39,8 @@ export async function launchTrustingBrowser(
   return chromium.launch({
     headless: true,
     chromiumSandbox: true,
-    env: { HOME: home, PATH: process.env.PATH, TMPDIR: root },
+    // Chromium needs a short Unix socket address even when the fixture path is long.
+    env: { HOME: home, PATH: process.env.PATH },
     args: ["--no-proxy-server", `--host-resolver-rules=${rules.join(",")}`],
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }

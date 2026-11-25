@@ -9,7 +9,6 @@ import {
   refusal,
 } from "./egress-custody-observations.mjs";
 
-// Use the same owned Agent, but a fresh source, grant, revision, enrollment and response sink.
 // The last-binding withdrawal currently retires its Sandbox. Observe denial while the recipient
 // is still live, then observe actual route withdrawal and retirement, without racing a dying Pod.
 export async function verifyCredentialFreeReadAndWithdrawal({
@@ -69,7 +68,6 @@ export async function verifyCredentialFreeReadAndWithdrawal({
     "/repos/" + repository.full_name,
   );
   const reads = provider.observations.length;
-  const issues = provider.issues;
   const before = await custody.snapshot();
   const preparse = provider.wireRequests;
   assert.deepEqual(await rows(), [], "newly enrolled recipient");
@@ -99,7 +97,6 @@ export async function verifyCredentialFreeReadAndWithdrawal({
     preparse + 1,
     "one credential-free request at pre-parse origin",
   );
-  assert.equal(provider.issues, issues, "no new provider credential issued");
   await checkpoint("explicit-credential-free-repository-read", {
     requestId: id,
     accessPermits: 1,

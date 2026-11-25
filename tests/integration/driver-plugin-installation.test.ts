@@ -290,10 +290,6 @@ async function authenticatedApplication(t: TestContext, drivers: InstallationRun
         // its Sandbox view again would discard the owner of its Namespace binding.
         controller.installDriver(drivers.protectedDriver, ["sandbox", "credential_proxy"]);
       }
-      if (drivers.credentialGatewayDriver !== undefined) {
-        controller.registerDriver(drivers.credentialGatewayDriver);
-        controller.selectDriver("credential_gateway", drivers.credentialGatewayDriver.id);
-      }
       return controller;
     },
     iamDriver,
@@ -385,14 +381,9 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     audience: "configured-audience",
     expirationSeconds: 900,
   };
-  const credentialGateway = record(record(configuration.drivers).credential_gateway);
   const sandboxGateway = record(
     record(record(record(configuration.drivers).sandbox).configuration).gateway,
   );
-  credentialGateway.configuration = {
-    binaries: ["/usr/bin/configured-model-client"],
-    toolBinaries: ["/usr/bin/configured-tool-client"],
-  };
   sandboxGateway.operatorWorkspaceResources = [
     {
       apiVersion: "v1",
@@ -423,26 +414,14 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
 
   // Editing the operator's file cannot replace values accepted by this running process.
-  record(credentialGateway.configuration).binaries = ["/usr/bin/next-startup"];
+  configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "next-startup";
   await writeFile(path, JSON.stringify(configuration));
   const inspected = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(inspected.status, 200, JSON.stringify(inspected));
   const descriptors = new Map(
     configurationDescriptors(inspected).map((descriptor) => [descriptor.capability, descriptor]),
   );
-  const credentials = record(descriptors.get("credential_gateway"));
-  assert.equal(credentials.driverId, "openshell-credentials");
-  assert.equal(credentials.implementation, "openshell");
-  assert.equal(credentials.scope, "installation");
-  assert.equal(credentials.key, "startup");
-  assert.deepEqual(credentials.startupConfiguration, {
-    binaries: ["/usr/bin/configured-model-client"],
-    toolBinaries: ["/usr/bin/configured-tool-client"],
-  });
-  assert.equal(
-    record(record(record(credentials.configurationSchema).properties).binaries).type,
-    "array",
-  );
+  assert.equal(descriptors.has("credential_gateway"), false);
   assert.deepEqual(record(descriptors.get("configuration")).startupConfiguration, {
     authentication: { mode: "inCluster" },
   });
@@ -483,7 +462,6 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const denied = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.data, undefined);
-  assert.ok(!JSON.stringify(denied).includes("/usr/bin/configured-model-client"));
   const denial = fixture.auditSink.events.find(
     (event) =>
       event.kind === "authorization_denial" &&

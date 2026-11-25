@@ -118,8 +118,14 @@ fails validation. With all three omitted and `rehearse_signin` off, the original
 
 The pair job validates two ordered main publications and their underlying CI
 runs and verifies each downloaded receipt before using its registry references.
-It pulls only three Linux/amd64 images: the two controllers and the **previous
-runtime**, which remains fixed. Each selected image needs a publication seal
+Before pulling images, it checks the controller build inputs and migration tree
+of each release against the reviewed sign-in profile. The commits must differ.
+Changes outside those inputs are allowed.
+
+If the inputs or migration tree differ from the profile, review the changes and
+test expectations before approving a matching profile. For a compatible pair,
+the job pulls three Linux/amd64 images. It uses both controllers and keeps the
+**previous runtime** fixed. Each selected image needs a publication seal
 with its platform manifest and config digests. An older seal without these
 fields can still be used for the original single-release check. A source tag,
 a local image, or a preparation-only artifact cannot substitute for a
@@ -132,9 +138,9 @@ read-only package permissions apply. No model or cluster credentials are needed.
 
 After preparation succeeds, the job uploads `staging-pair-images.json` and
 `staging-signin-plan.json`. These files remain available if a later installed
-rehearsal fails. The plan binds the observed images to the intended
-sign-in test: the source inputs must match a reviewed controller reader profile
-and both releases must share its migration tree. The current profile is the v3
+rehearsal fails. The planner repeats the source comparison and binds the observed
+images to the intended sign-in test: the source inputs must match a reviewed
+controller reader profile and both releases must share its migration tree. The current profile is the v3
 reader and catalog at `7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb`.
 Both releases must match its production-input projection. A change to those
 inputs requires a new review of the reader behavior and test expectations.

@@ -514,10 +514,17 @@ export async function createConsoleAppFixture(t, options = {}) {
             : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
-        ...(options.pluginSourceReader === undefined
+        modelCredentialSourcePresets: options.modelCredentialSourcePresets,
+        ...(options.modelCredentialPreset === undefined
           ? {}
-          : { pluginSourceReader: options.pluginSourceReader }),
+          : { modelCredentialPreset: options.modelCredentialPreset }),
+        ...(options.supportsCredentialDeployment === undefined
+          ? {}
+          : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        ...(options.prepareStagedRepositorySource === undefined
+          ? {}
+          : { prepareStagedRepositorySource: options.prepareStagedRepositorySource }),
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
           : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
@@ -535,6 +542,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
+        ...(options.credentialSourceDelivery === undefined
+          ? {}
+          : { credentialSourceDelivery: options.credentialSourceDelivery }),
       };
       controller =
         options.repositoryAdmission === undefined
