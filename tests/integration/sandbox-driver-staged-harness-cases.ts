@@ -400,9 +400,15 @@ export async function verifyStagedModelPolicyObservation(
     // Both image-owned worker Git files live here. Landlock must allow reading
     // the configuration and executing the helper without granting write access.
     const filesystem = repositoryIdle.filesystem as { read_only: string[]; read_write: string[] };
-    const containsGitFiles = (root: string) => "/usr/local/lib/oce/".startsWith(root + "/");
-    assert.ok(filesystem.read_only.some(containsGitFiles));
-    assert.equal(filesystem.read_write.some(containsGitFiles), false);
+    for (const file of [
+      "/usr/local/lib/oce/openshell-worker.gitconfig",
+      "/usr/local/lib/oce/openshell-git-credential.cjs",
+    ]) {
+      const coversFile = (grant: string) =>
+        file === grant || file.startsWith(grant.endsWith("/") ? grant : grant + "/");
+      assert.ok(filesystem.read_only.some(coversFile), file);
+      assert.equal(filesystem.read_write.some(coversFile), false, file);
+    }
   }
   const repositoryRoutes = narrowOpenShellRepositoryRoutes(
     repositoryRevision,
