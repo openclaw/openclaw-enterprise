@@ -23,8 +23,8 @@ The [Agent plugin reference](../agent-plugins.md) owns the shared Agent API and
 policy fields.
 
 The Driver supports two discovery sources. `hosted`, the default, searches the
-ChatGPT plugin service's GLOBAL catalog using an authorized personal access token
-(PAT) or supported bound login credential. `openai-curated` searches recorded
+ChatGPT plugin service's GLOBAL catalog using a TokenService Source for a Codex
+personal access token (PAT) or Codex OAuth login. `openai-curated` searches recorded
 catalog entries without a discovery credential. Both use selection IDs of the
 form `codex-plugin:<plugin>@openai-curated-remote`; neither source grants app or
 workspace access.
@@ -133,14 +133,12 @@ drivers:
         catalogSource: openai-curated
 ```
 
-For hosted discovery, omit `catalogSource` or set it to `hosted`. Permit API HTTPS
-egress to `auth.openai.com` and `chatgpt.com`; the Driver does not configure
-Kubernetes networking. The [Codex Installation profile](../../guides/deploy/installation-profiles.md#hosted-discovery-egress)
-renders this egress. Supply the PAT through an authorized same-Namespace Secret or
-supported bound credential; do not put token values in Installation YAML.
-Managed ServiceAccount references are unsupported for discovery. Workspace plugin
-access and external app connections must be configured separately for the same
-ChatGPT workspace and identity. A ChatGPT login is required for native remote
+For hosted discovery, omit `catalogSource` or set it to `hosted`. Select an
+authorized Codex PAT or OAuth Source in the Agent's Namespace. An issued
+ServiceAccount PAT has its own Source. The API needs DNS and HTTPS access to
+`auth.openai.com` and `chatgpt.com`. See [hosted discovery connectivity](../../guides/deploy/installation-profiles.md#hosted-discovery-connectivity).
+Enable the plugins and connect external apps for the same ChatGPT workspace
+and identity. A ChatGPT login is required for native remote
 installation; an API-key login receives `PLUGIN_AUTH_REQUIRED` when best-effort
 preparation can report authentication warnings.
 

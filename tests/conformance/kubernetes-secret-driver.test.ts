@@ -399,6 +399,21 @@ test("kubernetes-secret-driver conditional writes preserve concurrent changes an
   assert.equal(requireStoredSecret(client, key).metadata.resourceVersion, "2");
 });
 
+test("private custody admits one replacement of an observed credential", async () => {
+  const { driver } = namespacedDriver();
+  const store = driver.privateSecrets;
+  const ref = { installationId: `ins_${randomUUID()}`, id: "fixture-grant" };
+  await store.create(ref, "current");
+  assert.equal(await store.compareAndSwap(ref, "stale", "refused"), false);
+  // Both writes start from the same value. The Driver supplies Kubernetes' version precondition.
+  const results = await Promise.all([
+    store.compareAndSwap(ref, "current", "first"),
+    store.compareAndSwap(ref, "current", "second"),
+  ]);
+  assert.deepEqual([...results].sort(), [false, true]);
+  assert.equal(await store.withValue(ref, async (value) => value), results[0] ? "first" : "second");
+});
+
 test("kubernetes-secret-driver delete reports inaccessible backends instead of idempotent success", async (t) => {
   // The read's own 10 s deadline fires on demand, so the timeout case does not wait for it.
   const timeouts = controlledRequestTimeouts(t);

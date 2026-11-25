@@ -786,7 +786,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        ? "OCC could not reach the sign-in service at auth.openai.com. Ask an operator to check API Pod DNS, routing, and HTTPS connectivity, then try again."
         : "Device login could not start. Try again.",
     );
   }
@@ -854,7 +854,6 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof RepositoryBindingSelectionError) {
-    // Either repositoryBindings or repositoryAccess can carry the selections, so no detail.
     return failure(400, "INVALID_REQUEST", error.message);
   }
   if (error instanceof SecretBindingValidationError) {
@@ -1002,7 +1001,7 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(
       400,
       "INVALID_REQUEST",
-      "Static sources accept only the optional provider_preset=openai configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
+      "Static sources accept an approved provider_preset configuration. Supply one nonempty UTF-8 credential without NUL; its encoded value must fit the Secret storage limit.",
     );
   }
   if (

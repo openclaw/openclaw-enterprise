@@ -544,7 +544,7 @@ async function availablePorts() {
 
 export async function localFirstAgentStack(
   context,
-  { modelCredential, administratorPassword } = {},
+  { modelCredential, administratorPassword, nativeModelGrant } = {},
 ) {
   if (modelCredential !== undefined && modelCredential !== "openai") {
     throw new Error("Unsupported local first-Agent model credential selection.");
@@ -660,6 +660,25 @@ export async function localFirstAgentStack(
     );
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
+    if (nativeModelGrant) {
+      const { OPEN_SHELL_CODEX_BINARIES } =
+        await import("../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts");
+      const ceilingFile = `${directory}-network-policy-ceiling.json`;
+      const codexGrants = OPEN_SHELL_CODEX_BINARIES.flatMap((binary, architecture) =>
+        ["api.openai.com", "auth.openai.com", "chatgpt.com"].map((host) => ({
+          id: `codex-${architecture}-${host.split(".")[0]}`,
+          binary,
+          host,
+          ports: [{ from: 443, to: 443 }],
+        })),
+      );
+      await writeFile(ceilingFile, JSON.stringify({ grants: [nativeModelGrant, ...codexGrants] }), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      context.after(() => rm(ceilingFile, { force: true }));
+      startupArguments.push("--sandbox-network-policy-ceiling-file", ceilingFile);
+    }
   }
   const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   if (controllerImage !== undefined) {

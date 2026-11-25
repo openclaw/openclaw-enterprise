@@ -160,18 +160,24 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preTokenServiceSourceBackendRef";
   }
   if (count === 94 && completedCount > 94) {
-    return "preRuntimeAudit";
+    return "preTokenServiceCredentialSources";
   }
   if (count === 95 && completedCount > 95) {
-    return "preAuditMessageRead";
+    return "preNamespaceGitHubAppClients";
   }
   if (count === 96 && completedCount > 96) {
-    return "preHttpChatAuditLimits";
+    return "preRuntimeAudit";
   }
   if (count === 97 && completedCount > 97) {
-    return "preRuntimeAuditReplay";
+    return "preAuditMessageRead";
   }
   if (count === 98 && completedCount > 98) {
+    return "preHttpChatAuditLimits";
+  }
+  if (count === 99 && completedCount > 99) {
+    return "preRuntimeAuditReplay";
+  }
+  if (count === 100 && completedCount > 100) {
     return "preAgentHttpChatAuditPage";
   }
   if (count === completedCount) {

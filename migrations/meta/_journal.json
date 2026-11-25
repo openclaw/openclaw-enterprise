@@ -664,35 +664,49 @@
       "idx": 95,
       "version": "7",
       "when": 1787000000095,
-      "tag": "0095_runtime_audit",
+      "tag": "0095_credential_cutover",
       "breakpoints": true
     },
     {
       "idx": 96,
       "version": "7",
       "when": 1787000000096,
-      "tag": "0096_audit_message_read",
+      "tag": "0096_namespace_github_app_clients",
       "breakpoints": true
     },
     {
       "idx": 97,
       "version": "7",
       "when": 1787000000097,
-      "tag": "0097_http_chat_audit_limits",
+      "tag": "0097_runtime_audit",
       "breakpoints": true
     },
     {
       "idx": 98,
       "version": "7",
       "when": 1787000000098,
-      "tag": "0098_runtime_audit_replay",
+      "tag": "0098_audit_message_read",
       "breakpoints": true
     },
     {
       "idx": 99,
       "version": "7",
       "when": 1787000000099,
-      "tag": "0099_agent_http_chat_audit_page",
+      "tag": "0099_http_chat_audit_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1787000000100,
+      "tag": "0100_runtime_audit_replay",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1787000000101,
+      "tag": "0101_agent_http_chat_audit_page",
       "breakpoints": true
     }
   ]

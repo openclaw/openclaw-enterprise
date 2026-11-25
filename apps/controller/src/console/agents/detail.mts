@@ -91,7 +91,11 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
+import {
+  createRepositoryFields,
+  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+  repositorySelections,
+} from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -999,7 +1003,9 @@ export async function renderAgentDetail(
     agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
   const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
     isDedicatedCodex(values) &&
-    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    repositorySelections(agent.repositoryAccess).some(
+      ({ profile }) => profile === "github-repository",
+    );
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -1222,12 +1228,14 @@ export async function renderAgentDetail(
   const liveServingNote = element("p", { className: "stat-help" });
   // A failed deployment that probably left nothing serving (see renderLatestDeployment).
   let mayBeOfflineAfterFailure = false;
-  // Read the Sandbox Driver's record on entry, on a serving change and on admitted refocus.
+  // A failed replacement can stop the Sandbox without changing the selected version.
+  let failedReplacementId: string | undefined;
   // Nothing restarts a lost Sandbox, so Live serving names the next step when it observes loss.
   let harnessRead: { revisionId: string; status: AgentHarnessStatusRead | null } | null = null;
   // The current version the read in flight or answered is for, or null when none is wanted.
   let harnessRequested: string | null = null;
   let harnessAbort: AbortController | undefined;
+  let harnessGeneration = 0;
   let servingProjectionPending = false;
   // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
   // mode decides once the version list shows it; the Agent's saved mode can differ from it.
@@ -1239,18 +1247,22 @@ export async function renderAgentDetail(
     Boolean(currentRevisionId) &&
     (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
       currentAgent.executionMode) === "dedicated";
-  function syncHarnessRead(recheck?: ForegroundAgentRecheck) {
+  function syncHarnessRead(refresh?: ForegroundAgentRecheck | "replacement-failed") {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
-    if (wanted === harnessRequested && (!recheck || wanted === null)) {
+    if (wanted === harnessRequested && (wanted === null || !refresh)) {
       return;
     }
-    // Retire an obsolete observation before its response can reach the shared client.
-    harnessAbort?.abort();
+    const recheck = refresh === "replacement-failed" ? undefined : refresh;
+    // A replacement failure supersedes the displayed answer, but an in-flight foreground
+    // read of the same version must still be able to report a refusal to admission.
+    if (wanted !== harnessRequested || recheck) {
+      harnessAbort?.abort();
+      harnessAbort = undefined;
+    }
     harnessRequested = wanted;
     // Keep the loss warning and recovery step visible while rechecking the same version.
     const previous = harnessRead?.status;
     if (
-      !recheck ||
       previous?.status !== "observed" ||
       previous.revisionId !== wanted ||
       previous.harness?.state !== "lost"
@@ -1258,11 +1270,11 @@ export async function renderAgentDetail(
       harnessRead = null;
     }
     if (wanted === null) {
-      harnessAbort = undefined;
       return;
     }
-    const abort = new AbortController();
+    const abort = harnessAbort ?? new AbortController();
     harnessAbort = abort;
+    const generation = ++harnessGeneration;
     const isCurrent = () =>
       harnessAbort === abort &&
       wanted === currentRevisionId &&
@@ -1270,8 +1282,10 @@ export async function renderAgentDetail(
       context.isCurrent() &&
       (recheck?.isCurrent() ?? true);
     const finish = (status: AgentHarnessStatusRead | null) => {
-      harnessRead = { revisionId: wanted, status };
-      renderLiveServing();
+      if (generation === harnessGeneration) {
+        harnessRead = { revisionId: wanted, status };
+        renderLiveServing();
+      }
     };
     if (recheck) {
       renderLiveServing();
@@ -2990,6 +3004,11 @@ export async function renderAgentDetail(
       setText(latestDeploymentNote, note);
     }
     const mayBeOffline = replacementFailed || selectedFailed;
+    // Even the entry read may have started before this failure. Check once per replacement.
+    if (replacementFailed && failedReplacementId !== latest.id) {
+      failedReplacementId = latest.id;
+      void syncHarnessRead("replacement-failed");
+    }
     setLiveServing(mayBeOffline);
     const outcome = newerHidden || acceptedHidden ? "" : (latestDeploymentStatus ?? "");
     if (latestDeploymentValue.dataset.outcome !== outcome) {
@@ -3577,10 +3596,19 @@ export async function renderAgentDetail(
     );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
+    const automaticGit = Boolean(
+      agent.repositoryAccess?.githubAppClientId && agent.repositoryAccess.repositories.length,
+    );
+    if (automaticGit) {
+      reviewRepositories = false;
+    }
     const firstGitHubDraft =
+      !automaticGit &&
       revisionResult.status === "fulfilled" &&
       revisionResult.value.revisions.length === 0 &&
-      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+      repositorySelections(agent.repositoryAccess).some(
+        ({ profile }) => profile === "github-repository",
+      );
     async function hasRepositoryPolicy() {
       const permissions = await latestPermissionsRead;
       // OCC requires policy read for scoped deployments. Legacy deployers can
@@ -4339,6 +4367,7 @@ export async function renderAgentDetail(
       const showRepositoryWarning =
         !deployUnavailable &&
         !reviewRepositories &&
+        !automaticGit &&
         callerPermissions?.deploy === true &&
         callerPermissions.sandboxPolicyRead &&
         isDedicatedCodex(values) &&
@@ -4672,12 +4701,7 @@ export async function renderAgentDetail(
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
             return;
           }
-          if (
-            JSON.stringify(freshAgent.repositoryAccess) !==
-              JSON.stringify(agent.repositoryAccess) ||
-            JSON.stringify(freshAgent.repositoryBindings) !==
-              JSON.stringify(agent.repositoryBindings)
-          ) {
+          if (!sameValue(freshAgent.repositoryAccess, agent.repositoryAccess)) {
             deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
             return;
           }
@@ -4910,7 +4934,7 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
-      !reviewRepositories && hasRepositoryPermissions(values)
+      !reviewRepositories && !automaticGit && hasRepositoryPermissions(values)
         ? element(
             "p",
             { className: "hint" },
@@ -6532,7 +6556,7 @@ export async function renderAgentDetail(
       }
     } else {
       const repositoryBindings = draft
-        ? agent.repositoryBindings
+        ? repositorySelections(agent.repositoryAccess)
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
@@ -6546,7 +6570,7 @@ export async function renderAgentDetail(
           repositoryBindings
             ?.map(
               (binding) =>
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+                `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
             .join(", ") ?? "None",
         ],
@@ -6634,7 +6658,7 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          !(draft && reviewRepositories) &&
+          !(draft && (reviewRepositories || agent.repositoryAccess?.githubAppClientId)) &&
             repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
@@ -6711,8 +6735,23 @@ export async function renderAgentDetail(
     return holder;
   }
 
+  function draftRepositoryLabel(binding: { repositoryRef: string; profile: string }) {
+    const selected = agent.repositoryAccess?.githubAppClientId
+      ? agent.repositoryAccess.repositories.find(
+          ({ repositoryRef }) => repositoryRef === binding.repositoryRef,
+        )
+      : undefined;
+    if (selected?.access === "write") {
+      return "Read/write Git";
+    }
+    if (selected?.access === "read") {
+      return "Read-only Git";
+    }
+    return repositoryProfile(binding.profile)?.label ?? "Unknown access level";
+  }
+
   function repositoryAccessSummary(reason: string) {
-    const bindings = agent.repositoryBindings ?? [];
+    const bindings = repositorySelections(agent.repositoryAccess);
     return element(
       "section",
       { className: "agent-card" },
@@ -6729,15 +6768,12 @@ export async function renderAgentDetail(
             "ul",
             { className: "repository-access-summary" },
             ...bindings.map((binding) =>
-              element(
-                "li",
-                {},
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
-              ),
+              element("li", {}, `${binding.repositoryRef} · ${draftRepositoryLabel(binding)}`),
             ),
           )
         : null,
-      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+      !agent.repositoryAccess?.githubAppClientId &&
+        bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
         ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
         : null,
       element("p", { className: "muted", role: "status" }, reason),
@@ -6788,7 +6824,7 @@ export async function renderAgentDetail(
         fields?.setDisabled(true);
         return;
       }
-      const dirty = fields?.isDirty() ?? false;
+      const dirty = Boolean(fields?.isDirty());
       const pending = saveState === "saving";
       const outcomeUnknown = saveState === "uncertain";
       const reloadRequired = saveState === "conflict";
@@ -6867,8 +6903,7 @@ export async function renderAgentDetail(
         }
         if (
           fresh.configurationId !== agent.configurationId ||
-          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
+          !sameValue(fresh.repositoryAccess, agent.repositoryAccess)
         ) {
           saveState = "conflict";
           refuse(
@@ -6878,8 +6913,8 @@ export async function renderAgentDetail(
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
-        mutationStarted = true;
         const repositoryAccess = fields.access();
+        mutationStarted = true;
         const savedAgent = agentForPage(
           await request(path, {
             method: "PATCH",

@@ -1,5 +1,5 @@
 import { startGatewayRuntimeAuditListener } from "./http/runtime-audit.ts";
-import type { ChatGPTBackendDefinition, ComputeDriver } from "@openclaw-enterprise/contracts";
+import type { ChatGPTBackendDefinition } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
@@ -74,23 +74,6 @@ type ApiSettings = SharedApiSettings &
 
 type MeasuredStartupPhase =
   "modules" | "configuration" | "composition" | "ready" | "listen" | ProductionStartupPhase;
-
-type ServiceAccountCompute = Parameters<
-  typeof import("./drivers/service-account/chatgpt.ts").createChatGPTServiceAccountDriverFactory
->[1];
-
-function supportsServiceAccountCredentials(
-  compute: ComputeDriver & {
-    readonly storeServiceAccountCredential?: unknown;
-    readonly findServiceAccountCredential?: unknown;
-  },
-): compute is ComputeDriver & ServiceAccountCompute {
-  return (
-    typeof compute.storeServiceAccountCredential === "function" &&
-    typeof compute.findServiceAccountCredential === "function" &&
-    typeof compute.deleteServiceAccountCredential === "function"
-  );
-}
 
 function startupFailureCode(error: unknown): string {
   if (error instanceof ConsoleThemeError) {
@@ -430,10 +413,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     if (settings.databaseUrl === undefined) {
       throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
     }
-    const compute = drivers.computeDriver;
-    if (!supportsServiceAccountCredentials(compute)) {
-      throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
-    }
     const backendDefinition = drivers.installation.backend.find(
       (backend): backend is ChatGPTBackendDefinition =>
         backend.type === "chatgpt" &&
@@ -466,7 +445,7 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
           : { credentialTtlSeconds: configuration.credentialTtlSeconds }),
       }),
     };
-    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend, compute);
+    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend);
   }
   const databaseUrl = settings.databaseUrl;
   if (databaseUrl === undefined) {

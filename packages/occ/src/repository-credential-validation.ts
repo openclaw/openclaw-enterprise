@@ -1,8 +1,8 @@
 import type {
   AdmittedRepositoryBinding,
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryRevisionState,
+  SourceBackedRepositoryRevisionState,
 } from "@openclaw-enterprise/contracts";
 import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter, immutableCopy } from "@openclaw-enterprise/utils";
@@ -10,6 +10,8 @@ import { ScopeViolationError } from "./errors.ts";
 
 const token = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const backendIdentifier = /^(?!\s)(?!.*\s$).{1,200}$/;
+const credentialClientIdentifier =
+  /^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function boundedToken(value: unknown): value is string {
   return typeof value === "string" && token.exec(value)?.[0] === value;
@@ -73,18 +75,21 @@ function bindingArray(value: unknown, admitted: boolean): boolean {
   return true;
 }
 
-/** Canonical desired state; request defaulting and authority resolution belong to admission. */
-export function validRepositoryBindingSelections(
-  value: unknown,
-): value is readonly RepositoryBindingSelection[] {
-  return bindingArray(value, false);
-}
-
 export function validRepositoryAccess(value: unknown): value is RepositoryAccess {
+  const hasClient =
+    value !== null && typeof value === "object" && Object.hasOwn(value, "githubAppClientId");
   if (
-    !exactObject(value, ["defaultProfile", "repositories"]) ||
+    !exactObject(value, [
+      "defaultProfile",
+      "repositories",
+      ...(hasClient ? ["githubAppClientId"] : []),
+    ]) ||
     !boundedToken(value.defaultProfile) ||
     isInstallationRepositoryProfile(value.defaultProfile) ||
+    (hasClient &&
+      (typeof value.githubAppClientId !== "string" ||
+        credentialClientIdentifier.exec(value.githubAppClientId)?.[0] !== value.githubAppClientId ||
+        value.defaultProfile !== "github-repository")) ||
     !Array.isArray(value.repositories) ||
     value.repositories.length > 16
   ) {
@@ -95,11 +100,22 @@ export function validRepositoryAccess(value: unknown): value is RepositoryAccess
     if (entry === null || typeof entry !== "object") {
       return false;
     }
-    const keys = Object.hasOwn(entry, "profile") ? ["repositoryRef", "profile"] : ["repositoryRef"];
+    const hasProfile = Object.hasOwn(entry, "profile");
+    const hasAccess = Object.hasOwn(entry, "access");
+    const keys = [
+      "repositoryRef",
+      ...(hasProfile ? ["profile"] : []),
+      ...(hasAccess ? ["access"] : []),
+    ];
     if (
       !exactObject(entry, keys) ||
       !boundedToken(entry.repositoryRef) ||
-      (keys.length === 2 && !boundedToken(entry.profile)) ||
+      (hasProfile && !boundedToken(entry.profile)) ||
+      (hasClient
+        ? !hasAccess ||
+          (entry.access !== "read" && entry.access !== "write") ||
+          (entry.profile ?? value.defaultProfile) !== "github-repository"
+        : hasAccess) ||
       seen.has(entry.repositoryRef)
     ) {
       return false;
@@ -109,26 +125,12 @@ export function validRepositoryAccess(value: unknown): value is RepositoryAccess
   });
 }
 
-/** Persist intent only alongside the exact profiles it resolves to. */
-export function normalizedRepositoryAccess(
-  value: unknown,
-  bindings: readonly RepositoryBindingSelection[] | undefined,
-): RepositoryAccess | undefined {
+export function normalizedRepositoryAccess(value: unknown): RepositoryAccess | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
-  if (
-    !validRepositoryAccess(value) ||
-    value.repositories.length !== (bindings?.length ?? 0) ||
-    value.repositories.some(
-      (entry, index) =>
-        entry.repositoryRef !== bindings?.[index]?.repositoryRef ||
-        (entry.profile ?? value.defaultProfile) !== bindings?.[index]?.profile,
-    )
-  ) {
-    throw new ScopeViolationError(
-      "The Agent repository access intent does not match its bindings.",
-    );
+  if (!validRepositoryAccess(value)) {
+    throw new ScopeViolationError("The Agent repository access is invalid.");
   }
   return immutableCopy(value);
 }
@@ -140,18 +142,33 @@ export function validAdmittedRepositoryBindings(
 }
 
 /** Mirrors the database's closed, material-free immutable snapshot shape. */
-export function validRepositoryRevisionState(value: unknown): value is RepositoryRevisionState {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    exactObject(value, [
+export function validRepositoryRevisionState(
+  value: unknown,
+): value is RepositoryRevisionState | SourceBackedRepositoryRevisionState {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const sourceBacked = Object.hasOwn(value, "authorization");
+  if (
+    !exactObject(value, [
       "driver",
-      "deadlineWallMs",
       "bindings",
-      ...(Object.hasOwn(value, "standingApprovalId")
+      ...(sourceBacked ? ["authorization"] : ["deadlineWallMs"]),
+      ...(Object.hasOwn(value, "standingApprovalId") && !sourceBacked
         ? ["standingApprovalId", "standingApprovalGeneration", "standingApprovalScopeFingerprint"]
         : []),
-    ]) &&
+    ]) ||
+    !exactObject(value.driver, ["id", "implementation"]) ||
+    !opaqueIdentity(value.driver.id) ||
+    !opaqueIdentity(value.driver.implementation) ||
+    !validAdmittedRepositoryBindings(value.bindings)
+  ) {
+    return false;
+  }
+  if (sourceBacked) {
+    return value.authorization === "credential_source";
+  }
+  return (
     (!Object.hasOwn(value, "standingApprovalId") ||
       (boundedToken(value.standingApprovalId) &&
         typeof value.standingApprovalScopeFingerprint === "string" &&
@@ -160,24 +177,8 @@ export function validRepositoryRevisionState(value: unknown): value is Repositor
         Number(value.standingApprovalGeneration) > 0 &&
         Array.isArray(value.bindings) &&
         value.bindings.length === 1)) &&
-    exactObject(value.driver, ["id", "implementation"]) &&
-    opaqueIdentity(value.driver.id) &&
-    opaqueIdentity(value.driver.implementation) &&
     typeof value.deadlineWallMs === "number" &&
     Number.isSafeInteger(value.deadlineWallMs) &&
-    value.deadlineWallMs > 0 &&
-    validAdmittedRepositoryBindings(value.bindings)
+    value.deadlineWallMs > 0
   );
-}
-
-export function normalizedRepositoryBindings(
-  value: unknown,
-): readonly RepositoryBindingSelection[] | undefined {
-  if (value === undefined || (Array.isArray(value) && value.length === 0)) {
-    return undefined;
-  }
-  if (!validRepositoryBindingSelections(value)) {
-    throw new ScopeViolationError("The Agent repository bindings are invalid.");
-  }
-  return immutableCopy(value);
 }

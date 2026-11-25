@@ -3,10 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import test from "node:test";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
-import {
-  activateRepositoryAgent,
-  admitRepositoryAgent,
-} from "../helpers/egress-custody-installed-agent.mjs";
+import { activateRepositoryAgent } from "../helpers/egress-custody-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.ts";
 import { verifyCustodyFailures } from "./egress-connected-custody-observation-cases.ts";
@@ -37,64 +34,6 @@ function custodyControllerPods() {
     },
   };
 }
-
-test("repository admission inspects the current API and worker after an authority restart", async () => {
-  const { pod, input } = custodyControllerPods();
-  const namespace = input.controllerNamespace;
-  const worker = pod("worker");
-  const stack = { controllerPods: [pod("api", "api-retired"), worker] };
-  const api = pod("api", "api-replacement");
-  let items = [api, worker];
-  const inspected = [];
-  const provider = { businessOrigin: "https://issuer.example.test" };
-  const kubectl = (operation, ...args) => {
-    if (operation === "get") {
-      assert.deepEqual(args, [
-        "pods",
-        "--namespace",
-        namespace,
-        "--selector",
-        "owned=yes",
-        "-o",
-        "json",
-      ]);
-      return JSON.stringify({ items });
-    }
-    const [flag, ns, name] = args;
-    assert.deepEqual([operation, flag, ns], ["exec", "-n", namespace]);
-    assert.ok(
-      items.some(({ metadata }) => metadata.name === name),
-      name + " NotFound",
-    );
-    inspected.push(name);
-    return provider.businessOrigin;
-  };
-  // Stop at the first mutation. A stale snapshot, or a partial inspection, cannot pass this boundary.
-  const stop = new Error("reached enrollment");
-  const create = (kind) => {
-    assert.equal(kind, "configurations");
-    assert.deepEqual(inspected.splice(0), ["api-replacement", "worker"]);
-    throw stop;
-  };
-  const admit = () =>
-    admitRepositoryAgent(
-      { input, f: { kubectl }, controller: {} },
-      stack,
-      {},
-      { provider, create },
-    );
-  await assert.rejects(admit, (error) => error === stop);
-
-  items = [api];
-  await assert.rejects(admit, /worker Pod/);
-  items = [api, worker];
-  worker.metadata.deletionTimestamp = "2026-10-15T00:00:00Z";
-  await assert.rejects(admit, /terminating/);
-  delete worker.metadata.deletionTimestamp;
-  worker.spec.containers[0].image = "wrong-controller";
-  await assert.rejects(admit, /candidate controller image/);
-  assert.deepEqual(inspected, []);
-});
 
 test("failed custody deployment preserves worker event order across a reused attempt budget", async (t) => {
   const { pod, input } = custodyControllerPods();

@@ -199,7 +199,7 @@ test(
       name: "Isolated OpenAI key",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: original },
+      secret: original,
     });
     assert.equal(created.statusCode, 201, created.body);
     const source = created.json().data;
@@ -269,8 +269,16 @@ test(
     const read = await requestAsReader("GET", sourcePath);
     assert.equal(read.status, 200);
     assert.equal(read.data.id, sourceRef.id);
-    assert.deepEqual(read.data.secrets, {});
-    const denied = await requestAsReader("PATCH", sourcePath, { secret: { opaque: deniedValue } });
+    assert.equal(read.data.type, "static");
+    assert.equal(read.data.state, "ready");
+    assert.equal(read.data.config.provider_preset, "openai");
+    assert.ok(
+      ["secret", "secrets", "ownerCapability", "backendRef"].every(
+        (field) => !Object.hasOwn(read.data, field),
+      ),
+      "A reader receives public Source metadata without custody fields.",
+    );
+    const denied = await requestAsReader("PATCH", sourcePath, { secret: deniedValue });
     assert.equal(denied.status, 403);
     assert.ok(
       (await readNativeValue()) === original,
@@ -287,7 +295,7 @@ test(
     );
     assert.deepEqual(denialAudit.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
 
-    const updated = await inject("PATCH", sourcePath, { secret: { opaque: replacement } });
+    const updated = await inject("PATCH", sourcePath, { secret: replacement });
     assert.equal(updated.statusCode, 200, updated.body);
     const updatedProvider = await client.getProvider(workspace, name, t.signal);
     assert.ok(updatedProvider);
@@ -307,7 +315,7 @@ test(
     assert.equal(updatedSource.ownerCapability, "token_service");
     assert.equal(updatedSource.tokenServiceInstanceId, tokenServiceInstanceId);
     assert.deepEqual(updatedSource.backendRef, { workspaceId, providerId: provider.id });
-    assert.deepEqual(updatedSource.secrets, {});
+    assert.equal(Object.hasOwn(updatedSource, "secrets"), false);
     const persistent = await pool.query(
       `SELECT to_jsonb(s) AS source,
               (SELECT jsonb_agg(details) FROM occ.audit_events WHERE resource_id = $2) AS audit

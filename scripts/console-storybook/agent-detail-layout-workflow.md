@@ -110,6 +110,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
 
 Use **Current version's Sandbox lost** to check the warning while returning to the same version.
 
+In **Bootstrap failure with cleanup pending**, stay on the page as the replacement
+fails. The selected version stays the same. **Sandbox running** changes to
+**Sandbox lost** with **Deploy a new version** after one fresh Sandbox check.
+Cleanup updates do not trigger more checks. The story simulates both responses.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent

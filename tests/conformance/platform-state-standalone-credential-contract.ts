@@ -28,7 +28,6 @@ async function readySource(
     name: `Standalone model source ${randomUUID()}`,
     type: "static",
     config: { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: "openai" },
-    secrets: {},
     ownerCapability: "token_service",
     tokenServiceInstanceId,
     state: "ready",
@@ -159,7 +158,7 @@ export async function verifyStandaloneCredentialStateContract(
     }),
     refusal,
   );
-  // A generic policy can describe Plugins, but standalone v8 currently admits only one model.
+  // Both adapters refuse a fabricated, unpinned Plugin binding without a saved selection.
   await assert.rejects(
     store.transact(async (transaction) => {
       const revision = await standaloneRevision(transaction, seed);
@@ -187,7 +186,11 @@ export async function verifyStandaloneCredentialStateContract(
         },
       });
     }),
-    refusal,
+    storeRefusal(
+      "ScopeViolationError",
+      "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+      "The AgentRevision belongs to an unavailable Agent.",
+    ),
   );
   // The Agent may own both ready sources, but standalone v8 admits only its model source.
   await assert.rejects(

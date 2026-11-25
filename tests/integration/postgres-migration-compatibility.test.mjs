@@ -31,7 +31,7 @@ import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
   assertInjectedMigrationRollback,
-  retainGatewaySourcesAcrossProxyAdmission,
+  discardRetiredGatewaySourcesAcrossCutover,
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { request, startController } from "../helpers/postgres-platform-state.ts";
 import {
@@ -976,7 +976,7 @@ async function assertHistoryRefused(db, refusal) {
  * @param {Pick<Awaited<ReturnType<typeof historyDatabase>>, "app" | "migrator">} db
  * @param {readonly { hash: string, created_at: string | number | null }[]} [previous]
  */
-async function assertCompletedHistory(db, previous = []) {
+async function assertCompletedHistory(db, previous = [], selectedRepositories = 0) {
   const manifest = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
@@ -1010,8 +1010,8 @@ async function assertCompletedHistory(db, previous = []) {
         "SELECT count(*)::integer AS count FROM occ.agents WHERE repository_access IS NOT NULL",
       )
     ).rows[0].count,
-    0,
-    "migration must not invent inheritance intent for existing Agent bindings",
+    selectedRepositories,
+    "Agent repository access reflects existing selections",
   );
   assert.equal(
     catalogDigest(await migrationCatalog(db.migrator, "drizzle")),
@@ -1027,7 +1027,6 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
-      ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1572,11 +1571,13 @@ test(
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
-      [94, "preRuntimeAudit"],
-      [95, "preAuditMessageRead"],
-      [96, "preHttpChatAuditLimits"],
-      [97, "preRuntimeAuditReplay"],
-      [98, "preAgentHttpChatAuditPage"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1840,7 +1841,14 @@ test(
       ).rows[0].document;
     const readStatic = async (database = db) => ({
       instances: (await database.app.query("SELECT * FROM occ.token_service_instances")).rows,
-      sources: (await database.app.query("SELECT * FROM occ.credential_sources")).rows,
+      sources: (
+        await database.app.query(
+          `SELECT id, namespace_id, name, type, config, driver_id, state, created_at,
+                  owner_capability, egress, token_service_instance_id,
+                  to_jsonb(source)->'backend_ref' AS backend_ref
+             FROM occ.credential_sources AS source`,
+        )
+      ).rows,
     });
     const egress = await readEgress();
     const policy = await readPolicy();
@@ -1850,10 +1858,7 @@ test(
     assert.equal(staticMetadata.sources[0].token_service_instance_id, instance);
     assert.equal(staticMetadata.sources[0].owner_capability, "token_service");
     assert.equal(staticMetadata.sources[0].driver_id, null);
-    const upgradedStaticMetadata = {
-      ...staticMetadata,
-      sources: [{ ...staticMetadata.sources[0], backend_ref: null }],
-    };
+    assert.equal(staticMetadata.sources[0].backend_ref, null);
     const before = await historySnapshot(db);
     const stockArchive = await dumpHistoryArchive(fixture, db);
     assert.deepEqual(
@@ -1876,7 +1881,7 @@ test(
     await assertCompletedHistory(db, before.receipts);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), policy);
-    assert.deepEqual(await readStatic(), upgradedStaticMetadata);
+    assert.deepEqual(await readStatic(), staticMetadata);
 
     // The archived 0086 database has the same official receipts and qualified restore catalog.
     const upgraded = await restoreHistoryArchive(context, fixture, stockArchive);
@@ -1895,7 +1900,7 @@ test(
       history: "completed",
     });
     assert.deepEqual(await historyReceipts(upgraded.migrator), await historyReceipts(db.migrator));
-    assert.deepEqual(await readStatic(upgraded), upgradedStaticMetadata);
+    assert.deepEqual(await readStatic(upgraded), staticMetadata);
     assert.deepEqual(await readEgress(upgraded), egress);
     assert.deepEqual(await readPolicy(upgraded), policy);
 
@@ -1918,7 +1923,7 @@ test(
     assert.deepEqual(await historySnapshot(db), after);
     assert.deepEqual(await readEgress(), egress);
     assert.deepEqual(await readPolicy(), saved);
-    assert.deepEqual(await readStatic(), upgradedStaticMetadata);
+    assert.deepEqual(await readStatic(), staticMetadata);
 
     const restored = await restoreHistoryArchive(
       context,
@@ -1930,7 +1935,7 @@ test(
       history: "completed",
     });
     assert.deepEqual(await historyReceipts(restored.migrator), after.receipts);
-    assert.deepEqual(await readStatic(restored), upgradedStaticMetadata);
+    assert.deepEqual(await readStatic(restored), staticMetadata);
     assert.deepEqual(await readEgress(restored), egress);
     assert.deepEqual(await readPolicy(restored), saved);
   },
@@ -1941,39 +1946,6 @@ test(
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const subtests = [];
-    for (const schemas of [false, true]) {
-      const subtest = context.test(
-        `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
-        async (child) => {
-          const db = await historyDatabase(child, fixture, "fresh", { schemas });
-          const before = await historySnapshot(db);
-          assert.deepEqual(await runHistoryMigration(db, "development", "--check"), {
-            ok: true,
-            history: "empty",
-          });
-          assert.deepEqual(await historySnapshot(db), before);
-          // Two real processes (both scripts) race for the migration lock once; the
-          // owner-only case races in-process connections.
-          const migrate = schemas ? runHistoryMigration : runHistoryCommand;
-          const results = await Promise.all([migrate(db), migrate(db, "production")]);
-          assert.deepEqual(
-            results.map((result) => result.ok),
-            [true, true],
-          );
-          assert.deepEqual(results.map((result) => result.history).sort(), ["completed", "empty"]);
-          await assertCompletedHistory(db);
-          const after = await historySnapshot(db);
-          assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
-          assert.deepEqual(await runHistoryMigration(db, "production"), {
-            ok: true,
-            history: "completed",
-          });
-          assert.deepEqual(await historySnapshot(db), after);
-        },
-      );
-      subtests.push(subtest);
-    }
     // Gaps: 26, 60 and 61 have no named history; 27 is covered by the rollback case.
     const histories = await coveringNewestPrefix("populated canonical", 62, [
       [24, "prePresetsMain"],
@@ -2042,12 +2014,47 @@ test(
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
-      [94, "preRuntimeAudit"],
-      [95, "preAuditMessageRead"],
-      [96, "preHttpChatAuditLimits"],
-      [97, "preRuntimeAuditReplay"],
-      [98, "preAgentHttpChatAuditPage"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ]);
+    const subtests = [];
+    for (const schemas of [false, true]) {
+      const subtest = context.test(
+        `fresh ${schemas ? "owner-only schemas" : "absent schemas"}`,
+        async (child) => {
+          const db = await historyDatabase(child, fixture, "fresh", { schemas });
+          const before = await historySnapshot(db);
+          assert.deepEqual(await runHistoryMigration(db, "development", "--check"), {
+            ok: true,
+            history: "empty",
+          });
+          assert.deepEqual(await historySnapshot(db), before);
+          // Two real processes (both scripts) race for the migration lock once; the
+          // owner-only case races in-process connections.
+          const migrate = schemas ? runHistoryMigration : runHistoryCommand;
+          const results = await Promise.all([migrate(db), migrate(db, "production")]);
+          assert.deepEqual(
+            results.map((result) => result.ok),
+            [true, true],
+          );
+          assert.deepEqual(results.map((result) => result.history).sort(), ["completed", "empty"]);
+          await assertCompletedHistory(db);
+          const after = await historySnapshot(db);
+          assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
+          assert.deepEqual(await runHistoryMigration(db, "production"), {
+            ok: true,
+            history: "completed",
+          });
+          assert.deepEqual(await historySnapshot(db), after);
+        },
+      );
+      subtests.push(subtest);
+    }
     for (const [prefix, history] of histories) {
       const subtest = context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2059,9 +2066,21 @@ test(
           // 0072 requires settings on new rows; earlier prefixes retain their historical shape.
           harnessSettings: prefix >= 72,
         });
+        // Main still accepts direct Agent Repository bindings. The cutover
+        // preserves the selected profiles in the canonical editable access.
+        const legacySelections = [
+          { repositoryRef: "service", profile: "git-read" },
+          { repositoryRef: "website", profile: "git-write" },
+        ];
+        if (prefix === 94) {
+          await db.app.query(
+            "UPDATE occ.agents SET repository_bindings=$1::jsonb WHERE namespace_id=$2",
+            [JSON.stringify(legacySelections), namespaceId],
+          );
+        }
         const assertSourceOwners =
           prefix === 59
-            ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
+            ? await discardRetiredGatewaySourcesAcrossCutover(db.app, namespaceId)
             : undefined;
         const receipts = await historyReceipts(db.migrator);
         const upgrade = async () => {
@@ -2072,7 +2091,18 @@ test(
           });
           assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
           await assertSourceOwners?.();
-          await assertCompletedHistory(db, receipts);
+          if (prefix === 94) {
+            const { rows } = await db.app.query(
+              "SELECT repository_access FROM occ.agents WHERE namespace_id=$1",
+              [namespaceId],
+            );
+            assert.deepEqual(rows, [
+              {
+                repository_access: { defaultProfile: "git-read", repositories: legacySelections },
+              },
+            ]);
+          }
+          await assertCompletedHistory(db, receipts, prefix === 94 ? 1 : 0);
           if (history !== "preNativeGitDelivery") {
             await assertUpgradedRevisionReadable(db);
           }
@@ -2090,41 +2120,6 @@ test(
         }
         if (history === "preHumanAuthenticationResults") {
           await assertSignInResultStorage(db.app);
-        }
-        if (history === "preConnectionTemplates") {
-          // An Installation-wide template cannot present a Namespace client's credentials,
-          // even when an application-role writer bypasses OCC.
-          const templateId = `ctp_${randomUUID()}`;
-          const registrationId = `ccr_${randomUUID()}`;
-          await db.app.query("BEGIN");
-          try {
-            await db.app.query(
-              `INSERT INTO occ.oauth_clients
-                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
-               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
-              [registrationId, namespaceId],
-            );
-            await db.app.query(
-              `INSERT INTO occ.connection_templates
-                 (id, namespace_id, display_name, current_version, created_at)
-               VALUES ($1, NULL, 'Installation template', 1, now())`,
-              [templateId],
-            );
-            await assert.rejects(
-              db.app.query(
-                `INSERT INTO occ.oauth_connection_template_versions
-                   (template_id, version, oauth_client_id, issuer, mode, authorization_url,
-                    token_url, scopes, authorization_parameters, destinations, created_at)
-                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
-                    'https://issuer.example.test/auth', 'https://issuer.example.test/token',
-                    ARRAY['read'], '{}', '[{"host":"api.example.test","port":443,"path":"/"}]', now())`,
-                [templateId, registrationId],
-              ),
-              { code: "23514", message: /registration must belong to the template scope/ },
-            );
-          } finally {
-            await db.app.query("ROLLBACK");
-          }
         }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
@@ -2418,6 +2413,557 @@ test(
 );
 
 test(
+  "Credential cutover preserves an existing backend-owned TokenService Source",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "backend_source_cutover", { prefix: 94 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const sourceId = `cs_${randomUUID()}`;
+    const backendRef = { workspaceId: "fixture-workspace", providerId: "fixture-provider" };
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'openshell-token-service','fixture-store')`,
+      [installationId, instanceId],
+    );
+    // A Source enrolled on main already pins the selected native custody backend.
+    await db.app.query(
+      `INSERT INTO occ.credential_sources
+         (id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id,backend_ref)
+       VALUES($1,$2,'Native static Source','static','{}','token_service','ready',now(),$3,$4::jsonb)`,
+      [sourceId, namespaceId, instanceId, JSON.stringify(backendRef)],
+    );
+    const readSource = async () =>
+      (
+        await db.app.query(
+          `SELECT id,namespace_id,name,type,config,owner_capability,state,created_at,
+                  token_service_instance_id,backend_ref FROM occ.credential_sources WHERE id=$1`,
+          [sourceId],
+        )
+      ).rows[0];
+    const before = await readSource();
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    assert.deepEqual(await readSource(), before);
+    assert.deepEqual(await runHistoryCommand(db, "production", "--require-current"), {
+      ok: true,
+      history: "completed",
+    });
+    // The main-owned immutable reference still rejects a privileged row mutation.
+    await assert.rejects(
+      db.migrator.query("UPDATE occ.credential_sources SET backend_ref=$1::jsonb WHERE id=$2", [
+        JSON.stringify({ workspaceId: "other-workspace", providerId: "other-provider" }),
+        sourceId,
+      ]),
+      { code: "55000" },
+    );
+    assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "Namespace GitHub App Clients enforce Source ownership after upgrading 0095",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "github_app_scope", { prefix: 95 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const otherNamespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const globalClientId = `ccr_${randomUUID()}`;
+    const namespaceClientId = `ccr_${randomUUID()}`;
+    const appId = "10001";
+    const scope = {
+      appId,
+      installationId: "20001",
+      repositories: [{ repositoryId: "30001", repository: "example/repository" }],
+      permissions: { metadata: "read", contents: "read" },
+    };
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'GitHub fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.namespaces(id,name,status,created_at)
+       VALUES($1,'GitHub owner','ready',now()),($2,'Other owner','ready',now())`,
+      [namespaceId, otherNamespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
+       VALUES($1,$2,'occ-token-service','fixture-store')`,
+      [installationId, instanceId],
+    );
+    const insertClient = (id, owner) =>
+      db.app.query(
+        `INSERT INTO occ.oauth_clients
+           (id,kind,namespace_id,display_name,app_id,token_service_instance_id,created_at)
+         VALUES($1,'github-app',$2,'GitHub App',$3,$4,now())`,
+        [id, owner, appId, instanceId],
+      );
+    const insertSource = (owner, clientId) =>
+      db.app.query(
+        `INSERT INTO occ.credential_sources
+           (id,namespace_id,name,type,config,owner_capability,state,created_at,
+            token_service_instance_id,github_app_client_id,github_app_scope)
+         VALUES($1,$2,'GitHub Source','github-app-installation','{}','token_service','ready',
+                now(),$3,$4,$5::jsonb)
+         RETURNING id,namespace_id,github_app_client_id,github_app_scope`,
+        [`cs_${randomUUID()}`, owner, instanceId, clientId, JSON.stringify(scope)],
+      );
+
+    // A real 0095 database has an Installation Client and a Source already using it.
+    await insertClient(globalClientId, null);
+    const retained = (await insertSource(otherNamespaceId, globalClientId)).rows[0];
+    await assert.rejects(insertClient(namespaceClientId, namespaceId), {
+      code: "23514",
+      constraint: "oauth_clients_kind_shape",
+    });
+    const previous = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryCommand(db, "production"), {
+      ok: true,
+      history: "preNamespaceGitHubAppClients",
+    });
+    await assertCompletedHistory(db, previous);
+
+    assert.deepEqual(
+      (
+        await db.app.query(
+          `SELECT id,namespace_id,github_app_client_id,github_app_scope
+           FROM occ.credential_sources WHERE id=$1`,
+          [retained.id],
+        )
+      ).rows,
+      [retained],
+    );
+    await insertClient(namespaceClientId, namespaceId);
+    // Both Clients have the same App ID and TokenService owner. Only the Namespace differs.
+    await assert.rejects(insertSource(otherNamespaceId, namespaceClientId), {
+      code: "23514",
+      message: "Git Source requires a ready GitHub App client",
+    });
+    const scoped = (await insertSource(namespaceId, namespaceClientId)).rows[0];
+    assert.equal(scoped.namespace_id, namespaceId);
+    assert.equal(scoped.github_app_client_id, namespaceClientId);
+
+    // The app may retire a Source but cannot rehome it or repoint it at another Client.
+    assert.equal(
+      (
+        await db.app.query("UPDATE occ.credential_sources SET state='deleting' WHERE id=$1", [
+          scoped.id,
+        ])
+      ).rowCount,
+      1,
+    );
+    await assert.rejects(
+      db.app.query("UPDATE occ.oauth_clients SET namespace_id=$1 WHERE id=$2", [
+        otherNamespaceId,
+        namespaceClientId,
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      db.app.query("UPDATE occ.credential_sources SET github_app_client_id=$1 WHERE id=$2", [
+        globalClientId,
+        scoped.id,
+      ]),
+      { code: "42501" },
+    );
+  },
+);
+
+test(
+  "Credential cutover retires obsolete Gateway bindings and preserves Channel Secrets",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "retired_gateway_draft", { prefix: 94 });
+    const namespaceId = await seedCanonicalData(db, {
+      preset: true,
+      computeAdmission: true,
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    // The same Namespace already has a configured Agent and unrelated Channel Secret.
+    const sourceId = `cs_${randomUUID()}`;
+    const googleSourceId = `cs_${randomUUID()}`;
+    const slackSourceId = `cs_${randomUUID()}`;
+    const slackAccountSecret = `sec_${randomUUID()}`;
+    const secretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets
+        (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Channel startup token','secrets','fixture','slack-bot','value',$3,now()),
+              ($4,$2,'Retired Slack user token','secrets','fixture','slack-user','value',$5,now())`,
+      [secretId, namespaceId, randomUUID(), slackAccountSecret, randomUUID()],
+    );
+    const bindings = {
+      SLACK_BOT_TOKEN: {
+        source: { kind: "secret", namespaceId, id: secretId },
+        delivery: { type: "env" },
+      },
+    };
+    await db.app.query(
+      "UPDATE occ.configurations SET secret_bindings=$1::jsonb, generation=generation+1 WHERE namespace_id=$2",
+      [JSON.stringify(bindings), namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources
+         (id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+       VALUES
+         ($1,$2,'Retired Gateway model','openai','{}','openshell','credential_gateway','ready',now()),
+         ($3,$2,'Retired Google account','oauth2-refresh-token',$4::jsonb,'openshell','credential_gateway','ready',now()),
+         ($5,$2,'Retired Slack account','bearer-token',$6::jsonb,'openshell','credential_gateway','ready',now())`,
+      [
+        sourceId,
+        namespaceId,
+        googleSourceId,
+        JSON.stringify({
+          token_url: "https://oauth2.googleapis.com/token",
+          env_var: "GOG_ACCESS_TOKEN",
+          host: "www.googleapis.com",
+          path: "/calendar/**",
+          scope: "https://www.googleapis.com/auth/calendar.readonly",
+        }),
+        slackSourceId,
+        JSON.stringify({
+          protocol: "mcp",
+          host: "mcp.slack.com",
+          path: "/mcp",
+          env_var: "SLACK_MCP_TOKEN",
+        }),
+      ],
+    );
+    await db.app.query(
+      "INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id) VALUES($1,$2,'token',$3)",
+      [namespaceId, slackSourceId, slackAccountSecret],
+    );
+    const releaseSha = async (plugin) =>
+      createHash("sha256")
+        .update(
+          await readFile(
+            join(repositoryRoot, `apps/controller/plugins/${plugin}/ai.openclaw.oce/release.json`),
+          ),
+        )
+        .digest("hex");
+    const plugins = {
+      "occ-plugin:google-workspace@1.0.0": {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: await releaseSha("oce-google-workspace"),
+          credentials: { account: googleSourceId },
+        },
+        tools: { "calendar.events.list": { approval: "all_actions" } },
+      },
+      "occ-plugin:slack@1.0.0": {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: await releaseSha("oce-slack"),
+          credentials: { account: slackSourceId },
+          toolNames: ["slack_search_public"],
+        },
+        tools: { slack_search_public: { approval: "all_actions" } },
+      },
+      "occ-plugin:diffs@1.0.0": { enabled: false },
+    };
+    await db.app.query(
+      "UPDATE occ.agents SET harness_auth=$1::jsonb,credential_sources=$2::jsonb,plugins=$3::jsonb,plugin_driver=$4::jsonb WHERE namespace_id=$5",
+      [
+        JSON.stringify({ method: "credential_source", sourceId }),
+        JSON.stringify([sourceId, googleSourceId, slackSourceId].map((sourceId) => ({ sourceId }))),
+        JSON.stringify(plugins),
+        JSON.stringify({ id: "openclaw", implementation: "occ/openclaw-plugin" }),
+        namespaceId,
+      ],
+    );
+    const previous = await historyReceipts(db.migrator);
+    assert.equal(previous.length, 94);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    await assertCompletedHistory(db, previous);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT harness_auth,credential_sources,plugins FROM occ.agents WHERE namespace_id=$1",
+          [namespaceId],
+        )
+      ).rows,
+      [
+        {
+          harness_auth: null,
+          credential_sources: null,
+          plugins: {
+            "occ-plugin:google-workspace@1.0.0": {
+              enabled: true,
+              tools: plugins["occ-plugin:google-workspace@1.0.0"].tools,
+            },
+            "occ-plugin:slack@1.0.0": { enabled: true },
+            "occ-plugin:diffs@1.0.0": { enabled: false },
+          },
+        },
+      ],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT id FROM occ.credential_sources WHERE id=ANY($1::text[])", [
+          [sourceId, googleSourceId, slackSourceId],
+        ])
+      ).rows,
+      [],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT id FROM occ.secrets WHERE namespace_id=$1 AND id=$2", [
+          namespaceId,
+          secretId,
+        ])
+      ).rows,
+      [{ id: secretId }],
+    );
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT secret_bindings FROM occ.configurations WHERE namespace_id=$1", [
+          namespaceId,
+        ])
+      ).rows,
+      [{ secret_bindings: bindings }],
+    );
+  },
+);
+
+test(
+  "TokenService Source migration refuses a retained pending OAuth Source without mutation",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const prefix = 94;
+    const db = await historyDatabase(context, fixture, "oauth_source_cutover", { prefix });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const clientId = `ccr_${randomUUID()}`;
+    const templateId = `ctp_${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients
+         (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+       VALUES ($1,$2,'Namespace client','https://issuer.example.test','migration-client',
+         'https://issuer.example.test/token','none',now())`,
+      [clientId, namespaceId],
+    );
+    // The current Template version is a deferred foreign key, as it is during normal creation.
+    await db.app.query("BEGIN");
+    try {
+      await db.app.query(
+        `INSERT INTO occ.connection_templates(id,namespace_id,display_name,current_version,created_at)
+         VALUES($1,$2,'Migration template',1,now())`,
+        [templateId, namespaceId],
+      );
+      await db.app.query(
+        `INSERT INTO occ.oauth_connection_template_versions
+           (template_id,version,oauth_client_id,issuer,mode,authorization_url,token_url,scopes,
+            authorization_parameters,destinations,created_at)
+         VALUES($1,1,$2,'https://issuer.example.test','manual','https://issuer.example.test/auth',
+           'https://issuer.example.test/token',ARRAY['read'],'{}',
+           '[{"host":"api.example.test","port":443,"path":"/"}]',now())`,
+        [templateId, clientId],
+      );
+      await db.app.query("COMMIT");
+    } catch (error) {
+      await db.app.query("ROLLBACK");
+      throw error;
+    }
+    // Old OCC consumes the browser attempt before exchange. An uncertain exchange timeout
+    // retains this pending Source for retirement without an attempt or SavedConnection.
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,owner_capability,state,created_at)
+       VALUES($1,$2,$3,'oauth2-refresh-token',$4::jsonb,'token_service','registering',now())`,
+      [
+        sourceId,
+        namespaceId,
+        `Connection ${randomUUID()}`,
+        JSON.stringify({
+          connection_template_id: templateId,
+          connection_template_version: "1",
+          oauth_client_id: clientId,
+        }),
+      ],
+    );
+    const sourceData = async () =>
+      (
+        await db.app.query(
+          "SELECT to_jsonb(s) AS source FROM occ.credential_sources s WHERE id=$1",
+          [sourceId],
+        )
+      ).rows;
+    const before = await historySnapshot(db);
+    const sourceBefore = await sourceData();
+    assert.equal(before.receipts.length, prefix);
+    assert.equal(sourceBefore.length, 1);
+    // The exact PostgreSQL cause distinguishes the explicit preflight from a later failing CHECK.
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        assert.ok(error instanceof Error);
+        const failure = error.cause ?? error;
+        assert.ok(failure instanceof Error);
+        assert.ok("code" in failure);
+        assert.equal(failure.code, "55000");
+        assert.equal(
+          failure.message,
+          "Existing OAuth custody requires an approved transfer or confirmed reset before the selected TokenService can own OAuth Sources",
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await sourceData(), sourceBefore);
+  },
+);
+
+test(
+  "Codex device cutover discards completed, cancelled and expired logins after live logins settle",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "codex_device_cutover", { prefix: 94 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const actorId = `usr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'Migration fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Migration fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$1)",
+      [actorId],
+    );
+    const channelSecretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets
+         (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Channel startup token','secrets','fixture','slack-bot','value',$3,now())`,
+      [channelSecretId, namespaceId, randomUUID()],
+    );
+    const addLogin = async (phase, lifetime, version) => {
+      const sourceId = `cs_${randomUUID()}`;
+      const sessionId = `sec_${randomUUID()}`;
+      await db.app.query(
+        `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,owner_capability,state,created_at)
+         VALUES($1,$2,$1,'codex-oauth','{}','credential-gateway-openshell','credential_gateway','ready',now())`,
+        [sourceId, namespaceId],
+      );
+      await db.app.query(
+        `INSERT INTO occ.authentication_states
+           (id,kind,namespace_id,actor_id,expires_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+         VALUES($1,'device_authorization',$2,$3,now()+$4::interval,$5::jsonb,$6,now(),
+           $7,$8,$9)`,
+        [
+          sessionId,
+          namespaceId,
+          actorId,
+          lifetime,
+          JSON.stringify({
+            harnessId: "codex",
+            credentialGatewayId: "credential-gateway-openshell",
+            credentialRefreshId: "credential-refresh-openshell",
+            sourceId,
+            intervalSeconds: 5,
+          }),
+          phase,
+          phase === "cancelled" ? null : "sealed-challenge",
+          phase === "pending" ? "sealed-poll-state" : null,
+          version,
+        ],
+      );
+      return sessionId;
+    };
+    // Main keeps a successful poll receipt for 24 hours and can retain cancelled or expired handles.
+    await addLogin("ready", "24 hours", 3);
+    await addLogin("cancelled", "1 hour", 2);
+    await addLogin("pending", "-1 hour", 1);
+    const activeId = await addLogin("pending", "1 hour", 1);
+    const retainedData = async () =>
+      (
+        await db.app.query(
+          `SELECT to_jsonb(s) AS source,to_jsonb(a) AS session
+         FROM occ.authentication_states a JOIN occ.credential_sources s ON s.id=a.binding->>'sourceId'
+         WHERE a.namespace_id=$1 ORDER BY a.id`,
+          [namespaceId],
+        )
+      ).rows;
+    const before = await historySnapshot(db);
+    const retainedBefore = await retainedData();
+    assert.equal(before.receipts.length, 94);
+    assert.equal(retainedBefore.length, 4);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        assert.ok(error instanceof Error);
+        const failure = error.cause ?? error;
+        assert.ok(failure instanceof Error);
+        assert.ok("code" in failure);
+        assert.equal(failure.code, "55000");
+        assert.equal(
+          failure.message,
+          "Cancel or let outstanding Codex device logins expire before cutover",
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await retainedData(), retainedBefore);
+
+    // Complete the old release's normal cancellation, then retry the same database.
+    await db.app.query(
+      `UPDATE occ.authentication_states SET phase='cancelled', encrypted_challenge=NULL,
+         private_state=NULL, version=version+1 WHERE id=$1`,
+      [activeId],
+    );
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preTokenServiceCredentialSources",
+    });
+    assert.equal(
+      (
+        await db.app.query(
+          "SELECT id FROM occ.authentication_states WHERE namespace_id=$1 AND kind='device_authorization'",
+          [namespaceId],
+        )
+      ).rowCount,
+      0,
+    );
+    assert.deepEqual(
+      (await db.app.query("SELECT id FROM occ.secrets WHERE namespace_id=$1", [namespaceId])).rows,
+      [{ id: channelSecretId }],
+    );
+  },
+);
+
+test(
   "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
   requiresHistoryPostgres,
   async (context) => {
@@ -2613,11 +3159,13 @@ test(
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
-      [94, "preRuntimeAudit"],
-      [95, "preAuditMessageRead"],
-      [96, "preHttpChatAuditLimits"],
-      [97, "preRuntimeAuditReplay"],
-      [98, "preAgentHttpChatAuditPage"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2750,13 +3298,17 @@ test(
     for (const [prefix, history] of [
       [88, "preStaticConnectionTemplates"],
       [89, "preNativeGitDelivery"],
+      [90, "preAgentNetworkProxy"],
+      [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
-      [94, "preRuntimeAudit"],
-      [95, "preAuditMessageRead"],
-      [96, "preHttpChatAuditLimits"],
-      [97, "preRuntimeAuditReplay"],
-      [98, "preAgentHttpChatAuditPage"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -2926,11 +3478,13 @@ test(
       [91, "preAgentNetworkProxyAdmission"],
       [92, "preAgentRepositoryApiLimits"],
       [93, "preTokenServiceSourceBackendRef"],
-      [94, "preRuntimeAudit"],
-      [95, "preAuditMessageRead"],
-      [96, "preHttpChatAuditLimits"],
-      [97, "preRuntimeAuditReplay"],
-      [98, "preAgentHttpChatAuditPage"],
+      [94, "preTokenServiceCredentialSources"],
+      [95, "preNamespaceGitHubAppClients"],
+      [96, "preRuntimeAudit"],
+      [97, "preAuditMessageRead"],
+      [98, "preHttpChatAuditLimits"],
+      [99, "preRuntimeAuditReplay"],
+      [100, "preAgentHttpChatAuditPage"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2959,9 +3513,11 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [98, "CREATE INDEX"],
-                [95, "CREATE TRIGGER"],
-                [94, "CREATE TABLE"],
+                [100, "CREATE INDEX"],
+                [97, "CREATE TRIGGER"],
+                [96, "CREATE TABLE"],
+                [95, "CREATE FUNCTION"],
+                [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],
                 [92, "CREATE FUNCTION"],
                 [91, "ALTER TABLE"],
@@ -2999,6 +3555,15 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 95) {
+          // The Source guard follows the Client constraint change in 0096.
+          failAt = "";
+        } else if (prefix === 94) {
+          // Abort late in the cutover after the validator and the unvalidated constraint exist.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conrelid='occ.agent_revisions'::regclass
+              AND conname='agent_revisions_source_backed_repository_authorization' AND NOT convalidated
+          ) THEN RETURN; END IF;`;
         } else if (prefix === 93) {
           // Abort the immutability trigger after 0094 installs the reference constraint.
           failAt = `IF NOT EXISTS (
