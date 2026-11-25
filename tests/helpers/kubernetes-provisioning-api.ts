@@ -28,7 +28,7 @@ import {
 import type { SecretReference } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState, type ControllerWorkState } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "./auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "./auth-session.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,

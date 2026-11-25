@@ -81,7 +81,10 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   constructor(
     owner: { readonly driverId: string; readonly backendId: string },
     registry: GitHubRepositoryRegistry,
-    options: { readonly sessionDurationSeconds: number },
+    options: {
+      readonly sessionDurationSeconds: number;
+      readonly allowNameOnlyNativeRepositories?: boolean;
+    },
   ) {
     const { driverId: id, backendId } = owner;
     if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
@@ -91,7 +94,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
     if (typeof backendId !== "string") {
       throw new Error("The GitHub repository policy must declare its owning Backend.");
     }
-    this.#registry = validateGitHubRepositoryRegistry(registry, backendId);
+    this.#registry = validateGitHubRepositoryRegistry(registry, backendId, options);
     if (
       !Number.isSafeInteger(options.sessionDurationSeconds) ||
       options.sessionDurationSeconds < 1 ||

@@ -18,13 +18,13 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInWithEmailPassword,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { injectJson } from "../helpers/inject-json.ts";
 import { listen } from "../helpers/listen.ts";
 

@@ -159,4 +159,4 @@ it: use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernet
 Codex preset.
 
 For an operator-approved existing cluster, use the
-[explicit cluster selection](openshell-git-replacement.md#existing-cluster-selection).
+[historical explicit cluster selection](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/testing/openshell-git-replacement.md#existing-cluster-selection).

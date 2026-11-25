@@ -41,7 +41,7 @@ import {
   create,
   createSlackBotSecret,
   presetSecretsPath,
-  readyForm,
+  provisionableForm,
 } from "./create-agent-form-data.mts";
 import {
   calendarPlugin,
@@ -54,6 +54,7 @@ import {
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
+import { credentialSourceScenarios } from "./scenario-groups/credential-sources.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
@@ -1034,6 +1035,7 @@ const authoredScenarios = {
   } satisfies LocalScenario,
   ...namespacesScenarios,
   ...connectionTemplateScenarios,
+  ...credentialSourceScenarios,
   ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",
@@ -1459,9 +1461,9 @@ const authoredScenarios = {
     description:
       "The compact drawer keeps the document in place while its own contents scroll. API responses are simulated.",
     steps: [
-      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Secrets page behind it stays in place.",
-      "Choose Namespaces, then use Back. The Secrets heading and search return in view.",
-      "Open navigation and press Escape. Scroll Secrets normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
+      "At 390×480, open navigation and press Page Down on the focused link. Wheel over the overlay: the Credentials page behind it stays in place.",
+      "Choose Namespaces, then use Back. The Credentials heading and Secret search return in view.",
+      "Open navigation and press Escape. Scroll Credentials normally. Reopen navigation, widen past 760px, and check that desktop scrolling is available.",
     ],
   } satisfies LocalScenario,
   ...channelsScenarios({
@@ -2207,7 +2209,7 @@ const authoredScenarios = {
     group: "Flows",
     name: "Choose provider, harness, and authentication",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
@@ -2266,7 +2268,7 @@ const authoredScenarios = {
     emptyAgents: true,
     transport: false,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },

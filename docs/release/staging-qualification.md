@@ -11,8 +11,9 @@ last_verified: "2026-11-04"
 ## Overview
 
 This workflow accepts only standalone **Enterprise Containers** publications,
-not **Release OCE** runs. Release OCE already performs Full Integration and
-native image checks before publication.
+not **Release OCE** runs. Full Release OCE runs perform Full Integration and
+native image checks before publication. Image-only runs skip Full Integration
+and cannot use this workflow.
 
 Use **Staging Release Qualification** after publishing standalone images and before you
 attempt an upgrade. CI checks the source commit. This manual workflow pulls the

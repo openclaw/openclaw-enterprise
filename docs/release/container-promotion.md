@@ -13,8 +13,9 @@ before transfer. Missing or inaccessible metadata fails closed.
 ## Promote
 
 1. Record the full source SHA, publication run ID, and exact attempt from a
-   successful Release OCE or standalone Enterprise Containers publication. Its
-   receipt must still be retained. For a completed Release OCE recovery, select
+   successful full Release OCE or standalone Enterprise Containers publication.
+   Its receipt must still be retained. Image-only Release OCE runs, including
+   image-only recovery runs, are not eligible. For a completed full Release OCE recovery, select
    the successful recovery run; its final alias job and original preparation
    evidence must remain available. Standalone image recovery receipts are ineligible.
 2. Under an explicit publication request, dispatch

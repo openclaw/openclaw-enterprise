@@ -39,13 +39,13 @@ import {
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import { jsonRequestInit } from "../helpers/inject-json.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.ts";

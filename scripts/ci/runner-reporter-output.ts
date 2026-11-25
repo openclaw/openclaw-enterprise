@@ -22,7 +22,7 @@ import { nativeFirstAgentProofDiagnostic } from "./reporter.ts";
 export const splitCaseFailure = Symbol("failed declared split case");
 
 const nativeRedeploymentCase =
-  "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
+  "staged native OpenClaw redeployment resumes the same session with retained files and required-worker execution";
 const nativeFirstAgentComposeEntry = "tests/integration/local-first-agent-openshell-real.test.mjs";
 const nativeFirstAgentWrappers = new Set([
   nativeFirstAgentComposeEntry,

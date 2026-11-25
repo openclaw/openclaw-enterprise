@@ -214,7 +214,7 @@ function sessionQuery(proxy: Recipient): string {
   AND s.cleanup_context #>> '{binding,profile}' = ${profile}
   AND (s.cleanup_context#>>'{binding,profile}'<>'github-repository' OR (s.repository_ref=rev.admitted_spec#>>'{repository_credentials,bindings,0,repositoryRef}'
     AND grant_state.all_current))
-  AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile',s.cleanup_context #>> '{binding,profile}'))
+  AND occ.repository_access_contains_binding(g.repository_access,s.repository_ref,s.cleanup_context #>> '{binding,profile}')
   AND occ.repository_standing_approval_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id)
   AND NOT EXISTS (SELECT FROM occ.repository_standing_executions e WHERE e.revision_id=s.revision_id AND e.closed)
   AND (s.predecessor_admission_id IS NULL OR occ.repository_standing_execution_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id,s.revision_id))

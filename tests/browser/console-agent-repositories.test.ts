@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 /// <reference lib="es2024.promise" />
 
 import {
@@ -32,6 +33,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  selectSecret,
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -191,7 +193,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       { repositoryRef: "documentation", profile: "git-read" },
     ],
   });
-  assert.deepEqual(created.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
     { repositoryRef: "application", profile: "git-full" },
     { repositoryRef: "documentation", profile: "git-read" },
   ]);
@@ -284,7 +286,10 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     body: {
       name: "Legacy explicit repository access",
       configurationId: created.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-read" }],
+      },
     },
   });
   assert.equal(legacyResponse.status, 201);
@@ -424,10 +429,13 @@ test("Agent repository tab offers Save only to drop every binding while reposito
     body: {
       name: "Bound Agent",
       configurationId: configured.configurationId,
-      repositoryBindings: [
-        { repositoryRef: "application", profile: "git-read" },
-        { repositoryRef: "documentation", profile: "git-read" },
-      ],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [
+          { repositoryRef: "application", profile: "git-read" },
+          { repositoryRef: "documentation", profile: "git-read" },
+        ],
+      },
     },
   });
   assert.equal(created.status, 201);
@@ -519,9 +527,15 @@ test("Agent repository tab offers Save only to drop every binding while reposito
   assert.equal((await saved).status(), 200);
   await page.getByText("Repository access saved.", { exact: false }).waitFor();
   const stored = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.deepEqual((stored.data as AgentWire).repositoryBindings ?? [], []);
+  assert.deepEqual(
+    repositoryAccessSelections((stored.data as AgentWire).repositoryAccess) ?? [],
+    [],
+  );
   // Nothing is left to save, so no dead Save is offered.
   await save.waitFor({ state: "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const access = page.locator('.configuration-summary dt:text-is("Repository access") + dd');
+  assert.equal(await access.textContent(), "None selected");
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
@@ -680,7 +694,9 @@ test("Preset repository access and plugin policies remain independent during Age
     defaultProfile: "git-full",
     repositories: [{ repositoryRef: "project" }],
   });
-  assert.deepEqual(created.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
+    { repositoryRef: "project", profile: "git-full" },
+  ]);
 });
 
 test("Repository recovery preserves and updates hosted plugin policy before retry", async (t) => {
@@ -783,7 +799,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
     defaultProfile: "git-full",
     repositories: [{ repositoryRef: "project" }],
   });
-  assert.deepEqual(created.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
+  assert.deepEqual(repositoryAccessSelections(created.repositoryAccess), [
+    { repositoryRef: "project", profile: "git-full" },
+  ]);
   assert.equal(created.configurationId, savedConfiguration.id);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -1018,7 +1036,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   const savedAgent: AgentReadWire = saved.data;
   assert.ok("repositoryAccess" in savedAgent);
   assert.deepEqual(savedAgent.repositoryAccess, access("git-read"));
-  assert.deepEqual(savedAgent.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(savedAgent.repositoryAccess), [
     { repositoryRef: "application", profile: "git-read" },
   ]);
 
@@ -1478,7 +1496,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "repository-001" }],
     });
-    assert.deepEqual(agent.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), [
       { repositoryRef: "repository-001", profile: "git-full" },
     ]);
     assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
@@ -1559,7 +1577,10 @@ test("selected repository collaborators never override an explicit Read-only Age
       profile: "github-repository",
     })),
   });
-  assert.deepEqual(created.repositoryBindings, created.repositoryAccess.repositories);
+  assert.deepEqual(
+    repositoryAccessSelections(created.repositoryAccess),
+    created.repositoryAccess.repositories,
+  );
   await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByRole("button", { name: "Access for example/a", exact: true }).click();
   await page.locator("#repository-inherit-a").check();
@@ -1573,7 +1594,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   );
   await save.click();
   const saved: AgentResponse = await (await response).json();
-  assert.deepEqual(saved.data.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(saved.data.repositoryAccess), [
     { repositoryRef: "legacy", profile: "git-read" },
   ]);
   assert.equal(saved.data.repositoryAccess?.defaultProfile, "git-read");
@@ -1581,8 +1602,7 @@ test("selected repository collaborators never override an explicit Read-only Age
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.ok(modelSecret);
-  await page.locator("#provider-credential-secret").fill(modelSecret.name);
-  await page.getByRole("option", { name: modelSecret.name, exact: true }).click();
+  await selectSecret(page, "API key Secret", modelSecret);
   await page.getByRole("button", { name: "Enter model ID manually" }).click();
   await page.getByLabel("Model ID", { exact: true }).fill("gpt-5.1");
   await page.getByLabel("Agent name").fill("Fresh collaborators");
@@ -1590,13 +1610,14 @@ test("selected repository collaborators never override an explicit Read-only Age
   await repositoryCheckbox(page, "example/b").check();
   const fresh = await createAgentThroughForm(page, fixture, namespace.id);
   assert.deepEqual(
-    fresh.repositoryBindings,
+    repositoryAccessSelections(fresh.repositoryAccess),
     ["a", "b"].map((repositoryRef) => ({ repositoryRef, profile: "github-repository" })),
   );
 });
 
 for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
   test(`saved inherited ${defaultProfile} survives repository offering changes without edits`, async (t) => {
+    const approvedProfile: GitHubProfile = defaultProfile === "git-read" ? "git-write" : "git-read";
     const entries = (namespaceId: string, selected: boolean) =>
       ["a", "b"].map((repositoryRef, index) => ({
         repositoryRef,
@@ -1606,11 +1627,8 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
           {
             namespaceId,
             profiles: selected
-              ? ["github-repository" as const]
+              ? [approvedProfile]
               : (["git-read", "git-write", "git-full"] as const),
-            ...(selected
-              ? { permissions: { metadata: "read" as const, contents: "write" as const } }
-              : {}),
           },
         ],
       }));
@@ -1658,7 +1676,11 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
         await page.getByRole("button", { name: `Access for example/${ref}`, exact: true }).click();
       }
       await inherit.uncheck();
-      await page.locator(`#repository-override-${ref}-git-full`).check();
+      await page
+        .locator(
+          `#repository-override-${ref}-${approvedProfile === "git-write" ? "git-full" : approvedProfile}`,
+        )
+        .check();
     }
     const response = page.waitForResponse(
       (r) => r.url().endsWith(`/agents/${agent.id}`) && r.request().method() === "PATCH",
@@ -1669,9 +1691,12 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
       defaultProfile,
       repositories: ["a", "b"].map((repositoryRef) => ({
         repositoryRef,
-        profile: "github-repository",
+        profile: approvedProfile,
       })),
     });
-    assert.deepEqual(saved.data.repositoryBindings, saved.data.repositoryAccess.repositories);
+    assert.deepEqual(
+      repositoryAccessSelections(saved.data.repositoryAccess),
+      saved.data.repositoryAccess.repositories,
+    );
   });
 }

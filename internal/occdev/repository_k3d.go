@@ -10,14 +10,12 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,10 +33,8 @@ var developmentBackendID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}
 type developmentRepositoryInputs struct {
 	registry       map[string]any
 	backendID      string
-	upstreamCIDRs  []string
 	appKey         []byte
 	preparedOrigin string
-	preparedPort   int
 	issuerCA       []byte
 }
 
@@ -171,14 +167,6 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 			return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
 		}
 	}
-	cidrData, err := read("upstream-cidrs.json", false)
-	if err != nil {
-		return nil, err
-	}
-	cidrs, err := repositoryUpstreamCIDRs(cidrData, origin != "", repositoryMetaClient)
-	if err != nil {
-		return nil, err
-	}
 	key, err := read("private-key.pem", true)
 	if err != nil {
 		return nil, err
@@ -198,112 +186,15 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 	if parseErr != nil || !ok || (rsaKey.N.BitLen() < 2048 || rsaKey.N.BitLen() > 8192) {
 		return nil, fmt.Errorf("repository App key must be an RSA private key of 2048 to 8192 bits")
 	}
-	inputs := &developmentRepositoryInputs{registry: registry, backendID: backendID, upstreamCIDRs: cidrs, appKey: key}
+	inputs := &developmentRepositoryInputs{registry: registry, backendID: backendID, appKey: key}
 	if origin != "" {
-		if !reflect.DeepEqual(cidrs, []string{r.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] + "/32"}) {
-			return nil, fmt.Errorf("prepared Git fixture must select exactly its private HTTPS address")
-		}
 		ca, err := read("issuer-ca.crt", false)
 		if err != nil {
 			return nil, err
 		}
-		inputs.preparedOrigin, inputs.preparedPort, inputs.issuerCA = origin, port, ca
+		inputs.preparedOrigin, inputs.issuerCA = origin, ca
 	}
 	return inputs, nil
-}
-
-var nonPublicRepositoryNetworks = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("192.88.99.0/24"), netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("224.0.0.0/4"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-}
-
-// Local endpoint lists grant individual hosts. Hosted QA supplies the API and Git
-// networks selected from GitHub Meta; private issuer fixtures always use a single host.
-func repositoryUpstreamCIDRs(data []byte, privateIssuer bool, client *http.Client) ([]string, error) {
-	var cidrs []string
-	published := false
-	if err := json.Unmarshal(data, &cidrs); err != nil {
-		if privateIssuer {
-			return nil, fmt.Errorf("private repository issuer requires an explicit endpoint list")
-		}
-		var source struct {
-			GitHubAPIAndGit []string `json:"githubApiAndGit"`
-		}
-		if err := json.Unmarshal(data, &source); err != nil {
-			return nil, fmt.Errorf("invalid repository egress input")
-		}
-		cidrs = source.GitHubAPIAndGit
-		published = true
-	}
-	if len(cidrs) == 0 {
-		return nil, fmt.Errorf("repository egress input must contain IPv4 destinations")
-	}
-	for _, value := range cidrs {
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil || !prefix.Addr().Is4() || prefix != prefix.Masked() || prefix.Bits() == 0 {
-			return nil, fmt.Errorf("repository egress requires canonical IPv4 CIDRs")
-		}
-		if !published && prefix.Bits() != 32 {
-			return nil, fmt.Errorf("explicit repository endpoints must be IPv4 /32 addresses")
-		}
-		if published {
-			// Check the entire network. A public first address can still cover private hosts.
-			for _, reserved := range nonPublicRepositoryNetworks {
-				if prefix.Overlaps(reserved) {
-					return nil, fmt.Errorf("GitHub egress requires public IPv4 networks")
-				}
-			}
-		}
-	}
-	if published {
-		if err := verifyPublishedRepositoryCIDRs(cidrs, client); err != nil {
-			return nil, err
-		}
-	}
-	return cidrs, nil
-}
-
-var repositoryMetaClient = &http.Client{
-	Timeout:       15 * time.Second,
-	Transport:     &http.Transport{Proxy: nil},
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
-
-// Verify exact entries against GitHub itself before granting the worker egress.
-// A caller can select a subset, but cannot add another network or a broader prefix.
-func verifyPublishedRepositoryCIDRs(cidrs []string, client *http.Client) error {
-	response, err := client.Get("https://api.github.com/meta")
-	if err != nil {
-		return fmt.Errorf("verify GitHub repository egress ranges: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("verify GitHub repository egress ranges: HTTP %d", response.StatusCode)
-	}
-	const maxBytes = 4 << 20
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil || len(body) > maxBytes {
-		return fmt.Errorf("cannot read GitHub repository network metadata within %d bytes", maxBytes)
-	}
-	var meta struct {
-		API []string `json:"api"`
-		Git []string `json:"git"`
-	}
-	if err := json.Unmarshal(body, &meta); err != nil || len(meta.API) == 0 || len(meta.Git) == 0 {
-		return fmt.Errorf("GitHub repository network metadata must contain API and Git ranges")
-	}
-	for _, cidr := range cidrs {
-		if !slices.Contains(meta.API, cidr) && !slices.Contains(meta.Git, cidr) {
-			return fmt.Errorf("repository range %s is absent from GitHub's current API and Git ranges", cidr)
-		}
-	}
-	return nil
 }
 
 func (r *runner) validateDevelopmentRepositoryImage(ctx context.Context) error {
@@ -506,9 +397,8 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if err := json.Unmarshal(valuesData, &values); err != nil {
 		return err
 	}
-	repositoryValues := map[string]any{"enabled": true, "authority": "prepared-git", "preparedCustodySecretName": "occ-repository-custody", "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
+	repositoryValues := map[string]any{"enabled": true, "authority": "prepared-git", "preparedCustodySecretName": "occ-repository-custody", "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca"}
 	if inputs.preparedOrigin != "" {
-		repositoryValues["upstreamPort"] = inputs.preparedPort
 		repositoryValues["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
 	}
 	values["repositoryCredentials"] = repositoryValues

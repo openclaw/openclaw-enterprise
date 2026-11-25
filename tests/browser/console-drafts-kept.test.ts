@@ -19,7 +19,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -1083,8 +1083,8 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 });
 
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
-// uncertain outcome, an admitted provisioning job, a pending credential registration, a job that
-// created its Agent and a repository policy refusal keep none (finding 1965).
+// uncertain outcome, an admitted provisioning job, a job that created its Agent and a repository
+// policy refusal keep none (finding 1965).
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
 async function expectNoKeptDraft(page: Page) {
@@ -1177,44 +1177,6 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await fillProvisionedAgent(page, fixture, namespace, "Failed job Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^The initial deployment failed\. Open this Agent/).waitFor();
-  await expectNoKeptDraft(page);
-});
-
-test("a refused credential registration keeps no draft", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Registration create", { ready: true }));
-  const { page } = await newPage(t, fixture);
-  // The Installation provisions dedicated Agents through a Credential Gateway model source.
-  await routeInstallationWithoutProvisioning(page, fixture, {
-    agentProvisioning: { executionModes: ["dedicated"] },
-    credentialSources: {
-      types: [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-      ],
-    },
-  });
-  await page.route(`**/namespaces/${namespace.id}/credential-sources`, async (route, request) => {
-    if (request.method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-    // A rate limit in front of the API: the route itself sends no 429.
-    await route.fulfill(proxyErrorResponse(429));
-  });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Registration Agent");
-  await enterManualModel(page, "synthetic-guard-model-key", "gpt-5");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  // The registration keeps its frozen name for Check credential registration.
-  await page.getByRole("button", { name: "Check credential registration" }).waitFor();
   await expectNoKeptDraft(page);
 });
 

@@ -8,7 +8,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import type { signInToControllerApp as signIn } from "../helpers/auth-session.mjs";
+import type { signInToControllerApp as signIn } from "../helpers/auth-session.ts";
 import { createControllerAuth } from "../helpers/password-hasher.ts";
 import {
   authBaseURL,

@@ -1070,6 +1070,7 @@ p {
   min-width: 0;
   height: 100%;
   min-height: 0;
+  scroll-margin-block: var(--space-2);
   padding: 0 var(--space-8) 0 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -1119,6 +1120,10 @@ p {
 }
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
+}
+.credential-inventories {
+  display: grid;
+  gap: var(--space-8);
 }
 .agent-list-toolbar {
   container-type: inline-size;
@@ -3104,9 +3109,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-bottom: var(--space-5);
 }
 .credential-tabs a {
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
   color: var(--color-text);
   text-decoration: none;
+  white-space: nowrap;
 }
 .credential-tabs a:hover {
   text-decoration: underline;
@@ -3332,8 +3339,23 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+/* The longer message sizes the row so typing does not move the field or its actions. */
 #create-namespace-description {
+  display: grid;
   overflow-wrap: anywhere;
+}
+#create-namespace-description > span {
+  grid-area: 1 / 1;
+}
+#create-namespace-description > [aria-hidden="true"] {
+  visibility: hidden;
+}
+#create-namespace-conflict {
+  color: var(--color-danger);
+}
+/* Keep Done in place when the access check adds a second action. */
+#create-namespace-access + .dialog-actions {
+  justify-content: space-between;
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
@@ -3518,6 +3540,9 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .oauth-catalog-table thead th:last-child {
   width: 6rem;
+}
+.credential-source-catalog .oauth-catalog-table thead th:last-child {
+  width: 8rem;
 }
 .connection-template-catalog .oauth-catalog-table thead th:nth-last-child(2) {
   width: 6rem;

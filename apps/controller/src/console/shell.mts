@@ -3,7 +3,7 @@ import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, focusSaveOutcome, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
-  oauthClientsPage,
+  credentialClientsPage,
   type createNavigation,
   type pages,
 } from "./navigation.mjs";
@@ -634,8 +634,8 @@ export function createShell({
         navigate(name);
       });
     }
-    const credentialAdministration =
-      feature === connectionTemplatesPage || feature === oauthClientsPage;
+    const credentialSection =
+      feature === connectionTemplatesPage || feature === credentialClientsPage;
     const icons = {
       agents:
         "M12 3v3M4 9a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3z M9 11v2m6-2v2M2 12v3m20-3v3",
@@ -648,7 +648,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (credentialAdministration && name === "secrets")
+          ...(feature === name || (credentialSection && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -717,7 +717,7 @@ export function createShell({
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      credentialAdministration || ["agents", "secrets"].includes(feature)
+      credentialSection || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -779,17 +779,20 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || credentialAdministration) {
+    if (feature === "secrets" || credentialSection) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
-        ["secrets", "Secrets"],
+        ["secrets", "Credentials"],
         [connectionTemplatesPage, "Connection templates"],
-        [oauthClientsPage, "OAuth clients"],
+        [credentialClientsPage, "Credential clients"],
       ] as const) {
-        if (name !== "secrets" && !state.installationAdmin) {
+        if (
+          (name === connectionTemplatesPage || name === credentialClientsPage) &&
+          !state.installationAdmin
+        ) {
           continue;
         }
         const link = element(
@@ -1090,7 +1093,7 @@ export function createShell({
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
     dropAdministrationLinks() {
-      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+      for (const page of [connectionTemplatesPage, credentialClientsPage]) {
         app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
       }
       observabilityUrl = null;

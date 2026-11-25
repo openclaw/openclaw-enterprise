@@ -1,10 +1,45 @@
 # Release OpenClaw Enterprise
 
-Use **Release OCE** to test and publish the controller image, runtime image,
-Helm chart, and OCC CLI from one reviewed commit. Start with a rehearsal.
+Use **Release OCE** to publish from one reviewed commit in protected `main`. Choose:
+
+- [Publish images only](#publish-images-only): controller and runtime images, without Full Integration.
+- [Rehearse a full release](#rehearse-a-release), then [publish and verify](#publish-and-verify): images, Helm chart, and OCC CLI.
+- [Recover an image-only publication](#recover-an-image-only-publication) or [a full release](#recover-a-partial-release).
 
 <a id="overview"></a>
 <a id="release-guides"></a>
+
+## Publish images only
+
+1. Check [release configuration](configuration.md) and [GHCR package setup](configuration.md#bootstrap-ghcr-packages).
+   Select a reviewed commit in `main` history. No version change or previous push CI run is required.
+2. Dispatch [Release OCE](../../.github/workflows/release-oce.yml) on `main` with the full
+   40-character `source_sha`, `publish: true`, and `images_only: true`. Leave
+   `recovery_run_id` empty. **A blank `image_tag` updates `latest` for both images.**
+   Use a [custom alias](containers.md#prepare-and-publish) to leave `latest` unchanged.
+   There is no image-only rehearsal.
+3. Check the SHA and alias in the summary, then approve through `integration-main-approval`.
+   Require the native Linux amd64 and arm64 checks for both images.
+4. Compare both `sha-<source_sha>` tags and selected aliases with the digests in
+   `container-publication-<run-id>-1`. The receipt expires after 30 days.
+   If publication stops, [recover it](#recover-an-image-only-publication).
+
+This mode skips Full Integration. It publishes no version tags, Helm chart, OCC CLI,
+or GitHub Release. Docker Hub promotion and Staging Release Qualification do not accept this run.
+
+### Recover an image-only publication
+
+If publication fails, times out, or is cancelled, inspect both source tags and aliases.
+Use digest references if the aliases differ.
+
+1. Keep the original run at attempt 1. Its prepared images and
+   `release-image-baseline-<run-id>-1` expire after seven days.
+2. Dispatch **Release OCE** on `main` with the original `source_sha` and `image_tag`,
+   `publish: true`, `images_only: true`, and `recovery_run_id` set to the original run ID.
+   Approve the new run.
+3. Check the new receipt and both aliases. Recovery reuses the original bytes and
+   accepts each alias only at its previous or intended digest. A conflict stops recovery;
+   preserve the evidence and contact a release maintainer.
 
 ## Rehearse a release
 
@@ -15,7 +50,7 @@ Helm chart, and OCC CLI from one reviewed commit. Start with a rehearsal.
    [integration approval environment](../testing/ci/configuration.md#environments).
 3. Dispatch [Release OCE](../../.github/workflows/release-oce.yml) on `main`.
    Supply the full 40-character `source_sha` (the only required input).
-   Leave `publish` false for a rehearsal. No previous push CI run is required.
+   Leave `publish` and `images_only` false for a rehearsal. No previous push CI run is required.
    Choose `image_tag` now: **blank selects `latest` for both images**;
    a custom alias leaves `latest` unchanged. See [alias rules](containers.md#prepare-and-publish).
 4. Check the version, SHA, and alias in the summary. Approve your dispatch through
@@ -40,10 +75,10 @@ If any step fails, inspect the public outputs before retrying or [recovering](#r
 
 ## Recover a partial release
 
-Keep the original failed or cancelled publication run at attempt 1. Image, chart, and
-alias-baseline artifacts expire after seven days. Inspect the run summary, registry
-digests, and GitHub Release or draft. Writes are not atomic; aliases can point
-to different versions. Use digest references during recovery.
+Keep the original failed or cancelled full publication run at attempt 1.
+Image, chart, and alias-baseline artifacts expire after seven days. Inspect the run
+summary, registry digests, and GitHub Release or draft. Writes are not atomic;
+use digest references if the aliases differ.
 
 Dispatch **Release OCE** on current protected `main` with the original
 `source_sha`, original `image_tag`, `publish: true`, and
@@ -69,8 +104,7 @@ released images to another registry:
 
 Standalone workflows qualify only their own outputs. Before the first versioned
 rollout, maintainers must decide whether versioned releases require Release OCE
-or verified recovery, and whether `latest` is reserved for complete releases.
-Coordinate writers until that decision is made.
+or verified recovery. Coordinate updates to `latest` across all image publishers.
 
 ## Implementation flows
 

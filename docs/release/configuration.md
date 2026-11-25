@@ -4,8 +4,10 @@
 
 Configure access once before you publish images, a Helm chart, or the OCC CLI.
 Protect `main`, require `CI Required` for merge, and review workflow changes.
-**Release OCE** runs Full Integration for the selected source and requires the
-dispatcher's approval through [`integration-main-approval`](../testing/ci/configuration.md#environments).
+**Release OCE** requires the dispatcher's approval through
+[`integration-main-approval`](../testing/ci/configuration.md#environments). A full release
+requires Full Integration; [image-only publication](README.md#publish-images-only) skips
+that suite and requires native image checks.
 Keep provider credentials in the integration environments. The standalone image
 and CLI workflows instead require a successful entire `main` push CI conclusion
 and successful `CI Required` job for the exact source. First Agent Smoke must

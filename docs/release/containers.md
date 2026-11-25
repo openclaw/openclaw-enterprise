@@ -1,6 +1,7 @@
 # Enterprise container publication
 
-For a complete release, use [Release OCE](README.md). Use standalone
+Use [Release OCE](README.md) for a full release or its
+[image-only option](README.md#publish-images-only) to publish images without Full Integration. Use standalone
 **Enterprise Containers** to prepare or independently publish controller and
 runtime images for Linux amd64 and arm64.
 
@@ -118,8 +119,9 @@ checksum is not an OCI image digest.
 
 ## Recover a partial publication
 
-For Release OCE, use [complete-release recovery](README.md#recover-a-partial-release).
-The following steps apply only to standalone Enterprise Containers runs.
+For **Release OCE**, [recover an image-only publication](README.md#recover-an-image-only-publication)
+or [recover the full release](README.md#recover-a-partial-release).
+The procedure below covers **Enterprise Containers**.
 
 Preserve the original seven-day OCI artifacts. Do not rerun their producer:
 recovery requires its unchanged attempt. If artifacts expired, this path cannot

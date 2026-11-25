@@ -14,6 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
 import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
@@ -40,6 +41,7 @@ import {
   isUnavailable,
   jsonObjectDiagnostic,
   revealStatus,
+  setDescription,
   setHidden,
   setStatusTone,
   setText,
@@ -52,6 +54,7 @@ import {
 import {
   configuredHarnessId,
   configuredModel,
+  credentialSourceOperateDenial,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -91,7 +94,11 @@ import {
   repositoryProfile,
   repositoryWriteAccessHelp,
 } from "./repository-profiles.mjs";
-import { createRepositoryFields, FIRST_REPOSITORY_DEPLOYMENT_WARNING } from "./repositories.mjs";
+import {
+  createRepositoryFields,
+  FIRST_REPOSITORY_DEPLOYMENT_WARNING,
+  repositorySelections,
+} from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument, sameValue } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
@@ -233,6 +240,7 @@ interface ConfigurationDraft {
   outcomeUnknown?: boolean;
   reloadRequired?: boolean;
   carried?: boolean;
+  reviewNote?: string;
 }
 
 type AuthenticationFields = ReturnType<ReturnType<typeof createHarnessAuthFields>["capture"]>;
@@ -999,7 +1007,9 @@ export async function renderAgentDetail(
     agent.executionMode === "dedicated" && configuredHarnessId(values) === "codex";
   const hasRepositoryPermissions = (values: OpenClawConfigurationDocument) =>
     isDedicatedCodex(values) &&
-    agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+    repositorySelections(agent.repositoryAccess).some(
+      ({ profile }) => profile === "github-repository",
+    );
   // Sharing policy reads need Installation administration and a denial is audited, so the
   // Access tab is left out (not disabled) when the session probe already showed that access is
   // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
@@ -1222,12 +1232,14 @@ export async function renderAgentDetail(
   const liveServingNote = element("p", { className: "stat-help" });
   // A failed deployment that probably left nothing serving (see renderLatestDeployment).
   let mayBeOfflineAfterFailure = false;
-  // Read the Sandbox Driver's record on entry, on a serving change and on admitted refocus.
+  // A failed replacement can stop the Sandbox without changing the selected version.
+  let failedReplacementId: string | undefined;
   // Nothing restarts a lost Sandbox, so Live serving names the next step when it observes loss.
   let harnessRead: { revisionId: string; status: AgentHarnessStatusRead | null } | null = null;
   // The current version the read in flight or answered is for, or null when none is wanted.
   let harnessRequested: string | null = null;
   let harnessAbort: AbortController | undefined;
+  let harnessGeneration = 0;
   let servingProjectionPending = false;
   // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
   // mode decides once the version list shows it; the Agent's saved mode can differ from it.
@@ -1239,21 +1251,34 @@ export async function renderAgentDetail(
     Boolean(currentRevisionId) &&
     (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
       currentAgent.executionMode) === "dedicated";
-  function syncHarnessRead(recheck?: ForegroundAgentRecheck) {
+  function syncHarnessRead(refresh?: ForegroundAgentRecheck | "replacement-failed") {
     const wanted = harnessExpected() ? (currentRevisionId ?? null) : null;
-    if (wanted === harnessRequested && (!recheck || wanted === null)) {
+    if (wanted === harnessRequested && (wanted === null || !refresh)) {
       return;
     }
-    // Retire an obsolete observation before its response can reach the shared client.
-    harnessAbort?.abort();
-    harnessRequested = wanted;
-    harnessRead = null;
-    if (wanted === null) {
+    const recheck = refresh === "replacement-failed" ? undefined : refresh;
+    // A replacement failure supersedes the displayed answer, but an in-flight foreground
+    // read of the same version must still be able to report a refusal to admission.
+    if (wanted !== harnessRequested || recheck) {
+      harnessAbort?.abort();
       harnessAbort = undefined;
+    }
+    harnessRequested = wanted;
+    // Keep the loss warning and recovery step visible while rechecking the same version.
+    const previous = harnessRead?.status;
+    if (
+      previous?.status !== "observed" ||
+      previous.revisionId !== wanted ||
+      previous.harness?.state !== "lost"
+    ) {
+      harnessRead = null;
+    }
+    if (wanted === null) {
       return;
     }
-    const abort = new AbortController();
+    const abort = harnessAbort ?? new AbortController();
     harnessAbort = abort;
+    const generation = ++harnessGeneration;
     const isCurrent = () =>
       harnessAbort === abort &&
       wanted === currentRevisionId &&
@@ -1261,8 +1286,10 @@ export async function renderAgentDetail(
       context.isCurrent() &&
       (recheck?.isCurrent() ?? true);
     const finish = (status: AgentHarnessStatusRead | null) => {
-      harnessRead = { revisionId: wanted, status };
-      renderLiveServing();
+      if (generation === harnessGeneration) {
+        harnessRead = { revisionId: wanted, status };
+        renderLiveServing();
+      }
     };
     if (recheck) {
       renderLiveServing();
@@ -1458,16 +1485,15 @@ export async function renderAgentDetail(
   // external sign-in), so point only at paths that work in every sign-in mode.
   const readAccessHint = `${NEW_VERSIONS_READ} If this Agent is set up for a channel such as Slack, you can message it there when that channel allows you.`;
   // A current version the caller cannot read is named in the Agents list's words, not by its raw
-  // ID (finding D791): newer than every listed version beside the newest one's succeeded
-  // deployment. Null when it is listed or not known to be hidden: until every page of versions is
-  // loaded, it may be on an older one. revisionHidden is false until the version list loads, so
-  // the deployment status below is never read before its declaration.
+  // ID (finding D791). Only a selection confirmed after the newest visible deployment
+  // succeeded can be called newer. Until every page is loaded, the selection may
+  // still be listed on an older page.
   function unreadableCurrentLabel() {
     if (!currentRevisionId || !revisionHidden(currentRevisionId)) {
       return null;
     }
     return unreadableCurrentVersion(
-      visibleRevisions.length > 0 && latestDeploymentStatus === "succeeded",
+      selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded",
     );
   }
   // The current version as the page names it: its number, those words, else its short ID.
@@ -1818,18 +1844,21 @@ export async function renderAgentDetail(
     if (!control) {
       return;
     }
-    for (const other of tabControls.values()) {
-      other.tabIndex = other === control ? 0 : -1;
-    }
     // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
     // scroll padding, so the tab and its ring clear the faded edge.
     control.focus({ preventScroll: true });
     control.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
-  // A click outside the strip can leave the return stop clipped without a Tab keydown.
   tabs.addEventListener("focusin", (event) => {
-    const control = tabControls.get(selectedTab);
-    if (event.target === control && control.matches(":focus-visible")) {
+    const control = event.target;
+    if (!(control instanceof HTMLButtonElement)) {
+      return;
+    }
+    for (const other of tabControls.values()) {
+      other.tabIndex = other === control ? 0 : -1;
+    }
+    // A click outside the strip can leave the return stop clipped without a Tab keydown.
+    if (control === tabControls.get(selectedTab) && control.matches(":focus-visible")) {
       revealSelectedTab(control);
     }
   });
@@ -2231,9 +2260,11 @@ export async function renderAgentDetail(
   let latestDeploymentRecord: AgentDeploymentStatusWire | null = null;
   // Whether the newest version's panel last failed to refresh the Agent or its versions.
   let latestOverviewUnavailable = false;
-  // The newest version's status from its last record read; a failed read keeps it, so one
-  // failure does not relabel a deploying version Historical (finding 2085).
-  let latestRecordedStatus: DeploymentOutcome | null = null;
+  // A transient failure keeps the last known notice (finding 2085). A successful
+  // deployment alone cannot tell us whether the version is now selected for service.
+  let latestNoticeStatus: DeploymentOutcome | null = null;
+  // A later failed refresh cannot undo a confirmed ordering for the same two versions.
+  let selectionConfirmedAfterSuccess = false;
   // Set when the Agent reread after a completed deployment failed, until an Agent read lands.
   let agentRereadFailed = false;
   let versionRecord: ReturnType<typeof createVersionDeploymentEvidence> | null = null;
@@ -2251,35 +2282,51 @@ export async function renderAgentDetail(
   let latestRevisionDetailReading: string | null = null;
 
   function versionNotice() {
-    return selected === "draft"
-      ? selectedTab === "plugins"
-        ? // Plugin selections are Agent settings: a caller who may not save them reads them.
-          agentReadOnly()
+    if (selected === "draft") {
+      if (selectedTab === "plugins") {
+        // Plugin selections are Agent settings: a caller who may not save them reads them.
+        return agentReadOnly()
           ? READ_ONLY_DRAFT_NOTICE
-          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
-        : draftReadOnly() && !channelsAccessUnconfirmed()
-          ? READ_ONLY_DRAFT_NOTICE
-          : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
-      : selected === currentRevisionId
-        ? "Current version · read-only admitted snapshot."
-        : deployingRevision()?.id === selected
-          ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
-          : deployedRevision()?.id === selected
-            ? "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."
-            : // A failed version that is not current is not history: after a failed first
-              // deployment it was the only version and was called "Historical" (finding 2403).
-              failedVersions.has(failedVersionKey(path, selected))
-              ? "Failed version · read-only admitted snapshot. Its deployment did not complete."
-              : neutralVersions.has(failedVersionKey(path, selected))
-                ? NEUTRAL_VERSION_NOTICES[neutralVersions.get(failedVersionKey(path, selected))!]
-                : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+          : "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged.";
+      }
+      return draftReadOnly() && !channelsAccessUnconfirmed()
+        ? READ_ONLY_DRAFT_NOTICE
+        : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged.";
+    }
+    if (selected === currentRevisionId) {
+      return "Current version · read-only admitted snapshot.";
+    }
+    if (deployingRevision()?.id === selected) {
+      return "Deploying version · read-only admitted snapshot.";
+    }
+    if (deployedRevision()?.id === selected) {
+      return "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed.";
+    }
+    const key = failedVersionKey(path, selected);
+    if (failedVersions.has(key)) {
+      return "Failed version · read-only admitted snapshot. Its deployment did not complete.";
+    }
+    const outcome = neutralVersions.get(key);
+    if (outcome) {
+      return NEUTRAL_VERSION_NOTICES[outcome];
+    }
+    const latest = visibleRevisions[0];
+    const older =
+      viewedSnapshot &&
+      "revision" in viewedSnapshot &&
+      ((latest && viewedSnapshot.revision < latest.revision) ||
+        acceptedHiddenVersion(viewedSnapshot.revision) !== undefined);
+    const completed = activityRevisionId === selected && latestNoticeStatus === "succeeded";
+    return older || formerCurrent.has(selected) || completed
+      ? "Historical version · read-only admitted snapshot. Browsing it does not change the current version."
+      : "Read-only admitted snapshot.";
   }
 
   // The newest version whose deployment is queued or running, including while it is selected
   // for service and activation is still in progress.
   function deployingRevision() {
     const latest = visibleRevisions[0];
-    return latest && activityRevisionId === latest.id && deploymentPending(latestRecordedStatus)
+    return latest && activityRevisionId === latest.id && deploymentPending(latestNoticeStatus)
       ? latest
       : null;
   }
@@ -2296,7 +2343,7 @@ export async function renderAgentDetail(
     ) {
       return null;
     }
-    const state = latestRecordedStatus === "queued" ? "queued" : "in progress";
+    const state = latestNoticeStatus === "queued" ? "queued" : "in progress";
     return `v${pending.revision} was ${state} at the last check.`;
   }
 
@@ -2310,9 +2357,9 @@ export async function renderAgentDetail(
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
-      latestRecordedStatus === "succeeded" &&
+      latestNoticeStatus === "succeeded" &&
       agentRereadFailed &&
-      !revisionHidden(currentRevisionId)
+      !(selectionConfirmedAfterSuccess && revisionHidden(currentRevisionId))
       ? latest
       : null;
   }
@@ -2509,12 +2556,14 @@ export async function renderAgentDetail(
     }
     chooser.value = selected;
     chooser.addEventListener("change", () => {
-      if (draftEditorBlocksNavigation() || sharingWrite) {
-        chooser.value = selected;
+      const requested = chooser.value;
+      // Navigation can retain this page and restore its picker on a later visit.
+      chooser.value = selected;
+      if (sharingWrite) {
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(requested, "configuration");
     });
     trackRevisionControl(chooser);
     const older =
@@ -2593,6 +2642,7 @@ export async function renderAgentDetail(
     next: unknown,
     revisionResult: RevisionResult | null,
     snapshot: Snapshot | null,
+    afterSuccess = false,
   ) {
     const freshAgent = agentForPage(next);
     // A read answered after deletion was shown has nothing left to update.
@@ -2610,6 +2660,9 @@ export async function renderAgentDetail(
       formerCurrent.add(currentRevisionId);
     }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
+    if (revisionChanged || afterSuccess) {
+      selectionConfirmedAfterSuccess = afterSuccess;
+    }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
     const servingChanged =
@@ -2722,6 +2775,8 @@ export async function renderAgentDetail(
       fresh,
       page ? { status: "fulfilled", value: page } : latestRevisionResult,
       viewedSnapshot,
+      // The guards above discard a read that predates an accepted Agent update.
+      selectionConfirmedAfterSuccess,
     );
   }
   // A refocus recheck read the Agent to check that the page is still readable, and the page
@@ -2805,7 +2860,7 @@ export async function renderAgentDetail(
 
   function renderLatestDeployment() {
     markVersionOutcomes();
-    // An unreadable current version is newer beside a succeeded deployment (finding D791).
+    // A post-completion overview can change the label of an unreadable selection.
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     const versionContextLine = selector.querySelector(".agent-version-context");
@@ -2914,8 +2969,8 @@ export async function renderAgentDetail(
     // The current version is not on the pages loaded so far, yet not known to be hidden either:
     // it may be on an older page or one the caller cannot read (finding 1477).
     const currentUnknown = Boolean(currentRevisionId) && !current && !currentHidden;
-    // A succeeded deployment becomes current, so a different current version is newer.
-    const newerHidden = latestDeploymentStatus === "succeeded" && currentHidden;
+    const newerHidden =
+      selectionConfirmedAfterSuccess && latestDeploymentStatus === "succeeded" && currentHidden;
     // A failed deployment never becomes current, so a hidden current version may be newer or
     // older: the page cannot say whether that failure still matters (finding 1458).
     const failureBehindHidden = latestDeploymentStatus === "failed" && currentHidden;
@@ -2978,6 +3033,11 @@ export async function renderAgentDetail(
       setText(latestDeploymentNote, note);
     }
     const mayBeOffline = replacementFailed || selectedFailed;
+    // Even the entry read may have started before this failure. Check once per replacement.
+    if (replacementFailed && failedReplacementId !== latest.id) {
+      failedReplacementId = latest.id;
+      void syncHarnessRead("replacement-failed");
+    }
     setLiveServing(mayBeOffline);
     const outcome = newerHidden || acceptedHidden ? "" : (latestDeploymentStatus ?? "");
     if (latestDeploymentValue.dataset.outcome !== outcome) {
@@ -3169,6 +3229,11 @@ export async function renderAgentDetail(
     const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
+    const mostRecent = revisions[0];
+    const activityChanged = activityRevisionId !== (mostRecent?.id ?? null);
+    if (activityChanged) {
+      selectionConfirmedAfterSuccess = false;
+    }
     stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
     const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
     // A current version the caller cannot read keeps the page's words, not its ID (finding D791).
@@ -3179,13 +3244,12 @@ export async function renderAgentDetail(
     renderCurrentVersion();
     nativeAdmin.updateTarget();
     renderVersions(revisions, snapshot, revisionResult);
-    const mostRecent = revisions[0];
-    if (activityRevisionId !== (mostRecent?.id ?? null)) {
+    if (activityChanged) {
       activityRevisionId = mostRecent?.id ?? null;
       // The version's record panel no longer gets this panel's reads.
       versionRecord?.release();
       latestDeploymentStatus = null;
-      latestRecordedStatus = null;
+      latestNoticeStatus = null;
       agentRereadFailed = false;
       latestDeploymentRecord = null;
       latestOverviewUnavailable = false;
@@ -3230,11 +3294,12 @@ export async function renderAgentDetail(
             },
             path,
             mostRecent,
-            (freshAgent, freshRevisions) =>
+            (freshAgent, freshRevisions, afterSuccess) =>
               updateCurrentAgent(
                 freshAgent,
                 { status: "fulfilled", value: revisionsForPage(freshRevisions) },
                 snapshot,
+                afterSuccess,
               ),
             ({
               outcome: status,
@@ -3242,6 +3307,7 @@ export async function renderAgentDetail(
               readError,
               record,
               overviewUnavailable,
+              overviewSettled,
               transientFailure,
             }) => {
               if (
@@ -3263,7 +3329,10 @@ export async function renderAgentDetail(
               }
               // A refused or missing record ends the wait, so it no longer labels the version.
               if (record || !transientFailure) {
-                latestRecordedStatus = status;
+                latestNoticeStatus = status === "succeeded" && !overviewSettled ? null : status;
+                if (status !== "succeeded") {
+                  selectionConfirmedAfterSuccess = false;
+                }
               }
               if (overviewUnavailable) {
                 agentRereadFailed = true;
@@ -3288,12 +3357,7 @@ export async function renderAgentDetail(
                 }
               }
               renderLatestDeployment();
-              // A success is shown once the Agent reread makes the version current; until then
-              // the notice keeps "Deploying" rather than flash "Historical". A reread that failed
-              // leaves the version labelled from its record (finding 2085).
-              if (status !== "succeeded" || overviewUnavailable) {
-                renderVersionNotice();
-              }
+              renderVersionNotice();
               refreshDeployControls();
             },
             // A newer version found later is one the reader is following: its first record
@@ -3556,6 +3620,13 @@ export async function renderAgentDetail(
     let snapshot: Configuration = found;
     let values = snapshot.values;
     const executionMode = agent.executionMode;
+    const harnessSourceId =
+      agent.harnessAuth?.method === "credential_source" &&
+      executionMode === "dedicated" &&
+      configuredHarnessId(values) === "codex"
+        ? agent.harnessAuth.sourceId
+        : undefined;
+    let sourceDestinationChecking = harnessSourceId !== undefined;
     let deployPending = false;
     let deployReloadMessage = "";
     const repositoryDeploymentWarning = element(
@@ -3565,10 +3636,19 @@ export async function renderAgentDetail(
     );
     // A normal Agent link has no creation receipt. The same GitHub credential
     // profile supports legacy access and saved grants, including deny-all.
+    const automaticGit = Boolean(
+      agent.repositoryAccess?.githubAppClientId && agent.repositoryAccess.repositories.length,
+    );
+    if (automaticGit) {
+      reviewRepositories = false;
+    }
     const firstGitHubDraft =
+      !automaticGit &&
       revisionResult.status === "fulfilled" &&
       revisionResult.value.revisions.length === 0 &&
-      agent.repositoryBindings?.some(({ profile }) => profile === "github-repository");
+      repositorySelections(agent.repositoryAccess).some(
+        ({ profile }) => profile === "github-repository",
+      );
     async function hasRepositoryPolicy() {
       const permissions = await latestPermissionsRead;
       // OCC requires policy read for scoped deployments. Legacy deployers can
@@ -3968,6 +4048,7 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        sourceDestinationChecking ||
         (reviewRepositories &&
           (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
@@ -4143,7 +4224,7 @@ export async function renderAgentDetail(
     }
     function updateDeployControls() {
       harnessControls.hidden = callerPermissions?.deploy !== true;
-      harnessControls.toggleAttribute("inert", deployPending);
+      harnessControls.toggleAttribute("inert", deployPending || sourceDestinationChecking);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -4224,6 +4305,8 @@ export async function renderAgentDetail(
           deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
+        } else if (sourceDestinationChecking) {
+          deployMessage = "Checking Credential Source destination…";
         } else if (authenticationSaveState === "saving") {
           deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
@@ -4327,6 +4410,7 @@ export async function renderAgentDetail(
       const showRepositoryWarning =
         !deployUnavailable &&
         !reviewRepositories &&
+        !automaticGit &&
         callerPermissions?.deploy === true &&
         callerPermissions.sandboxPolicyRead &&
         isDedicatedCodex(values) &&
@@ -4593,12 +4677,14 @@ export async function renderAgentDetail(
         updateChecklist();
       });
     }
+    const sourceDestinationHint = element("p", { className: "hint", hidden: true });
     const harnessControls = element(
       "details",
       { className: "card agent-harness-settings" },
       element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
+      sourceDestinationHint,
       element(
         "p",
         { className: "hint" },
@@ -4660,12 +4746,7 @@ export async function renderAgentDetail(
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
             return;
           }
-          if (
-            JSON.stringify(freshAgent.repositoryAccess) !==
-              JSON.stringify(agent.repositoryAccess) ||
-            JSON.stringify(freshAgent.repositoryBindings) !==
-              JSON.stringify(agent.repositoryBindings)
-          ) {
+          if (!sameValue(freshAgent.repositoryAccess, agent.repositoryAccess)) {
             deployReloadMessage = "Repository access changed. Reload this draft before deploying.";
             return;
           }
@@ -4898,7 +4979,7 @@ export async function renderAgentDetail(
       "section",
       { className: "card agent-draft-actions" },
       draftActionsHeading,
-      !reviewRepositories && hasRepositoryPermissions(values)
+      !reviewRepositories && !automaticGit && hasRepositoryPermissions(values)
         ? element(
             "p",
             { className: "hint" },
@@ -4931,6 +5012,52 @@ export async function renderAgentDetail(
       draftActions.insertAdjacentElement("afterend", harnessControls);
     }
     renderDetailHeading();
+    if (harnessSourceId) {
+      void (async () => {
+        try {
+          const permissions = await latestPermissionsRead;
+          if (
+            permissions?.deploy !== true ||
+            !context.isCurrent() ||
+            generation !== detailsGeneration
+          ) {
+            return;
+          }
+          const sourcePath = `/namespaces/${encodeURIComponent(namespaceId)}/credential-sources/${encodeURIComponent(harnessSourceId)}`;
+          const source = readCredentialSourceMetadata(await request(sourcePath), namespaceId);
+          if (source?.id !== harnessSourceId) {
+            throw new Error("The Credential Source metadata did not match the saved Source.");
+          }
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (source.modelPreset === "codex-pat" || source.oauthConsentKind === "builtin_codex") {
+            harnessChoice.querySelector('option[value="retain"]')?.remove();
+            harnessChoice.querySelector<HTMLOptionElement>('option[value="custom"]')!.disabled =
+              true;
+            harnessChoice.value = "default";
+            const kind = source.modelPreset === "codex-pat" ? "PAT" : "OAuth";
+            sourceDestinationHint.textContent = `This Codex ${kind} Source has a fixed destination. Model provider overrides are unavailable.`;
+            sourceDestinationHint.hidden = false;
+          }
+        } catch (cause) {
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (requestFailure(cause).status === 401) {
+            context.onExpired();
+            return;
+          }
+          sourceDestinationHint.textContent = `${namedDenial(cause) ?? "Credential Source metadata is unavailable."} Deployment will check whether the requested Harness destination is compatible.`;
+          sourceDestinationHint.hidden = false;
+        } finally {
+          if (context.isCurrent() && generation === detailsGeneration) {
+            sourceDestinationChecking = false;
+            updateDeployControls();
+          }
+        }
+      })();
+    }
     return {
       get snapshot() {
         return snapshot;
@@ -5355,6 +5482,21 @@ export async function renderAgentDetail(
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
+        // Detaching the live editor keeps its selection but resets its internal scroll.
+        const editor =
+          mountedTab.id === "configuration"
+            ? content.querySelector<HTMLTextAreaElement>("#configuration-json")
+            : null;
+        if (editor) {
+          const { scrollTop, scrollLeft, scrollHeight } = editor;
+          mountedTab.resumeDrafts = () => {
+            resumeDrafts();
+            // If lines rewrapped while away, the old offset can hide the selection.
+            if (content.contains(editor) && editor.scrollHeight === scrollHeight) {
+              editor.scrollTo(scrollLeft, scrollTop);
+            }
+          };
+        }
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);
@@ -5606,8 +5748,8 @@ export async function renderAgentDetail(
           }
           return result && requestFailure(result.error).status === 403 ? false : undefined;
         }),
-        // The failed-version recovery stops offering Logs as soon as they are denied.
-        onLogsDenied: () => {
+        // Keep the failed version’s recovery action in sync with the reads available in Logs.
+        onRuntimeAvailabilityChanged: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
@@ -6067,6 +6209,8 @@ export async function renderAgentDetail(
         configuredHarnessId(values),
         {
           agentName: agent.name,
+          executionMode: agent.executionMode,
+          configuration: values,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
           onStartSettled: () => recordAuthentication(),
@@ -6470,10 +6614,20 @@ export async function renderAgentDetail(
             // A refused write names the chosen Secret when a fresh answer says the caller may not
             // operate it (finding 2453).
             const chosen = auth.changedSecret;
-            const named =
-              mutationStarted && requestFailure(error).status === 403 && chosen
-                ? await refusedSecretBinding("agent", [chosen])
+            const sourceId =
+              harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined;
+            const currentId =
+              baseline.harnessAuth?.method === "credential_source"
+                ? baseline.harnessAuth.sourceId
                 : undefined;
+            const namedSource =
+              (sourceId ? credentialSourceOperateDenial(error, sourceId) : undefined) ??
+              (currentId ? credentialSourceOperateDenial(error, currentId, true) : undefined);
+            const named =
+              namedSource ??
+              (mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding("agent", [chosen])
+                : undefined);
             if (!context.isCurrent()) {
               return;
             }
@@ -6520,7 +6674,7 @@ export async function renderAgentDetail(
       }
     } else {
       const repositoryBindings = draft
-        ? agent.repositoryBindings
+        ? repositorySelections(agent.repositoryAccess)
         : snapshot.repositoryCredentials?.bindings;
       const details: Parameters<typeof summary>[1] = [
         ["Execution mode", executionMode === "dedicated" ? "Dedicated" : "Embedded"],
@@ -6534,9 +6688,9 @@ export async function renderAgentDetail(
           repositoryBindings
             ?.map(
               (binding) =>
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
+                `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",
@@ -6622,7 +6776,7 @@ export async function renderAgentDetail(
           { className: "agent-card" },
           snapshotHeading ?? element("h2", {}, "Configuration draft"),
           summary(values, details),
-          !(draft && reviewRepositories) &&
+          !(draft && (reviewRepositories || agent.repositoryAccess?.githubAppClientId)) &&
             repositoryBindings?.some((binding) => repositoryProfile(binding.profile)?.writes)
             ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
             : null,
@@ -6699,8 +6853,23 @@ export async function renderAgentDetail(
     return holder;
   }
 
+  function draftRepositoryLabel(binding: { repositoryRef: string; profile: string }) {
+    const selected = agent.repositoryAccess?.githubAppClientId
+      ? agent.repositoryAccess.repositories.find(
+          ({ repositoryRef }) => repositoryRef === binding.repositoryRef,
+        )
+      : undefined;
+    if (selected?.access === "write") {
+      return "Read/write Git";
+    }
+    if (selected?.access === "read") {
+      return "Read-only Git";
+    }
+    return repositoryProfile(binding.profile)?.label ?? "Unknown access level";
+  }
+
   function repositoryAccessSummary(reason: string) {
-    const bindings = agent.repositoryBindings ?? [];
+    const bindings = repositorySelections(agent.repositoryAccess);
     return element(
       "section",
       { className: "agent-card" },
@@ -6717,15 +6886,12 @@ export async function renderAgentDetail(
             "ul",
             { className: "repository-access-summary" },
             ...bindings.map((binding) =>
-              element(
-                "li",
-                {},
-                `${binding.repositoryRef} · ${repositoryProfile(binding.profile)?.label ?? "Unknown access level"}`,
-              ),
+              element("li", {}, `${binding.repositoryRef} · ${draftRepositoryLabel(binding)}`),
             ),
           )
         : null,
-      bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
+      !agent.repositoryAccess?.githubAppClientId &&
+        bindings.some((binding) => repositoryProfile(binding.profile)?.writes)
         ? element("p", { className: "hint repository-write-access" }, repositoryWriteAccessHelp)
         : null,
       element("p", { className: "muted", role: "status" }, reason),
@@ -6776,7 +6942,7 @@ export async function renderAgentDetail(
         fields?.setDisabled(true);
         return;
       }
-      const dirty = fields?.isDirty() ?? false;
+      const dirty = Boolean(fields?.isDirty());
       const pending = saveState === "saving";
       const outcomeUnknown = saveState === "uncertain";
       const reloadRequired = saveState === "conflict";
@@ -6855,8 +7021,7 @@ export async function renderAgentDetail(
         }
         if (
           fresh.configurationId !== agent.configurationId ||
-          JSON.stringify(fresh.repositoryAccess) !== JSON.stringify(agent.repositoryAccess) ||
-          JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
+          !sameValue(fresh.repositoryAccess, agent.repositoryAccess)
         ) {
           saveState = "conflict";
           refuse(
@@ -6866,8 +7031,8 @@ export async function renderAgentDetail(
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
-        mutationStarted = true;
         const repositoryAccess = fields.access();
+        mutationStarted = true;
         const savedAgent = agentForPage(
           await request(path, {
             method: "PATCH",
@@ -6927,7 +7092,17 @@ export async function renderAgentDetail(
   ) {
     const retained = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     if (!retained?.carried) {
-      return { retained, note: "" };
+      // The note describes the saved values used for this merge. Refresh can keep the
+      // draft even when it rereads a different Configuration or generation.
+      const note =
+        retained?.reviewNote &&
+        retained.baseline.id === snapshot.id &&
+        retained.baseline.generation === snapshot.generation &&
+        !retained.outcomeUnknown &&
+        !retained.reloadRequired
+          ? retained.reviewNote
+          : "";
+      return { retained, note };
     }
     const initialText = JSON.stringify(values, null, 2);
     if (retained.baseline?.id !== snapshot.id) {
@@ -7014,6 +7189,8 @@ export async function renderAgentDetail(
       safety.node,
     );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    const reviewReminder = "Review the merged draft. Saving may replace other changes.";
+    let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
     let pending = false;
@@ -7038,6 +7215,7 @@ export async function renderAgentDetail(
             text: editor.value,
             initialText,
             baseline,
+            reviewNote,
             outcomeUnknown: outcomeUnknown || pending,
             reloadRequired,
           }
@@ -7048,13 +7226,13 @@ export async function renderAgentDetail(
       const draft = value as ConfigurationDraft | undefined;
       return !!draft && (draft.text !== draft.initialText || !!draft.outcomeUnknown);
     });
+    const shownSavedNotice = savedNotice;
     const feedback = element(
       "p",
       { className: "hint", role: "status", id: "configuration-editor-feedback" },
-      [savedNotice, carriedNote].filter(Boolean).join(" "),
+      retained ? "" : [shownSavedNotice, carriedNote].filter(Boolean).join(" "),
     );
-    // The carried-edits note stays until the reader edits again.
-    let feedbackLocked = Boolean(carriedNote);
+    let feedbackLocked = false;
     // Entering the editor replaces the pressed button; focus moves to the editor (finding 1620).
     function startEditing() {
       editing = true;
@@ -7127,10 +7305,15 @@ export async function renderAgentDetail(
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       tone: "primary",
-      // Reload draft focuses Save after carrying edits; the note says what was applied.
-      ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
+    function clearReview() {
+      if (reviewNote) {
+        setDescription(save, feedback.id, false);
+        reviewNote = "";
+      }
+    }
     const cancel = button("Cancel", () => {
+      clearReview();
       baseline = { id: snapshot.id, generation: snapshot.generation };
       initialText = JSON.stringify(values, null, 2);
       editing = false;
@@ -7240,6 +7423,22 @@ export async function renderAgentDetail(
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
       syncSafety();
+      let reviewMessage = "";
+      if (reviewNote) {
+        // An unconfirmed permission check hides the saved values; only a denial retires them.
+        const confirmed =
+          callerPermissions !== unconfirmedPermissions &&
+          isAgentPermissionSummary(callerPermissions);
+        if (confirmed && (!callerPermissions?.configurationRead || configurationReadOnly())) {
+          reviewNote = reviewReminder;
+        }
+        if (!save.disabled && !feedbackLocked) {
+          reviewMessage = [shownSavedNotice, confirmed ? reviewNote : reviewReminder]
+            .filter(Boolean)
+            .join(" ");
+        }
+        setDescription(save, feedback.id, Boolean(reviewMessage));
+      }
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
         feedback.textContent =
@@ -7257,7 +7456,10 @@ export async function renderAgentDetail(
         }
       } else if (dirty) {
         if (!feedbackLocked) {
-          feedback.textContent = "Save or cancel these Configuration edits before deploying.";
+          setText(
+            feedback,
+            reviewMessage || "Save or cancel these Configuration edits before deploying.",
+          );
         }
       } else if (!pending && editing) {
         if (!feedbackLocked) {
@@ -7271,16 +7473,20 @@ export async function renderAgentDetail(
       feedback.textContent = "";
       setStatusTone(feedback, null);
       feedback.setAttribute("role", "status");
+      if (editor.value !== retained?.text) {
+        clearReview();
+      }
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
     });
-    showDraftEditorNavigationBlock = () => {
+    showDraftEditorNavigationBlock = (focusFeedback) => {
       if (draftEditorNavigationBlock) {
         setStatusTone(feedback, null);
         feedback.setAttribute("role", "status");
         feedback.textContent = draftEditorNavigationBlock;
         feedbackLocked = true;
+        focusFeedback?.(feedback);
       }
     };
 
@@ -7321,6 +7527,7 @@ export async function renderAgentDetail(
           freshAgent.configurationId !== baseline.id ||
           freshConfig.generation !== baseline.generation
         ) {
+          clearReview();
           // An alert before its text is written (finding 2010).
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
@@ -7331,6 +7538,7 @@ export async function renderAgentDetail(
         mutationStarted = true;
         await saveConfigurationEdit(freshConfig, nextValues);
         configurationSaved = true;
+        clearReview();
         if (context.isCurrent()) {
           context.drafts.forget("configuration");
           await refreshDraftInPlace({
@@ -7342,11 +7550,16 @@ export async function renderAgentDetail(
         if (!context.isCurrent()) {
           return;
         }
-        if (requestFailure(error).status === 401) {
+        const { status } = requestFailure(error);
+        // After an access refusal, never repeat the saved values from the earlier review.
+        if (reviewNote && (status === 403 || status === 404)) {
+          reviewNote = reviewReminder;
+        }
+        if (status === 401) {
           context.onExpired();
           return;
         }
-        if (!mutationStarted && requestFailure(error).status === 403) {
+        if (!mutationStarted && status === 403) {
           retireSaveRead(
             error,
             rejectionMessage(refusedSave(error, "configuration", false), false),
@@ -7359,6 +7572,7 @@ export async function renderAgentDetail(
           refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
+          clearReview();
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
@@ -7385,8 +7599,11 @@ export async function renderAgentDetail(
             rejectionMessage(error, mutationStarted);
         }
         feedbackLocked = true;
-        outcomeUnknown =
-          mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status);
+        outcomeUnknown = mutationStarted && !refusedWriteStatuses.includes(status);
+        // A definite refusal leaves the same merge to review after Refresh.
+        if (outcomeUnknown) {
+          clearReview();
+        }
       } finally {
         if (context.isCurrent()) {
           pending = false;

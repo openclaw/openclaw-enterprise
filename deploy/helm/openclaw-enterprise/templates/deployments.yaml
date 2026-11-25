@@ -1,5 +1,6 @@
 {{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
 {{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
+{{- $repositoryRegistry := .Values.repositoryCredentials.registryConfigMapName }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
@@ -128,13 +129,15 @@ spec:
               - key: {{ $.Values.executionCluster.kubeconfigKey | quote }}
                 path: kubeconfig
         {{- end }}
-        {{- if $repositoryGit }}
+        {{- if $repositoryRegistry }}
         - name: repository-registry
           configMap:
             name: {{ $.Values.repositoryCredentials.registryConfigMapName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.registryKey | quote }}
                 path: registry.json
+        {{- end }}
+        {{- if $repositoryGit }}
         {{- if $repositoryBroker }}
         - name: repository-public-ca
           secret:
@@ -212,21 +215,6 @@ spec:
             medium: Memory
             sizeLimit: 1Mi
         {{- end }}
-        {{- end }}
-        {{- end }}
-        {{- if $.Values.preparedGitHub.custodySecretName }}
-        - name: prepared-github-custody
-          secret:
-            secretName: {{ $.Values.preparedGitHub.custodySecretName | quote }}
-            defaultMode: 288 # 0440, readable by the control-plane filesystem group
-            items:
-              - {key: custody.key, path: custody.key}
-        {{- if $.Values.preparedGitHub.issuerCaConfigMapName }}
-        - name: prepared-github-issuer-ca
-          configMap:
-            name: {{ $.Values.preparedGitHub.issuerCaConfigMapName | quote }}
-            items:
-              - {key: ca.crt, path: ca.crt}
         {{- end }}
         {{- end }}
         - name: installation-startup
@@ -513,10 +501,12 @@ spec:
               mountPath: /etc/openclaw/execution
               readOnly: true
             {{- end }}
-            {{- if $repositoryGit }}
+            {{- if $repositoryRegistry }}
             - name: repository-registry
               mountPath: /etc/openclaw/repository-registry
               readOnly: true
+            {{- end }}
+            {{- if $repositoryGit }}
             {{- if $repositoryBroker }}
             - name: repository-public-ca
               mountPath: /etc/openclaw/repository-ca
@@ -540,16 +530,6 @@ spec:
             - name: repository-control
               mountPath: /run/openclaw/repository-control
             {{- end }}
-            {{- end }}
-            {{- end }}
-            {{- if $.Values.preparedGitHub.custodySecretName }}
-            - name: prepared-github-custody
-              mountPath: /etc/openclaw/prepared-github
-              readOnly: true
-            {{- if $.Values.preparedGitHub.issuerCaConfigMapName }}
-            - name: prepared-github-issuer-ca
-              mountPath: /etc/openclaw/prepared-github-issuer
-              readOnly: true
             {{- end }}
             {{- end }}
             - name: installation-startup

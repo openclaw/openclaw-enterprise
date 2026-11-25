@@ -1,7 +1,5 @@
 # Upgrade production images
 
-See [One Off Upgrades](one-off-upgrades.md).
-
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
 and the [OCC CLI](../cli.md#connect-to-your-installation).
@@ -246,6 +244,8 @@ Return to software compatible with retained state and schema, then read back an
 acknowledged candidate write.
 
 ## Upgrade the control plane
+
+Review [credential upgrade preparation](production-upgrade-credentials.md).
 
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 

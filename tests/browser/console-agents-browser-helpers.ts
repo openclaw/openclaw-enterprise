@@ -425,7 +425,7 @@ export async function newPage(
   return { page, artifacts };
 }
 
-const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
+const signedInPath = /\/console\/(agents|backends|credentials|namespaces|settings|secrets)/;
 
 function assertCredentials(credentials: unknown): asserts credentials is Credentials {
   assert.ok(

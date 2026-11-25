@@ -763,6 +763,7 @@ test("Create Agent waits for the replacement model Secret before validating", as
   const requests = apiRequests(page, fixture.origin);
   // A failed read leaves no cached answer, so the replacement waits for a fresh check.
   await page.route(permission, (route) => route.abort(), { times: 1 });
+  const beforeSearch = await asksBeforeUnload(page);
   await key.fill(first.name);
   await page.getByRole("option", { name: first.name }).waitFor();
   const searching = await asksBeforeUnload(page);
@@ -796,7 +797,7 @@ test("Create Agent waits for the replacement model Secret before validating", as
   const validated = await validation;
   assert.equal(validated.status(), 204);
   assert.deepEqual(validated.request().postDataJSON().harnessAuth.source, second.ref);
-  assert.equal(searching, false);
+  assert.equal(searching, beforeSearch, "searching does not add a draft edit");
   assert.equal(selected, true);
 });
 
