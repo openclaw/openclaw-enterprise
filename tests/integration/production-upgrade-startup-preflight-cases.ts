@@ -799,7 +799,8 @@ exec "$0.fixture" "$@"
       assert.equal(existsSync(`${f.evidence}.migration-state.json`), false);
     }
     await writeFile(statePath, JSON.stringify(migrationReady));
-    const { stdout } = await attempt();
+    const { stdout, stderr } = await attempt();
+    assert.match(stderr, /Upgrade: Verifying database migration history\./);
     assert.match(stdout, /Database migration verified and its Jobs and Pods are gone/);
     await assertHeld(2);
   });
@@ -1304,7 +1305,10 @@ exec "$0.fixture" "$@"
 `,
           { mode: 0o700 },
         );
-        await assert.rejects(f.run(...resume), apiChanged);
+        const failure = await runForFailure(f.run, ...resume);
+        assert.equal(failure.code, apiChanged.code);
+        assert.match(failure.stderr, apiChanged.stderr);
+        assert.match(failure.stderr, /Upgrade: Rechecking candidate startup\./);
         assert.ok(existsSync(marker), "expected the generation change after writer drain");
         assert.deepEqual(await progress(), {
           attempts: beforeRetry.attempts + 1,
@@ -1364,6 +1368,7 @@ exec "$0.fixture" "$@"
       await assert.rejects(attempt(), (error: Error & { stderr?: string }) => {
         const message = error.stderr ?? "";
         assert.match(message, /MIGRATION_DATABASE_BUSY/);
+        assert.doesNotMatch(message, /Upgrade: Verifying database migration history\./);
         assert.match(message, /migration-deploy-apply\/preflight-migration\.log/);
         assert.match(message, /Do not replay the Job/);
         assert.equal(message.includes(marker), false);

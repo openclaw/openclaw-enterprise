@@ -1858,6 +1858,7 @@ preflight_resume() {
   preflight_children=()
   preflight_consumer_unknown=0
   jq -n --arg id "$installation_id" '{id: $id, name: ""}' >"$evidence_dir/installation.json"
+  progress "Rechecking candidate startup."
   preflight_startup identity-job "${1:-}"
 }
 
@@ -2418,6 +2419,7 @@ apply_database_migration() {
   require_migration_writers_stopped
   recheck_migration_secrets "$secret_names"
   run_migration_stage apply "$rendered_json" "$secret_names"
+  progress "Verifying database migration history."
   run_migration_stage verify "$rendered_json" "$secret_names"
   recheck_migration_release post-verification "$evidence_dir/before-helm-status.json"
   recheck_migration_secrets "$secret_names"
