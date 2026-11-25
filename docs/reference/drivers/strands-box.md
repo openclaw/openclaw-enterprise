@@ -77,7 +77,8 @@ agentGrants:
 ```
 
 Apply the same configuration to the API and Worker, then deploy the Agent.
-This switches the installation to staged delivery. It accepts only the named
+This switches the installation to v8 `standalone` admission and staged
+delivery. It accepts only the named
 Agent and Source and still requires the exact endpoint above. Leave other
 network and repository ceilings empty. Executable-specific rules cannot
 authorize a whole Agent.

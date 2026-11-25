@@ -28,6 +28,10 @@ The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/ind
 
 OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
 
+Each staged [request match](../../../packages/contracts/src/deployment-request-match.ts) selects an executable (`binary`) or every Agent process (`subject: "agent"`). OCC and PostgreSQL reject missing or mixed subject kinds and require network coverage for each injection request with the same subject.
+
+Both Drivers must declare [`supportsAgentSubject: true`](../../../packages/contracts/src/deployment-policy.ts) for Agent grants. Sandbox enforces the full network policy and Proxy enforces each binding's request limits. OpenShell requires executable grants. The [Strands Box preview](strands-box.md#use-a-managed-openai-source) accepts an Agent grant only for OpenAI Responses.
+
 OpenShell prepares admitted HTTP and managed MCP bindings with a Provider per projection. Accepted temporary MCP exceptions let bodyless legacy SSE GET and unsolicited JSON-RPC response POST reach substitution without an admitted RPC or tool match. See [Source lifecycle](../../flows/credential-source-lifecycle.md) and [implementation status](../credential-sources.md#implementation-status).
 
 ## Legacy protected egress
