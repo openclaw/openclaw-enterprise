@@ -15,6 +15,7 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 
 const origin = "https://console.oce.localhost";
 const authSecret = "private-test-auth-" + randomUUID();
@@ -97,6 +98,20 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
   const { core, driver } = useInstallationSecretDriver(controller);
+  assert.ok(driver.privateSecrets);
+  const instanceId = await controller.activateTokenServiceInstance(
+    "private-client-token-service",
+    "private-client-store",
+  );
+  const owner = new OCCTokenServiceDriver(
+    "private-client-token-service",
+    installation.id,
+    driver.privateSecrets,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
   const auth = await createPostgresControllerAuth({
     ...authOptions(installation.id),
     pool: transport,
@@ -158,18 +173,24 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
     assert.equal(response.statusCode, 201, "manual template created");
     return response.json<{ data: { id: string } }>().data.id;
   };
-  const input = (templateId: string, version = 1) => ({
-    connectionTemplateId: templateId,
-    connectionTemplateVersion: version,
+  const input = () => ({
+    kind: "oauth2",
     displayName: "Private client",
+    issuer: manual.issuer,
+    tokenUrl: manual.tokenUrl,
     clientId: randomUUID(),
     tokenEndpointAuthMethod: "client_secret_basic" as const,
     clientSecret: inventedValue(),
   });
   const row = async (clientId: string) =>
     (
-      await pool.query<{ id: string; secret_driver_id: string; hidden: boolean; due: boolean }>(
-        "SELECT id,secret_driver_id,cleanup_after IS NOT NULL AS hidden,cleanup_after<=now() AS due FROM occ.oauth_clients WHERE client_id=$1",
+      await pool.query<{
+        id: string;
+        token_service_instance_id: string;
+        hidden: boolean;
+        due: boolean;
+      }>(
+        "SELECT id,token_service_instance_id,cleanup_after IS NOT NULL AS hidden,cleanup_after<=now() AS due FROM occ.oauth_clients WHERE client_id=$1",
         [clientId],
       )
     ).rows[0];
@@ -188,8 +209,11 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   const recovered = new OpenClawController(installation, { state: recoveryState });
   recovered.registerDriver(driver);
   recovered.selectDriver("secret", driver.id);
+  await recovered.activateTokenServiceInstance(owner.id, "private-client-store");
+  recovered.registerDriver(owner);
+  recovered.selectDriver("token_service", owner.id);
   const absentFromPublic = async (value: string, clientId: string) => {
-    const response = await inject("GET", "/oauth-clients");
+    const response = await inject("GET", "/credential-clients");
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.includes(value), false);
     assert.equal(response.body.includes(driver.id), false);
@@ -210,6 +234,7 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
     controller,
     core,
     driver,
+    instanceId,
     recovered,
     inject,
     draft,
@@ -259,7 +284,7 @@ test(
   requiresPostgres,
   async (t) => {
     const f = await fixture(t);
-    const input = f.input(await f.draft());
+    const input = f.input();
     const create = f.core.createNamespacedSecret.bind(f.core);
     let key = "";
     t.mock.method(
@@ -273,17 +298,17 @@ test(
       },
       { times: 1 },
     );
-    const response = await f.inject("POST", "/oauth-clients", input);
+    const response = await f.inject("POST", "/credential-clients", input);
     assert.equal(response.statusCode, 404);
     assertSanitizedPrivateFailure(response, input.clientSecret, f.driver.id, "NOT_FOUND");
     const reserved = await f.row(input.clientId);
     assert.ok(reserved?.hidden);
-    assert.equal(reserved.secret_driver_id, f.driver.id);
+    assert.equal(reserved.token_service_instance_id, f.instanceId);
     await f.absentFromPublic(input.clientSecret, input.clientId);
     const immediatelyAbsent = !f.core.secrets.has(key);
     const immediateDeletes = f.core.calls.deleteNamespacedSecret;
     await f.due(input.clientId);
-    await f.recovered.cleanupOAuthClients();
+    await f.recovered.cleanupCredentialClients();
     const remaining = await f.row(input.clientId);
     observation(t, {
       case: "refused-create",
@@ -325,7 +350,7 @@ test(
     for (const scenario of cases) {
       await t.test(scenario, async (s) => {
         const f = await fixture(s);
-        const input = f.input(await f.draft());
+        const input = f.input();
         const create = f.core.createNamespacedSecret.bind(f.core);
         const remove = f.core.deleteNamespacedSecret.bind(f.core);
         let key = "";
@@ -388,7 +413,7 @@ test(
           },
           { times: 1 },
         );
-        const response = await f.inject("POST", "/oauth-clients", input);
+        const response = await f.inject("POST", "/credential-clients", input);
         const expectedStatus = scenario === "same-name-absent" ? 404 : 503;
         const calls = f.core.calls.deleteNamespacedSecret;
         const reserved = await f.row(input.clientId);
@@ -407,7 +432,7 @@ test(
           expectedStatus === 404 ? "NOT_FOUND" : "DEPENDENCY_UNAVAILABLE",
         );
         assert.ok(reserved?.hidden);
-        assert.equal(reserved.secret_driver_id, f.driver.id);
+        assert.equal(reserved.token_service_instance_id, f.instanceId);
         await f.absentFromPublic(input.clientSecret, input.clientId);
         const hasPreconditions = ![
           "missing-uid",
@@ -431,7 +456,7 @@ test(
         }
         // Recovery is a separate current-state observation, never a replay of the uncertain create.
         await f.due(input.clientId);
-        await f.recovered.cleanupOAuthClients();
+        await f.recovered.cleanupCredentialClients();
         const remaining = await f.row(input.clientId);
         const absent = ["same-name-absent", "alternate-name-absent", "delete-dropped"].includes(
           scenario,
@@ -473,7 +498,7 @@ test(
             await close();
             await proxy.waitForHeldSessionEnd(f.pool);
           };
-          const input = f.input(await f.draft());
+          const input = f.input();
           const create = f.core.createNamespacedSecret.bind(f.core);
           const remove = f.core.deleteNamespacedSecret.bind(f.core);
           let key = "";
@@ -493,7 +518,7 @@ test(
             { times: 1 },
           );
           if (phase === "publication") {
-            const pending = f.inject("POST", "/oauth-clients", input);
+            const pending = f.inject("POST", "/credential-clients", input);
             if (mode === "not-forwarded") {
               await abandonHeldCommit("publication");
             }
@@ -522,7 +547,7 @@ test(
             });
             if (row.hidden) {
               await f.due(input.clientId);
-              await f.recovered.cleanupOAuthClients();
+              await f.recovered.cleanupCredentialClients();
               assert.equal(await f.row(input.clientId), undefined);
             } else {
               const current = await f.pool.query(
@@ -530,10 +555,12 @@ test(
                 [input.clientId],
               );
               assert.equal(current.rowCount, 1);
-              const registered = await new PostgresPlatformState(f.pool).read((view) =>
-                view.connectionTemplates.findOAuthClient(row.id),
-              );
-              assert.ok(registered);
+              const listing = await f.inject("GET", "/credential-clients");
+              assert.equal(listing.statusCode, 200);
+              const registered = listing
+                .json()
+                .data.find((client: OAuthClient) => client.id === row.id);
+              assert.ok(registered?.kind === "oauth2");
               assert.equal(
                 await f.recovered.withOAuthClientSecret(
                   registered,
@@ -543,7 +570,7 @@ test(
               );
             }
           } else {
-            const result = await f.inject("POST", "/oauth-clients", input);
+            const result = await f.inject("POST", "/credential-clients", input);
             assert.equal(result.statusCode, 503);
             assertSanitizedPrivateFailure(
               result,
@@ -562,7 +589,7 @@ test(
               },
               { times: 1 },
             );
-            const pending = f.controller.cleanupOAuthClients();
+            const pending = f.controller.cleanupCredentialClients();
             const settled = pending.then(
               () => false,
               () => true,
@@ -584,7 +611,7 @@ test(
               deletes: f.core.calls.deleteNamespacedSecret,
             });
             if (row) {
-              await f.recovered.cleanupOAuthClients();
+              await f.recovered.cleanupCredentialClients();
               assert.equal(await f.row(input.clientId), undefined);
             }
             assert.equal(f.core.calls.deleteNamespacedSecret, 1);
@@ -601,8 +628,8 @@ test(
   async (t) => {
     const f = await fixture(t);
     const templateId = await f.draft();
-    const input = f.input(templateId);
-    const denied = await f.inject("POST", "/oauth-clients", input, f.baseHeaders);
+    const input = f.input();
+    const denied = await f.inject("POST", "/credential-clients", input, f.baseHeaders);
     assert.equal(denied.statusCode, 401);
     assertPrivateMaterialAbsent(denied, input.clientSecret, f.driver.id);
     const readerAccount = {
@@ -613,20 +640,20 @@ test(
     await f.state.appendNativeIAMPrincipal(f.auth.principalSeed(reader, { grant: "none" }));
     const unauthorized = await f.inject(
       "POST",
-      "/oauth-clients",
+      "/credential-clients",
       input,
       await f.signIn(readerAccount),
     );
     assert.equal(unauthorized.statusCode, 403);
     assertPrivateMaterialAbsent(unauthorized, input.clientSecret, f.driver.id);
-    const stale = await f.inject("POST", "/oauth-clients", {
+    const stale = await f.inject("POST", "/credential-clients", {
       ...input,
-      connectionTemplateVersion: 99,
+      tokenEndpointAuthMethod: "private_key_jwt",
     });
-    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.statusCode, 400);
     assertPrivateMaterialAbsent(stale, input.clientSecret, f.driver.id);
     assert.equal(f.core.calls.createNamespacedSecret, 0);
-    const result = await f.inject("POST", "/oauth-clients", input);
+    const result = await f.inject("POST", "/credential-clients", input);
     assert.equal(result.statusCode, 201);
     const client = result.json<{ data: OAuthClient }>().data;
     assert.equal(
@@ -637,10 +664,24 @@ test(
       true,
     );
     const names = [...f.core.secrets.keys()];
+    // A schema-valid GitHub rotation request cannot replace material for an OAuth Client.
+    const wrongKind = await f.inject("POST", "/credential-clients/" + client.id + "/rotate", {
+      kind: "github-app",
+      privateKey: inventedValue(),
+    });
+    assert.equal(wrongKind.statusCode, 400, wrongKind.body);
+    assert.equal(
+      await f.controller.withOAuthClientSecret(
+        client,
+        async (value) => value === input.clientSecret,
+      ),
+      true,
+    );
     const replacement = inventedValue();
     assert.equal(
       (
-        await f.inject("POST", "/oauth-clients/" + client.id + "/rotate-secret", {
+        await f.inject("POST", "/credential-clients/" + client.id + "/rotate", {
+          kind: "oauth2",
           clientSecret: replacement,
         })
       ).statusCode,
@@ -652,7 +693,7 @@ test(
       true,
     );
     assert.equal(f.core.calls.deleteNamespacedSecret, 0);
-    const listed = await f.inject("GET", "/oauth-clients");
+    const listed = await f.inject("GET", "/credential-clients");
     assert.equal(
       listed.body.includes(input.clientSecret) ||
         listed.body.includes(replacement) ||
@@ -660,10 +701,10 @@ test(
       false,
     );
     assert.equal((await f.inject("DELETE", "/connection-templates/" + templateId)).statusCode, 204);
-    assert.equal((await f.inject("DELETE", "/oauth-clients/" + client.id)).statusCode, 204);
+    assert.equal((await f.inject("DELETE", "/credential-clients/" + client.id)).statusCode, 204);
     await f.absentFromPublic(replacement, input.clientId);
     await f.due(input.clientId);
-    await f.recovered.cleanupOAuthClients();
+    await f.recovered.cleanupCredentialClients();
     assert.equal(await f.row(input.clientId), undefined);
     assert.equal(f.core.secrets.size, 0);
     observation(t, {
@@ -671,7 +712,7 @@ test(
       create: 201,
       unauthenticated: 401,
       unauthorized: 403,
-      stale: 409,
+      stale: 400,
       deletes: f.core.calls.deleteNamespacedSecret,
       rotationStable: true,
     });

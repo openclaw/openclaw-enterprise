@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
@@ -288,7 +289,10 @@ test(
             name: "Selected repository approval",
             configurationId,
             harnessAuth: { method: "api_key", source: secretRef },
-            repositoryBindings: [{ repositoryRef: "project", profile: "github-repository" }],
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: "project", profile: "github-repository" }],
+            },
           });
           const agent = createdAgent(created);
           await grantAgentSecretOperate(pool, agent, secretRef.id);
@@ -365,10 +369,13 @@ test(
           const multi = await request("POST", `/namespaces/${namespaceId}/agents`, {
             name: "Finite selected repositories",
             configurationId,
-            repositoryBindings: selectedRegistry.repositories.map(({ repositoryRef }) => ({
-              repositoryRef,
-              profile: "github-repository",
-            })),
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: selectedRegistry.repositories.map(({ repositoryRef }) => ({
+                repositoryRef,
+                profile: "github-repository",
+              })),
+            },
           });
           assert.equal(multi.statusCode, 201, multi.body);
           const multiPath = `/namespaces/${namespaceId}/agents/${multi.json().data.id}`;
@@ -520,14 +527,17 @@ test(
         name: "Bound repository save",
         harnessAuth: { method: "api_key", source: secretRef },
         configurationId,
-        repositoryBindings: bindings,
+        repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
       });
       assert.equal(created.statusCode, 201, created.body);
       const savePath = `/namespaces/${namespaceId}/agents/${created.json().data.id}`;
       assert.equal(bound.mock.callCount(), 1);
       assert.equal(legacy.mock.callCount(), 0);
       assert.deepEqual(bound.mock.calls[0]?.arguments, [{ namespaceId, bindings }]);
-      assert.deepEqual((await request("GET", savePath)).json().data.repositoryBindings, bindings);
+      assert.deepEqual(
+        repositoryAccessSelections((await request("GET", savePath)).json().data.repositoryAccess),
+        bindings,
+      );
 
       const access = {
         defaultProfile: "git-write",
@@ -543,7 +553,7 @@ test(
       assert.equal(legacy.mock.callCount(), 0);
       assert.deepEqual(bound.mock.calls[1]?.arguments, [{ namespaceId, bindings: inherited }]);
       const saved = (await request("GET", savePath)).json().data;
-      assert.deepEqual(saved.repositoryBindings, inherited);
+      assert.deepEqual(repositoryAccessSelections(saved.repositoryAccess), inherited);
       assert.deepEqual(saved.repositoryAccess, access);
 
       const unchanged = await request("PATCH", savePath, { configurationId });
@@ -555,7 +565,10 @@ test(
       // The actual bound policy refuses an unapproved profile; do not synthesize its error.
       const denied = await request("PATCH", savePath, {
         configurationId,
-        repositoryBindings: [{ repositoryRef: "project-two", profile: "git-read" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "project-two", profile: "git-read" }],
+        },
       });
       assert.equal(denied.statusCode, 400, denied.body);
       assert.equal(bound.mock.callCount(), 3);
@@ -624,7 +637,10 @@ test(
             name: `Finite ${route}`,
             harnessAuth: { method: "api_key", source: secretRef },
             configurationId,
-            repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
+            repositoryAccess: {
+              defaultProfile: "git-write",
+              repositories: [{ repositoryRef: "project", profile: "git-write" }],
+            },
           });
           const finiteAgent = createdAgent(created);
           await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
@@ -657,7 +673,7 @@ test(
             v.revisions.findRevision(namespaceId, finiteAgent.id, deployed.json().data.id),
           );
           const snapshot = revision?.repositoryCredentials;
-          assert.ok(snapshot);
+          assert.ok(snapshot && snapshot.authorization !== "credential_source");
           assert.equal(calls, route === "bundled" || route === "built-in" ? 0 : 1);
           assert.equal(snapshot.standingApprovalId, undefined);
           if (route === "legacy") {
@@ -744,7 +760,10 @@ test(
             const before = (await request("GET", finitePath)).json().data;
             const denied = await request("PATCH", finitePath, {
               configurationId,
-              repositoryBindings: [{ repositoryRef: "project", profile: "git-read" }],
+              repositoryAccess: {
+                defaultProfile: "git-write",
+                repositories: [{ repositoryRef: "project", profile: "git-read" }],
+              },
             });
             assert.equal(denied.statusCode, 400, denied.body);
             assert.deepEqual((await request("GET", finitePath)).json().data, before);
@@ -826,7 +845,10 @@ test(
       name: "Approval source",
       harnessAuth: { method: "api_key", source: secretRef },
       configurationId,
-      repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project", profile: "git-write" }],
+      },
     });
     const agent = createdAgent(created);
     await grantAgentSecretOperate(pool, agent, secretRef.id);
@@ -891,7 +913,7 @@ test(
         const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
           name: "Bound standing approval",
           configurationId,
-          repositoryBindings: agent.repositoryBindings,
+          repositoryAccess: agent.repositoryAccess,
         });
         assert.equal(created.statusCode, 201, created.body);
         const boundAgent = created.json().data;
@@ -979,7 +1001,7 @@ test(
             assert.equal(bound.mock.callCount(), 1);
             assert.equal(adapter.mock.callCount(), 0);
             assert.deepEqual(bound.mock.calls[0]?.arguments, [
-              { namespaceId, bindings: agent.repositoryBindings },
+              { namespaceId, bindings: repositoryAccessSelections(agent.repositoryAccess) },
             ]);
             const saved = await request("PATCH", boundPath, approval);
             assert.equal(saved.statusCode, 200, saved.body);
@@ -1168,23 +1190,32 @@ test(
       "lost ACK retry preserves approval",
     );
     assert.deepEqual(await read(), [first]);
-    assert.ok(agent.repositoryBindings, "the finite Agent retains its saved repository binding");
+    assert.ok(
+      repositoryAccessSelections(agent.repositoryAccess),
+      "the finite Agent retains its saved repository binding",
+    );
     const secondBinding = { repositoryRef: "project-two", profile: "git-write" };
     const addBinding = await request("PATCH", path, {
       configurationId,
-      repositoryBindings: [...agent.repositoryBindings, secondBinding],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      },
     });
     assert.equal(addBinding.statusCode, 409, addBinding.body);
     assert.equal(addBinding.json().error.message, STANDING_APPROVAL_BINDING_LOCKED);
     assert.deepEqual(
-      (await request("GET", path)).json().data.repositoryBindings,
-      agent.repositoryBindings,
+      repositoryAccessSelections((await request("GET", path)).json().data.repositoryAccess),
+      repositoryAccessSelections(agent.repositoryAccess),
       "adding a second binding rolls back atomically",
     );
     const multi = await request("POST", `/namespaces/${namespaceId}/agents`, {
       name: "Finite multibinding source",
       configurationId,
-      repositoryBindings: [...agent.repositoryBindings, secondBinding],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [...repositoryAccessSelections(agent.repositoryAccess), secondBinding],
+      },
     });
     assert.equal(multi.statusCode, 201, multi.body);
     const multiPath = `/namespaces/${namespaceId}/agents/${multi.json().data.id}`;
@@ -1219,6 +1250,8 @@ test(
       v.revisions.findRevision(namespaceId, agent.id, deployment.json().data.id),
     );
     assert.ok(revision?.repositoryCredentials);
+    const repositoryCredentials = revision.repositoryCredentials;
+    assert.ok(repositoryCredentials.authorization !== "credential_source");
     assert.equal(revision.repositoryCredentials.standingApprovalId, first.id);
     assert.equal(revision.repositoryCredentials.standingApprovalGeneration, 1);
     assert.equal(
@@ -1286,7 +1319,10 @@ test(
         name: "Finite preparation control",
         harnessAuth: { method: "api_key", source: secretRef },
         configurationId,
-        repositoryBindings: [{ repositoryRef: "project", profile: "git-write" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "project", profile: "git-write" }],
+        },
       });
       const finiteAgent = createdAgent(positive);
       await grantAgentSecretOperate(pool, finiteAgent, secretRef.id);
@@ -1422,7 +1458,7 @@ test(
         repositoryRef: "project",
         admissionId: openingId,
         durationSeconds: 3600,
-        deadlineWallMs: revision.repositoryCredentials!.deadlineWallMs,
+        deadlineWallMs: repositoryCredentials.deadlineWallMs,
         createdAt: new Date().toISOString(),
       }),
     );
@@ -1645,7 +1681,7 @@ test(
     const contender = await request("POST", `/namespaces/${namespaceId}/agents`, {
       name: "Standing approval grant contention",
       configurationId,
-      repositoryBindings: agent.repositoryBindings,
+      repositoryAccess: agent.repositoryAccess,
     });
     assert.equal(contender.statusCode, 201, contender.body);
     const contenderId = contender.json().data.id;

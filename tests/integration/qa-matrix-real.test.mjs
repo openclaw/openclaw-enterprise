@@ -200,14 +200,15 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
-    if (selection.gitModel) {
-      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+    if (selection.optionalPluginWithdrawal) {
+      const { verifyOpenShellOptionalPluginWithdrawal } =
+        await import("../helpers/openshell-optional-plugin-withdrawal.ts");
       await stage(
         context,
-        "kubernetes/Codex/OpenShell",
-        "fresh Gateway model delivery with and without Git access",
-        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
-        "openshell-git-model",
+        "kubernetes/OpenClaw/OpenShell",
+        "optional Slack withdrawal preserves other native bindings and Source custody",
+        () => verifyOpenShellOptionalPluginWithdrawal(context),
+        "openshell-optional-plugin-withdrawal",
       );
     }
     if (selection.oidcAgentChat) {

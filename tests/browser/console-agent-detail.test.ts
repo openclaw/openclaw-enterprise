@@ -220,17 +220,7 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   });
   assert.deepEqual(secretPostRequests(requests, namespace.id), []);
 
-  await page.getByLabel("Authentication source").selectOption("codex_pat");
-  const serviceAccountSecret = page.getByLabel("Service account token Secret");
-  assert.equal(
-    await serviceAccountSecret.evaluate((node) => {
-      if (!(node instanceof HTMLInputElement)) {
-        throw new Error("Expected an input");
-      }
-      return node.value;
-    }),
-    "",
-  );
+  await page.getByLabel("Authentication source").selectOption("runtime");
   await page.getByLabel("Authentication source").selectOption("api_key");
   await waitForInputValue(page.getByLabel("API key Secret"), secretOptionLabel(replacementSecret));
 
@@ -407,8 +397,18 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   );
   assert.deepEqual(secretSource(current.data.harnessAuth), bound.ref);
 
-  await page.getByLabel("Authentication source").selectOption("codex_pat");
-  const token = page.getByLabel("Service account token Secret", { exact: true });
+  const method = page.getByLabel("Authentication source");
+  await waitForEnabled(method);
+  await method.selectOption("");
+  const clearedAuth = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}`) && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  assert.equal((await clearedAuth).status(), 200);
+  await waitForEnabled(method);
+  await method.selectOption("api_key");
+  const token = page.getByLabel("API key Secret", { exact: true });
   await token.click();
   await page.getByRole("option", { name: "No Secret bound (no binding)", exact: true }).waitFor();
   await page.getByRole("option", { name: "No Secret bound", exact: true }).waitFor();
@@ -712,11 +712,6 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   const fixture = await createConsoleAppFixture(t, { secretDriver });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Credential Secret picker UX", { ready: true });
-  const originalSecret = await fixture.createSecret(
-    namespace.id,
-    "Original picker Secret",
-    "hidden-original-picker",
-  );
   const keyboardSecret = await fixture.createSecret(
     namespace.id,
     "Keyboard replacement Secret",
@@ -731,7 +726,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     namespace.id,
     "Combobox Agent",
     nativeValues("credential-picker-ux", { harnessId: "codex" }),
-    { harnessAuth: { method: "api_key", source: originalSecret.ref }, executionMode: "dedicated" },
+    { harnessAuth: null, executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -739,6 +734,8 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
 
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Combobox Agent" }).waitFor();
+  const method = page.getByLabel("Authentication source");
+  await method.selectOption("api_key");
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.fill(keyboardSecret.id);
   await page.getByRole("option", { name: keyboardSecret.name, exact: true }).waitFor();
@@ -770,11 +767,12 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await apiKeySecret.press("Escape");
   assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(keyboardSecret));
 
-  await page.getByLabel("Authentication source").selectOption("codex_pat");
-  const serviceAccountSecret = page.getByLabel("Service account token Secret", { exact: true });
+  await method.selectOption("");
+  await method.selectOption("api_key");
+  const unboundSecret = apiKeySecret;
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal(
-    await serviceAccountSecret.evaluate((input) => {
+    await unboundSecret.evaluate((input) => {
       if (!(input instanceof HTMLInputElement)) {
         throw new Error("Expected an input");
       }
@@ -784,10 +782,10 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 
-  await serviceAccountSecret.fill("no matching create target");
+  await unboundSecret.fill("no matching create target");
   await page.getByText("No matching Secrets.", { exact: true }).waitFor();
-  await serviceAccountSecret.press("ArrowDown");
-  await serviceAccountSecret.press("Enter");
+  await unboundSecret.press("ArrowDown");
+  await unboundSecret.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
   await dialog.waitFor();
   assert.equal(
@@ -877,7 +875,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   await waitForEnabled(dialog.getByRole("button", { name: "Create Secret", exact: true }));
   await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
-  const distinctName = "Combobox Agent corrected service account token";
+  const distinctName = "Combobox Agent corrected API key";
   await dialog.getByLabel("Name", { exact: true }).fill(distinctName);
   const created = page.waitForResponse((response) => {
     if (
@@ -895,7 +893,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   assert.notEqual(createdSecret.id, duplicateNameSecret.id);
   assert.equal(createdSecret.name, distinctName);
   assert.equal(secretDriver.valueFor(createdSecret), "synthetic-duplicate-value");
-  assert.equal(await serviceAccountSecret.inputValue(), secretOptionLabel(createdSecret));
+  assert.equal(await unboundSecret.inputValue(), secretOptionLabel(createdSecret));
 });
 
 // The shared grant wording for the harness authentication source (findings 1920, 2259).
@@ -2829,10 +2827,15 @@ test("a reader without update views the version draft read-only", async (t) => {
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const openDraft = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) })
+    .getByRole("button", { name: "Open draft", exact: true });
   // Draft-only tabs open on this Agent. Back returns to the saved version's shortcut.
   const snapshotUrl = page.url();
   for (const name of ["Credentials", "Repositories"]) {
-    await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+    await openDraft.waitFor();
     const link = snapshot.getByRole("link", { name: `Draft ${name.toLowerCase()}` });
     assert.equal(await link.isVisible(), true);
     await link.press("Enter");
@@ -2846,7 +2849,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     await page.locator(settledView).waitFor();
     assert.ok(await hasFocus(link), name);
   }
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).click();
+  await openDraft.click();
   await page.getByText(CONFIGURATION_READ_ONLY, { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("revision"), "draft");
   assert.equal(await page.getByRole("button", { name: "Edit current Configuration" }).count(), 0);
@@ -2896,7 +2899,7 @@ test("a reader without update views the version draft read-only", async (t) => {
     true,
   );
   await page.locator(settledView).waitFor();
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  await openDraft.waitFor();
   assert.equal(await draftLinks.count(), 0);
   assert.ok(await hasFocus(page.getByRole("heading", { level: 1 })));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2939,12 +2942,18 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   const snapshot = page
     .locator("section.agent-card")
     .filter({ has: page.getByRole("heading", { name: "Configuration snapshot" }) });
+  // The entry to the draft sits in the version's Settings card, below its snapshot summary.
+  const settingsCard = page
+    .locator("section.agent-card")
+    .filter({ has: page.getByRole("heading", { name: "Settings", exact: true }) });
   // Until the answer lands the page assumes an editor.
-  await snapshot.getByRole("button", { name: "Edit current Configuration", exact: true }).waitFor();
+  await settingsCard
+    .getByRole("button", { name: "Edit current Configuration", exact: true })
+    .waitFor();
   const draftLinks = snapshot.getByRole("link", { name: /^Draft (credentials|repositories)$/ });
   assert.equal(await draftLinks.count(), 0);
   firstAnswer.release();
-  await snapshot.getByRole("button", { name: "Open draft", exact: true }).waitFor();
+  await settingsCard.getByRole("button", { name: "Open draft", exact: true }).waitFor();
   assert.equal(await draftLinks.count(), 2);
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {

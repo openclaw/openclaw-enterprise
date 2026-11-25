@@ -4,6 +4,9 @@ kind: reference/driver
 
 # CredentialGatewayDriver contract
 
+This Driver describes the retired Credential Gateway path. Configure
+[TokenService Sources](../credential-sources.md#register-a-source) for current Installations.
+
 ## Overview
 
 `CredentialGatewayDriver` is the legacy delivery contract. It holds credentials
@@ -247,8 +250,8 @@ adopt or delete the same stored copy.
   Update pushes new static values; running Agents use them after a redeploy.
 - Compute accepts `openai`/`api_key` credential sources for dedicated Codex or
   native OpenClaw. `openai`/`chatgptAuthTokens` is dedicated-Codex-only and
-  requires the external-auth attachment described above. The bundled catalog
-  includes experimental Codex device login through the paired Refresh Driver.
+  requires the external-auth attachment described above. New Codex account sign-in
+  uses the selected [TokenService](kubernetes-compute/codex-oauth-storage.md).
   Other listed sources need a Sandbox Driver that provisions the Harness.
 - Guided Agent provisioning rejects credential-source Harness authentication.
   Create the Agent, then deploy it.
@@ -262,7 +265,7 @@ adopt or delete the same stored copy.
 | Registration or binding returns `403`                              | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
 | Deployment returns `409` with a gateway selected                   | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
 | Registration or deletion returns `503`, or a read reports `failed` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
-| `503` naming the driver that registered the source                 | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
+| `503` naming the driver that registered the source                 | Another driver is selected; see [replacement enrollment](../credential-sources.md#register-a-source).                             |
 | An Agent revision never activates                                  | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations

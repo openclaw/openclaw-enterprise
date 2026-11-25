@@ -1,5 +1,5 @@
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, RepositoryRevisionState } from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -75,7 +75,7 @@ type Owner = {
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
-  revision: AgentRevision;
+  revision: AgentRevision & { readonly repositoryCredentials: RepositoryRevisionState };
   resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   runtime: OpenShellGitRuntime;
   sandbox: {
@@ -162,7 +162,7 @@ export function openShellGitRuntimeFixture({
         deadlineWallMs: Date.now() + 3_600_000,
         bindings: [admitted],
       },
-    })) as unknown as AgentRevision;
+    })) as unknown as World["revision"];
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
   // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {

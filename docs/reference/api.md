@@ -87,7 +87,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 23 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 15 operations |
+| [Connections](#connections) | 14 operations |
 | [Installation](#installation) | 13 operations |
 | [Namespaces](#namespaces) | 7 operations |
 | [Agents](#agents) | 61 operations |
@@ -1524,14 +1524,13 @@ Example response
 | [`DELETE /connection-templates/{connectionTemplateId}`](#delete-connectiontemplatesconnectiontemplateid) | Delete a connection template |
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template or create a version with updated settings |
+| [`GET /credential-clients`](#get-credentialclients) | List registered credential clients |
+| [`POST /credential-clients`](#post-credentialclients) | Register an OAuth or GitHub App credential client |
+| [`DELETE /credential-clients/{credentialClientId}`](#delete-credentialclientscredentialclientid) | Delete an unused credential client |
+| [`POST /credential-clients/{credentialClientId}/rotate`](#post-credentialclientscredentialclientidrotate) | Rotate credential client private material |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates available in this Namespace |
-| [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
-| [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
-| [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
-| [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
-| [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
-| [`POST /oauth-clients/{oauthClientId}/rotate-secret`](#post-oauthclientsoauthclientidrotatesecret) | Rotate an OAuth client secret |
+| [`GET /namespaces/{namespaceId}/connections/oauth-clients`](#get-namespacesnamespaceidconnectionsoauthclients) | List OAuth clients eligible for a connection template in this Namespace |
 | [`GET /oauth/callback`](#get-oauthcallback) | Complete a browser connection for the signed-in person who started it |
 
 #### `GET /connection-templates`
@@ -1580,7 +1579,6 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data[].current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.observed` | `object` | No | — |
 | `data[].current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1645,7 +1643,6 @@ Example response
         ],
         "issuer": "https://accounts.example.com",
         "mode": "manual",
-        "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
         "scopes": [
           "profile.read"
         ],
@@ -1711,7 +1708,6 @@ Create an Installation-wide or Namespace-scoped connection template
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `mode` | `"manual"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1725,7 +1721,6 @@ Create an Installation-wide or Namespace-scoped connection template
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `mode` | `"mcp_discovery"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
@@ -1786,7 +1781,6 @@ Example request
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.observed` | `object` | No | — |
 | `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2038,7 +2032,6 @@ Get one connection template
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.observed` | `object` | No | — |
 | `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2092,7 +2085,6 @@ Example response
       ],
       "issuer": "https://accounts.example.com",
       "mode": "manual",
-      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "scopes": [
         "profile.read"
       ],
@@ -2167,7 +2159,6 @@ Rename a connection template or create a version with updated settings
 | `displayName` | `string` | No | min length: 1; max length: 200 |
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `mode` | `"manual"` | Yes | — |
-| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2180,7 +2171,6 @@ Rename a connection template or create a version with updated settings
 | `displayName` | `string` | No | min length: 1; max length: 200 |
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `mode` | `"mcp_discovery"` | Yes | — |
-| `oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `scopes` | `array<string>` | Yes | unique items: true; Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
@@ -2226,7 +2216,6 @@ Example request
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data.current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.observed` | `object` | No | — |
 | `data.current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2280,7 +2269,6 @@ Example response
       ],
       "issuer": "https://accounts.example.com",
       "mode": "manual",
-      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "scopes": [
         "profile.read"
       ],
@@ -2291,6 +2279,300 @@ Example response
     "displayName": "Engineering account",
     "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /credential-clients`
+
+<span id="get-credentialclients"></span>
+
+List registered credential clients
+
+**Operation ID:** `listCredentialClients`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object or object>` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+No readable resources
+```json
+{
+  "data": [],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+Example response
+```json
+{
+  "data": [
+    {
+      "clientId": "example-client",
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "displayName": "Example provider client",
+      "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "issuer": "https://accounts.example.com",
+      "kind": "oauth2",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "tokenEndpointAuthMethod": "client_secret_basic",
+      "tokenUrl": "https://accounts.example.com/token"
+    }
+  ],
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /credential-clients`
+
+<span id="post-credentialclients"></span>
+
+Register an OAuth or GitHub App credential client
+
+**Operation ID:** `createCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+**`kind: "oauth2"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientId` | `string` | Yes | min length: 1; max length: 256 |
+| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `kind` | `"oauth2"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
+| `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
+| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+
+**`kind: "github-app"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `appId` | `string` | Yes | pattern: `^[1-9][0-9]{0,15}$` |
+| `displayName` | `string` | Yes | min length: 1; max length: 200 |
+| `kind` | `"github-app"` | Yes | — |
+| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
+
+Example request
+```json
+{
+  "clientId": "example-client",
+  "clientSecret": "example-client-secret",
+  "displayName": "Example provider client",
+  "issuer": "https://accounts.example.com",
+  "kind": "oauth2",
+  "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+  "tokenEndpointAuthMethod": "client_secret_basic",
+  "tokenUrl": "https://accounts.example.com/token"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `201` | Created |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`201` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "clientId": "example-client",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "kind": "oauth2",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /credential-clients/{credentialClientId}`
+
+<span id="delete-credentialclientscredentialclientid"></span>
+
+Delete an unused credential client
+
+**Operation ID:** `deleteCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `credentialClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `POST /credential-clients/{credentialClientId}/rotate`
+
+<span id="post-credentialclientscredentialclientidrotate"></span>
+
+Rotate credential client private material
+
+**Operation ID:** `rotateCredentialClient`
+
+**Permissions:** Requires administer permission on the requested Installation.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `credentialClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+**`kind: "oauth2"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientSecret` | `string` | Yes | min length: 1; max length: 4096 |
+| `kind` | `"oauth2"` | Yes | — |
+
+**`kind: "github-app"`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `kind` | `"github-app"` | Yes | — |
+| `privateKey` | `string` | Yes | min length: 1; max length: 20000 |
+
+Example request
+```json
+{
+  "clientSecret": "replacement-example-client-secret",
+  "kind": "oauth2"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.redirectUri` | `string` | No | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "clientId": "example-client",
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "displayName": "Example provider client",
+    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
+    "issuer": "https://accounts.example.com",
+    "kind": "oauth2",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "tokenEndpointAuthMethod": "client_secret_basic",
+    "tokenUrl": "https://accounts.example.com/token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2350,7 +2632,6 @@ List connection templates available in this Namespace
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mode` | `"manual" or "mcp_discovery"` | Yes | — |
-| `data[].current.oauthClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.observed` | `object` | No | — |
 | `data[].current.observed.authorizationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.observed.issuer` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2414,7 +2695,6 @@ Example response
         ],
         "issuer": "https://accounts.example.com",
         "mode": "manual",
-        "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
         "scopes": [
           "profile.read"
         ],
@@ -2425,111 +2705,6 @@ Example response
       "displayName": "Example account",
       "id": "ctp_123e4567-e89b-42d3-a456-426614174000",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
-  ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `GET /namespaces/{namespaceId}/connections`
-
-<span id="get-namespacesnamespaceidconnections"></span>
-
-List completed connections the caller can read in this Namespace
-
-**Operation ID:** `listNamespaceConnections`
-
-**Permissions:** Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `read` | `namespace` | `requested` |
-| `read` | `credential_source` | `each_returned` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].clientId` | `string` | Yes | — |
-| `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `data[].createdAt` | `string` | Yes | — |
-| `data[].credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].destinations` | `array<object>` | Yes | Effective credential delivery destinations; empty when the current template is unavailable or incompatible. |
-| `data[].destinations[].host` | `string` | Yes | — |
-| `data[].destinations[].path` | `string` | Yes | — |
-| `data[].destinations[].port` | `integer` | Yes | — |
-| `data[].grantedScopes` | `array<string>` | Yes | — |
-| `data[].issuer` | `string` | Yes | — |
-| `data[].mcpServerUrl` | `string` | No | — |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].oauthClientId` | `string` | Yes | — |
-| `data[].ownerPrincipalId` | `string` | Yes | — |
-| `data[].requestedScopes` | `array<string>` | Yes | — |
-| `data[].resource` | `string` | No | — |
-| `data[].tokenUrl` | `string` | Yes | — |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-No readable resources
-```json
-{
-  "data": [],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-Example response
-```json
-{
-  "data": [
-    {
-      "clientId": "example-client",
-      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-      "connectionTemplateVersion": 2,
-      "createdAt": "2026-10-01T12:00:00.000Z",
-      "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
-      "destinations": [
-        {
-          "host": "api.example.com",
-          "path": "/profile",
-          "port": 443
-        }
-      ],
-      "grantedScopes": [
-        "profile.read"
-      ],
-      "issuer": "https://accounts.example.com",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "ownerPrincipalId": "user-docs-admin",
-      "requestedScopes": [
-        "profile.read"
-      ],
-      "tokenUrl": "https://accounts.example.com/token"
     }
   ],
   "meta": {
@@ -2567,12 +2742,14 @@ Start consent for a reusable account in this Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `oauthClientId` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `selectedScopes` | `array<string>` | No | unique items: true |
 
 Example request
 ```json
 {
-  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000"
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000"
 }
 ```
 
@@ -2598,7 +2775,6 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.authorizationUrl` | `string` | Yes | — |
-| `data.credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.expiresAt` | `string` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2608,7 +2784,6 @@ Example response
 {
   "data": {
     "authorizationUrl": "https://accounts.example.com/authorize?state=example-state",
-    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
     "expiresAt": "2026-10-01T12:00:00.000Z"
   },
   "meta": {
@@ -2617,53 +2792,26 @@ Example response
 }
 ```
 
-#### `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`
+#### `GET /namespaces/{namespaceId}/connections/oauth-clients`
 
-<span id="delete-namespacesnamespaceidconnectionscredentialsourceid"></span>
+<span id="get-namespacesnamespaceidconnectionsoauthclients"></span>
 
-Disconnect a saved account and retire its OAuth grant
+List OAuth clients eligible for a connection template in this Namespace
 
-**Operation ID:** `disconnectNamespaceConnection`
+**Operation ID:** `listEligibleOAuthClients`
 
-**Permissions:** Requires delete permission on this CredentialSource unless the caller owns the saved connection.
+**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
-| `delete` | `credential_source` | `requested` |
+| `create` | `credential_source` | `namespace` |
 
 ##### Parameters
 
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
+| `connectionTemplateId` | query | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ctp_123e4567-e89b-42d3-a456-426614174000" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cs_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-#### `GET /oauth-clients`
-
-<span id="get-oauthclients"></span>
-
-List registered OAuth clients
-
-**Operation ID:** `listOAuthClients`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
 
 ##### Responses
 
@@ -2687,12 +2835,12 @@ List registered OAuth clients
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
 | `data[].id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].kind` | `"oauth2"` | Yes | — |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
 | `data[].tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 No readable resources
@@ -2715,226 +2863,12 @@ Example response
       "displayName": "Example provider client",
       "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "issuer": "https://accounts.example.com",
+      "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
       "tokenEndpointAuthMethod": "client_secret_basic",
       "tokenUrl": "https://accounts.example.com/token"
     }
   ],
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `POST /oauth-clients`
-
-<span id="post-oauthclients"></span>
-
-Register an OAuth client from a connection template
-
-**Operation ID:** `createOAuthClient`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `clientId` | `string` | Yes | min length: 1; max length: 256 |
-| `clientSecret` | `string` | No | min length: 1; max length: 4096 |
-| `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
-| `displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-
-Example request
-```json
-{
-  "clientId": "example-client",
-  "clientSecret": "example-client-secret",
-  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
-  "connectionTemplateVersion": 1,
-  "displayName": "Example provider client",
-  "tokenEndpointAuthMethod": "client_secret_basic"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `201` | Created |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`201` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
-| `data.createdAt` | `string` | Yes | — |
-| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `data.id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `data.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "clientId": "example-client",
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "displayName": "Example provider client",
-    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-    "issuer": "https://accounts.example.com",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `DELETE /oauth-clients/{oauthClientId}`
-
-<span id="delete-oauthclientsoauthclientid"></span>
-
-Delete an unused OAuth client
-
-**Operation ID:** `deleteOAuthClient`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `204` | No Content |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-#### `POST /oauth-clients/{oauthClientId}/rotate-secret`
-
-<span id="post-oauthclientsoauthclientidrotatesecret"></span>
-
-Rotate an OAuth client secret
-
-**Operation ID:** `rotateOAuthClientSecret`
-
-**Permissions:** Requires administer permission on the requested Installation.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `administer` | `installation` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `oauthClientId` | path | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ccr_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `clientSecret` | `string` | Yes | min length: 1; max length: 4096 |
-
-Example request
-```json
-{
-  "clientSecret": "replacement-example-client-secret"
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
-| `data.createdAt` | `string` | Yes | — |
-| `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `data.id` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `data.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `meta` | `object` | Yes | — |
-| `meta.redirectUri` | `string` | No | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "clientId": "example-client",
-    "createdAt": "2026-10-01T12:00:00.000Z",
-    "displayName": "Example provider client",
-    "id": "ccr_123e4567-e89b-42d3-a456-426614174000",
-    "issuer": "https://accounts.example.com",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
-  },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
@@ -2949,7 +2883,7 @@ Complete a browser connection for the signed-in person who started it
 
 **Operation ID:** `completeNamespaceConnection`
 
-**Permissions:** Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.
+**Permissions:** Requires the signed-in human session that started the connection, permission to create a credential source in the starting Namespace, and a template available there. The provider redirects here with `state` and `code`, or with `error`. Browser success returns a small HTML page that confirms the saved Source to the initiating Console tab; other requests redirect to the console without the provider query.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -2968,8 +2902,18 @@ Complete a browser connection for the signed-in person who started it
 
 | Status | Meaning |
 | --- | --- |
+| `200` | Browser consent completion page |
 | `303` | Redirect to the console with the connection outcome |
 | `429` | Too many requests; wait for Retry-After |
+
+**`200` response body:** `text/html`
+
+Schema: `string`.
+
+Browser consent completion page
+```json
+"<!doctype html><html>Account connected</html>"
+```
 
 <span id="installation"></span>
 
@@ -3044,6 +2988,8 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -3166,6 +3112,8 @@ Example request
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -4511,6 +4459,8 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data.capabilities.deviceAuthorization` | `true` | No | — |
+| `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
 | `data.capabilities.nativeWorkers` | `object` | No | Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from. |
 | `data.capabilities.nativeWorkers.support` | `"pinned-runtime" or "custom-image"` | Yes | — |
@@ -4720,8 +4670,8 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
-| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
-| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
+| [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources |
+| [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source |
 | [`POST /namespaces/{namespaceId}/agents/provision`](#post-namespacesnamespaceidagentsprovision) | Create a new Agent and queue first-time provisioning |
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
@@ -4753,9 +4703,9 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions/secrets`](#get-namespacesnamespaceidagentsagentidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
@@ -4911,7 +4861,7 @@ List authorized Agents in one exact Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
+| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4965,12 +4915,13 @@ Create a Namespace-owned Agent
 
 **Operation ID:** `createAgent`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources or named by a credential-source harnessAuth.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires administer permission on the Installation when selecting or changing the Agent's GitHub App Client. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource listed in credentialSources, named by a credential-source harnessAuth, or selected at a Plugin connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
+| `administer` | `installation` | `installation` |
 | `read` | `configuration` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
@@ -5013,14 +4964,13 @@ Create a Namespace-owned Agent
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Save the initial GitHub grants on this draft atomically. Requires permission to enable editing, save and read the Agent networking policy. Omit for ordinary profile access. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
@@ -5080,14 +5030,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -5442,16 +5391,18 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsplugins"></span>
 
-List or search available plugins for Agent creation using the selected Driver
+List or search available plugins for Agent creation using the selected Driver; credential choices include only readable Sources
 
 **Operation ID:** `discoverAgentPlugins`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery. Credential choices include only CredentialSource resources with caller read permission.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
+| `read` | `credential_source` | `each_returned` |
 
 ##### Parameters
 
@@ -5465,17 +5416,17 @@ List or search available plugins for Agent creation using the selected Driver
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object`.
+Schema: `object or object`.
 
 Example request
 ```json
 {
-  "harnessId": "codex",
-  "secretRef": {
-    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "kind": "secret",
+  "credentialSource": {
+    "id": "cs_123e4567-e89b-42d3-a456-426614174004",
+    "kind": "credential_source",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  }
+  },
+  "harnessId": "codex"
 }
 ```
 
@@ -5501,6 +5452,17 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.plugins` | `array<object>` | Yes | — |
 | `data.plugins[].available` | `boolean` | No | — |
@@ -5550,16 +5512,17 @@ Example response
 
 <span id="post-namespacesnamespaceidagentspluginsdetails"></span>
 
-Read plugin details using the selected Driver
+Read plugin details using the selected Driver; managed MCP discovery requires operate access to the selected Source
 
 **Operation ID:** `discoverAgentPluginDetails`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the exact same-Namespace Secret when a Secret reference is supplied. Requires operate permission on the exact CredentialSource supplied for catalog or managed MCP discovery.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `operate` | `secret` | `request_body` |
+| `operate` | `credential_source` | `request_body` |
 
 ##### Parameters
 
@@ -5573,18 +5536,18 @@ Read plugin details using the selected Driver
 
 **Content type:** `application/json`
 
-Schema: `object or object or object or object`.
+Schema: `object or object or object`.
 
 Example request
 ```json
 {
-  "harnessId": "codex",
-  "pluginId": "documentation",
-  "secretRef": {
-    "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-    "kind": "secret",
+  "credentialSource": {
+    "id": "cs_123e4567-e89b-42d3-a456-426614174004",
+    "kind": "credential_source",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  }
+  },
+  "harnessId": "codex",
+  "pluginId": "documentation"
 }
 ```
 
@@ -5682,7 +5645,7 @@ Create a new Agent and queue first-time provisioning
 | `configuration.values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
-| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission. |
+| `harnessAuth` | `object or object or object or object or null` | No | Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A model `credential_source` must be ready and operable by the caller. TokenService Sources require direct Agent creation; guided provisioning returns 409. |
 | `initialWorkspaceFiles` | `object` | No | — |
 | `initialWorkspaceFiles.AGENTS.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
 | `initialWorkspaceFiles.IDENTITY.md` | `string` | No | max length: 16384; pattern: `^[^\u0000]*$` |
@@ -5698,14 +5661,13 @@ Create a new Agent and queue first-time provisioning
 | `pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `workspaceDefaultsId` | `string` | No | pattern: `^[a-f0-9]{64}$` |
 
@@ -6069,9 +6031,9 @@ List approved repository choices for Agent creation in one Namespace
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy. |
 | `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
-| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^(?!.*\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$` |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -6113,12 +6075,13 @@ Check an unsaved Agent Configuration, plugin selections, initial workspace files
 
 **Operation ID:** `validateAgentCreate`
 
-**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false.
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires administer permission on the Installation when gatewayManagedMode is set to false. Requires operate permission on each CredentialSource submitted at a Plugin connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `agent` | `namespace` |
 | `administer` | `installation` | `installation` (when `gatewayManagedMode` is `false`) |
+| `operate` | `credential_source` | `request_body` (when bound) |
 
 ##### Parameters
 
@@ -6322,14 +6285,13 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -6403,7 +6365,7 @@ Get an exact Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
+| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6445,12 +6407,13 @@ Replace an exact Namespace-owned Agent's editable draft
 
 **Operation ID:** `updateAgent`
 
-**Permissions:** Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.
+**Permissions:** Requires update permission on the requested Agent. Requires administer permission on the Installation when the request changes the Agent's saved gatewayManagedMode setting. Requires administer permission on the Installation when selecting or changing the Agent's GitHub App Client. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. Submitting Plugin selections also checks current and submitted Plugin Sources; submitting credentialSources checks the selected Plugin Sources. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions and the Agent has repository bindings after the update.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `administer` | `installation` | `installation` (when the request changes `gatewayManagedMode`) |
+| `administer` | `installation` | `installation` |
 | `read` | `configuration` | `requested` |
 | `read` | `service_account` | `requested` (when associated) |
 | `operate` | `secret` | `requested` (when bound) |
@@ -6483,14 +6446,13 @@ Replace an exact Namespace-owned Agent's editable draft
 | `networkProxy` | `object or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
 | `plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
-| `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryStandingApproval` | `object or object` | No | — |
 
 Example request
@@ -6553,14 +6515,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -7312,7 +7273,7 @@ Save an Agent revision from the Agent's saved settings
 
 **Operation ID:** `deployAgent`
 
-**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
+**Permissions:** Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires operate permission on the exact CredentialSource used for the Agent's saved GitHub App repository access. Requires create permission on the CredentialSource collection when deployment needs to create a GitHub App Source. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -7326,6 +7287,8 @@ Save an Agent revision from the Agent's saved settings
 | `read` | `sandbox_policy` | `requested` (when saved network policy additions or an explicit repository network policy list exist, including an empty list) |
 | `manage_policy` | `agent` | `requested` (when an explicit repository network policy list exists, including an empty list) |
 | `update` | `sandbox_policy` | `requested` (when an explicit repository network policy list exists, including an empty list) |
+| `operate` | `credential_source` | `requested` |
+| `create` | `credential_source` | `namespace` |
 
 ##### Parameters
 
@@ -7408,7 +7371,7 @@ Example request
 | `data.repositoryCredentials.bindings` | `array<object>` | Yes | min items: 1; max items: 16 |
 | `data.repositoryCredentials.bindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryCredentials.bindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryCredentials.deadlineWallMs` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+| `data.repositoryCredentials.deadlineWallMs` | `integer` | No | minimum: 1; maximum: 9007199254740991 |
 | `data.repositoryCredentials.driver` | `object` | Yes | — |
 | `data.repositoryCredentials.driver.id` | `string` | Yes | min length: 1 |
 | `data.repositoryCredentials.driver.implementation` | `string` | Yes | min length: 1 |
@@ -7542,7 +7505,7 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 
 **Operation ID:** `deployAgentFirst`
 
-**Permissions:** Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has an explicit repository network policy list, including an empty list. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.
+**Permissions:** Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists, names in harnessAuth, or selects at a Plugin connection. Requires read permission on the Agent's SandboxPolicy when it has saved network policy additions, saved GitHub App repository access, or an explicit repository network policy list, including an empty list. Requires manage_policy permission on the exact Agent when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires update permission on the exact SandboxPolicy when the Agent has saved GitHub App repository access or an explicit repository network policy list, including an empty list. Requires operate permission on the exact CredentialSource used for the Agent's saved GitHub App repository access. Requires create permission on the CredentialSource collection when deployment needs to create a GitHub App Source. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists or selects at a Plugin connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -7556,6 +7519,8 @@ Admit the first deployment of an exact reviewed Configuration; requires Configur
 | `read` | `sandbox_policy` | `requested` (when saved network policy additions or an explicit repository network policy list exist, including an empty list) |
 | `manage_policy` | `agent` | `requested` (when an explicit repository network policy list exists, including an empty list) |
 | `update` | `sandbox_policy` | `requested` (when an explicit repository network policy list exists, including an empty list) |
+| `operate` | `credential_source` | `requested` |
+| `create` | `credential_source` | `namespace` |
 
 ##### Parameters
 
@@ -8418,17 +8383,18 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidplugins"></span>
 
-List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants
+List or search plugins for an active Agent; caller needs Agent read/update. Hosted discovery uses the Agent's bound Secret or Source with the corresponding caller and Agent operate grants
 
 **Operation ID:** `discoverSavedAgentPlugins`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
 
 ##### Parameters
 
@@ -8479,6 +8445,17 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
+| `data.credentialSlots[].label` | `string` | Yes | — |
+| `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
+| `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.credentialSlots[].sources` | `array<object>` | Yes | — |
+| `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSlots[].sources[].name` | `string` | Yes | — |
+| `data.credentialSlots[].toolDiscovery` | `true` | No | — |
 | `data.nextCursor` | `string or null` | Yes | — |
 | `data.plugins` | `array<object>` | Yes | — |
 | `data.plugins[].available` | `boolean` | No | — |
@@ -8532,12 +8509,13 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 
 **Operation ID:** `getSavedAgentPluginPolicyCapabilities`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Credential choices include only CredentialSource resources with caller read permission. A verified saved binding can identify its Source independently of those choices.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
+| `read` | `credential_source` | `each_returned` |
 
 ##### Parameters
 
@@ -8570,9 +8548,12 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.approvers.plugin` | `boolean` | Yes | — |
 | `data.approvers.tools` | `boolean` | Yes | — |
 | `data.credentialSlots` | `array<object>` | No | — |
+| `data.credentialSlots[].boundSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.credentialSlots[].id` | `string` | Yes | — |
+| `data.credentialSlots[].issuers` | `array<string>` | No | — |
 | `data.credentialSlots[].label` | `string` | Yes | — |
 | `data.credentialSlots[].pluginId` | `string` | Yes | — |
+| `data.credentialSlots[].recipient` | `object or object` | No | — |
 | `data.credentialSlots[].releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
 | `data.credentialSlots[].sources` | `array<object>` | Yes | — |
 | `data.credentialSlots[].sources[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -8583,6 +8564,7 @@ Read selected Plugin Driver policy capabilities for an active Agent with caller 
 | `data.driver.id` | `string` | Yes | min length: 1 |
 | `data.driver.implementation` | `string` | Yes | min length: 1 |
 | `data.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.hostedCredential` | `"codex_account" or "api_key"` | No | — |
 | `data.policyScopeByPlugin` | `object<string, "enablement_only" or "tool_human_approval">` | No | — |
 | `data.toolDefaults` | `object` | Yes | — |
 | `data.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
@@ -8634,17 +8616,19 @@ Example response
 
 <span id="post-namespacesnamespaceidagentsagentidpluginsdetails"></span>
 
-Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential
+Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery requires caller Source operate access or a valid saved Plugin binding with the Agent's Source operate grant
 
 **Operation ID:** `discoverSavedAgentPluginDetails`
 
-**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the Agent's bound Secret when the selected Plugin Driver requires a discovery credential.
+**Permissions:** Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires caller and Agent operate permission on the bound Secret when the selected Plugin Driver requires a discovery credential. Requires caller and Agent operate permission on the bound CredentialSource when the selected Plugin Driver requires a discovery credential. Managed MCP discovery requires caller operate permission on the selected CredentialSource, or a currently validated saved Plugin binding with the Agent's operate grant.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `agent` | `requested` |
 | `read` | `agent` | `requested` |
 | `operate` | `secret` | `requested` |
+| `operate` | `credential_source` | `requested` |
+| `operate` | `credential_source` | `request_body` |
 
 ##### Parameters
 
@@ -8935,9 +8919,9 @@ List approved repository choices for updating one Agent
 | `data[].allowedProfiles` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true |
 | `data[].description` | `string` | No | min length: 1; max length: 512 |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection, shown only to authorized creators. Saving and deployment recheck current permissions. |
+| `data[].githubAccess` | `object` | No | Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy. |
 | `data[].githubAccess.access` | `"read" or "write"` | Yes | — |
-| `data[].githubAccess.repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
+| `data[].githubAccess.repository` | `string` | Yes | pattern: `^(?!.*\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$` |
 | `data[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `meta` | `object` | Yes | — |
 | `meta.notConfigured` | `true` | No | Present when the Installation has no repository settings, so no repository credential Driver is selected. `data` is then empty, and Agent save refuses repository bindings with 409 RESOURCE_CONFLICT. |
@@ -9342,7 +9326,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.policy.repositoryNetworkPolicy[].apiLimits.pull_requests` | `"none" or "read" or "write"` | No | — |
 | `data.policy.repositoryNetworkPolicy[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
 | `data.policy.version` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy requires protected execution. Saving nonempty additions then returns SANDBOX_POLICY_PROTECTED_EXECUTION. The current Sandbox and Compute pair must admit a first repository list, including an empty list, or a nonempty replacement. Send empty arrays for additions and repositoryNetworkPolicy to withdraw an existing list. Omit repositoryNetworkPolicy to clear additions alone. |
+| `data.protectedExecution` | `boolean or null` | Yes | Null when the controller cannot read the active revision for a saved repository policy. See unavailableReason. True when the active revision or the next deploy uses protected or standalone credential execution. The selected Drivers must admit the proposed repository grants and network additions. |
 | `data.repositoryApiMaxima` | `array<object>` | No | max items: 32; Selected repositories eligible for API limits and the maximum Git and API levels permitted by the current bindings and ceilings before applying the Agent's grants. Save and deployment validate the complete policy. |
 | `data.repositoryApiMaxima[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryApiMaxima[].issues` | `"none" or "read" or "write"` | Yes | — |
@@ -9351,7 +9335,7 @@ Read one Agent sandbox policy and delegation ceiling
 | `data.repositoryNetworkPolicyCeiling` | `array<object>` | Yes | max items: 32; Repository access levels the current policy owner approved for this Namespace when the view was generated. PUT checks each exact requested access level independently. |
 | `data.repositoryNetworkPolicyCeiling[].access` | `"read" or "write"` | Yes | — |
 | `data.repositoryNetworkPolicyCeiling[].repository` | `string` | Yes | pattern: `^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$`; Canonical lowercase GitHub owner/name without a .git suffix. |
-| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal of a saved list or submit a first list for validation. Before the first deployment, a qualified Driver pair can evaluate a first list if the selected and delegated scopes overlap or the pair accepts an empty list. PUT validates the complete proposed list. |
+| `data.repositoryNetworkPolicySaveSupported` | `boolean` | Yes | Whether the editor can request withdrawal or submit a repository list for legacy protected Git. PUT validates the complete list against the Agent selections and policy ceiling. |
 | `data.unavailableReason` | `string` | No | Why per-Agent network policy is unavailable when capability is null. An authorized administrator can still enable editing to withdraw an existing repository list. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9420,7 +9404,7 @@ Replace one Agent network policy additions
 | `additions[].ports[].from` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `additions[].ports[].to` | `integer` | Yes | minimum: 1; maximum: 65535 |
 | `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
-| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. Sending an explicit empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment. A first list or nonempty replacement requires an admitted protected topology and empty additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
+| `repositoryNetworkPolicy` | `array<object>` | No | max items: 32; Omit to preserve the saved grants. An empty list requires SandboxPolicy read permission and requests denial of all repository access. Save the first list before the first deployment unless TokenService Git qualifies an earlier dedicated standalone model-only history. A qualified TokenService Git policy can retain model network additions. Send empty arrays for both fields to withdraw an existing list even if the current Driver pair is unsupported. |
 | `repositoryNetworkPolicy[].access` | `"read" or "write"` | Yes | — |
 | `repositoryNetworkPolicy[].apiLimits` | `object` | No | min properties: 1; Limit eligible native API routes for this Agent. Write permits read and creation. Unspecified resources inherit unless default is none. Redeploy to apply. |
 | `repositoryNetworkPolicy[].apiLimits.default` | `"none"` | No | — |
@@ -9720,14 +9704,13 @@ Example request
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -9908,14 +9891,13 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.pluginDriver.id` | `string` | Yes | min length: 1 |
 | `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
-| `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
+| `data.repositoryAccess` | `object` | No | Desired repository access. An omitted profile inherits defaultProfile. When githubAppClientId is set, use the github-repository profile and specify read or write access for every repository. Deploy resolves a finite installation Source. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `data.repositoryAccess.githubAppClientId` | `string` | No | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.repositoryAccess.repositories` | `array<object>` | Yes | max items: 16 |
+| `data.repositoryAccess.repositories[].access` | `"read" or "write"` | No | — |
 | `data.repositoryAccess.repositories[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.repositoryAccess.repositories[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings` | `array<object>` | No | min items: 1; max items: 16 |
-| `data.repositoryBindings[].profile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
-| `data.repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `data.sandboxPolicyEditing` | `boolean` | No | — |
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
@@ -11518,7 +11500,7 @@ Example response
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
-| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Force the Credential Refresh Driver to mint a new token for a refresh-type source |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Renew an OAuth or GitHub App installation credential source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
 
@@ -11557,32 +11539,7 @@ List readable credential sources without revealing credential values
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object>` | Yes | — |
-| `data[].config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data[].egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data[].egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data[].egress.retention` | `"none"` | Yes | — |
-| `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data[].ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data[].ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].ref.kind` | `"credential_source"` | Yes | — |
-| `data[].ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data[].state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data[].status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data[].status.reason` | `string` | No | max length: 512 |
-| `data[].status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data[].status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data[].status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data[].status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data[].status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data[].status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `array<object or object or object or object or object>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11601,25 +11558,56 @@ Example response
 {
   "data": [
     {
-      "config": {},
+      "config": {
+        "provider_preset": "openai"
+      },
+      "createdAt": "2026-10-01T12:00:00.000Z",
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "name": "Model credentials",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "ownerCapability": "credential_gateway",
       "ref": {
         "id": "cs_123e4567-e89b-42d3-a456-426614174000",
         "kind": "credential_source",
         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
       },
-      "secrets": {
-        "api_key": {
-          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-          "kind": "secret",
-          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-        }
+      "state": "ready",
+      "type": "static"
+    },
+    {
+      "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+      "consent": {
+        "clientId": "example-client",
+        "destinations": [
+          {
+            "host": "api.example.com",
+            "path": "/profile",
+            "port": 443
+          }
+        ],
+        "grantedScopes": [
+          "profile.read"
+        ],
+        "issuer": "https://accounts.example.com",
+        "kind": "connection_template",
+        "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+        "ownerPrincipalId": "user-docs-admin",
+        "requestedScopes": [
+          "profile.read"
+        ],
+        "tokenUrl": "https://accounts.example.com/token",
+        "version": 2
+      },
+      "createdAt": "2026-10-01T12:00:00.000Z",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+      "name": "Example account",
+      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+      "ref": {
+        "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+        "kind": "credential_source",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
       },
       "state": "ready",
-      "type": "openai"
+      "type": "oauth2-refresh-token"
     }
   ],
   "meta": {
@@ -11636,12 +11624,11 @@ Register a credential source
 
 **Operation ID:** `createCredentialSource`
 
-**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace. Requires operate permission on each Secret named in the request body secrets.
+**Permissions:** Requires create permission for CredentialSource resources in the requested Namespace.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `create` | `credential_source` | `namespace` |
-| `operate` | `secret` | `request_body` (when bound) |
 
 ##### Parameters
 
@@ -11666,28 +11653,36 @@ Register a credential source
 
 **RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
-Register a managed static Source. OCC allocates its identity and selects the TokenService owner.
+Register a managed static Source. Optionally supply connectionTemplateId. OCC validates the approved static Template before TokenService takes custody.
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat. |
+| `connectionTemplateId` | `string` | No | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `secret` | `object<string, string>` | Yes | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `secret` | `string` | Yes | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Opaque credential value. |
 | `type` | `"static"` | Yes | — |
+
+**RegisterGitHubAppTokenServiceSourceBody (required fields: `name`, `type`, `clientId`, `repositoryRefs`)**
+
+Register a GitHub App installation Source. Select a registered App client. The Installation's GitHub registry verifies the App and supplies the installation and permissions for the selected repositories. Agent access requires a separate grant.
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `clientId` | `string` | Yes | pattern: `^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; OCC registration ID of the GitHub App client. |
+| `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `repositoryRefs` | `array<string>` | Yes | min items: 1; max items: 16; unique items: true; Repository references approved for this Namespace in the GitHub registry. |
+| `type` | `"github-app-installation"` | Yes | — |
 
 Example request
 ```json
 {
-  "config": {},
-  "name": "Model credentials",
-  "secrets": {
-    "api_key": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
+  "config": {
+    "provider_preset": "openai"
   },
-  "type": "openai"
+  "name": "Model credentials",
+  "secret": "replace-with-your-authorized-model-key",
+  "type": "static"
 }
 ```
 
@@ -11711,32 +11706,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11744,25 +11714,20 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
+    "config": {
+      "provider_preset": "openai"
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
     "id": "cs_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model credentials",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "static"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11778,7 +11743,7 @@ Remove an unreferenced credential source
 
 **Operation ID:** `deleteCredentialSource`
 
-**Permissions:** Requires delete permission on the requested CredentialSource.
+**Permissions:** Requires delete permission on this CredentialSource unless the caller owns the saved connection.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
@@ -11841,32 +11806,7 @@ Get one readable credential source and its available status
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11874,25 +11814,40 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
-    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Model credentials",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "consent": {
+      "clientId": "example-client",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
+      "grantedScopes": [
+        "profile.read"
+      ],
+      "issuer": "https://accounts.example.com",
+      "kind": "connection_template",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "ownerPrincipalId": "user-docs-admin",
+      "requestedScopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 2
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+    "name": "Example account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
-      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "oauth2-refresh-token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -11908,12 +11863,11 @@ Update a Source through its recorded owner
 
 **Operation ID:** `updateCredentialSource`
 
-**Permissions:** Requires update permission on the requested CredentialSource. For a legacy Gateway update, requires operate permission on each Secret the source references after the update, including its current references when the request omits secrets.
+**Permissions:** Requires update permission on the requested CredentialSource.
 
 | Action | Resource | Scope |
 | --- | --- | --- |
 | `update` | `credential_source` | `requested` |
-| `operate` | `secret` | `requested` (when bound) |
 
 ##### Parameters
 
@@ -11928,34 +11882,15 @@ Update a Source through its recorded owner
 
 **Content type:** `application/json`
 
-**Optional fields: `adoption`, `authorityScope`, `secrets`**
-
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `adoption` | `"live"` | No | Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission. |
-| `authorityScope` | `"execution"` | No | Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change. |
-| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-
-**UpdateTokenServiceSourceBody**
-
-Update a managed static Source through its persisted owner. Supply at least one of config or secret. Omitted fields retain their values. An effective provider_preset change or removal combined with replacement credential material returns 409 RESOURCE_CONFLICT. Repeating the current preset with replacement material is allowed.
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset=openai selects the approved permitted-use preset outside TokenService. |
-| `secret` | `object<string, string>` | No | min properties: 1; max properties: 1; Write-only: one opaque credential value. The field name does not grant destination authority. |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret configuration. provider_preset selects an approved model operation: openai or codex-pat. |
+| `secret` | `string` | No | min length: 1; max length: 65536; pattern: `^[^\u0000]*$`; Opaque credential value. |
 
 Example request
 ```json
 {
-  "adoption": "live",
-  "secrets": {
-    "api_key": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    }
-  }
+  "secret": "replace-with-your-rotated-model-key"
 }
 ```
 
@@ -11978,32 +11913,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -12011,25 +11921,20 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
+    "config": {
+      "provider_preset": "openai"
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
     "id": "cs_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model credentials",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
       "id": "cs_123e4567-e89b-42d3-a456-426614174000",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "static"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -12041,7 +11946,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate"></span>
 
-Force the Credential Refresh Driver to mint a new token for a refresh-type source
+Renew an OAuth or GitHub App installation credential source
 
 **Operation ID:** `rotateCredentialSource`
 
@@ -12075,32 +11980,7 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.config` | `object<string, string>` | Yes | max properties: 32; Non-secret source configuration keyed by catalog field name. |
-| `data.egress` | `object` | No | Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence. |
-| `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
-| `data.egress.retention` | `"none"` | Yes | — |
-| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ownerCapability` | `"credential_gateway" or "credential_proxy" or "token_service"` | Yes | The Token Service owns saved accounts. Other sources belong to the Driver that admitted them. |
-| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.ref.kind` | `"credential_source"` | Yes | — |
-| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.secrets` | `object<string, object>` | Yes | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
-| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
-| `data.status` | `object` | No | Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values. |
-| `data.status.reason` | `string` | No | max length: 512 |
-| `data.status.refresh` | `object` | No | Credential refresh status for a refresh-type source. It never contains tokens or refresh material. |
-| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
-| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
-| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
-| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
-| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
-| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
-| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -12108,25 +11988,40 @@ Example response
 ```json
 {
   "data": {
-    "config": {},
-    "id": "cs_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Model credentials",
+    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+    "consent": {
+      "clientId": "example-client",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
+      "grantedScopes": [
+        "profile.read"
+      ],
+      "issuer": "https://accounts.example.com",
+      "kind": "connection_template",
+      "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
+      "ownerPrincipalId": "user-docs-admin",
+      "requestedScopes": [
+        "profile.read"
+      ],
+      "tokenUrl": "https://accounts.example.com/token",
+      "version": 2
+    },
+    "createdAt": "2026-10-01T12:00:00.000Z",
+    "id": "cs_123e4567-e89b-42d3-a456-426614174001",
+    "name": "Example account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "ownerCapability": "credential_gateway",
     "ref": {
-      "id": "cs_123e4567-e89b-42d3-a456-426614174000",
+      "id": "cs_123e4567-e89b-42d3-a456-426614174001",
       "kind": "credential_source",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
     },
-    "secrets": {
-      "api_key": {
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-        "kind": "secret",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-      }
-    },
     "state": "ready",
-    "type": "openai"
+    "type": "oauth2-refresh-token"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -13015,7 +12910,6 @@ Create a reusable Namespace-owned Agent Preset
 | `template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13142,7 +13036,6 @@ Example request
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13331,7 +13224,6 @@ Read one exact Namespace-owned Preset
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13474,7 +13366,6 @@ Update a Preset without changing existing Agents
 | `template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `template.agent.plugins` | `SafeJsonValue` | No | — |
 | `template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `template.configuration` | `object` | No | — |
 | `template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -13601,7 +13492,6 @@ Example request
 | `data.template.agent.pluginApprovers` | `SafeJsonValue` | No | — |
 | `data.template.agent.plugins` | `SafeJsonValue` | No | — |
 | `data.template.agent.repositoryAccess` | `SafeJsonValue` | No | — |
-| `data.template.agent.repositoryBindings` | `SafeJsonValue` | No | — |
 | `data.template.configuration` | `object` | No | — |
 | `data.template.configuration.secretBindings` | `object<string, SafeJsonValue>` | No | Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}. |
 | `data.template.configuration.values` | `object<string, SafeJsonValue>` | No | A native OpenClaw configuration document. |
@@ -14143,7 +14033,8 @@ List authorized Namespace-owned ServiceAccounts in one exact Namespace
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
 | `data[].credential` | `object` | No | — |
-| `data[].credential.kind` | `"api_key" or "access_token" or "oauth_access_token"` | Yes | — |
+| `data[].credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
+| `data[].credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14234,7 +14125,8 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "access_token" or "oauth_access_token"` | Yes | — |
+| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
+| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14356,7 +14248,8 @@ Get an exact Namespace-owned ServiceAccount
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "access_token" or "oauth_access_token"` | Yes | — |
+| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
+| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14443,7 +14336,8 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "access_token" or "oauth_access_token"` | Yes | — |
+| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
+| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14522,7 +14416,8 @@ Example request
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "access_token" or "oauth_access_token"` | Yes | — |
+| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
+| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14554,6 +14449,7 @@ Reusable schema names are referenced by operation request and response tables.
 | --- | --- |
 | `PushAgentCredentialsBody` | `object` |
 | `PushAgentCredentialsResponse` | `object` |
+| `RegisterGitHubAppTokenServiceSourceBody` | `object` |
 | `RegisterTokenServiceSourceBody` | `object` |
 | `UpdateTokenServiceSourceBody` | `object` |
 | `SafeJsonValue` | `string or boolean or number or null or array<SafeJsonValue> or object<string, SafeJsonValue>` |

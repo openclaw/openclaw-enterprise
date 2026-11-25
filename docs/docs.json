@@ -545,7 +545,15 @@
                       },
                       {
                         "page": "reference/drivers/plugin-bundled",
-                        "label": "Bundled"
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "reference/drivers/openclaw-plugin",
+                        "label": "OpenClaw"
+                      },
+                      {
+                        "page": "reference/drivers/codex-plugin",
+                        "label": "Codex"
                       }
                     ]
                   },
@@ -1383,6 +1391,7 @@
               "flows/github-actions-testing",
               "flows/clawsweeper-dispatch",
               "flows/container-package-bootstrap",
+              "flows/release-oce",
               "flows/container-publication",
               "flows/cli-publication",
               "flows/cli-agent-browsing",

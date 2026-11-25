@@ -160,9 +160,15 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preTokenServiceSourceBackendRef";
   }
   if (count === 94 && completedCount > 94) {
-    return "preInstallationNetworkPolicyCeiling";
+    return "preTokenServiceCredentialSources";
   }
   if (count === 95 && completedCount > 95) {
+    return "preNamespaceGitHubAppClients";
+  }
+  if (count === 96 && completedCount > 96) {
+    return "preInstallationNetworkPolicyCeiling";
+  }
+  if (count === 97 && completedCount > 97) {
     return "preDynamicInstallationNetworkPolicyCeiling";
   }
   if (count === completedCount) {
