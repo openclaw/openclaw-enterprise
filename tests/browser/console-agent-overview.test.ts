@@ -5042,12 +5042,6 @@ for (const viewport of [
   });
 }
 
-// The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
-// and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now
-// carries its deployment's outcome while it is in progress or failed, and the
-// list is one Tab stop on the viewed version: Up/Down (wrapping) and Home/End move focus, Enter
-// opens a version, and Tab leaves the list. A poll that lands the outcome rebuilds the list and
-// keeps focus on the same version (finding 2115).
 test("Viewing version matches the Configuration snapshot when revisiting a queued version", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Saved versions", "Picker Agent", {
     recordOperations: true,
@@ -5091,6 +5085,12 @@ test("Viewing version matches the Configuration snapshot when revisiting a queue
   assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
 });
 
+// The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
+// and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now
+// carries its deployment's outcome while it is in progress or failed, and the
+// list is one Tab stop on the viewed version: Up/Down (wrapping) and Home/End move focus, Enter
+// opens a version, and Tab leaves the list. A poll that lands the outcome rebuilds the list and
+// keeps focus on the same version (finding 2115).
 test("Version picker retains selection and focus while deployment outcomes change", async (t) => {
   const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, page } = await agentPage(t, "Version picker", "Picker Agent");
