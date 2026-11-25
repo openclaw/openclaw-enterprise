@@ -238,11 +238,10 @@ export function installationControllerOptions(
 > {
   const tokenService = installation?.drivers.token_service?.implementation;
   const modelCredentialSourcePresets =
-    tokenService === OCCTokenServiceDriver.implementation
+    tokenService === OCCTokenServiceDriver.implementation ||
+    tokenService === OpenShellTokenServiceDriver.implementation
       ? (["openai", "codex-pat"] as const)
-      : tokenService === OpenShellTokenServiceDriver.implementation
-        ? (["openai"] as const)
-        : undefined;
+      : undefined;
   return {
     modelCredentialSourcePresets,
     modelCredentialPreset: resolveModelCredentialPreset,

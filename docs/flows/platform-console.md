@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-25
-last_updated_session: authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12
+last_updated_session: authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747
 ---
 
 # Platform console request flow
@@ -155,6 +155,11 @@ session. Changed reads, newly readable Namespaces and Refresh rebuild. Cancelled
 returns preserve views. Cancelled Refresh discards them. Discovery, passwords,
 mutations and pending or failed reads prevent reuse. Read-only POSTs permit it.
 
+When Back or Forward reopens an unchanged Agent draft, the **Configuration**
+tab, **Edit Configuration** button or **Configuration JSON** editor can regain
+focus unless the user moved it elsewhere. When the editor regains focus, it
+also restores its scroll position. The **Open Configuration draft** link still focuses the tab.
+
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
 reads. Focus and visibility share checks. Navigation cancels it. Detail errors
 hide protected content. A 5xx permits one retry unless refusal, 429 or delay
@@ -281,19 +286,19 @@ Late names preserve state/focus; metadata failures keep IDs; unknown grants stay
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
 
-**Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
-Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
-the tab leaves visible output in place. Recovery links scroll their version tab into view
-and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
+Recovery normally offers **Open vN Logs** for the failed version. If the
+Console skips log text, operators see **View vN runtime status in Logs**
+on every visit while status remains available. Status denial hides only
+that version’s status link. An unreadable version or a server refusal of
+log text hides both links. Neither link needs an extra read.
+Recovery focuses and scrolls to Logs, smoothly unless rebuilding or motion is reduced.
+Direct navigation focuses and scrolls to output. Tab selection preserves it. Stop and Delete stay put.
 
-[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
-permission answer skips the audited log read. Status `403` hides Pod details, not
-separately authorized logs. Denials last until logout; newly granted `operate` permits another
-status read. Refused reads or downloads clear the rows; late successes cannot restore them or
-download. Refusing allowed log text rereads status at once, superseding stale reads. Back
-rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
-replaced; rate-limit notices update at the retry time without rereading. New streams or
-rejected cursors clear rows.
+[Runtime logs](agent-runtime-logs.md) explains access and row handling.
+`readLogs: false` skips the audited text read. Refresh and sign-out clear remembered denials.
+Status `403` hides Pods but preserves authorized logs. Newly granted `operate` permits one retry.
+Revoking readable text triggers a fresh status check. Back rebuilds refused
+views. Rate notices update without rereading.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -380,6 +385,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-25 08:48: Trace runtime status on return to Logs. (authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747 - 1238aef6d77aa4544bfabfd80215ef1ea7414f2d)
 - 2026-11-25 02:20: Trace failed replacement refresh. (authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12 - cdd3ab41242cce4734163c6edc4abe115fd90f83)
 
 - 2026-11-24 10:55: Trace Secret consumer return. (authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
@@ -398,12 +404,5 @@ gateway startup and file availability.
 
 - 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)
 - 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
-- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
-
-- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
-
-- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

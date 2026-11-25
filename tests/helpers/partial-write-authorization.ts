@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 
 import type { AuditEvent, AuthorizationRequest } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "./auth-session.mjs";
+import { authenticatedHeaders } from "./auth-session.ts";
 
 type PartialWriteOptions = {
   origin: string;

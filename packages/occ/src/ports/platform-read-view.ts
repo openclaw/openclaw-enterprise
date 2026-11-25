@@ -4,6 +4,7 @@ import type { SandboxPolicyReadRepository, WorkspaceSetupReadRepository } from "
 import type { AuthenticationStateReadRepository } from "./authentication-states.ts";
 import type { ConfigurationReadRepository } from "./configurations.ts";
 import type { ConnectionTemplateReadRepository } from "./connection-templates.ts";
+import type { CredentialClientReadRepository } from "./credential-clients.ts";
 import type { CredentialSourceReadRepository } from "./credential-sources.ts";
 import type { InstallationReadRepository } from "./installations.ts";
 import type { NamespaceReadRepository } from "./namespaces.ts";
@@ -24,6 +25,7 @@ export interface PlatformReadView {
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
   readonly connectionTemplates: ConnectionTemplateReadRepository;
+  readonly credentialClients: CredentialClientReadRepository;
   readonly oauthCredentials: OAuthCredentialReadRepository;
   readonly presets: PresetReadRepository;
   readonly authenticationStates: AuthenticationStateReadRepository;
@@ -64,11 +66,8 @@ export const platformReadMethods = deepFreeze({
     "hasOtherConnectionIssuer",
     "countNamespaceConnectionTemplates",
     "findOAuthConnectionTemplateVersion",
-    "listCredentialClientCleanups",
-    "listCredentialClients",
-    "countNamespaceCredentialClients",
-    "findCredentialClient",
   ],
+  credentialClients: ["list", "countNamespace", "find", "listCleanups"],
   oauthCredentials: ["findTokenCustody", "listDueOAuthSources", "listRevokingOAuthSources"],
   authenticationStates: ["findDevice"],
   secrets: ["findSecret", "listSecrets", "listReferences"],
@@ -163,6 +162,7 @@ export function createPlatformReadView(
     configurations: bind(repositories.configurations, methods.configurations),
     presets: bind(repositories.presets, methods.presets),
     connectionTemplates: bind(repositories.connectionTemplates, methods.connectionTemplates),
+    credentialClients: bind(repositories.credentialClients, methods.credentialClients),
     oauthCredentials: bind(repositories.oauthCredentials, methods.oauthCredentials),
     authenticationStates: bind(repositories.authenticationStates, methods.authenticationStates),
     secrets: bind(repositories.secrets, methods.secrets),

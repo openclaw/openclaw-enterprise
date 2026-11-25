@@ -29,7 +29,7 @@ import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { workerEnvironmentSettings } from "../../apps/controller/src/worker/timer-settings.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { injectJson } from "../helpers/inject-json.ts";
-import { jsonLines as parseJsonLines } from "../helpers/json-lines.mjs";
+import { jsonLines as parseJsonLines } from "../helpers/json-lines.ts";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";

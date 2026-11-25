@@ -42,6 +42,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import { postgresOAuthCredentials } from "./postgres-oauth-credentials.ts";
 import { postgresAuthenticationStates } from "./postgres-authentication-states.ts";
 import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
+import { postgresCredentialClients } from "./postgres-credential-clients.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import { projectAgentAuditRow, SELECT_AGENT_AUDIT } from "./postgres-agent-audit.ts";
 import {
@@ -5085,6 +5086,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       connectionTemplates: postgresConnectionTemplates(client, () =>
         this.requireInitialized(context),
       ),
+      credentialClients: postgresCredentialClients(client, () => this.requireInitialized(context)),
       presets,
       authenticationStates: postgresAuthenticationStates(client, () =>
         this.requireInitialized(context),

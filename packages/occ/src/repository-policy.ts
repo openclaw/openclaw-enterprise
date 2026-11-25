@@ -826,7 +826,6 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       });
     }
     const registration = prepareRepositorySource(agent);
-    // Serialize a new or retained reference with Client retirement.
     await dependencies.validateDeploymentGitHubAppClient(
       agent.namespaceId,
       clientId,

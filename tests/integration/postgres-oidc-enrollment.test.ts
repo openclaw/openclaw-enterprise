@@ -17,7 +17,7 @@ import {
   oidcUpgradeSettings,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
   preparePostgresSignInInstallation,

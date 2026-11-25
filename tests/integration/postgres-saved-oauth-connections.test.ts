@@ -17,8 +17,13 @@ import {
   PostgresHumanAuthentication,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
+import {
+  keycloakRealmAdmin,
+  keycloakRealmRows,
+  rotateKeycloakClientSecret,
+} from "../helpers/ci-keycloak-realm.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -357,11 +362,8 @@ test(
       },
     });
     t.after(async () => {
-      const [client] = await keycloakRealmAdmin(
-        issuer,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
+      const [client] = keycloakRealmRows(
+        await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${clientId}`),
       );
       if (client) {
         await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`);
@@ -671,14 +673,14 @@ test(
       displayName: "Provider defaults",
     });
     assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
-    const [keycloakClient] = await keycloakRealmAdmin(
-      issuer,
-      secrets.admin,
-      "GET",
-      "/clients?clientId=" + clientId,
+    const [keycloakClient] = keycloakRealmRows(
+      await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/clients?clientId=" + clientId),
     );
-    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
-    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
+    const realmScopes = keycloakRealmRows(
+      await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes"),
+    );
+    assert.ok(keycloakClient);
+    const profile = realmScopes.find((scope) => scope.name === "profile");
     assert.ok(profile);
     const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
     await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
@@ -994,15 +996,18 @@ test(
     const alice = await subject(original);
     assert.ok(alice);
     async function setIssuedLifetime(seconds: number) {
-      const [client] = await keycloakRealmAdmin(
-        issuer!,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
+      const [client] = keycloakRealmRows(
+        await keycloakRealmAdmin(issuer!, secrets.admin, "GET", `/clients?clientId=${clientId}`),
+      );
+      assert.ok(client);
+      const attributes = asRecord(client.attributes);
+      assert.ok(
+        client.attributes === undefined || client.attributes === null || attributes,
+        "invalid Keycloak client attributes",
       );
       await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", `/clients/${client.id}`, {
         ...client,
-        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
+        attributes: { ...attributes, "access.token.lifespan": String(seconds) },
       });
     }
     assert.equal(

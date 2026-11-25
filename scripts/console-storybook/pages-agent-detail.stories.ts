@@ -160,6 +160,7 @@ export const DeploymentRecordRefused = {
 export const DeploymentActivityLoading = story("deploymentActivityLoading");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
+export const DeploymentFailedStatusOnly = story("deploymentFailedStatusOnly");
 export const SandboxLost = story("sandboxLost");
 export const SandboxRunning = story("sandboxRunning");
 export const SandboxStatusUnknown = story("sandboxStatusUnknown");

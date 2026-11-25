@@ -9,6 +9,7 @@ import type {
 import type { AuthenticationStateRepository } from "./authentication-states.ts";
 import type { ConfigurationRepository } from "./configurations.ts";
 import type { ConnectionTemplateRepository } from "./connection-templates.ts";
+import type { CredentialClientRepository } from "./credential-clients.ts";
 import type { CredentialSourceRepository } from "./credential-sources.ts";
 import type { InstallationRepository } from "./installations.ts";
 import type { NamespaceRepository } from "./namespaces.ts";
@@ -40,6 +41,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
   readonly connectionTemplates: ConnectionTemplateRepository;
+  readonly credentialClients: CredentialClientRepository;
   readonly oauthCredentials: OAuthCredentialRepository;
   readonly presets: PresetRepository;
   readonly authenticationStates: AuthenticationStateRepository;
@@ -119,14 +121,17 @@ export function bindPlatformUnitOfWork(
     connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
       ...platformReadMethods.connectionTemplates,
       "lockConnectionTemplate",
-      "setCredentialClientCleanup",
-      "lockCredentialClient",
-      "lockCredentialClientForCleanup",
-      "createCredentialClient",
-      "deleteCredentialClient",
       "createConnectionTemplate",
       "updateConnectionTemplate",
       "deleteConnectionTemplate",
+    ]),
+    credentialClients: bindRepository(repositories.credentialClients, lifetime, [
+      ...platformReadMethods.credentialClients,
+      "lock",
+      "lockForCleanup",
+      "setCleanup",
+      "create",
+      "delete",
     ]),
     oauthCredentials: bindRepository(repositories.oauthCredentials, lifetime, [
       ...platformReadMethods.oauthCredentials,

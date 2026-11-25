@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import tokenServiceAgentLane from "../../scripts/ci/test-suites/openshell-token-service-agent.json" with { type: "json" };
 
 const scenarioPresets = {
   "native-restart": ["Codex"],
@@ -14,6 +15,7 @@ const scenarioPresets = {
   "openshell-provider-replacement": ["Codex"],
   "openshell-git-replacement": ["Codex"],
   "openshell-optional-plugin-withdrawal": ["OpenClaw"],
+  "openshell-token-service-agent": ["OpenClaw"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -51,6 +53,7 @@ export function selectQaMatrix(env = process.env) {
         "openshell-provider-replacement",
         "openshell-git-replacement",
         "openshell-optional-plugin-withdrawal",
+        "openshell-token-service-agent",
         "codex-search-config",
         "harness-overrides",
       ].includes(name),
@@ -79,6 +82,16 @@ export function selectQaMatrix(env = process.env) {
     assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
     assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
     assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
+  }
+  const tokenServiceAgent = scenarios.includes("openshell-token-service-agent");
+  if (tokenServiceAgent) {
+    assert.equal(
+      scenarios.length,
+      1,
+      "OpenShell TokenService Agent requires an exclusive selection",
+    );
+    assert.equal(installation, "kubernetes", "OpenShell TokenService Agent requires Kubernetes");
+    assert.equal(preset, "OpenClaw", "OpenShell TokenService Agent requires Dedicated OpenClaw");
   }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
@@ -119,6 +132,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-provider-replacement",
             "openshell-git-replacement",
             "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
@@ -137,6 +151,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-provider-replacement",
             "openshell-git-replacement",
             "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) &&
           applies(scenario, value, name) &&
           !scenarios.includes(scenario),
@@ -157,6 +172,7 @@ export function selectQaMatrix(env = process.env) {
             "openshell-provider-replacement",
             "openshell-git-replacement",
             "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
@@ -182,6 +198,9 @@ export function selectQaMatrix(env = process.env) {
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
   const requiredEnv = [];
+  if (tokenServiceAgent) {
+    requiredEnv.push(...tokenServiceAgentLane.requiredEnv);
+  }
   if (channelUpgrade) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",
@@ -431,6 +450,7 @@ export function selectQaMatrix(env = process.env) {
     providerReplacement,
     gitReplacement,
     optionalPluginWithdrawal,
+    tokenServiceAgent,
     templateResources,
     cells,
     scenarios,

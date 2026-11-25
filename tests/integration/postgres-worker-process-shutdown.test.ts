@@ -13,7 +13,7 @@ import { composePostgresDevelopment } from "../../apps/controller/src/compositio
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
-import { jsonLines } from "../helpers/json-lines.mjs";
+import { jsonLines } from "../helpers/json-lines.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, within } from "../helpers/wait-for.ts";

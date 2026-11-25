@@ -12,7 +12,7 @@ import {
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
   persistedDeploymentError,
@@ -3769,7 +3769,10 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     if (recoveryMessage) {
       await recovery.getByText(recoveryMessage, { exact: false }).waitFor();
-      assert.equal(await recovery.getByRole("link").first().textContent(), "Open Configuration");
+      assert.equal(
+        await recovery.getByRole("link").first().textContent(),
+        "Open Configuration draft",
+      );
     }
     // A failed or timed-out model check leads as one; a refused gateway CLI does not.
     const lead = error.code.startsWith("RUNTIME_MODEL_PROBE_")
@@ -3790,7 +3793,9 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     }
     assert.match(
       requiredText(
-        await recovery.getByRole("link", { name: "Open Configuration" }).getAttribute("href"),
+        await recovery
+          .getByRole("link", { name: "Open Configuration draft", exact: true })
+          .getAttribute("href"),
       ),
       new RegExp(`agents/${agent.id}\\?revision=draft&tab=configuration`),
     );

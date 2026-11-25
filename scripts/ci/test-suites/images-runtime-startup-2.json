@@ -70,6 +70,7 @@
       "path": "tests/integration/sandbox-driver-startup.test.ts",
       "expectedTests": [
         "OpenShell observes canonical staged model and exact Repository policies",
+        "OpenShell qualifies and stages the managed MCP session and selected tool policy",
         "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
         "OpenShell legacy delivers codex initial workspace files privately after supervisor readiness",
@@ -78,7 +79,8 @@
         "OpenShell service delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits",
         "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence",
-        "OpenShell staged Codex launch carries a placeholder and trusted account context"
+        "OpenShell staged Codex launch carries a placeholder and trusted account context",
+        "OpenShell staged native Source aliases reach only their selected model and Plugin projections"
       ]
     },
     {

@@ -181,9 +181,11 @@ Cleanup updates do not trigger more checks. The story simulates both responses.
    completion. When the badge reads **Completed**, check that focus stays visible.
    Press Enter to open **Deployment** for v7.
 
-8. In **New version queued**, fold **Deployment details**, then Tab to **Run
-   diagnostics for this version**. Routine polls keep the fold and the visible
-   focused button in place. Repeat expanded, at desktop and phone widths.
+8. In **New version queued**, check the picker's keyboard round trip. Fold
+   **Deployment details** and Tab to **Run diagnostics for this version**.
+   Polls keep the fold, focus and button position. Repeat expanded at both widths.
+   In **Deployment activity loading**, Configuration shows **Deploying version**
+   on reply. **Deployment activity unavailable** stays neutral.
    In **New version in progress, one status read fails**, open Deployment before
    the failed poll. The fold stays as chosen through the transient error; the
    selected record shows the error outside it, with one visible alert. Completion
