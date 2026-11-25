@@ -4,7 +4,8 @@ A CredentialSource is a Namespace resource. The selected TokenService maintains
 Sources for static credentials, OAuth grants, and finite GitHub installation
 tokens. A Source can reference a Connection Template. The Source API exposes
 metadata and controls access to the Source. [Protected repository metadata](credential-sources/protected-repository-metadata.md)
-is a separate noncredential Source. [Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
+is a separate noncredential Source served by a qualified sender through the
+deprecated legacy credential-egress Driver. [Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 covers Channel and Gateway Secret delivery.
 
 <a id="intended-credential-flow"></a>

@@ -1,5 +1,11 @@
 # Protected repository access with OpenShell
 
+This reference covers the deprecated legacy credential-egress implementation.
+It remains pending removal while qualified protected repository exchanges
+depend on it. Use native TokenService and Credential Proxy delivery for new Git
+credentials; do not replace a live protected exchange without settling its
+original owner.
+
 The protected OpenShell sender verifies middleware denial before preparing
 credentials and releasing the Agent. Repositories must share permissions. OCE
 checks token scope against canonical repository IDs. GitHub governs refs and
@@ -21,149 +27,29 @@ native Git, see [GitHub App setup](../../guides/repository-credentials.md#set-gi
   approver, Codex declines the shell commands it asks about, so Git never runs. For
   unattended qualification, select an approval policy appropriate for that environment.
 
-## Configuration for a qualified release
-
+<a id="configuration-for-a-qualified-release"></a>
 <a id="install-without-the-repository-broker"></a>
+<a id="prepare-the-request-phase-service"></a>
+<a id="register-the-request-phase-service"></a>
 
-Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from one
-Driver registration. Use
-[protected sender settings](../drivers/selection.md#select-a-protected-sender) and
-[artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
-Set repository eligibility in the registry at
-`/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
-`repository.preparedGitHub`. Connect the selected Driver
-with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
-`publicCaPath`, `repository.nativeSender` and `repository.preparedGitHub.apiOrigin`:
-`repository.openShell` reaches only `github.com`, and deploy refuses repository Git otherwise.
-Remove Compute's `network.repositoryCredentials`: startup refuses it without
-`repository.nativeSender`.
+## Deprecated configuration
 
-Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
-`repositoryCredentials.enabled: false`, and
-`repositoryCredentials.authority: prepared-git`. Keep
-`repository.openShell.authority` on host `0.0.0.0` (or `::`) and on the
-`openshellGit.port` value (default 8445), with the chart's files
-`/etc/openclaw/openshell-git/tls.crt`, `tls.key` and `gateway-public.pem`.
-Startup and the upgrade check refuse other values with
-`CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
-inputs select the registry ConfigMap, worker-only App-key and existing custody
-Secrets. Preserve the custody key across restarts;
-never put either key in Agent configuration or Helm values.
-
-## Prepare the request-phase service
-
-Prepare a separate serving certificate whose DNS SAN covers
-`openclaw-enterprise-openshell-git.openclaw-system.svc`, its private key, and the
-**public** PEM key from the selected OpenShell Gateway JWT signing bundle.
-Create these resources in the OCE namespace with your approved Kubernetes context:
-
-```bash
-kubectl --context "$CONTEXT" -n openclaw-system create secret tls openshell-git-tls \
-  --cert=/secure/occ/openshell-git/tls.crt \
-  --key=/secure/occ/openshell-git/tls.key
-kubectl --context "$CONTEXT" -n openclaw-system create configmap openshell-gateway-public \
-  --from-file=gateway-public.pem=/secure/occ/openshell-git/gateway-public.pem
-```
-
-Add this to the existing production values. Replace the example namespace and Pod
-labels with observed labels for your Gateway and trusted supervisors; both call
-the middleware. Do not select Agent workload Pods as trusted callers.
-
-```yaml
-openshellGit:
-  enabled: true
-  mode: protected
-  port: 8445
-  tlsSecretName: openshell-git-tls
-  issuerPublicKeyConfigMapName: openshell-gateway-public
-  clients:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: openshell-system
-      podSelector:
-        matchLabels:
-          app: openshell-gateway
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: openshell-system
-      podSelector:
-        matchLabels:
-          app: openshell-supervisor
-```
-
-The chart exposes a ClusterIP Service on port 8445 and allows that port only from
-these peers under the chart's default-deny policy. It mounts the serving key,
-certificate and public issuer key at the fragment's `/etc/openclaw/openshell-git`
-paths in the worker. The API, initialization Job and repository sidecar do not
-receive this projection. Keep the worker port equal in Helm and the Installation.
-If the OpenShell namespace enforces egress, also permit its Gateway and supervisors
-to reach this Service's selected worker Pods on TCP 8445 and resolve cluster DNS.
-
-Set `authority.issuer` to `openshell-gateway:<gateway_id>` from the actual Gateway
-JWT configuration, `keyId` to the contents of its `kid_path`, and `audience` to the
-registration audience below. The fragment's values are examples, not discovery.
-The Gateway's signing private key stays with the Gateway. Render and inspect the
-combined production values, then use your normal Helm upgrade procedure.
-
-## Register the request-phase service
-
-Use matching stock OpenShell 0.1.6 Gateway and supervisor images for required
-request bindings. Register this middleware so OpenShell can enforce OCE's
-decisions; [grant repository access separately](#grant-access-to-a-github-app-installation).
-Use the certificate's exact Service DNS name and mount the serving CA's public
-certificate at `tls_ca_cert_path` on the Gateway. Its
-`[openshell.gateway.gateway_jwt]` signing key, public key, key ID and gateway ID
-must match the OCE verifier settings.
-
-```toml
-[[openshell.supervisor.middleware]]
-binding_policy = "allowlist"
-bindings = ["http_request_pre_credentials"]
-name = "oce-prepared-git"
-grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8445"
-tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
-audience = "oce-prepared-git"
-max_payload_bytes = 4194304
-timeout = "5s"
-```
-
-Selected repositories and the `github-installation` preview require `5s`; OCE limits authorization to three seconds.
-
-Start the configured OCE worker before restarting the Gateway: Gateway startup
-calls authenticated `Describe` and refuses an unavailable or incompatible service.
-OCE advertises the request-phase binding; policy admission calls `ValidateConfig`.
-The allowlist requires that binding: a service advertising only response hooks is
-refused by both Gateway and supervisor. Do not remove the required binding.
-The registration name must match `repository.openShell.registrationName`.
-OCE attaches the selected binding to the sandbox policy with `on_error: fail_closed`
-for `github.com` and `api.github.com`. Do not hand-author its binding identifier.
-Those hosts, and every other name under `github.com` (such as `ssh.github.com`,
-`codeload.github.com`, `gist.github.com`, `docs.github.com` and `*.pkg.github.com`),
-come only from this route: if another Sandbox Driver network policy
-(`policy.networkPolicies`, such as a `source-control` policy) also allows one, the
-Installation refuses to start and names that policy. `ghcr.io` and
-`githubusercontent.com` hosts are not covered. The Driver still needs at
-least one policy, such as the model endpoint's. An Agent network grant for those
-hosts on any port is refused the same way: saving it for an Agent with a repository
-binding, adding the binding beside it, deploy and live application each fail with a
-`409` that names the grant. IP-address hosts (IPv4, IPv6 or a range, private and
-loopback included) may lead to GitHub, so both checks refuse them too; use DNS names,
-such as a Service name. The checks compare names only: a DNS name that resolves to
-GitHub (a wildcard-IP name or your own record) is not detected; do not add one.
-Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enable
-`allow_insecure_transport`. This attachment alone does not establish qualified enforcement.
+Do not configure new credentialed deployments on the legacy credential-egress
+Driver. For an existing qualified release, retain its recorded sender, trust,
+custody, and network settings until its work is settled. The
+[earlier release-specific configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release)
+records the former setup procedure. Use
+[native TokenService Git](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+for new access.
 
 ## Grant access to a GitHub App installation
 
-Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
-for membership and permissions, and the
-[registry reference](../repository-credentials.md#canonical-platform-registry)
-for policy. Prefer repository scope. To expose an
-installation scope, set a distinct `installationAccess.repositoryRef`, allow the
-Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryAccess.repositories`, as its only
-binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
-`github_installation` support. The bundled OpenShell Credential Proxy requires
+An existing installation-wide admission records a distinct
+`installationAccess.repositoryRef`, Namespace `accessMode: installation`, and
+one Agent binding with `profile: github-installation`. It gives access to the
+installation's repositories, subject to GitHub membership and permissions. No
+default or wildcard selects this scope; the sender must confirm
+`github_installation` support. The legacy OpenShell credential-egress Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers
 `409 RESOURCE_CONFLICT`. Missing or incompatible registration returns
 `503 DEPENDENCY_UNAVAILABLE`. Use 0.1.6 for incident key distrust; 0.1.5 remains affected.
@@ -184,7 +70,7 @@ Repository grants never use this fallback.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,
 permissions and branch rules set its limit. See
-[operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
+[historical operator verification and withdrawal](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#verify-use-loss-and-withdrawal)
 for profile-specific allowed/denied requests and the required model-source choice.
 
 ## Use the admitted repository
@@ -238,7 +124,7 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 ## Diagnose a refused request
 
 GitHub App `permissions` flags alone prove neither write access nor denial.
-[Verify the authorized operation and remote result](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal);
+[Verify the authorized operation and remote result using the matching legacy procedure](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#verify-use-loss-and-withdrawal);
 Git push success does not prove pull-request API access.
 
 Git hides JSON error bodies. A refused clone, fetch, `ls-remote` or initial push

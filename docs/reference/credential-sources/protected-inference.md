@@ -2,7 +2,7 @@
 
 The bundled OpenShell protected static inference profile is retired for new
 Sources, adoption, and deployments. Use a
-[managed model Source](managed-static.md) for new model access. This reference
+[managed model Source](managed-static.md) for new model access. The legacy credential-egress Driver is deprecated and pending removal. This reference
 records the request and response policy for existing protected revisions and
 separately qualified installed senders.
 
@@ -188,15 +188,10 @@ client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-For recovery of a retained installation, use its recorded Driver settings and
-[OpenShell Backend](../backends.md#openshell-gateway). The settings below apply to
-the protected exchange. Use the managed Source procedure for new bundled model
-credentials.
-Select the same Driver ID in `backend[].drivers.credential_proxy` and the
-Installation's `drivers.credential_proxy` selection. Configuring only one is an
-error, not a request to disable protection. Startup also rejects the retired
-`drivers.conduit` key at either boundary, including when both keys are present;
-use `drivers.credential_proxy` instead.
-Set its middleware name and `authorityScope: execution`. Provide an authenticated
-HTTPS Gateway, the authority's TLS identity and trusted Gateway issuer public key.
-Keep the single authority process reachable for the whole exchange.
+Do not configure a new credentialed legacy proxy. Recovery of a retained
+revision uses its recorded Driver and authenticated
+[OpenShell Backend](../backends.md#openshell-gateway); changing only one side of
+that pair can break enforcement or cleanup. The
+[earlier configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/credential-sources/protected-inference.md#installation-configuration)
+records release-specific settings. Use a [managed Source](managed-static.md) for
+new model credentials.

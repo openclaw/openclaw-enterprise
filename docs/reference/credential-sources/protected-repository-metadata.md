@@ -1,5 +1,11 @@
 # Protected repository metadata
 
+Credential-free repository metadata remains available through a qualified
+protected sender. Its current `LegacyEgressProxyDriver` implementation is
+deprecated and pending removal after the protected exchange has another owner
+or is retired. Native TokenService and Credential Proxy delivery do not provide
+this exact-send and filtered-response exchange.
+
 Use [TokenService enrollment](../credential-sources.md#register-a-source) for
 model credentials, OAuth and GitHub installation Sources. A qualified selected
 Credential Proxy can offer **credential-free repository metadata** for one

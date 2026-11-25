@@ -167,7 +167,8 @@ also runs optional Compute preflight before initializing authentication or
 registering routes. The default unconfigured development API retains its existing
 startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
-The production and configured PostgreSQL development APIs pass the resolved
+For the deprecated legacy credential-egress exchange, the production and
+configured PostgreSQL development APIs pass the resolved
 `drivers.credential_proxy.requestCapacity` to the `OpenClawController` constructor.
 `packages/occ/src/controller-composition.ts:createControllerComposition` validates
 the limits again. When a protected Driver is selected, `installEgressAuthority`
@@ -175,7 +176,7 @@ calls `packages/occ/src/controller.ts:OpenClawController.createCredentialProxy` 
 the exchange registry with those limits. The worker validates the setting when
 loading Installation configuration and uses the default capacity for its
 provisioning controller. See the
-[Credential Proxy reference](../reference/drivers/credential-proxy.md#request-time-capacity).
+[legacy exchange capacity reference](../reference/drivers/credential-proxy.md#request-time-capacity).
 The API composition registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,

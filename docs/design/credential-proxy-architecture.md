@@ -101,11 +101,14 @@ See [renewal](../reference/credential-sources.md#request-renewal) and
 The [prepared Git sender](../reference/repository-credentials/prepared-native-git.md)
 runs without a Sandbox Driver. Its broker uses a Worker-owned repository session
 and asks the Worker to authorize each send.
-The separately qualified [protected OpenShell route](../reference/repository-credentials/protected-openshell-git.md)
-uses a request-phase callback. For a [protected metadata read](credential-proxy.md#read-one-repositorys-identity),
+The deprecated legacy credential-egress Driver serves the separately qualified
+[protected OpenShell route](../reference/repository-credentials/protected-openshell-git.md),
+which uses a request-phase callback. For a [protected metadata read](credential-proxy.md#read-one-repositorys-identity),
 OCC authorizes the send and checks the complete response before the sender
 returns selected fields. The [earlier protected OpenShell and metadata diagrams](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/design/credential-proxy-architecture.md)
-record those separate flows.
+record those separate flows. The legacy implementation remains pending removal
+until its protected exchanges are reowned or retired; native Credential Proxy
+delivery does not supply the filtered-response metadata exchange.
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>

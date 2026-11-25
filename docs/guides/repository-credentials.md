@@ -1,8 +1,9 @@
 # Give an Agent repository access
 
 For Dedicated Codex with an OpenShell Sandbox, use [native GitHub App access](repository-credentials/openshell-git-push.md).
-TokenService owns the Source, and Credential Proxy applies each Agent's approved
-Repository policy. Choose an [access level](../reference/repository-credentials/access-levels.md) for the task.
+TokenService owns the Source. Sandbox installs each Agent's approved Repository
+network rules, and Credential Proxy prepares the token Provider. Choose an
+[access level](../reference/repository-credentials/access-levels.md) for the task.
 
 The prepared repository sender is a separate path without a Sandbox. Its worker
 owns GitHub App credentials. That path supports ordinary `git` and the
@@ -65,7 +66,7 @@ import it, select its digest and configure model authentication.
 
 ### Keep Git access on the same running Agent
 
-For legacy Repository sessions, an Agent administrator can approve one
+For session-based Repository access, an Agent administrator can approve one
 repository binding until they remove that approval.
 The worker can then open another short session for the same running Agent without an hourly
 approval or a replacement Agent. Git can pause between sessions. The approval does not extend a

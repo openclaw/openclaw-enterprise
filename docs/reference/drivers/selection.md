@@ -18,7 +18,8 @@ images; individual Agents cannot choose implementations.
 2. Select the required Configuration, IAM, Compute, and Secret implementations.
    The table lists each capability and its allowed choices. Omit optional
    Sandbox, TokenService, ServiceAccount, Plugin, and Repo selections
-   unless you need them.
+   unless you need them. For managed Agent credentials, select TokenService
+   with a Sandbox registration that provides native Credential Proxy delivery.
 3. Set `OCC_CONFIG_PATH` to the absolute path of that trusted YAML and select
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
    worker with the same file and controller image. Follow the
@@ -53,14 +54,18 @@ in either mode.
 | `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                                                                  |
 | `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                                                                         |
 | `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
-| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                                                                                |
 | `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with TokenService and an advertising Sandbox registration. No separate YAML setting.                                                                                                          |
 | `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
+| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Deprecated and pending removal. Retained for qualified credential-free metadata and protected repository exchanges; do not select it for new managed Agent credentials.                                |
 | `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
 | `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
-| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                                                                        |
+| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; use Source-backed native Git for managed Agent credentials.                                                                                                    |
 
 [token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
+
+Credential Gateway (`credential_gateway`) and Credential Refresh
+(`credential_refresh`) selections are retired and unsupported. Enroll managed
+credentials through TokenService instead.
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -75,67 +80,36 @@ runtime, and projected-credential checks apply only to bundled Kubernetes Comput
 OCC Secret delivery to SSH hosts is unsupported even though the Installation
 contract still requires the Secret selection.
 
-## Select a protected sender
+<a id="select-a-protected-sender"></a>
 
-Implementers start with the [Credential Proxy contract](credential-proxy.md) and the
-[legacy Driver walkthrough](../../contributing/credential-proxy-driver.md#4-bind-the-selected-transport).
+## Legacy protected sender selection
 
-With bundled Kubernetes Compute, select the trusted package under
-`drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
-same Driver ID and its `configuration` to `{}`. Configure the package once,
-under `drivers.sandbox.configuration`. The API and worker each load one
-registration and check its identity against the Agent revision.
-The package runs in the worker beside the GitHub App and custody keys
-([Helm](#supply-protected-git-credentials-with-helm)); reviewing it is their boundary.
+The `credential_proxy` selection belongs to the deprecated legacy
+credential-egress Driver and is pending removal. It remains available only
+while qualified credential-free metadata and protected repository exchanges
+depend on it. Use TokenService and native `credential_proxy_delivery` for new
+managed workflows. The [prepared Git sender](../repository-credentials/prepared-native-git.md)
+is a separate no-Sandbox path.
 
-For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
-policy member. Set `repository.configuration.sessionDurationSeconds` and
-`repository.preparedGitHub`. Omit `drivers.repo` and `repository.nativeSender`
-from the Installation. External senders also omit `repository.openShell`.
-No native control socket or broker CA is required. The Driver supplies Sandbox
-repository access and `bindRepositoryGit`. Compute verifies the installed
-recipient before release.
+For a qualified installed sender, select the trusted package under
+`drivers.sandbox.package` and configure it under
+`drivers.sandbox.configuration`. Set `drivers.credential_proxy.id` to the
+same registration ID and its `configuration` to `{}`. The API and Worker
+check that paired registration against the admitted revision. A bundled
+OpenShell protected exchange also requires the same legacy Proxy ID in its
+OpenShell Backend. Confirm the sender and Sandbox provide the protected exchange
+guarantees required by the selected metadata or repository profile; a declared
+capability alone does not qualify the transport.
 
-| Admission | Required behavior                                                                                                                                                                                                                             |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                                                                  |
-| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                                                                |
-| v5        | Online authorization returns a decision by `replyBy`. Bundled OpenShell supports selected repository sets and single `git-write` grants with a verified mandatory pre-credentials binding. An authorized request may finish after withdrawal. |
-| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
-| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
+<a id="supply-protected-git-credentials-with-helm"></a>
 
-Observed OpenShell Git routes keep their launch acknowledgment through rotation and
-reopen only when the model provider observation matches the new shared environment;
-stale or incomplete observations leave the route pending.
+### Retain existing protected Git custody
 
-A lost authorization reply records possible use. Do not retry the exchange.
-Stock OpenShell lacks v7 qualification. For isolation and release requirements,
-see the [Driver contract](credential-proxy.md#delivery-profiles) and
-[OpenShell qualification guide](../repository-credentials/protected-openshell-git.md).
-
-### Supply protected Git credentials with Helm
-
-Configure the [production chart](../../../deploy/helm/openclaw-enterprise/values.yaml)
-with your resource names. Keep Secret contents out of Helm values.
-
-```yaml
-repositoryCredentials:
-  delivery: credential-proxy
-  authority: prepared-git
-  registryConfigMapName: repository-registry-v1
-  appKeySecretName: repository-app-key
-  preparedCustodySecretName: git-custody
-```
-
-Leave `repositoryCredentials.enabled` and `openshellGit.enabled` false. The chart
-mounts `/etc/openclaw/repository-registry/registry.json` for the API, worker and
-upgrade check. Only the worker gets `private-key.pem` and `custody.key` under
-`/etc/openclaw/prepared-repository`, plus an egress rule to the issuer on TCP 443.
-Your sender supplies its own listener, trust and network policy. Before switching from
-a broker, stop admissions and settle existing sessions with their original owner. Then
-remove Compute `network.repositoryCredentials`. Startup refuses it without
-`repository.nativeSender`.
-The worker's `Recreate` rollout cannot establish that custody is settled.
+Before changing an existing protected deployment, stop admissions and settle
+accepted sessions with their original owner. Do not infer settlement from a
+Worker rollout. Consult the
+[release-specific legacy configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/drivers/selection.md#supply-protected-git-credentials-with-helm)
+only when needed to retire an existing installation.
 
 ## Backend membership
 
@@ -145,8 +119,8 @@ membership, and composition injects the Backend into the concrete member.
 The generic Driver contract has no Backend identity field. All declared members
 are required and must match the selected registry `(capability, id)`. The bundled ChatGPT Backend requires its selected
 ServiceAccount Driver; the bundled GitHub Backend requires its selected Repo
-Driver. OpenShell requires its Sandbox Driver. A protected-egress
-`credential_proxy` Backend member must match the selected legacy Proxy. An
+Driver. OpenShell requires its Sandbox Driver. A deprecated protected-egress
+`credential_proxy` Backend member must match the selected legacy Proxy until that path is removed. An
 OpenShell `token_service` Backend member must match the selected OpenShell
 TokenService preview. There is no per-Agent Driver selection.
 

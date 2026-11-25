@@ -308,7 +308,7 @@
                   },
                   {
                     "page": "reference/security/credential-proxy",
-                    "label": "Credential Proxy Threat Model"
+                    "label": "Protected Sender Threat Model"
                   },
                   {
                     "page": "reference/credential-sources/managed-static",
@@ -325,10 +325,6 @@
                   {
                     "page": "reference/credential-sources/withdrawal",
                     "label": "Credential Withdrawal"
-                  },
-                  {
-                    "page": "reference/credential-sources/protected-inference",
-                    "label": "Protected Inference"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -382,6 +378,7 @@
               "reference/console/agent-sharing",
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
+              "reference/credential-sources/protected-inference",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -580,10 +577,6 @@
                         "label": "Native Git with a Prepared Credential"
                       },
                       {
-                        "page": "reference/repository-credentials/protected-openshell-git",
-                        "label": "Protected Git with OpenShell"
-                      },
-                      {
                         "page": "reference/public-github-reads",
                         "label": "Public GitHub Reads"
                       }
@@ -616,6 +609,7 @@
             ],
             "hidden": [
               "guides/repository-credentials/team-runbook",
+              "reference/repository-credentials/protected-openshell-git",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
@@ -1116,10 +1110,6 @@
                     "label": "Driver Development"
                   },
                   {
-                    "page": "contributing/credential-proxy-driver",
-                    "label": "Legacy Egress Driver"
-                  },
-                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -1293,6 +1283,7 @@
             ],
             "hidden": [
               "contributing/rfc-template",
+              "contributing/credential-proxy-driver",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",

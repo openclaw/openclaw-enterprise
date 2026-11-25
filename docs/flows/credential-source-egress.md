@@ -8,7 +8,11 @@ last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes the supervisor to release GitHub identity replies. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+This flow covers the deprecated legacy credential-egress Driver, which remains
+load-bearing for qualified credential-free metadata exchanges until those uses
+have another owner or are retired. OpenClaw Control Plane (OCC) authorizes the
+supervisor to release GitHub identity replies. Native Credential Proxy delivery
+does not use this request-time flow. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points

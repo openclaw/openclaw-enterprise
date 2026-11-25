@@ -1,4 +1,8 @@
-# Credential Proxy threat model
+# Protected metadata sender threat model
+
+This page covers the qualified protected metadata exchange implemented by the
+deprecated legacy credential-egress Driver. It does not describe native
+TokenService and Credential Proxy injection.
 
 Assume a downloaded script can read the Agent's environment and files, run
 commands and open network connections. In the credential-free repository metadata profile,
@@ -15,11 +19,11 @@ requests reach GitHub and which responses return to that execution. See the
 | Read extra fields from GitHub's reply.         | The sender holds the whole reply. The adapter checks the ID and name and releases only `id` and the granted `full_name`.     | The script can keep those two fields. The sender withholds a redirect, ambiguous JSON or a reply with a different ID. |
 
 Ordinary OpenShell delivery can expose a placeholder that a child
-can use at the allowed endpoint. Native Git puts a usable repository session
+can use at the allowed endpoint. The separate prepared Git sender puts a usable repository session
 credential in the workload. Direct Harness authentication can supply a real
 model credential to the process that runs the Agent. See
 [OpenShell enforcement limits](../credential-sources.md#implementation-status),
-[native Git sessions](../repository-credentials/prepared-native-git.md) and
+[prepared Git sessions](../repository-credentials/prepared-native-git.md) and
 [direct Harness credentials](runtime-isolation.md#temporary-runtime-credential-exceptions).
 
 ## What stops another execution or a direct connection?

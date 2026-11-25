@@ -32,8 +32,8 @@ ref against the approved branch. Protect important branches at GitHub.
 See [withdrawal and draft PR creation](repository-credentials/prepared-native-git.md).
 
 [Credential-free metadata](credential-sources/protected-repository-metadata.md) and
-[protected OpenShell Git](repository-credentials/protected-openshell-git.md)
-use qualified sender and Sandbox selections.
+[protected OpenShell Git](repository-credentials/protected-openshell-git.md) retain
+the deprecated legacy credential-egress Driver.
 Helm uses `Recreate` to prevent overlapping worker or credential service owners.
 
 Model credentials stay with their consumer and dedicated Slack tokens with the
@@ -57,7 +57,7 @@ supplies the resolver that checks the admitted grant and selects its destination
 For native OpenShell Git, select `repository` with the TokenService and paired
 Sandbox and native Credential Proxy. For the prepared sender, select
 `repository.nativeSender` with `repository.preparedGitHub`. Protected Git uses
-the selected protected egress Driver and its own repository settings. Controller startup rejects the legacy
+the deprecated legacy credential-egress Driver and its own repository settings. Controller startup rejects the legacy
 Installation-level `drivers.repo` in every mode. Before switching, stop new
 admissions and drain accepted work on its original owner.
 

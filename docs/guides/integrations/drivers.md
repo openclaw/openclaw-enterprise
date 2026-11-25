@@ -34,9 +34,11 @@ Source or [set up GitHub App access](../repository-credentials.md#set-github-app
 for a dedicated Codex Agent.
 
 Remove the retired `credential_gateway` and `credential_refresh` selectors when
-[upgrading an older installation](../deploy/production-upgrade.md). The
-separate `credential_proxy` selector still serves
-[legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
+[upgrading an older installation](../deploy/production-upgrade.md). The separate
+`credential_proxy` selection belongs to `LegacyEgressProxyDriver`, which is
+deprecated and pending removal. Existing qualified protected repository exchanges and
+credential-free metadata still require it; do not use it for new credentialed
+workflows. See [legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
 
 ## Available implementations
 

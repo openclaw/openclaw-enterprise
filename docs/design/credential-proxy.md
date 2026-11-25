@@ -68,7 +68,9 @@ and [withdrawal](../reference/credential-sources/withdrawal.md).
 
 ## Which path checks the request?
 
-The native path checks requests locally. The separate
+The native path checks requests locally. The deprecated legacy credential-egress
+implementation remains for qualified protected exchanges until those uses have
+another owner or are retired. The separate
 [protected OpenShell Git route](../reference/repository-credentials/protected-openshell-git.md)
 calls the Worker on each request. The
 [installation-wide GitHub preview](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation)
@@ -76,10 +78,10 @@ has separate scope and verification requirements.
 
 ## Read one repository's identity
 
-A separate protected metadata sender can authorize
+A qualified sender using the deprecated legacy Driver can authorize
 `GET /repos/acme/widgets` with OCC and return only the approved repository ID
 and name. Stock OpenShell does not provide that exact-send and filtered-reply
-exchange. See the [metadata Source](../reference/credential-sources/protected-repository-metadata.md)
+exchange. Credential-free metadata remains a distinct capability. See the [metadata Source](../reference/credential-sources/protected-repository-metadata.md)
 and [request and reply flow](../flows/credential-source-egress.md#follow-the-metadata-get).
 
 <a id="read-further"></a>

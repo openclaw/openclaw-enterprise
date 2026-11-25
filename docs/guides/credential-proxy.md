@@ -14,9 +14,10 @@ contract.
 - For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
   TokenService renews the GitHub installation token, and Credential Proxy
   injects it only on requests admitted for the Agent.
-- For credential-free repository metadata, select a qualified protected sender
+- Credential-free repository metadata uses a qualified protected sender
   and Sandbox registration. The sender restricts the request and its response
-  without injecting a credential.
+  without injecting a credential. This capability still depends on the deprecated
+  legacy egress Driver.
   [Credential-free Source procedure](../reference/credential-sources/protected-repository-metadata.md#register-a-source)
 - For the separate Kubernetes prepared Git path without a Sandbox or
   Credential Proxy, use the [prepared native Git reference](../reference/repository-credentials/prepared-native-git.md).
@@ -75,75 +76,25 @@ settings. Check that the deployment's Git delivery is withdrawn and that a fresh
 Git read fails. Send a model request through the same Agent to verify that its
 independent model credential continues to work. See the [Git withdrawal flow](../flows/agent-repository-credentials.md#2-freeze-a-deployable-revision).
 
-Legacy prepared Git uses a separate standing or finite session procedure.
+Prepared Git uses a separate standing or finite session procedure.
 [Prepared native Git access](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes)
 
 <a id="prepare-enforcement-trust-and-custody"></a>
+<a id="configure-a-legacy-protected-sender"></a>
 
-## Configure a legacy protected sender
+## Existing legacy protected exchanges
 
-For protected egress on a qualified release, use matching immutable OpenShell
-images and charts. See [local image selection](deploy/local-openshell-images.md).
-New local protected static-inference launches are retired. The launcher rejects
-`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, including with
-Kubernetes/OpenShell. See the [retirement notice](deploy/local-openshell-images.md#select-the-protected-profile).
+`LegacyEgressProxyDriver` and its `drivers.credential_proxy` selection are
+deprecated and pending removal. They remain required for qualified protected
+repository exchanges and credential-free metadata until those capabilities move
+to another owner or are retired. Do not select this Driver for new credentialed
+model, Git, or Plugin workflows; use TokenService and native Credential Proxy.
+Sandbox network policy and ordinary Channel egress are separate capabilities.
 
-Use this authority configuration for a qualified legacy protected sender. For
-static inference, the bundled OpenShell Driver uses it only to recover and
-retire revisions already admitted on a matching pre-cutover release. The
-Installation selects the same Driver ID in
-`backend[].drivers.credential_proxy` and `drivers.credential_proxy`. A bundled
-OpenShell authority selection has this shape:
-
-```yaml
-drivers:
-  credential_proxy:
-    id: openshell-egress
-    configuration:
-      middlewareName: oce-authority
-      authorityScope: execution
-      authority:
-        host: 0.0.0.0
-        port: 9444
-        certificatePath: /etc/openclaw/egress/tls/tls.crt
-        privateKeyPath: /etc/openclaw/egress/tls/tls.key
-        issuerPublicKeyPath: /etc/openclaw/egress/issuer/issuer.pub
-        issuer: openshell-gateway:openshell-gateway
-        audience: oce-egress
-        keyId: current
-```
-
-This is a fragment, not a complete Installation. Match issuer, audience, key ID,
-and middleware name to the configured peers. Keep the
-[OpenShell Backend configuration](../reference/backends.md#openshell-gateway).
-A packaged Driver instead takes configuration through its Sandbox selection;
-its matching Credential Proxy selection has an empty `configuration`.
-Either kind can add `requestCapacity` to size OCC's in-memory request bounds; see
-[request-time capacity](../reference/drivers/credential-proxy.md#request-time-capacity).
-
-The API owns the static authority listener. Development binds only to loopback.
-Production needs a reachable host and a certificate covering the Service DNS
-name. With Helm, use `host: 0.0.0.0` (or `::`) and the `egressAuthority.port`
-value. Startup and the upgrade check refuse another host or port, a disabled
-`egressAuthority`, or file paths other than the chart mounts shown above, with
-`CHART_LISTENER_MISMATCH`. The Backend requires HTTPS
-with bearer-file or mutual TLS authentication. Register `oce-authority` under
-`[[openshell.supervisor.middleware]]` with its HTTPS `grpc_endpoint`, `audience`,
-`tls_ca_cert_path`, and `max_payload_bytes = 4194304`. Both peers must support
-`openshell.supervisor-middleware.http-credential-access.v1` and all five capabilities
-required by [connected qualification](../testing/static-egress.md#select-the-prepared-connected-lane).
-Verify the Agent's WSS server trust separately from the controller's Backend mTLS;
-an administrator client Secret must never be projected into the Agent. See
-[trust prerequisites](../testing/static-egress.md#protected-launch-packaging).
-
-With Helm, enable `egressAuthority`, set its `port`, `tlsSecretName` (`tls.crt`,
-`tls.key`), and `issuerSecretName` (`public.pem`). Its `clients` must select the
-actual Gateway and trusted supervisor namespaces and Pod labels. Allow those
-peers to reach the authority and resolve DNS. Keep upstream access constrained
-to the selected endpoints. The Gateway signing private key stays with the
-Gateway; the authority receives its public key. All phases of an exchange must
-reach the same authority process; replicated shared exchange state is unavailable.
+For an existing qualified exchange, retain its matching release, authority,
+trust, and peer configuration. See the [historical protected-sender setup](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#prepare-enforcement-trust-and-custody)
+and [qualified sender prerequisites](../reference/drivers/selection.md#select-a-protected-sender).
+New local protected static-inference launches are [retired](deploy/local-openshell-images.md#select-the-protected-profile).
 
 ## Diagnose before retrying
 
