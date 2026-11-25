@@ -495,8 +495,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
       createdAt: new Date().toISOString(),
     };
     try {
-      return await this.state.transact(async ({ credentialSources }) => {
-        await credentialSources.createCredentialSource(source);
+      return await this.state.transact(async (state) => {
+        const namespace = await state.namespaces.lockNamespace(ref.namespaceId);
+        if (namespace?.status !== "ready") {
+          throw new ResourceStateConflictError("The credential source Namespace is not ready.");
+        }
+        // Keep the Client active until the Source reference commits.
+        this.assertGitHubAppClient(
+          await state.credentialClients.lock(source.clientId),
+          source.namespaceId,
+          source.scope.appId,
+        );
+        await state.credentialSources.createCredentialSource(source);
         const { stored } = encodeGitHubAppCredential(installationToken);
         await withComputeAbortSignal(signal, () => this.store.create(this.storageRef(ref), stored));
         signal.throwIfAborted();

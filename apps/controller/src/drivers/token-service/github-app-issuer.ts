@@ -113,7 +113,7 @@ export function createGitHubAppSourceIssuer(options: GitHubAppIssuerOptions = {}
     }
     const dispatcher = new Agent({
       maxResponseSize: responseLimitBytes,
-      ...(options.ca && { connect: { ca: Buffer.from(options.ca) } }),
+      connect: { rejectUnauthorized: true, ...(options.ca && { ca: Buffer.from(options.ca) }) },
     });
     try {
       const response = await sendRequest(`${origin}${path}`, {
