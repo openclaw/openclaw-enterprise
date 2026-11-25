@@ -81,7 +81,7 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   return fixture;
 }
 
-test("workers refuse revisions saved for the other Box credential boundary", async (t) => {
+test("Box keeps existing receiver revisions and refuses the other credential boundary", async (t) => {
   const installation = createInstallationDriverConfiguration();
   const compute = installation.drivers.compute.configuration;
   compute.gatewayRouting = gatewayRouting;
@@ -105,6 +105,13 @@ test("workers refuse revisions saved for the other Box credential boundary", asy
   };
   const receiver = await load(false);
   const stock = await load(true);
+  // Existing revisions must still resolve to the same Deployment without opting in.
+  const saved = routedRevision(receiver.computeDriver, { sandboxDriverId: "strands-box-sandbox" });
+  const namespace = { ...tenant, name: kubernetesNamespaceName(tenant.id) };
+  assert.equal(
+    receiver.sandboxDriver.harnessResource({ revision: saved, namespace }).resourceName,
+    "strands-d467e45c411fb6002cc7027f5595ca6d",
+  );
   await assert.rejects(load(false, stock.sandboxDriver.id), (error) =>
     error.details?.some(
       ({ path, code }) => path === "/drivers/sandbox/id" && code === "INVALID_VALUE",
