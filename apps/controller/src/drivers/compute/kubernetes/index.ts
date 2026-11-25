@@ -100,11 +100,8 @@ import {
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { gatewayRoutingHostname } from "./gateway-routing-hostname.ts";
-import {
-  managedNamespaceName,
-  isKubernetesNamespaceName,
-  isKubernetesResourceName,
-} from "./resource-name.ts";
+import { managedNamespaceName } from "./namespace-name.ts";
+import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
   MODEL_EGRESS_PORT,

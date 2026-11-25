@@ -1,9 +1,3 @@
-import { sha256Hex } from "@openclaw-enterprise/utils";
-
-export function managedNamespaceName(namespaceId: string): string {
-  return `oce-${sha256Hex(namespaceId, 15)}`;
-}
-
 /**
  * A Kubernetes resource name: a DNS subdomain of at most 253 characters.
  * The Compute driver applies this to Gateway names and Secret names.

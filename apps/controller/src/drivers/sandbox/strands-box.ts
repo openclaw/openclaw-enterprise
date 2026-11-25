@@ -1,5 +1,5 @@
 import { gatewayRoutingHostname } from "../compute/kubernetes/gateway-routing-hostname.ts";
-import { managedNamespaceName } from "../compute/kubernetes/resource-name.ts";
+import { managedNamespaceName } from "../compute/kubernetes/namespace-name.ts";
 import type {
   KubernetesGatewayRoutingOptions,
   KubernetesWorkloadPeer,
