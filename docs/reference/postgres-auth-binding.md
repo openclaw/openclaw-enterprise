@@ -37,7 +37,6 @@ performs no database I/O and creates no pool. The application owns migrations
 and pool shutdown. Construction failures reject without a memory fallback.
 
 Sharing a pool does not join Better Auth transactions to OCC transactions.
-Account provisioning retains its separate IAM transaction and cleanup on failure.
 See [authentication](authentication.md) for account, session, API key, and
 authorization behavior.
 
