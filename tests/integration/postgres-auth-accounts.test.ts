@@ -25,7 +25,7 @@ import { injectJson as injectJsonRequest } from "../helpers/inject-json.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 

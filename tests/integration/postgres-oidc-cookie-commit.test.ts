@@ -30,7 +30,7 @@ import {
   currentSession,
   readAccount,
 } from "../helpers/production-sign-in.mjs";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import {
   databaseUrl as selectedDatabaseUrl,
   requiresPostgres,

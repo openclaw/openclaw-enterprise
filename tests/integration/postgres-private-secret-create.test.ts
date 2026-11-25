@@ -11,7 +11,7 @@ import {
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";

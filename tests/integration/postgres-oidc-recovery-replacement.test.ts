@@ -35,7 +35,7 @@ import {
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { within } from "../helpers/wait-for.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.ts";
 
 const secondSubject = "9200002";

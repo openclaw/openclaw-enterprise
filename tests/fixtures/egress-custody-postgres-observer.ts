@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { isAbsolute, join } from "node:path";
 
 import { validateConnectedDatabaseUrl } from "../helpers/egress-connected-inputs.mjs";
-import { commitAckProxy } from "./postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "./postgres-commit-ack-proxy.ts";
 
 // Run before installing the disposable controller. Publish only the data-plane
 // loopback port to its disposable network, never this owner's local control socket.

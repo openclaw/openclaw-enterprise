@@ -35,7 +35,7 @@ import { defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 
 type Json = Record<string, unknown>;
 type Metadata = {

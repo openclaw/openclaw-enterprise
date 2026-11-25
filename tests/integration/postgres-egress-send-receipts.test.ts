@@ -14,7 +14,7 @@ import {
 } from "../../packages/occ/src/egress-send-receipts.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import type { SendReceiptOwnerCommand } from "../fixtures/egress-send-receipt-owner.mts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 

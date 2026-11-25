@@ -1,15 +1,24 @@
-import net from "node:net";
+import net, { type Socket } from "node:net";
+import assert from "node:assert/strict";
 import { once } from "node:events";
-import pg from "pg";
+import pg, { type Pool } from "pg";
 import { waitFor } from "../helpers/wait-for.ts";
+
+interface ProxyOptions {
+  port?: number;
+  egressDispatch?: boolean;
+  transactionStatement?: string;
+}
+
+interface ArmOptions {
+  skipCommits?: number;
+  pauseCommit?: boolean;
+  instanceId?: string;
+}
 
 // Real PostgreSQL transport faults: drop the server's COMMIT completion, or
 // pause the client's COMMIT request before forwarding it to the server.
-/**
- * @param {string} databaseUrl
- * @param {{port?: number, egressDispatch?: boolean, transactionStatement?: string}} [options]
- */
-export async function commitAckProxy(databaseUrl, options = {}) {
+export async function commitAckProxy(databaseUrl: string, options: ProxyOptions = {}) {
   const { port = 0, egressDispatch = false, transactionStatement } = options;
   const target = new URL(databaseUrl);
   // Resolve query-string and environment precedence with the same installed
@@ -30,18 +39,17 @@ export async function commitAckProxy(databaseUrl, options = {}) {
   let observed = false;
   let commits = 0;
   let pauseCommit = false;
-  let heldCommit;
-  /** @type {number | undefined} */
-  let heldBackendPid;
-  const sockets = new Set();
-  let expectedInstance;
-  /** @type {ReturnType<typeof dispatch>} */
-  let dropped;
+  let heldCommit: { upstream: Socket; frame: Buffer } | undefined;
+  let heldBackendPid: number | undefined;
+  const sockets = new Set<Socket>();
+  let expectedInstance: string | undefined;
+  let dropped: ReturnType<typeof dispatch>;
   let authorizations = 0;
-  /** @param {string[]} params */
-  const dispatch = (params) => {
+  const dispatch = (params: readonly string[]) => {
     const [instanceId, useId, attemptId] = params;
     if (
+      instanceId === undefined ||
+      useId === undefined ||
       !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(useId) ||
       attemptId !== useId ||
       (expectedInstance && instanceId !== expectedInstance)
@@ -59,17 +67,14 @@ export async function commitAckProxy(databaseUrl, options = {}) {
     upstream.setNoDelay(true);
     sockets.add(client);
     sockets.add(upstream);
-    let frontend = Buffer.alloc(0);
-    let backend = Buffer.alloc(0);
+    let frontend: Buffer = Buffer.alloc(0);
+    let backend: Buffer = Buffer.alloc(0);
     let startup = true;
-    /** @type {number | undefined} */
-    let backendPid;
+    let backendPid: number | undefined;
     let dropping = false;
     let parsedDispatch = false;
-    /** @type {ReturnType<typeof dispatch>} */
-    let selected;
-    /** @type {ReturnType<typeof dispatch>} */
-    let updated;
+    let selected: ReturnType<typeof dispatch>;
+    let updated: ReturnType<typeof dispatch>;
     let sawTransactionStatement = false;
     const close = () => {
       if (heldCommit?.upstream === upstream) {
@@ -85,6 +90,7 @@ export async function commitAckProxy(databaseUrl, options = {}) {
     client.on("close", close);
     upstream.on("close", close);
     client.on("data", (chunk) => {
+      assert.ok(Buffer.isBuffer(chunk), "Expected a binary PostgreSQL client frame.");
       frontend = Buffer.concat([frontend, chunk]);
       while (frontend.length >= (startup ? 4 : 5)) {
         const size = frontend.readInt32BE(startup ? 0 : 1) + (startup ? 0 : 1);
@@ -163,6 +169,7 @@ export async function commitAckProxy(databaseUrl, options = {}) {
       }
     });
     upstream.on("data", (chunk) => {
+      assert.ok(Buffer.isBuffer(chunk), "Expected a binary PostgreSQL server frame.");
       backend = Buffer.concat([backend, chunk]);
       while (backend.length >= 5) {
         const size = backend.readInt32BE(1) + 1;
@@ -218,13 +225,14 @@ export async function commitAckProxy(databaseUrl, options = {}) {
   await once(server, "listening");
   const proxyUrl = new URL(target);
   proxyUrl.hostname = "127.0.0.1";
-  proxyUrl.port = String(server.address().port);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string", "The commit fault proxy must listen on TCP.");
+  proxyUrl.port = String(address.port);
   proxyUrl.searchParams.delete("host");
   proxyUrl.searchParams.delete("port");
   return {
     url: proxyUrl.toString(),
-    /** @param {{skipCommits?: number, pauseCommit?: boolean, instanceId?: string}} [options] */
-    arm(options = {}) {
+    arm(options: ArmOptions = {}) {
       const skip = options.skipCommits ?? 0;
       if (!Number.isSafeInteger(skip) || skip < 0) {
         throw new Error("Skipped COMMIT count must be a nonnegative integer.");
@@ -273,9 +281,9 @@ export async function commitAckProxy(databaseUrl, options = {}) {
      * After close(), wait until PostgreSQL has ended the session whose COMMIT was held. The
      * server rolls that transaction back only when it notices the closed socket; until then it
      * still holds its row locks, and a recovery that skips locked rows returns without them.
-     * @param {pg.Pool} pool a pool on the real server, not through this proxy
+     * Use a pool on the real server, not through this proxy.
      */
-    async waitForHeldSessionEnd(pool) {
+    async waitForHeldSessionEnd(pool: Pool) {
       const pid = heldBackendPid;
       if (pid === undefined) {
         throw new Error("No COMMIT request was held.");
@@ -290,7 +298,7 @@ export async function commitAckProxy(databaseUrl, options = {}) {
       for (const socket of sockets) {
         socket.destroy();
       }
-      await new Promise((resolve, reject) =>
+      await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );
     },

@@ -14,7 +14,7 @@ import { AgentSchema } from "../../packages/contracts/src/api/resources.ts";
 import type { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
 import type { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { attempt, type StoredSendReceipt } from "../../packages/occ/src/egress-send-receipts.ts";
-import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.ts";
 import { isArray, isRecord } from "./egress-observation-values.ts";
 import { databaseUrl } from "./postgres-database.mjs";
 import { postgresApp } from "./postgres-egress-app.mjs";
