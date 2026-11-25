@@ -1,4 +1,5 @@
 export { OpenClawController } from "./controller.ts";
+export type { LegacyCredentialSourceMetadata } from "./credential-source-metadata.ts";
 export { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "./namespace-operations.ts";
 export type { CreateNamespaceInput } from "./namespace-operations.ts";
 export type {
@@ -9,10 +10,11 @@ export { recognizedRuntimeFailureValues, runtimeFailureCause } from "./runtime-f
 export type {
   CompleteNamespaceConnectionInput,
   StartNamespaceConnectionInput,
-} from "./saved-oauth-connections.ts";
+} from "./oauth-consent.ts";
 export type {
   CreateConnectionTemplateInput,
-  CreateOAuthClientInput,
+  CreateCredentialClientInput,
+  RotateCredentialClientInput,
   UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";
 export type {
@@ -20,7 +22,11 @@ export type {
   CreateIAMRoleInput,
   InstallationIAMConfiguration,
 } from "./iam-policy-operations.ts";
-export { refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
+export {
+  parseOAuthGrantedScopes,
+  readOAuthTokenResponse,
+  refreshPinnedOAuthGrant,
+} from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";
@@ -265,7 +271,7 @@ export { InMemoryPlatformState } from "./state/platform-state.ts";
 export type { PredecessorReplacement, AgentRevisionReadRepository } from "./ports/agent-reads.ts";
 export type { InMemoryPlatformStateOptions, PlatformAuditSink } from "./state/platform-state.ts";
 export type { PlatformOperation } from "./ports/platform-operations.ts";
-export type { ConnectionTokenCustody } from "./ports/saved-connections.ts";
+export type { OAuthTokenCustody } from "./ports/oauth-credentials.ts";
 export type { PlatformReadView } from "./ports/platform-read-view.ts";
 export type { PlatformStateStore } from "./ports/platform-state-store.ts";
 export type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
@@ -426,9 +432,11 @@ export type { LookupChannelDirectoryInput } from "./setup-discovery.ts";
 export type {
   CreateCredentialSourceInput,
   RotateCredentialSourceInput,
-  UpdateCredentialSourceInput,
 } from "./credential-source-operations.ts";
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 
-export { hasOnlyScopedRepositoryRevisions } from "./repository-network-policy.ts";
+export {
+  repositoryNetworkLimitForSelection,
+  supportsScopedRepositoryHistory,
+} from "./repository-network-policy.ts";

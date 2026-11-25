@@ -4,7 +4,13 @@ import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexLaunchEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  codexLaunchEntrypoint,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { sandboxCommand } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { stagedHarnessSupervisor } from "../../apps/controller/src/drivers/sandbox/openshell-staged-harness.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
@@ -15,6 +21,31 @@ import {
   transientProbeRetryCases,
 } from "./codex-native-startup-retry-cases.ts";
 import { startSupervisor } from "./workspace-node-supervisor-fixture.ts";
+
+test("staged Codex account launch fits the native command limit with a workspace Node", () => {
+  const child = codexLaunchEntrypoint({
+    providerOwned: true,
+    protected: false,
+    openShellProgram: "account",
+    withNode: true,
+    workspaceSetup: false,
+  });
+  const launch = sandboxCommand(
+    [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(child)],
+    [],
+    true,
+    "chatgptAuthTokens",
+    undefined,
+  );
+  const staged = sandboxCommand(
+    [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(stagedHarnessSupervisor(launch))],
+    [],
+    true,
+    "api_key",
+    undefined,
+  );
+  assert.ok(Buffer.byteLength(JSON.stringify(staged)) <= 65_536);
+});
 import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   checkCodexStartup,

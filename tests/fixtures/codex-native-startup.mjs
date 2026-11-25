@@ -12,6 +12,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -117,6 +118,21 @@ export function createCodexStartup(
   const retryTimers = [];
   const loginPauses = [];
   const boundaryErrors = [];
+  /** @type {NodeJS.ProcessEnv} */
+  const credentialEnvironment = {};
+  if (loginMode === "chatgptAuthTokens") {
+    credentialEnvironment.CODEX_ACCESS_TOKEN = providerPlaceholder;
+    credentialEnvironment.OCE_CODEX_CHATGPT_ACCOUNT = JSON.stringify({
+      accountId: "account-fixture",
+      planType: "plus",
+    });
+  } else if (loginMode === "codex_pat") {
+    credentialEnvironment.CODEX_ACCESS_TOKEN = providerPat
+      ? providerPlaceholder
+      : "at-fixture-token";
+  } else {
+    credentialEnvironment.OPENAI_API_KEY = "fixture-api-key";
+  }
   let statusHandler;
   let enrollmentHandler;
   const plan = {
@@ -189,9 +205,7 @@ export function createCodexStartup(
         OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
         CODEX_LOGIN_MODE: loginMode,
         ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
-        ...(loginMode === "codex_pat"
-          ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
-          : { OPENAI_API_KEY: "fixture-api-key" }),
+        ...credentialEnvironment,
         OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
         OPENCLAW_AGENT_REVISION_ID: revisionId,
         ...(protectedInference
@@ -235,6 +249,7 @@ export function createCodexStartup(
           mkdirSync,
           mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
           rmSync,
+          renameSync,
           readFileSync() {
             throw new Error("no plugin runtime payload is configured");
           },
@@ -321,7 +336,7 @@ export function createCodexStartup(
                 clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
-                probeSpawns.push({ env: { ...childEnvironment } });
+                probeSpawns.push({ args: Array.from(args), env: { ...childEnvironment } });
                 if (protectedInference) {
                   assert.equal(args[args.indexOf("unbounded_connection_retries") - 1], "--disable");
                   for (const argument of [

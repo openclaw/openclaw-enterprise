@@ -1,4 +1,3 @@
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
@@ -20,10 +19,6 @@ export async function standingExecutionFixture(
     controlSocket?: string;
     backendId: string;
     protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
-    credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
-    modelConfig?: { authorized_base_url: string };
-    modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
-    activePredecessor?: boolean;
     requestedBinding?: {
       repositoryRef: string;
       profile: "github-installation";
@@ -34,18 +29,6 @@ export async function standingExecutionFixture(
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
-  if (external?.modelProvider || external?.credentialGateway) {
-    // Preserve production admission while the fixture supplies unrelated infrastructure.
-    const admission = createTestKubernetesComputeDriver(f.compute.id, {
-      gatewayRuntime: true,
-      ...(external.modelProvider ? { modelProvider: external.modelProvider } : {}),
-    });
-    Object.assign(f.compute, {
-      normalizeHarnessOverrides: admission.normalizeHarnessOverrides.bind(admission),
-      resolveHarnessConfiguration: admission.resolveHarnessConfiguration.bind(admission),
-      admitRevision: admission.admitRevision.bind(admission),
-    });
-  }
   const registry =
     external?.registry ??
     ({
@@ -83,35 +66,8 @@ export async function standingExecutionFixture(
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: external && !external.protectedDriver ? "secret" : "credential_source",
-    modelConfig: external?.modelConfig,
+    auth: external?.protectedDriver ? "runtime" : "secret",
   });
-  // Start a real predecessor before admitting Git on its successor. The candidate must
-  // remain unable to receive repository material while this pointer is still active.
-  const predecessor = external?.activePredecessor ? await f.revision(owner, 1) : undefined;
-  if (predecessor) {
-    try {
-      await f.start(f.compute, {
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
-          ...d,
-          credentialGatewayDriver: external!.credentialGateway,
-          protectedDriver: external!.protectedDriver,
-          sandboxDriver: external!.protectedDriver?.require("sandbox"),
-          proxyDriver: external!.protectedDriver?.require("credential_proxy"),
-          installation: {
-            ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: external!.credentialGateway!.id },
-            },
-          },
-        }),
-      });
-      await f.work(predecessor, "succeeded");
-    } finally {
-      await f.stop();
-    }
-  }
   const bindings = [
     external?.requestedBinding ?? {
       repositoryRef: "source",
@@ -123,8 +79,8 @@ export async function standingExecutionFixture(
     bindings,
   }).bindings;
   const binding = selected!;
-  await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-    JSON.stringify(bindings),
+  await f.observerPool.query("UPDATE occ.agents SET repository_access=$1 WHERE id=$2", [
+    JSON.stringify({ defaultProfile: "git-write", repositories: bindings }),
     owner.id,
   ]);
   const scope = driver.standingApprovalScope({
@@ -161,13 +117,10 @@ export async function standingExecutionFixture(
     actorId: f.actor.id,
     repositoryCredentials: credentials,
   };
-  if (external?.protectedDriver && external.credentialGateway) {
-    const gateway = external.credentialGateway;
+  if (external?.protectedDriver) {
     f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
-    f.controller.registerDriver(gateway);
-    f.controller.selectDriver("credential_gateway", gateway.id);
   }
-  const revision = (await f.revision(owner, predecessor ? 2 : 1, {
+  const revision = (await f.revision(owner, 1, {
     ...revisionOptions,
     ...(external?.protectedDriver && {
       protectedRepositoryDriver: external.protectedDriver,
@@ -191,7 +144,6 @@ export async function standingExecutionFixture(
     binding,
     owner,
     revision,
-    predecessor,
     revisionOptions,
     credentials,
     driver,

@@ -72,10 +72,17 @@ discovery denied**, which display their own status instead.
 
 Open **GitHub repository access** under **Pages / Create Agent**
 (`createGitHubRepositoryGrants`). The story starts with two repositories
-selected and **Save Agent draft** available. Uncheck both. Before **Create Agent**,
+selected. Choose a registered **GitHub App Client** before saving the draft. The
+Client and selected repository access are saved on the Agent; the Console does
+not create a GitHub credential Source. Uncheck both. Before **Create Agent**,
 check the warning about deployment without a repository policy. Select a repository
 again. The warning disappears and **Save Agent draft** returns. **Access profiles**
-retains its existing hint.
+retains its existing hint. Open **GitHub repository access with a registered App**
+(`createGitHubClient`) to inspect the selected application repository. The
+**GitHub App Client** list offers the Installation-wide Client and the Client
+registered in Engineering. Select **Engineering repository App** and save the
+draft. This story simulates the Console. It does not mint a token or deploy a
+Source.
 
 Open **Set permissions on a saved draft** under **Pages / Agent detail**
 (`repositoryPermissionsDraft`). Read the conditional warning before **Deploy new

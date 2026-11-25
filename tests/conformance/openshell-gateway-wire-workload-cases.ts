@@ -100,8 +100,10 @@ export function registerWorkloadCases(): void {
     const clients: (
       options: { inAgent: (...command: string[]) => Promise<string> },
       origin: string,
+      path: string,
     ) => { curl(): unknown; throughFin(): unknown } = agentClients;
-    const { curl, throughFin } = clients({ inAgent }, new URL(target).origin);
+    const { origin, pathname } = new URL(target);
+    const { curl, throughFin } = clients({ inAgent }, origin, pathname);
     assert.deepEqual(await Promise.all([curl(), throughFin()]), [
       "recipient-bytes",
       "recipient-bytes",

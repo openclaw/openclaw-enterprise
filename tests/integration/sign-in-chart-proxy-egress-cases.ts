@@ -350,11 +350,6 @@ const chartOnly = (
       assert.match(await refusal(values), chart, `${provider}: ${name}`);
     }),
   );
-const emptyEgress = (provider: string) =>
-  new RegExp(
-    `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
-  );
-
 export function registerProxyAndEgressCases() {
   test(
     "trusted-proxy CIDR parity preserves mapped hosts and bounded IPv6 ranges",
@@ -509,26 +504,6 @@ export function registerProxyAndEgressCases() {
           /auth\.google client ID and client secret must use different Secret keys/,
         ],
         [
-          "a hostname egress",
-          { ...google, "auth.google.egressCidrs[0]": "accounts.google.com" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an invalid egress address",
-          { ...google, "auth.google.egressCidrs[0]": "142.250.300.0/24" },
-          /auth\.google\.egressCidrs contains an invalid IPv4 address/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...google, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...google, "auth.google.egressCidrs": "" },
-          emptyEgress("google"),
-        ],
-        [
           "an empty-string domain allowlist",
           { ...google, "auth.google.allowedDomains": "" },
           /auth\.google\.allowedDomains must be a list of DNS domain names/,
@@ -562,21 +537,6 @@ export function registerProxyAndEgressCases() {
           "one key for client ID and secret",
           { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
           /auth\.oidc client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "tenant.idp.example.test" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...oidc, "auth.oidc.egressCidrs": "" },
-          emptyEgress("oidc"),
         ],
         [
           "an HTTP base URL",
@@ -626,14 +586,6 @@ export function registerProxyAndEgressCases() {
         assert.deepEqual(
           signInSettings(deploymentEnv(objects, "api")),
           defaultInstallSettings,
-          key,
-        );
-        assert.equal(
-          objects.filter(
-            ({ kind, metadata }) =>
-              kind === "NetworkPolicy" && /-login-egress$/.test(metadata.name),
-          ).length,
-          0,
           key,
         );
       }),

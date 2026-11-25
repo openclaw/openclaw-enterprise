@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
@@ -37,7 +38,6 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   DEPENDENCY_UNAVAILABLE,
-  REPOSITORY_ACCESS_OR_BINDINGS,
   REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -281,7 +281,7 @@ export function registerRepositoryAdmissionCases({
           name: `Repository Agent ${randomUUID()}`,
           configurationId: f.configurationId,
           executionMode,
-          repositoryBindings: selection,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         };
         const { error } = checkedEnvelope(
           await f.request("POST", f.collection, payload),
@@ -298,7 +298,10 @@ export function registerRepositoryAdmissionCases({
         assert.deepEqual(agents, []);
         continue;
       }
-      const agent = await createAgent(f, { executionMode, repositoryBindings: selection });
+      const agent = await createAgent(f, {
+        executionMode,
+        repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+      });
       await f.prepareDeployment(agent);
       const { data: deployed } = checkedEnvelope(
         await f.request("POST", `${f.collection}/${agent.id}/deploy`),
@@ -338,7 +341,9 @@ export function registerRepositoryAdmissionCases({
 
   test("Successful repository discovery does not authorize later writes", async (t) => {
     const f = await admissionFixture(fixture, t);
-    const agent = await createAgent(f, { repositoryBindings: selection });
+    const agent = await createAgent(f, {
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+    });
     await f.prepareDeployment(agent);
     const path = `${f.collection}/${agent.id}`;
     const before = await readAgent(f.request, path);
@@ -348,7 +353,10 @@ export function registerRepositoryAdmissionCases({
       200,
     );
 
-    const bindings = { configurationId: f.configurationId, repositoryBindings: selection };
+    const bindings = {
+      configurationId: f.configurationId,
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+    };
     const update: UpdateAgentBody = bindings;
     const create: CreateAgentBody = { ...bindings, name: "Denied Agent" };
     for (const [action, method, target, payload] of [
@@ -390,15 +398,23 @@ export function registerRepositoryAdmissionCases({
 
   test("Repository bindings normalize through Agent create and preserve or clear through PATCH", async (t) => {
     const f = await admissionFixture(fixture, t);
-    for (const fields of [{}, { repositoryBindings: [] }]) {
+    for (const fields of [
+      {},
+      { repositoryAccess: { defaultProfile: "git-write", repositories: [] } },
+    ]) {
       const agent = await createAgent(f, fields);
       assert.equal(Object.hasOwn(agent, "repositoryBindings"), false);
     }
-    const agent = await createAgent(f, { repositoryBindings: [{ repositoryRef: "project" }] });
+    const agent = await createAgent(f, {
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project" }],
+      },
+    });
     const path = `${f.collection}/${agent.id}`;
-    assert.deepEqual(agent.repositoryBindings, selection);
+    assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), selection);
     const saved = await readAgent(f.request, path);
-    assert.deepEqual(saved.repositoryBindings, selection);
+    assert.deepEqual(repositoryAccessSelections(saved.repositoryAccess), selection);
 
     const patch: UpdateAgentBody = { configurationId: f.configurationId };
     const { data: preserved } = checkedEnvelope(
@@ -406,8 +422,11 @@ export function registerRepositoryAdmissionCases({
       AgentResponse,
       200,
     );
-    assert.deepEqual(preserved.repositoryBindings, selection);
-    const clearedPatch: UpdateAgentBody = { ...patch, repositoryBindings: [] };
+    assert.deepEqual(repositoryAccessSelections(preserved.repositoryAccess), selection);
+    const clearedPatch: UpdateAgentBody = {
+      ...patch,
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
+    };
     const { data: cleared } = checkedEnvelope(
       await f.request("PATCH", path, clearedPatch),
       AgentResponse,
@@ -432,10 +451,7 @@ export function registerRepositoryAdmissionCases({
   });
 }
 
-export function registerRepositoryAccessUpdateCases({
-  fixture,
-  selection,
-}: Pick<AdmissionInputs, "fixture" | "selection">) {
+export function registerRepositoryAccessUpdateCases({ fixture }: Pick<AdmissionInputs, "fixture">) {
   test("Agent repository access preserves inheritance intent and admits only resolved approved profiles", async (t) => {
     const f = await admissionFixture(fixture, t);
     const intent: NonNullable<CreateAgentBody["repositoryAccess"]> = {
@@ -445,7 +461,9 @@ export function registerRepositoryAccessUpdateCases({
     const agent = await createAgent(f, { repositoryAccess: intent });
     const path = `${f.collection}/${agent.id}`;
     assert.deepEqual(agent.repositoryAccess, intent);
-    assert.deepEqual(agent.repositoryBindings, [{ repositoryRef: "project", profile: "git-full" }]);
+    assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), [
+      { repositoryRef: "project", profile: "git-full" },
+    ]);
 
     const updateAgent = async (fields: UpdateAgentBody) =>
       checkedEnvelope(
@@ -471,13 +489,16 @@ export function registerRepositoryAccessUpdateCases({
     const updatedDefault = { ...custom, defaultProfile: "git-read" };
     const changed = await updateAgent({ repositoryAccess: updatedDefault });
     assert.deepEqual(changed.repositoryAccess, updatedDefault);
-    assert.deepEqual(changed.repositoryBindings, agent.repositoryBindings);
+    assert.deepEqual(
+      repositoryAccessSelections(changed.repositoryAccess),
+      repositoryAccessSelections(agent.repositoryAccess),
+    );
 
     // Resetting to inheritance applies the new default while preserving the omitted profile.
     const reset = { ...intent, defaultProfile: "git-read" };
     const inherited = await updateAgent({ repositoryAccess: reset });
     assert.deepEqual(inherited.repositoryAccess, reset);
-    assert.deepEqual(inherited.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(inherited.repositoryAccess), [
       { repositoryRef: "project", profile: "git-read" },
     ]);
     const { error: denied } = checkedEnvelope(
@@ -491,18 +512,6 @@ export function registerRepositoryAccessUpdateCases({
     assert.equal(denied.message, REPOSITORY_SELECTION_NOT_APPROVED);
     assert.deepEqual((await readAgent(f.request, path)).repositoryAccess, reset);
 
-    const { error: ambiguous } = checkedEnvelope(
-      await f.request("PATCH", path, {
-        configurationId: f.configurationId,
-        repositoryAccess: reset,
-        repositoryBindings: selection,
-      }),
-      ErrorResponse,
-      400,
-    );
-    assert.equal(ambiguous.message, REPOSITORY_ACCESS_OR_BINDINGS);
-    const legacy = await updateAgent({ repositoryBindings: selection });
-    assert.equal(Object.hasOwn(legacy, "repositoryAccess"), false);
     const empty: typeof intent = { defaultProfile: "git-full", repositories: [] };
     const cleared = await updateAgent({ repositoryAccess: empty });
     assert.deepEqual(cleared.repositoryAccess, empty);
@@ -537,7 +546,7 @@ export function registerRepositoryAccessUpdateCases({
     assert.equal(error.message, "The supplied plugin policies are invalid.");
     const unchanged = await readAgent(f.request, path);
     assert.deepEqual(unchanged.repositoryAccess, initialAccess);
-    assert.deepEqual(unchanged.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(unchanged.repositoryAccess), [
       { repositoryRef: "project", profile: "git-read" },
     ]);
     assert.deepEqual(unchanged.plugins, initialPlugins);
@@ -556,7 +565,7 @@ export function registerRepositoryAccessUpdateCases({
       200,
     );
     assert.deepEqual(updated.repositoryAccess, nextAccess);
-    assert.deepEqual(updated.repositoryBindings, [
+    assert.deepEqual(repositoryAccessSelections(updated.repositoryAccess), [
       { repositoryRef: "project", profile: "git-full" },
     ]);
     assert.deepEqual(updated.plugins, nextPlugins);
