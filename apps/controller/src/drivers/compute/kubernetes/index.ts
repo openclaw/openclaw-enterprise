@@ -13230,17 +13230,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
   }
 
-  // Sync the running Harness Pods now so their optional setup volume shows the
-  // new code within seconds. Without this update event the kubelet refreshes
-  // the volume only on its periodic resync (measured 58-84 s on k3d, #612).
-  private async refreshWorkspaceNodeSetup(
+  // Updating a Pod makes the kubelet refresh its optional setup Secret or binding ConfigMap
+  // without waiting for its periodic resync (measured 58-84 s on k3d, #612).
+  private async refreshWorkspaceNodePods(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-    setupId: string,
+    role: "agent" | "gateway",
+    value: string,
   ): Promise<void> {
     const clients = await this.clients(namespace.plane);
-    for (const pod of await this.revisionPods(revision, namespace, "agent")) {
-      const name = required(asRecord(pod.metadata)?.name, "Harness Pod name");
+    const [annotation, nameLabel]: [string, string] =
+      role === "agent"
+        ? [NODE_SETUP_ANNOTATION, "Harness Pod name"]
+        : [WORKSPACE_NODE_BINDING_ANNOTATION, "Gateway Pod name"];
+    for (const pod of await this.revisionPods(revision, namespace, role)) {
+      const name = required(asRecord(pod.metadata)?.name, nameLabel);
       try {
         await this.request(
           () =>
@@ -13248,9 +13252,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
               {
                 name,
                 namespace: namespace.name,
-                // The value only has to change per setup; it names no secret.
                 body: {
-                  metadata: { annotations: { [NODE_SETUP_ANNOTATION]: sha256Hex(setupId, 12) } },
+                  metadata: { annotations: { [annotation]: sha256Hex(value, 12) } },
                 },
               },
               this.mergePatchOptions,
@@ -13258,7 +13261,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           { mutating: true },
         );
       } catch (error) {
-        // A Pod that is already gone mounts the current Secret when it is replaced.
+        // A replacement Pod mounts the current volume contents at startup.
         if (numericErrorStatus(error) !== 404) {
           throw error;
         }
@@ -13374,43 +13377,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ),
       { mutating: true },
     );
-    await this.refreshWorkspaceNodeBinding(revision, namespace, document);
-  }
-
-  // Like the Harness setup nudge: a Pod update event makes the kubelet refresh
-  // the optional ConfigMap volume now instead of on its periodic resync.
-  private async refreshWorkspaceNodeBinding(
-    revision: AgentRevision,
-    namespace: KubernetesNamespaceAddress,
-    document: string,
-  ): Promise<void> {
-    const clients = await this.clients(namespace.plane);
-    for (const pod of await this.revisionPods(revision, namespace, "gateway")) {
-      const name = required(asRecord(pod.metadata)?.name, "Gateway Pod name");
-      try {
-        await this.request(
-          () =>
-            clients.core.patchNamespacedPod(
-              {
-                name,
-                namespace: namespace.name,
-                body: {
-                  metadata: {
-                    annotations: { [WORKSPACE_NODE_BINDING_ANNOTATION]: sha256Hex(document, 12) },
-                  },
-                },
-              },
-              this.mergePatchOptions,
-            ),
-          { mutating: true },
-        );
-      } catch (error) {
-        // A Pod that is already gone mounts the current binding when it is replaced.
-        if (numericErrorStatus(error) !== 404) {
-          throw error;
-        }
-      }
-    }
+    await this.refreshWorkspaceNodePods(revision, namespace, "gateway", document);
   }
 
   // The Gateway's private status reports the node OpenClaw applied. It is
@@ -13728,7 +13695,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       if (setup !== undefined && setupFile) {
-        await this.refreshWorkspaceNodeSetup(revision, namespace, setup.setupId);
+        await this.refreshWorkspaceNodePods(revision, namespace, "agent", setup.setupId);
       }
     }
     const ca = await this.readNodeCa?.();
@@ -14078,7 +14045,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // file now rather than on its ~1 min resync (#612).
     const setupCodeRemoved = async () => {
       if (dropSetupCode && secret.data?.setupCode !== undefined) {
-        await this.refreshWorkspaceNodeSetup(revision, namespace, `${read("setupId")}:removed`);
+        await this.refreshWorkspaceNodePods(
+          revision,
+          namespace,
+          "agent",
+          `${read("setupId")}:removed`,
+        );
       }
     };
     if (deviceId && receiptDeviceId === undefined) {

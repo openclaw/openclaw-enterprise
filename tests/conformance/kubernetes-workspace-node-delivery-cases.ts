@@ -66,13 +66,6 @@ function workspaceSetupSecret(objects: DedicatedDeployFixture["objects"]) {
   return secret;
 }
 
-function patchAnnotations(body: unknown) {
-  return renderedRecord(
-    renderedRecord(renderedRecord(body, "Pod patch").metadata, "Pod patch metadata").annotations,
-    "Pod patch annotations",
-  );
-}
-
 // The node wiring a Deployment-backed Codex Harness renders from its first start.
 function harnessNodeSetup(template: unknown) {
   const { pod, container } = templateContainer(template);
@@ -212,14 +205,13 @@ export async function checkStartupPluginInitialization(
     renderedRecord(harnessBeforeSetup.spec, "previous Harness Deployment spec").template,
   );
   assert.equal(agent.metadata.generation, harnessBeforeSetup.metadata.generation);
-  assert.deepEqual(
-    podPatches.map(({ name, namespace: target, body }) => ({
-      name,
-      target,
-      annotations: Object.keys(patchAnnotations(body)),
-    })),
-    [{ name: "agent-pod", target: namespace, annotations: ["openclaw.dev/workspace-node-setup"] }],
-  );
+  const setupPatch = (id: string) => ({
+    name: "agent-pod",
+    namespace,
+    body: { metadata: { annotations: { "openclaw.dev/workspace-node-setup": digest(id) } } },
+  });
+  const minted = setupPatch("setup-1");
+  assert.deepEqual(podPatches, [minted]);
   const nodeSecretName = workspaceSetupSecret(objects).metadata.name;
   // The first Harness template already carries the node wiring. The setup code
   // is not in its environment: one optional Secret item is mounted read-only,
@@ -282,14 +274,6 @@ export async function checkStartupPluginInitialization(
     ).toString("utf8"),
     revision.id,
   );
-  // The removal nudges the running Harness Pod again, with a new value, so the
-  // kubelet removes the file now instead of on its periodic resync.
-  assert.equal(podPatches.length, 3);
-  const [minted, removed] = podPatches
-    .slice(0, 2)
-    .map(({ body }) => patchAnnotations(body)["openclaw.dev/workspace-node-setup"]);
-  assert.notEqual(minted, removed);
-  assert.equal(podPatches[1]?.name, "agent-pod");
   const gatewayAfterBinding = read("Deployment", gatewayName, gatewayNamespace);
   assert.deepEqual(
     renderedRecord(gatewayAfterBinding.spec, "Gateway Deployment spec").template,
@@ -297,18 +281,11 @@ export async function checkStartupPluginInitialization(
   );
   assert.equal(gatewayAfterBinding.metadata.generation, gatewayBeforeBinding.metadata.generation);
   const binding = read("ConfigMap", `${gatewayName}-workspace-node`, gatewayNamespace);
-  assert.deepEqual(
-    JSON.parse(
-      renderedString(
-        renderedRecord(binding.data, "workspace binding ConfigMap data")["workspace-node.json"],
-        "workspace-node.json",
-      ),
-    ),
-    {
-      revisionId: revision.id,
-      deviceId: "node-1",
-    },
+  const document = renderedString(
+    renderedRecord(binding.data, "workspace binding ConfigMap data")["workspace-node.json"],
+    "workspace-node.json",
   );
+  assert.deepEqual(JSON.parse(document), { revisionId: revision.id, deviceId: "node-1" });
   assert.equal(binding.immutable, undefined);
   assert.equal(
     renderedRecord(binding.metadata.labels, "workspace binding ConfigMap labels")[
@@ -316,20 +293,18 @@ export async function checkStartupPluginInitialization(
     ],
     revision.agentId,
   );
-  assert.deepEqual(
-    podPatches.slice(2).map(({ name, namespace: target, body }) => ({
-      name,
-      target,
-      annotations: Object.keys(patchAnnotations(body)),
-    })),
-    [
-      {
-        name: "gateway-pod",
-        target: gatewayNamespace,
-        annotations: ["openclaw.dev/workspace-node-binding"],
+  // Removing the code refreshes the Harness mount again before the Gateway gets its binding.
+  assert.deepEqual(podPatches, [
+    minted,
+    setupPatch("setup-1:removed"),
+    {
+      name: "gateway-pod",
+      namespace: gatewayNamespace,
+      body: {
+        metadata: { annotations: { "openclaw.dev/workspace-node-binding": digest(document) } },
       },
-    ],
-  );
+    },
+  ]);
   // A paired file-delivered node reconnects with its saved device token, so an
   // expired setup is not re-minted and the code does not come back.
   const paired = read("Secret", nodeSecretName);
@@ -425,16 +400,7 @@ export async function checkUpgradeRemovesSetupCode(createFixture: DedicatedDeplo
     renderedRecord(read("Secret", nodeName).data, "upgraded Secret data").setupCode,
     undefined,
   );
-  assert.deepEqual(
-    missingPods.filter((name) => name === "agent-pod"),
-    ["agent-pod"],
-    "the removal nudge ran once and its 404 was ignored",
-  );
-  // The Gateway binding nudge tolerates a missing Pod the same way.
-  assert.deepEqual(
-    missingPods.filter((name) => name === "gateway-pod"),
-    ["gateway-pod"],
-  );
+  assert.deepEqual(missingPods.sort(), ["agent-pod", "gateway-pod"]);
 }
 
 // A node that has not paired within the pass's wait leaves the pass pending; the
