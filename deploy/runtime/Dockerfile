@@ -538,7 +538,10 @@ RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.rea
 LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
 RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
 
+USER node
+RUN cd /usr/local/lib/oce && test ! -w . \
+    && test -r openshell-worker.gitconfig && test ! -w openshell-worker.gitconfig \
+    && test -x openshell-git-credential.cjs && test ! -w openshell-git-credential.cjs
+
 # Keep this last: a client change then rebuilds only this layer (see repository-client-build).
 COPY --from=repository-client-build /build/.build/runtime-client/ /
-
-USER node

@@ -536,10 +536,10 @@ export async function verifyStagedCodexAccountProjection(t: TestContext): Promis
   const launcher = stagedHarnessSupervisor([
     process.execPath,
     "-e",
-    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ placeholder: process.env.CODEX_ACCESS_TOKEN, account: JSON.parse(process.env.OCE_CODEX_CHATGPT_ACCOUNT) }))`,
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ placeholder: process.env.CODEX_ACCESS_TOKEN, account: JSON.parse(process.env.OCE_CODEX_CHATGPT_ACCOUNT), workerExecutionPresent: Object.hasOwn(process.env, "OPENCLAW_NODE_WORKER_EXECUTION") }))`,
   ]);
   const supervisor = spawn(process.execPath, ["-e", launcher], {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, OPENCLAW_NODE_WORKER_EXECUTION: "inherited" },
     stdio: "ignore",
   });
   t.after(() => supervisor.kill());
@@ -564,7 +564,11 @@ export async function verifyStagedCodexAccountProjection(t: TestContext): Promis
   });
   assert.equal(activate.status, 0);
   await waitFor("Codex staged launch", () => existsSync(marker), 5000);
-  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { placeholder, account });
+  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), {
+    placeholder,
+    account,
+    workerExecutionPresent: false,
+  });
 }
 
 export async function verifyStagedNativeSourceProjection(t: TestContext): Promise<void> {
@@ -632,11 +636,32 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       runtimeEnvironment: gitAlias,
     },
   ];
-  const prepare = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
-    env: { ...process.env, HOME: home },
-    input: JSON.stringify(projections),
+  function prepare(plan: typeof projections) {
+    const result = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
+      env: { ...process.env, HOME: home },
+      input: JSON.stringify(plan),
+    });
+    assert.equal(result.status, 0);
+  }
+
+  // A genuine placeholder for another Provider cannot become this Agent's Git Source.
+  // Its alias and value agree, so the refusal must come from the frozen Repository binding.
+  prepare(
+    projections.map((p) =>
+      p.environment === "GITHUB_TOKEN" ? { ...p, runtimeEnvironment: pluginAlias } : p,
+    ),
+  );
+  const wrongGitSource = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
+    env: {
+      ...process.env,
+      HOME: home,
+      [modelAlias]: modelPlaceholder,
+      [pluginAlias]: pluginPlaceholder,
+    },
   });
-  assert.equal(prepare.status, 0);
+  assert.notEqual(wrongGitSource.status, 0);
+  assert.equal(existsSync(marker), false);
+  prepare(projections);
 
   // Activation must refuse a Provider placeholder for the wrong Source, before launching the Harness.
   const wrong = spawnSync(process.execPath, ["-e", STAGED_HARNESS_ACTIVATE], {
