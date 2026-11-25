@@ -1027,6 +1027,23 @@ test(
     const agentId = text(agent.id);
     const path = `/namespaces/${namespaceId}/agents/${agentId}`;
     const directRevisionId = text(record(topology.revision).id);
+    // The worker can replace a prepared Gateway after publishing the active revision.
+    // Wait for deployment completion before keeping a Pod name or inspecting retired slots.
+    const waitForDeployment = async (
+      request: typeof topology.request,
+      agentPath: string,
+      revisionId: string,
+    ) => {
+      await waitFor(`Gateway deployment ${revisionId} to finish`, async () => {
+        const deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+        assert.equal(deployment.status, 200);
+        assert.notEqual(deployment.data.status, "failed");
+        return deployment.data.status === "succeeded";
+      });
+      const current = await request("GET", agentPath);
+      assert.equal(current.status, 200);
+      assert.equal(current.data.activeRevisionId, revisionId);
+    };
     const fleet = topology.channelEgress!;
     assert.equal(fleet.envoyNamespace, envoyNamespace);
     const harnessPolicies = async (revisionId: string) => {
@@ -1184,10 +1201,7 @@ test(
       "OCC Slack validation must not use the Agent's selected proxy.",
     );
     await restoreWorker();
-    await waitFor("proxied Slack Agent activation", async () => {
-      const current = await topology.request("GET", path);
-      return current.data?.activeRevisionId === deployed.data.id;
-    });
+    await waitForDeployment(topology.request, path, deployed.data.id);
     const revision = await topology.request("GET", `${path}/revisions/${deployed.data.id}`);
     assert.deepEqual(revision.data.networkProxy, selection);
     assert.equal(JSON.stringify(revision).includes(proxy.authorization), false);
@@ -1594,10 +1608,7 @@ test(
     );
     const peerDeploy = await topology.adminRequest("POST", `${peerPath}/deploy`);
     assert.equal(peerDeploy.status, 202);
-    await waitFor("peer Agent activation on its own proxy", async () => {
-      const current = await topology.adminRequest("GET", peerPath);
-      return current.data?.activeRevisionId === peerDeploy.data.id;
-    });
+    await waitForDeployment(topology.adminRequest, peerPath, peerDeploy.data.id);
     const peerPods = rows(
       record(
         JSON.parse(
@@ -1926,11 +1937,7 @@ test(
     );
     const badDeploy = await topology.request("POST", `${path}/deploy`);
     assert.equal(badDeploy.status, 202);
-    await waitFor(
-      "bad-certificate Agent revision activation",
-      async () =>
-        (await topology.request("GET", path)).data?.activeRevisionId === badDeploy.data.id,
-    );
+    await waitForDeployment(topology.request, path, badDeploy.data.id);
     const badPod = await waitFor("bad-certificate Gateway readiness", async () => {
       const pods = await listed(
         "pods",
@@ -1986,10 +1993,7 @@ test(
     assert.deepEqual(retained.data.networkProxy, selection);
     const recovery = await topology.request("POST", `${path}/deploy`);
     assert.equal(recovery.status, 202);
-    await waitFor("direct Slack Agent recovery after clearing the proxy", async () => {
-      const current = await topology.request("GET", path);
-      return current.data?.activeRevisionId === recovery.data.id;
-    });
+    await waitForDeployment(topology.request, path, recovery.data.id);
     const recovered = await topology.request("GET", `${path}/revisions/${recovery.data.id}`);
     assert.equal(recovered.data.networkProxy, undefined);
     const slots = rows(
