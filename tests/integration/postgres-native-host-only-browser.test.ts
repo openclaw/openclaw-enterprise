@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { request } from "node:http";
 import { createServer } from "node:https";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
@@ -108,7 +109,9 @@ test(
       "oidc",
       "10101",
     );
-    const browser: Browser = await launchTrustingBrowser(chromium, upstream.directory, {
+    // Exercise Chromium startup under a long fixture path.
+    const browserRoot = join(upstream.directory, "nested-".repeat(16));
+    const browser: Browser = await launchTrustingBrowser(chromium, browserRoot, {
       caFiles: [upstream.certPath],
       hosts: [origin, native.origin].map((url) => ({
         host: new URL(url).hostname,
