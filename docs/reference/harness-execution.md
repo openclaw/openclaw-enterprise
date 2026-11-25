@@ -274,8 +274,8 @@ A Preset is checked when a launch creates its Configuration.
 
 ## Limits
 
-- One dedicated Harness serves all sessions for an AgentRevision. OpenShell
-  contains the revision. The native OpenClaw node defaults to eight retained
+- One dedicated Harness serves all sessions for an AgentRevision.
+  The native OpenClaw node defaults to eight retained
   session workers on Kubernetes. Set `runtime.nativeOpenClawSessionCapacity`
   to an integer from 1 to 1024 to change the limit. At capacity the node refuses
   additional sessions until a hosted session stops.

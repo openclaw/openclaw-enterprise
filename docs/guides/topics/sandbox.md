@@ -7,18 +7,30 @@ remain with Compute even when a Sandbox creates the Harness workload.
 
 ## When to select a Sandbox
 
-Sandbox selection is optional and currently requires the bundled Kubernetes
-Compute Driver and dedicated Agent execution. It cannot be combined with Docker,
-SSH, installed Compute Drivers, or embedded execution. The Installation operator
-selects it; an Agent cannot choose its own Sandbox.
+The Installation operator selects the Sandbox Driver. A Sandbox requires bundled
+Kubernetes Compute and dedicated execution. Docker, SSH, installed Compute
+Drivers and embedded execution cannot use it.
 
-[OpenShell](../../reference/drivers/openshell-sandbox.md) is the bundled
-integration for dedicated Codex. The stock OpenShell gateway version documented
-there cannot honor the projected identity and app-server token Secret reference
-that OCC requires. Its paired [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-keeps the model API key out of the Harness. Local verification uses development-only workarounds; it is not a
-supported production deployment path. If the selected Sandbox cannot enforce
-required containment or preserve workload identity, deployment stops.
+Dedicated Codex can run without a Sandbox. Dedicated native OpenClaw requires
+a compatible Driver that provisions the Harness and enforces networking,
+filesystem and process restrictions.
+
+[OpenShell](../../reference/drivers/openshell-sandbox.md) can provision either Harness.
+OpenShell cannot preserve the Agent’s ServiceAccount and projected identity
+token. Kubernetes Compute rejects dedicated OpenShell execution with
+`servicePrincipalCredentials.mode: projectedServiceAccountToken`. If the Agent
+needs projected identity, choose a Driver that supports it.
+
+For Codex app-server authentication, Compute supplies a SHA-256 verifier in
+the launch environment. The Agent Gateway presents the bearer token when it
+connects. Compute also passes that token to the Sandbox Driver for readiness
+checks through the OpenShell service.
+
+OpenShell model credentials can use the [Credential Proxy](../../reference/drivers/credential-proxy.md)
+or the optional legacy [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md).
+The [local verification setup](../deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
+is for development only. Deployment stops if the selected Sandbox cannot enforce
+required containment or preserve workload identity.
 
 Upstream OpenClaw has a separate
 [OpenShell sandbox backend](https://docs.openclaw.ai/gateway/openshell), the

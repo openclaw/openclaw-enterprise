@@ -182,8 +182,9 @@ Its closed `configuration` accepts:
   Service HTTP/WebSocket requests retain their separate scoped bearer identity.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
-  deletion has its own 120-second bound: OpenShell answers only after the
-  Sandbox Pod terminates, and OCE waits until the Sandbox is gone.
+  deletion defaults to a separate 120-second deadline. If OpenShell accepts
+  deletion without confirming it, OCE polls for removal. A timeout leaves
+  deletion unconfirmed.
 - `rootCertificatePath`: an absolute path to the gateway CA. An `https`
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
@@ -341,10 +342,10 @@ provider calls or model execution. See
 
 ## Deferred behavior
 
-Optional member Drivers, per-Agent Driver selection, automatic account creation,
-clientless Backends, installed Backend loading/injection, Backend detail,
-creation, and management UI, OAuth/refresh, renewal, and a common inference API
-remain out of scope.
+Per-Agent Driver selection, automatic ServiceAccount creation during Agent setup,
+clientless Backends, installed Backend loading or injection, Backend detail,
+creation and management UI, automatic renewal of Backend-issued ServiceAccount
+credentials and a common inference API remain out of scope.
 
 ## Related
 

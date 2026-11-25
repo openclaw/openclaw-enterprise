@@ -78,12 +78,12 @@ supported behavior and limits. Source implementation is not proof that a
 particular deployment enforces its networking, storage, or placement requirements.
 
 The API, console, durable worker, PostgreSQL persistence, and Kubernetes packaging
-are implemented. Single-cluster Kubernetes execution places Gateway and Harness in one tenant
-namespace with separate Pods, identities and storage. External access-gateway admission, workload
+are implemented. In a dedicated single-cluster deployment, the Agent Gateway
+stays in the OCE tenant namespace. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
 planned. The two-cluster profile is experimental. The Kubernetes Compute Driver's experimental
 [managed OpenShell runtime](reference/drivers/kubernetes-openshell-compute.md)
-uses OpenShell-managed Harness namespaces and storage with a stable Sandbox per
+uses OpenShell Workspace storage and a stable Sandbox per
 Agent. Its cluster integration and generation-fenced replacement remain unverified.
 
 <a id="current-limitations"></a>
@@ -155,7 +155,10 @@ selected credentials.
 
 Embedded OpenClaw runs its gateway and Harness together in the data plane.
 Dedicated Kubernetes execution uses separate Gateway and Harness Pods, identities
-and storage within one tenant namespace in a single cluster. The Gateway uses scoped remote file operations rather than
+and storage. In a single cluster, both Pods normally run in the OCE tenant
+namespace. In service mode, the OpenShell gateway’s workspace mode determines
+where the Harness runs. The Agent Gateway stays in the OCE tenant namespace.
+The Gateway uses scoped remote file operations rather than
 mounting the Harness workspace. Direct authentication gives the model credential to the executing Harness; managed delivery gives it a placeholder. A dedicated Gateway does not receive the model credential.
 
 <a id="agent-provisioning-sequence"></a>

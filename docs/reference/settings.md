@@ -75,23 +75,33 @@ When a production or explicit Kubernetes startup YAML is used, the required
 `drivers.secret` selection currently supports the bundled
 [Kubernetes Secret Driver](drivers/kubernetes-secret.md). It is loaded from the
 same startup YAML, stores Namespace-owned Secret values in the backing
-Kubernetes namespace, and exposes only metadata through OCC. Secret value updates
-do not restart workloads; explicitly redeploy or restart each consuming Agent to
-consume the current value. The selected Secret Driver is not a Credential Gateway, SecretBroker,
+Kubernetes namespace, and exposes only metadata through OCC. Updating a Secret
+does not restart workloads. Harnesses and embedded Gateways need a new
+Agent deployment to refresh revision copies. A dedicated Gateway restart
+reads current channel Secret values. If a static Credential Source holds a
+Gateway copy, wait until every running Agent using that Source is idle.
+An OpenShell Source update briefly disconnects their workspace nodes and can
+interrupt turns. Update the Source before deployment. Review saved drafts and
+deploy only Agents intended to run. Follow
+[Update and redeploy](drivers/kubernetes-secret.md#update-and-redeploy)
+to verify each consumer. The selected Secret Driver is not a Credential Gateway, SecretBroker,
 rotation service, or credential issuer.
 
 The optional `drivers.sandbox` selection currently supports the bundled
 [OpenShell SandboxDriver](drivers/openshell-sandbox.md) with the bundled Kubernetes
 Compute Driver. It is loaded from the same startup YAML, injected into the
 Kubernetes Compute Driver before workers reconcile versions, and fails startup
-when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
-dedicated Codex execution; embedded OpenClaw remains unsupported for this
-SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`
-[Backend](backends.md#openshell-gateway) and a matching
-`drivers.credential_gateway` selection of the
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). An optional
-`drivers.credential_refresh` selection on the same Backend adds the
-[Credential Refresh Driver](drivers/credential-refresh.md) for OAuth2 sources.
+when paired with SSH or an installed Compute Driver. OpenShell is
+for development. It supports dedicated Codex and experimental
+[dedicated native OpenClaw](harness-execution.md#supported-topology) with compatible
+Sandbox settings and native worker support. Embedded OpenClaw is unsupported.
+
+The [OpenShell Backend](backends.md#openshell-gateway) must connect to the
+OpenShell Gateway service and list the selected Sandbox Driver ID. The legacy
+[Credential Gateway Driver](drivers/openshell-credential-gateway.md) is optional.
+The optional [Credential Refresh Driver](drivers/credential-refresh.md) for
+OAuth2 sources requires that Gateway Driver on the same Backend. The selected Gateway
+and Refresh Driver IDs must match their Backend members.
 
 For contributor test variables, fixtures, and commands, see the
 [testing guides](../testing/README.md).
