@@ -10,18 +10,16 @@ author: stevenlee-oai
 
 A Gateway needs usable credentials to connect to services such as Slack. Today, Slack uses Namespace Secrets. [Credential Design 1.0](20261124-credential-design-1-0/index.md) also lets TokenService own credentials, including material held by OpenShell outside Kubernetes. The Gateway has no startup path for those Sources.
 
-**Approach:** Use `Configuration.secretBindings` to select credentials for Gateway startup. An authorized caller can explicitly bind any supported static CredentialSource, including one also used by Credential Proxy. The OCC worker authorizes the exact binding and resolves TokenService's value; Compute delivers it only to the dedicated Gateway. No Gateway-specific Source profile or native field allowlist is required. Preserve existing Namespace Secret delivery.
+**Approach:** An authorized caller explicitly selects a supported static CredentialSource in `Configuration.secretBindings`, including a Source also used by Credential Proxy. The OCC worker authorizes the binding and resolves the value; Compute delivers it only to the dedicated Gateway. Existing Namespace Secret delivery stays unchanged.
 
 **Accepted tradeoff:** An explicit Gateway binding authorizes a usable copy outside Credential Proxy's request restrictions. Kubernetes stages that copy in the Gateway Pod namespace, where workload managers can mount it elsewhere. The running Gateway retains its startup value until managed redeploy; revocation does not erase its environment or immediately remove the staged copy.
 
 ## Delivery flow
 
-1. OCC admits a ready static Source from the same Namespace when its recorded owner matches the selected TokenService instance and dedicated Gateway export is supported. Model presets, Connection Templates, and other consumer bindings do not disqualify it. Record the selected instance in the revision. Reject unsupported or embedded Source delivery before saving the revision.
-2. The [worker](../../apps/controller/src/worker.ts) calls Compute's `prepareRevision`. Compute runs in the worker process and invokes `context.gatewayStartupCredentials.resolve(signal)`. The worker verifies the claim, Agent, revision, owner, supported binding, and both principals' grants before and after reading from TokenService (or the selected Secret Driver for a supported export). It returns only the explicitly bound Gateway environment names and values in memory.
-3. The selected Compute Driver owns delivery. Kubernetes Compute creates a revision-specific Secret in the Gateway Pod namespace and references it from the Gateway Deployment, as shown below. Existing canonical Namespace Secrets remain direct references. Other Compute Drivers must use their own qualified transport or refuse delivery. The Secret Driver owns storage or export, not startup transport.
-4. For exported delivery, Compute authorizes all Gateway bindings immediately before any mutation that can start the Gateway, including mixed bindings and retries. Authorization, read, and staging failures precede that mutation; a later Kubernetes `Recreate` rollout failure can interrupt the predecessor. Sanitize errors and remove abandoned or retired copies without deleting owner material.
-
-If a candidate staged A but has not launched when the owner changes to B, retry with B. Observe the same workload after an uncertain launch. An OCC-managed redeploy uses the newly resolved value. A kubelet-only restart can reuse the old staged copy; revocation blocks subsequent OCC-managed starts.
+1. **Admit:** OCC checks that the Source is ready, static, in the same Namespace, and owned by the selected TokenService instance; it records that instance in the revision. Model presets, Connection Templates, or other consumer bindings do not disqualify it. Reject unsupported or embedded Source delivery before saving the revision.
+2. **Resolve:** The [worker](../../apps/controller/src/worker.ts) calls Compute's `prepareRevision`. Compute runs in the same process. When it needs exported credentials, it calls `context.gatewayStartupCredentials.resolve(signal)`. The worker verifies the claim, Agent, revision, owner, binding, and both principals' grants before and after reading from TokenService (or the selected Secret Driver for a supported export). It returns the bound Gateway values and, for each Source, its owner version in memory. Refuse Source delivery without a nonempty owner version.
+3. **Deliver:** For exported Gateway values, Kubernetes Compute creates one staged Secret per Agent revision in the Gateway Pod namespace. It records Source versions by environment destination in a private annotation so retries can identify the staged version, and stages the values in `data`. The Gateway Deployment references only the values, as shown below. Existing canonical Namespace Secrets remain direct references. Other Compute Drivers must own a qualified startup transport or refuse delivery; the Secret Driver owns storage or export.
+4. **Start:** When a revision uses exported delivery, Compute calls the worker-owned `authorize` callback for all Gateway bindings immediately before an operation that can start the Gateway, such as updating its Kubernetes Deployment. This includes mixed bindings and retries. Authorization, read, or staging failure prevents candidate startup. Dedicated deployment may already have stopped the predecessor, so a failure can interrupt service. Sanitize failures.
 
 ### Kubernetes Compute example
 
@@ -33,6 +31,8 @@ kind: Secret
 metadata:
   name: gateway-credentials-rev-123
   namespace: tenant-example
+  annotations:
+    openclaw.dev/gateway-source-versions: '{"GW_HOOK_TOKEN":"version-1"}'
 type: Opaque
 data:
   GW_HOOK_TOKEN: ZXhhbXBsZQ==
@@ -57,11 +57,17 @@ spec:
 
 The kubelet reads that Secret and supplies the decoded value in the Gateway container's environment at startup. The Deployment, container image, and OCC Configuration do not contain the token. The Kubernetes Secret does contain a usable copy: `data` is base64-encoded, not encrypted by that encoding.
 
+### Revision lifetime and cleanup
+
+The staged Secret belongs to the Agent revision. A replacement Pod for the same running revision reuses it; a new revision gets its own Secret. Kubernetes Compute owns cleanup: when a revision is stopped or retired, it waits for that revision's Gateway Pods to stop, then deletes the staged Secret in the Gateway namespace. It also removes copies for abandoned candidates once their Pods have stopped. Cleanup never deletes the original TokenService material or a canonical Namespace Secret. A failed deletion can leave the staged copy until cleanup succeeds.
+
+An OCC-managed redeploy reads the current owner value. If an unlaunched candidate staged A and the owner changes to B, retry by replacing the staged values and Source-version annotation together with B and B's version. After an uncertain launch, observe the same workload before retrying. A kubelet-only Pod restart can reuse A; revocation blocks subsequent OCC-managed starts but does not erase an existing process's environment.
+
 ## Interface changes
 
 ### APIs
 
-Extend [SecretBinding.source](../../packages/contracts/src/index.ts) with `CredentialSourceReference` alongside `SecretReference`. Keep exact same-Namespace references, environment destinations, limits, reserved names, and native Configuration validation. Do not add a Gateway field allowlist. Existing Slack discovery and preflight remain Namespace Secret-only. If an enabled Slack credential input selects a Source, refuse that unsupported integration until qualified; an environment name alone does not disqualify a Gateway binding.
+Extend [SecretBinding.source](../../packages/contracts/src/index.ts) with `CredentialSourceReference` alongside `SecretReference`. Keep exact same-Namespace references, environment destinations, limits, reserved names, and native Configuration validation. Do not add a Gateway-specific Source profile or field allowlist. Existing Slack discovery and preflight remain Namespace Secret-only. If an enabled Slack credential input selects a Source, refuse that unsupported integration until qualified; an environment name alone does not disqualify a Gateway binding.
 
 ### IAM
 
@@ -78,11 +84,13 @@ Add to [ComputeRevisionContext](../../packages/contracts/src/drivers/compute/ind
 ```ts
 readonly gatewayStartupCredentials?: {
   authorize(signal: AbortSignal): Promise<void>;
-  resolve(signal: AbortSignal): Promise<Readonly<Record<string, string>>>;
+  resolve(signal: AbortSignal): Promise<
+    Readonly<Record<string, { readonly value: string; readonly sourceVersion?: string }>>
+  >;
 };
 ```
 
-For exported inputs, require both methods: `resolve` returns only the selected Gateway variables; `authorize` checks all bindings without reading values. Secret-only deployments retain their existing worker authorization path. Reuse [TokenService.resolveCredential](../../packages/contracts/src/drivers/token-service/index.ts) and optional [SecretDriver.withValue](../../packages/contracts/src/drivers/secret/index.ts). Keep canonical Namespace Secret projections direct. OCC must not expose exported values to the Harness, other containers, APIs, revisions, logs, or diagnostics.
+For exported inputs, require both methods: `resolve` returns only the selected Gateway variables, with a nonempty `sourceVersion` required for Source bindings and absent for Secret Driver exports; `authorize` checks all bindings without reading values. Canonical Namespace Secret-only deployments retain their existing worker authorization path. Reuse [TokenService.resolveCredential](../../packages/contracts/src/drivers/token-service/index.ts) and optional [SecretDriver.withValue](../../packages/contracts/src/drivers/secret/index.ts). OCC must not expose exported values to the Harness, other containers, APIs, revisions, logs, or diagnostics.
 
 ## Initial support
 
@@ -101,8 +109,8 @@ Keeping only Namespace Secrets would be simpler, but would not let a Gateway con
 
 Use the real API, PostgreSQL worker, Kubernetes Compute, and native Gateway process:
 
-- **AC1:** The Gateway observes A, keeps A after its Source is replaced with B, and observes B after managed redeploy. An unlaunched retry staged with A must start with B. Verify process identity and compare a digest without exposing plaintext.
+- **AC1:** The Gateway observes A, keeps A after its Source is replaced with B, and observes B after managed redeploy. An unlaunched retry staged with A must stage B and record B's owner version before starting. Verify process identity and compare a digest without exposing plaintext; refuse a Source result without its version.
 - **AC2:** Deny each principal, revoke during owner I/O, and deny staged reuse; each must prevent Gateway mutation. A queued provisioning plan as the sole reference must block Source deletion. Verify attributable evidence for the actor, exact Source and revision, without credential values, and sanitized failures.
-- **AC3:** Verify Gateway-only projection, cleanup, and that ordinary workload identities cannot read the copy or create workloads that mount it. This does not protect against namespace administrators.
+- **AC3:** Verify Gateway-only projection, reuse on Pod replacement within a running revision, separate copies across revisions, and Compute cleanup after stop, retirement, or abandonment without deleting owner material or another revision's copy. Ordinary workload identities cannot read the copy or create workloads that mount it; namespace administrators remain trusted.
 - **AC4:** Preserve Slack preflight and discovery checks. A canonical Secret update followed by bare Gateway Pod replacement must observe the update. Qualify actual OpenShell export separately.
 - **AC5:** Explicitly bind a static Source already used through Credential Proxy. Verify that only the Gateway receives the exported copy, the original Proxy binding continues to enforce its request restrictions, and removing the Gateway binding leaves the Proxy binding intact. Without the Gateway binding, no Gateway copy is created.
