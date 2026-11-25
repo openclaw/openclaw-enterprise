@@ -9,7 +9,8 @@ import {
   keycloakBrowserRoute,
   keycloakHostPort,
   keycloakRealmAdmin,
-} from "./ci-keycloak-realm.mjs";
+  keycloakRealmRows,
+} from "./ci-keycloak-realm.ts";
 import { tlsPeerCertificate } from "./tls-peer-certificate.ts";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -1793,16 +1794,19 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
 
   // A disposable client admits this run's exact Console callback without changing
   // the separately prepared sign-in fixture or weakening redirect validation.
-  const [preparedClient] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/clients?clientId=${secrets.clientId}`,
+  const [preparedClient] = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${secrets.clientId}`),
   );
   assert.ok(preparedClient);
   const clientId = `oce-native-${randomUUID()}`;
   const clientSecret = randomUUID() + randomUUID();
   const { id: _preparedId, ...clientSettings } = preparedClient;
+  assert.ok(
+    clientSettings.protocolMappers === undefined ||
+      clientSettings.protocolMappers === null ||
+      Array.isArray(clientSettings.protocolMappers),
+    "invalid Keycloak client protocol mappers",
+  );
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
     ...clientSettings,
     clientId,
@@ -1825,20 +1829,15 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
       },
     ],
   });
-  const [client] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/clients?clientId=${clientId}`,
+  const [client] = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${clientId}`),
   );
+  assert.ok(client);
   context.after(() => keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`));
   const groupName = `oce-members-${randomUUID()}`;
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/groups", { name: groupName });
-  const groups = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/groups?search=${groupName}`,
+  const groups = keycloakRealmRows(
+    await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/groups?search=${groupName}`),
   );
   const group = groups.find((entry) => entry.name === groupName);
   assert.ok(group);
@@ -2300,11 +2299,13 @@ export async function runOidcAgentChatUpgradeScenario(context, upgrade = undefin
     lastName: "Person",
     credentials: [{ type: "password", value: linkedPassword, temporary: false }],
   });
-  const [linkedUser] = await keycloakRealmAdmin(
-    issuer,
-    secrets.admin,
-    "GET",
-    `/users?exact=true&username=${linkedUsername}`,
+  const [linkedUser] = keycloakRealmRows(
+    await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      `/users?exact=true&username=${linkedUsername}`,
+    ),
   );
   assert.ok(linkedUser);
   context.after(() =>
