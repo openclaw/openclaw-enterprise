@@ -1,7 +1,7 @@
 ---
 created: "2026-11-20"
-updated: 2026-11-22
-last_updated_session: authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc
+updated: 2026-11-25
+last_updated_session: authoring-run/94ca3b94-b1d1-4aa4-8da6-ab2d17cf904a
 ---
 
 # Managed static credential source custody flow
@@ -57,6 +57,8 @@ Startup binds the selected TokenService instance to the Secret Driver's Installa
 
 `packages/occ/src/managed-credential-sources.ts:createManagedCredentialSource`, `apps/controller/src/drivers/token-service/occ.ts:createSource`
 
+`occ credential-source create --github-repo owner/name` reads the token from redirected stdin. `internal/occcli/github_source.go:createGitHubSource` sends the same registration POST as `--file`, with a single `owner/name:read` ceiling.
+
 The OCC Source manager authorizes the collection request, then checks the ready Namespace and approved provider preset. A `github` Source also needs a valid repository ceiling, which OCC stores in canonical order, and a value that has the fine-grained personal access token prefix and only printable characters. OCC refuses other values before custody without echoing them. TokenService also refuses a `github` value that the native Git Provider cannot install, using that Provider's own check: more than 16,384 bytes or containing `openshell:resolve:`. It commits registration intent and releases its locks before calling TokenService. TokenService assigns the Source ID, creates the canonical ready record and private credential in its own operation, commits its PostgreSQL transaction, and returns the Source. OCC uses the returned Source to commit creator IAM and completion audit separately. Completion audit carries the preset and any repository ceiling. An operation admitted before IAM revocation may finish after revocation. The credential never enters public metadata, Namespace Secret references, logs, or audit details.
 
 An uncertain private-store write can leave material without a Source record. A failure after TokenService commits can leave a Source without its creator grant or completion audit. POST reports failure; the committed request intent remains. The private store has no inventory operation.
@@ -97,6 +99,8 @@ Run `node --test tests/integration/postgres-staged-agent-credential-binding.test
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 04:21: Document CLI enrollment for one read-only repository from standard input. (authoring-run/94ca3b94-b1d1-4aa4-8da6-ab2d17cf904a - bf7a88d2899cea31aefa38beb2ddd96815ed5a9f)
 
 - 2026-11-22 12:28: Retire the selected Proxy delivery copy before TokenService removes Source custody. (authoring-run/81ce6a62-aa40-44d2-8f4f-48c6b97428fc - 802c9adb9)
 

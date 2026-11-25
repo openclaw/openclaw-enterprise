@@ -21,6 +21,16 @@ If the private-store write cannot be confirmed, registration can fail while leav
 
 ### Register a GitHub repository token
 
+For a first repository, select only that repository and Contents read access when creating the fine-grained token on GitHub. Verify its permissions there on registration and replacement. The OCC ceiling cannot verify or reduce the token's GitHub permissions.
+
+With [CLI access](../cli.md#global-options) to the ready Namespace, redirect an existing private file containing just the token (on Unix, use mode `0600`). Use HTTPS or HTTP on a loopback IP.
+
+```sh
+occ credential-source create --github-repo acme/docs < "$PAT_FILE"
+```
+
+Alternatively, in Bash with tracing disabled, pipe an existing unexported variable with `builtin printf '%s' "$PAT" | occ credential-source create --github-repo acme/docs`. The CLI reads one token from stdin and registers `GitHub acme/docs` with the Git-only ceiling `acme/docs:read`. Keep the returned Source ID. Registration grants no Agent access.
+
 The `github` preset holds one GitHub fine-grained personal access token. `config.repositories` is required with this preset and is not allowed with other presets. It is the Source's repository ceiling: comma-separated `owner/name:read` or `owner/name:write` entries, each repository once, in canonical lowercase form. It holds at most 32 entries, and the whole value at most 2,048 characters, as for every config value. An error names the refused entry by number. The response returns the ceiling in repository order. Create and update audit records carry the ceiling, and a ceiling change also records the previous one.
 
 ```json

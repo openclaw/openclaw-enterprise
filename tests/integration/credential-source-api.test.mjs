@@ -1,7 +1,13 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { open, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { text } from "node:stream/consumers";
 import test from "node:test";
+import { promisify } from "node:util";
 import { Check } from "typebox/value";
 import { CredentialDeliveryFailedError, InstalledDriver } from "../../packages/occ/src/index.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
@@ -30,6 +36,8 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { registerCredentialSourceEndpointCases } from "./credential-source-endpoint-cases.ts";
 
 // Tool source types, the Secret field each takes, and a valid config each starts from.
@@ -544,6 +552,97 @@ const REFUSED_CLASSES = {
 };
 const CLASS_REFUSAL =
   "A github credential source accepts only a fine-grained personal access token.";
+
+test("occ credential-source create --github-repo requires create permission and saves one Git Read repository", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-github-source-");
+  const cli = join(directory, "occ");
+  const run = promisify(execFile);
+  await run("go", ["build", "-trimpath", "-o", cli, "./cmd/occ"]);
+
+  const f = await fixture(t, { tokenService: true });
+  const address = f.app.server.address();
+  assert.ok(address && typeof address !== "string");
+  const namespaceId = f.namespace.id;
+  const principalId = "sp_" + randomUUID();
+  f.policy.identities.push({ kind: "service_principal", id: principalId, namespaceId });
+  grantRole(f.policy, principalId, {
+    id: "source-reader",
+    namespaceId,
+    permissions: { namespace: ["read"], credential_source: ["read"] },
+  });
+  const issued = await f.request("POST", "/api/auth/service-keys", {
+    body: { servicePrincipalId: principalId, namespaceId, name: "enrollment" },
+  });
+  assert.equal(issued.status, 201);
+  const keyFile = join(directory, "key.json");
+  await writeFile(keyFile, JSON.stringify({ data: issued.data }), { mode: 0o600 });
+
+  // Redirect a private file just as a developer would with < "$PAT_FILE".
+  const tokenFile = join(directory, "token");
+  await writeFile(tokenFile, FINE_GRAINED + "\n", { mode: 0o600 });
+  async function enroll() {
+    const input = await open(tokenFile);
+    try {
+      const args = ["-o", "json", "credential-source", "create", "--github-repo", "octo/app"];
+      const env = {
+        OCC_URL: `http://127.0.0.1:${address.port}`,
+        OCC_SERVICE_KEY_FILE: keyFile,
+        OCC_NAMESPACE: namespaceId,
+      };
+      const child = spawn(cli, args, { env, stdio: [input.fd, "pipe", "pipe"], timeout: 10_000 });
+      const [[code], stdout, stderr] = await Promise.all([
+        once(child, "close"),
+        text(child.stdout),
+        text(child.stderr),
+      ]);
+      // Check both streams before any assertion can print the command's output.
+      const visible = JSON.stringify([stdout, stderr, f.auditSink.events]);
+      for (const secret of [FINE_GRAINED, issued.data.key]) {
+        assert.ok(!visible.includes(secret), "credential exposed");
+      }
+      return { code, stdout, stderr };
+    } finally {
+      await input.close();
+    }
+  }
+
+  const denied = await enroll();
+  assert.ok(denied.code > 0);
+  assert.match(denied.stderr, /HTTP 403/);
+  const list = await f.request("GET", f.path);
+  assert.equal(list.status, 200);
+  assert.equal(list.data.length, 0);
+
+  grantRole(f.policy, principalId, {
+    id: "source-creator",
+    namespaceId,
+    permissions: { credential_source: ["create"] },
+  });
+  const created = await enroll();
+  assert.equal(created.code, 0);
+  const { id } = JSON.parse(created.stdout);
+  assert.ok(
+    f.auditSink.events.some(
+      (event) =>
+        event.resource?.id === id &&
+        event.action === "openclaw.credential_sources.create" &&
+        event.details?.repositories === "octo/app:read",
+    ),
+  );
+  const read = await f.request("GET", `${f.path}/${id}`);
+  assert.equal(read.status, 200);
+  assert.ok(!JSON.stringify(read.body).includes(FINE_GRAINED), "source exposed the token");
+  assert.deepEqual(read.data.config, { provider_preset: "github", repositories: "octo/app:read" });
+  assert.deepEqual(read.data.secrets, {});
+  const stored = await f.tokenServiceOwner.resolveCredential(
+    {
+      sourceRef: { kind: "credential_source", namespaceId, id },
+      tokenServiceInstanceId: f.tokenServiceInstanceId,
+    },
+    AbortSignal.timeout(5000),
+  );
+  assert.ok(stored.credential === FINE_GRAINED, "Token Service did not retain the stdin token");
+});
 
 test("Source enrollment and the Repo Driver agree on which tokens are fine-grained", () => {
   const values = [

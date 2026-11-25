@@ -51,7 +51,10 @@ JSON
   Add harnessAuth to select model authentication. See
   https://docs-enterprise.openclaw.org/reference/agents/`
 
-const credentialSourceCreateExample = `  cat > credential-source.json <<'JSON'
+const credentialSourceCreateExample = `  # Use a private file containing only the token. Check its scope on GitHub first.
+  occ credential-source create --github-repo acme/docs < "$PAT_FILE"
+
+  cat > credential-source.json <<'JSON'
   {"name": "openai", "type": "openai",
    "secrets": {"api_key": {"kind": "secret", "namespaceId": "<namespace-id>", "id": "<secret-id>"}}}
 JSON
