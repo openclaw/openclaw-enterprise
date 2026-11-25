@@ -10,9 +10,9 @@ Enable Linear on the Codex Agent you created during setup (`fred` in this exampl
 
 ## Before you start
 
-Use a ready Codex account Source with hosted Apps enabled and an authorized
-Linear connection. A Source from Codex OAuth or a Codex PAT can browse the
-account catalog. An OpenAI API key cannot access hosted Apps. A real PAT-backed
+To use Linear, the Agent needs a ready Codex account Source with hosted Apps
+enabled and an authorized Linear connection. An OpenAI API key cannot access
+hosted Apps. A real PAT-backed
 turn and a hosted App tool call remain unverified on the managed delivery path.
 
 Complete [Deploy your first Agent](../deploy/deploy-first-agent.md), including browser onboarding and reopening the same conversation. Continue in its Bash shell or source the private `session.sh` printed at the end of the guide. Use the same Agent and ready TokenService account Source. Selecting a plugin does not authorize a new connection.
@@ -29,23 +29,22 @@ Save the plugin selections, then continue below to stop and redeploy the Agent.
 </Accordion>
 <Accordion title="CLI">
 
-### Discover Linear in the account catalog
+<a id="discover-linear-in-the-account-catalog"></a>
 
-Use the ready TokenService account Source for Codex. The saved session supplies its Namespace Source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+### Discover Linear in the curated catalog
+
+The quickstart configures the `openai-curated` catalog. Search it without a credential Source. The result gives you the plugin ID. Verify the Agent's access to Linear in step 2.
 
 ```bash
-# Read the Source reference for the existing Agent's account.
-request GET "$base/credential-sources/${modelSource:?}" |
-  jq -e '.data | select(.state=="ready") | .ref' > "$RUN_DIR/catalog-source-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{credentialSource:.,q:"linear"} +
-    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-source-ref" |
+  jq -n --arg cursor "$cursor" '{q:"linear"} +
+    (if $cursor=="" then {} else {cursor:$cursor} end)' |
     request POST "$base/agents/$agent/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")
   if [[ -n $plugin ]]; then break; fi
   cursor=$(jq -r '.data.nextCursor // empty' "$RUN_DIR/plugins")
-  if [[ -z $cursor ]]; then echo 'Linear is unavailable for this account.' >&2; exit 1; fi
+  if [[ -z $cursor ]]; then echo 'Linear is unavailable in the curated catalog.' >&2; exit 1; fi
 done
 printf 'Linear plugin ID: %s\n' "$plugin"
 ```
