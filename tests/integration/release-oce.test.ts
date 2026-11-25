@@ -231,6 +231,36 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
   };
   const imageRecovery = command("admit", { ...fresh, IMAGES_ONLY: "true" }, imagesProducer);
   assert.equal(imageRecovery.status, 0, imageRecovery.stderr);
+  // A publisher can time out between alias writes. GitHub can report the
+  // overall run as failed even when the job conclusion is timed_out.
+  for (const conclusion of ["failure", "timed_out"]) {
+    const timedOut = command(
+      "admit",
+      { ...fresh, IMAGES_ONLY: "true" },
+      {
+        ...metadata,
+        [api + "/runs/123"]: { ...producer, conclusion },
+        [api + "/runs/123/attempts/1/jobs"]: {
+          jobs: [
+            ...jobs.slice(0, 2),
+            {
+              ...jobs[0],
+              name: "Publish images only (Full Integration skipped)",
+              conclusion: "timed_out",
+            },
+          ],
+        },
+      },
+    );
+    assert.equal(timedOut.status, 0, timedOut.stderr);
+  }
+  assert.notEqual(
+    command("admit", fresh, {
+      ...metadata,
+      [api + "/runs/123"]: { ...producer, conclusion: "timed_out" },
+    }).status,
+    0,
+  );
   assert.notEqual(command("admit", fresh, imagesProducer).status, 0);
   const rehearsal = command("record", { PUBLISH: "false" });
   assert.equal(rehearsal.status, 0, rehearsal.stderr);

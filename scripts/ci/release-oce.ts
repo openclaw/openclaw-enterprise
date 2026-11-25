@@ -36,16 +36,18 @@ export function validateProducer(run: unknown, jobs: unknown[], env: NodeJS.Proc
   }
   assert.equal(field(run, "run_attempt"), 1, "The original attempt must still be attempt 1.");
   assert.equal(field(run, "status"), "completed");
+  const interrupted =
+    env.IMAGES_ONLY === "true" ? ["failure", "cancelled", "timed_out"] : ["failure", "cancelled"];
   assert.ok(
-    ["failure", "cancelled"].includes(String(field(run, "conclusion"))),
-    "Recovery requires a failed or cancelled original publish run.",
+    interrupted.includes(String(field(run, "conclusion"))),
+    `Expected the original publish run to conclude with one of: ${interrupted.join(", ")}.`,
   );
   const required = new Map<string, string[]>([
     ["Approve release", ["success"]],
     ["Verify approval", ["success"]],
   ]);
   if (env.IMAGES_ONLY === "true") {
-    required.set("Publish images only (Full Integration skipped)", ["failure", "cancelled"]);
+    required.set("Publish images only (Full Integration skipped)", interrupted);
   } else {
     required.set("Full Integration / Full Integration Aggregate", ["success"]);
     required.set("Record qualified release", ["success"]);

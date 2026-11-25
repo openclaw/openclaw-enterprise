@@ -64,7 +64,7 @@ and the GitHub Release require the full release procedure above.
 
 ### Recover an image-only publication
 
-If the image-only publisher fails or is cancelled after it starts writing,
+If the image-only publisher fails, times out, or is cancelled after it starts writing,
 check both source tags and both aliases. Use digest references while the
 aliases point to different publications.
 
