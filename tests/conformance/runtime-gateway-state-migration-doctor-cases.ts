@@ -199,10 +199,12 @@ test("Gateway state migration runs Doctor for an older shared state database bes
 });
 
 test("Gateway state migration waits for the settled Doctor result and preserves warnings", async (t) => {
-  const directory = await stateDirectory(t, { main: CURRENT - 1, current: CURRENT });
+  // These are the settled agent and shared schemas written by the preceding Runner.
+  const directory = await stateDirectory(t, { main: 43, current: CURRENT }, { shared: 40 });
   const warning = "Warning: Gateway is not configured";
   const outcome = await migrate(directory, async (child) => {
     setVersion(databasePath(directory, "main"), CURRENT);
+    setVersion(sharedPath(directory), STATE_CURRENT);
     // Let any exit-driven decision settle before delivering the final output.
     child.emit("exit", 0, null);
     await nextTurn();
@@ -236,7 +238,10 @@ test("Gateway state migration waits for the settled Doctor result and preserves 
   assert.equal(outcome.holds, 0);
   assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
   assert.deepEqual(outcome.stdout, [warning + "\n"]);
-  assert.match(outcome.errors.join("\n"), new RegExp(`from schema ${CURRENT - 1} to ${CURRENT}`));
+  assert.match(
+    outcome.errors.join("\n"),
+    new RegExp(`from schema 40 to ${STATE_CURRENT}, 43 to ${CURRENT}`),
+  );
 });
 
 test("Gateway state migration refuses incomplete maintenance even after schemas advance", async (t) => {

@@ -99,7 +99,7 @@ export async function probePackagedCodex(
           "openclaw-http-chat-input.patch":
             "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
           "openclaw-node-setup-renewal.patch":
-            "a4662990e1a43ff0e4cfddc58509e164bce7c6d50ffcf535612acec05ac66e49",
+            "0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);

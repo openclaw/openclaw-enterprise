@@ -11069,24 +11069,19 @@ index a1ca38135cb..0a906f7e2eb 100644
    invokeRegisteredNodeHostCommand: vi.fn(async () => null),
  }));
 diff --git a/src/node-host/startup-state-readiness.test.ts b/src/node-host/startup-state-readiness.test.ts
-index 58839fc9a08..7065997956f 100644
+index 58839fc9a08..723434aa945 100644
 --- a/src/node-host/startup-state-readiness.test.ts
 +++ b/src/node-host/startup-state-readiness.test.ts
-@@ -189,9 +189,11 @@ describe("node-host state readiness", () => {
-       if (mode === "managed") {
-         stateDb.openOpenClawStateDatabase({ env });
-         await stateDb.closeOpenClawStateDatabaseAsync();
--        await expect(withExistingOpenClawStateSchema({ path: databasePath() }, run)).rejects.toBe(
--          fixture.admitted,
--        );
-+        await expect(
-+          withExistingOpenClawStateSchema({ path: databasePath() }, async () => {
-+            await run();
-+          }),
-+        ).rejects.toBe(fixture.admitted);
-       } else if (mode === "canonical") {
-         const canonical = identityStore.loadOrCreateDeviceIdentity({ env });
-         const { sourcePath, raw } = writeSource("identity/device.json", {
+@@ -56,3 +56,8 @@ const makeIdentity = () => generateStoredDeviceIdentity(1_700_000_000_000);
+ const entrypoints = [
+-  { name: "node runner", run: () => runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 }) },
++  {
++    name: "node runner",
++    run: async () => {
++      await runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 });
++    },
++  },
+   { name: "JSONL worker", run: runNodeHostWorker },
 diff --git a/src/node-host/worker-runtime.test.ts b/src/node-host/worker-runtime.test.ts
 index dd2612109e7..a5741cc7ef5 100644
 --- a/src/node-host/worker-runtime.test.ts
