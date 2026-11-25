@@ -646,13 +646,9 @@ test(
 
     const template = await inject("POST", "/connection-templates", {
       namespaceId,
-      displayName: "OAuth authorization",
-      mode: "manual",
-      issuer: "https://issuer.example.test",
-      authorizationUrl: "https://issuer.example.test/authorize",
-      tokenUrl: "https://issuer.example.test/token",
-      scopes: [],
-      destinations: [{ host: "api.example.test", port: 443, path: "/**" }],
+      displayName: "Static service authorization",
+      mode: "static_bearer",
+      destinations: [{ host: "api.example.test", port: 443, path: "/**", method: "GET" }],
     });
     assert.equal(template.statusCode, 201, template.body);
     const templateId: string = template.json().data.id;

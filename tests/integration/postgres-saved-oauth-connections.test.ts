@@ -418,6 +418,7 @@ test(
       const removed = await inject("DELETE", `/credential-clients/${id}`);
       assert.equal(removed.statusCode, 204, removed.body);
     }
+    await controller.cleanupCredentialClients();
   },
 );
 
