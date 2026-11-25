@@ -1,7 +1,11 @@
 import type { Pool, QueryResult, QueryResultRow } from "pg";
 
 import { summarizeWorkerEvents, workerDiagnosticLines } from "./k3d-failure-diagnostics.ts";
-import { diagnosticDeadlinePassed } from "./kubernetes-real.ts";
+import {
+  diagnosticDeadlineMs,
+  diagnosticDeadlinePassed,
+  withinDiagnosticDeadline,
+} from "./kubernetes-real.ts";
 
 export const diagnosticQueryTimeoutMs = 3_000;
 
@@ -39,6 +43,95 @@ type WorkerCompletionDiagnostic = {
   persisted: PersistedWorkerState | { readError: "unavailable" };
   events: ReturnType<typeof summarizeWorkerEvents>;
 };
+
+// The thrown value controls even its name. Report only known error classes, never its text.
+const diagnosticErrorNames = new Set([
+  "AbortError",
+  "AggregateError",
+  "AssertionError",
+  "EvalError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TimeoutError",
+  "TypeError",
+  "URIError",
+]);
+
+function diagnosticErrorName(error: unknown): string {
+  try {
+    const name = typeof error === "object" && error !== null && "name" in error && error.name;
+    return typeof name === "string" && diagnosticErrorNames.has(name) ? name : "Error";
+  } catch {
+    return "Error";
+  }
+}
+
+type RevisionFailureCallbacks = {
+  readWorker: () => unknown;
+  describe: (worker: object | undefined) => string | PromiseLike<string>;
+};
+
+export async function describeRevisionFailure({
+  flow,
+  readWorker,
+  describe,
+  timeoutMs = diagnosticDeadlineMs,
+}: RevisionFailureCallbacks & {
+  flow: "Recovery" | "Replacement";
+  timeoutMs?: number;
+}): Promise<string> {
+  // Give the description its full budget even if the worker uses all of its own.
+  const read = await withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(readWorker)
+        .catch(() => null),
+    { timeoutMs, timedOut: null },
+  );
+  const worker = typeof read === "object" && read !== null ? read : undefined;
+  return withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(() => describe(worker))
+        .catch(
+          (error: unknown) => `\n${flow} diagnostic unavailable: ${diagnosticErrorName(error)}`,
+        ),
+    { timeoutMs, timedOut: `\n${flow} diagnostic timed out after ${timeoutMs / 1_000} s` },
+  );
+}
+
+// Finding 2017: after the gateway outage the held deployment can end failed_permanent with
+// RUNTIME_LOGIN_FAILED. The proof reads why near the failure, before its refresh checks take
+// minutes and the failed revision's Pods go: `readWorker` gives the worker's events and persisted
+// state, and `describe(worker)` the revision's Pods with the Gateway, Harness and OpenShell
+// supervisor log tails. Each read stops at the diagnostic deadline, and one that fails or stalls
+// only says so: it never replaces the failure it explains. The text is written to stderr, added
+// to `failure`'s message when the wait itself failed, and returned for the assertion.
+export async function failedRecoveryDiagnostic(
+  {
+    readWorker,
+    describe,
+    failure,
+    write = (text) => process.stderr.write(text),
+  }: RevisionFailureCallbacks & {
+    failure?: Error | undefined;
+    write?: (text: string) => unknown;
+  },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  const detail = await describeRevisionFailure({
+    flow: "Recovery",
+    readWorker,
+    describe,
+    timeoutMs,
+  });
+  write(`OpenShell integration: gateway outage recovery failed.${detail}\n`);
+  if (failure instanceof Error) {
+    failure.message = `${failure.message}${detail}`;
+  }
+  return detail;
+}
 
 export async function diagnosticQuery<Row extends QueryResultRow = Record<string, unknown>>(
   pool: Pool,

@@ -112,6 +112,7 @@ import {
   redeployOpenShellReplacement,
 } from "./openshell-replacement-activation.ts";
 import {
+  describeRevisionFailure,
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
   writeWorkerCompletionDiagnostics,
@@ -8411,16 +8412,11 @@ export async function waitForReplacementActivation(
         `Last completed pending replacement Compute decision: ${observation}.`,
       );
     }
-    const worker = await topology.diagnoseRevision(redeployed.data.id);
-    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
-    const detail = await withinDiagnosticDeadline(
-      () =>
-        diagnose(topology, redeployed.data, worker).catch(
-          (diagnosticError) =>
-            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-        ),
-      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
-    );
+    const detail = await describeRevisionFailure({
+      flow: "Replacement",
+      readWorker: () => topology.diagnoseRevision(redeployed.data.id),
+      describe: (worker) => diagnose(topology, redeployed.data, worker),
+    });
     // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
     if (error instanceof Error) {
       error.message = `${error.message}${detail}`;

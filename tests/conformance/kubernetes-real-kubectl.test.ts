@@ -43,7 +43,7 @@ import { readJsonLines } from "../helpers/json-lines-file.ts";
 import {
   assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
   createOpenShellKubernetesFixture as createOpenShellKubernetesFixtureJs,
-  failedRecoveryDiagnostic as failedRecoveryDiagnosticJs,
+  failedRecoveryDiagnostic,
   modelAtCapacityOutcome,
   retryModelAtCapacity as retryModelAtCapacityJs,
 } from "../helpers/openshell-kubernetes-real.mjs";
@@ -84,15 +84,6 @@ const assertAllowedCredentialRoute = assertAllowedCredentialRouteJs as (
   },
   options?: { timeoutMs?: number },
 ) => Promise<void>;
-const failedRecoveryDiagnostic = failedRecoveryDiagnosticJs as (
-  input: {
-    readWorker: () => unknown;
-    describe: (worker: unknown) => string | Promise<string>;
-    failure?: Error | undefined;
-    write: (text: string) => unknown;
-  },
-  options?: { timeoutMs?: number },
-) => Promise<string>;
 
 function expectExecFailure(
   value: unknown,
@@ -1232,6 +1223,16 @@ test("a failed outage recovery says why without replacing its failure", async ()
       write,
     }),
     "\nRecovery diagnostic unavailable: TypeError",
+  );
+  assert.equal(
+    await failedRecoveryDiagnostic({
+      readWorker: () => undefined,
+      describe: () => {
+        throw Object.assign(new Error("description failed"), { name: "untrusted diagnostic text" });
+      },
+      write,
+    }),
+    "\nRecovery diagnostic unavailable: Error",
   );
   const stalledWorker: unknown[] = [];
   await failedRecoveryDiagnostic(
