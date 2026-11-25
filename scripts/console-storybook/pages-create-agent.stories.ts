@@ -139,7 +139,10 @@ export const ExistingCredentialSourceLoading = story("createExistingSourceLoadin
 export const ExistingCredentialSourceListFailure = story("createExistingSourceListFailure");
 export const ExistingCredentialSourceNoMatch = story("createExistingSourceNoMatch");
 export const CreateExistingCredentialSourceDenied = story("createExistingSourceDenied");
-export const CreateWithExistingCredentialSource = story("createWithExistingCredentialSource");
+export const CreateWithExistingCredentialSource = {
+  ...story("createWithExistingCredentialSource"),
+  name: "Reuse an existing Credential Source",
+};
 export const ExistingSourceDestinationMismatch = story(
   "createExistingSourceUnsupportedDestination",
 );

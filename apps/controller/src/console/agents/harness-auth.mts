@@ -13,6 +13,7 @@ import {
   responseFields,
 } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setUnavailable } from "../dom.mjs";
+import { normalizeOpenAiBaseUrl } from "../openai-endpoint-url.mjs";
 import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
 import {
@@ -103,14 +104,11 @@ export function modelSourceProvider(
     responseFields(responseFields(configuration).models).providers,
   ).openai;
   const nativeOpenAI = responseFields(provider);
-  const nativeHostname =
-    typeof nativeOpenAI.baseUrl === "string"
-      ? /^https:\/\/([^/:]+)(?::443)?\/v1\/?$/.exec(nativeOpenAI.baseUrl)?.[1]
-      : undefined;
   return harnessId === "openclaw" &&
     providerId === "openai" &&
     nativeOpenAI.api === "openai-responses" &&
-    nativeHostname?.toLowerCase() === "api.openai.com"
+    typeof nativeOpenAI.baseUrl === "string" &&
+    normalizeOpenAiBaseUrl(nativeOpenAI.baseUrl) === "https://api.openai.com/v1"
     ? "openai"
     : undefined;
 }

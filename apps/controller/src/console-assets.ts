@@ -136,6 +136,14 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // Source eligibility and Compute admission use the same model endpoint normalization.
+  [
+    "/console/openai-endpoint-url.mjs",
+    {
+      path: new URL("./drivers/openai-endpoint-url.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
   // The Console shows the Gateway security values deployment admission fills from OCC's own table.
   [
     "/console/gateway-security-defaults.mjs",

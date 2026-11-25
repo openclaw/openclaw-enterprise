@@ -1155,9 +1155,16 @@ test("Create Agent reuses a Source without enrolling it; replacement persists th
   assert.equal(await configuration.getAttribute("aria-invalid"), "true");
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+  // URL parsing drops empty userinfo, but Compute refuses the written credential syntax.
+  object(object(object(custom.models).providers).openai).baseUrl = "https://@api.openai.com/v1";
+  await configuration.fill(JSON.stringify(custom, null, 2));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await mismatch.waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   const canonicalHost = object(JSON.parse(originalConfiguration));
   object(object(object(canonicalHost.models).providers).openai).baseUrl =
-    "https://API.OPENAI.COM/v1";
+    "HTTPS://API.OPENAI.COM:0443/v1";
   await configuration.fill(JSON.stringify(canonicalHost, null, 2));
   const response = await submitCreateAgent(page, fixture, namespace.id, {
     path: "agents",
