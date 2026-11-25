@@ -66,22 +66,21 @@ The worker rechecks authority and source ownership before runtime effects.
 An Agent draft can have an empty `harnessAuth`; deployment requires an
 [explicit binding](../../packages/contracts/src/harness-auth.ts).
 
-| Binding                                | Authority and delivery                                                                                                                                                                                                                                                                                                                                     |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `api_key` or `codex_pat` from a Secret | The caller and Agent service principal need `operate` on the exact Secret. On Kubernetes the embedded process or dedicated Harness receives the key. PAT login is for dedicated Codex.                                                                                                                                                                     |
-| `codex_pat` from a ServiceAccount      | The caller needs `read` on the exact ServiceAccount. OCC checks the private Backend binding and records the account's credential reference. Dedicated Codex receives the PAT.                                                                                                                                                                              |
-| `credential_source`                    | The caller and Agent principal need Source `operate`. Dedicated OpenClaw or Codex receives a placeholder; the paired Credential Proxy or legacy Gateway delivers the key on egress. Dedicated Codex also supports [external ChatGPT authentication](drivers/credential-gateway.md#external-chatgpt-authentication). Activation requires prepared delivery. |
-| `runtime`                              | SSH embedded OpenClaw uses operator-managed credentials; gateway readiness excludes model probes. Kubernetes requires protected Dedicated Codex and a qualified Credential Proxy, even without sources or repositories. Deployment saves a plan with no inference route; Proxy refusal saves no revision. Agent provisioning rejects this method.          |
+| Binding                                | Authority and delivery                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api_key` or `codex_pat` from a Secret | The caller and Agent service principal need `operate` on the exact Secret. On Kubernetes the embedded process or dedicated Harness receives the key. PAT login is for dedicated Codex.                                                                                                                                                                                                   |
+| `credential_source`                    | The caller and Agent principal need Source `operate`. A dedicated Harness receives a placeholder. The paired Credential Proxy injects the credential on authorized requests. [Codex device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login) and [issued ServiceAccount PATs](service-accounts.md#version-snapshots-and-credential-delivery) use this binding. |
+| `runtime`                              | SSH embedded OpenClaw uses operator-managed credentials; gateway readiness excludes model probes. Kubernetes requires protected Dedicated Codex and a qualified Credential Proxy, even without sources or repositories. Deployment saves a plan with no inference route; Proxy refusal saves no revision. Agent provisioning rejects this method.                                        |
 
 For embedded OpenClaw, Kubernetes projects the Secret as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, or `OCE_MODEL_API_KEY`. A custom provider must reference
 `OCE_MODEL_API_KEY` in its Configuration. Dedicated Codex logs in with the key
-or PAT through stdin. With a selected Credential Gateway, choose a compatible
-`credential_source`; deployment rejects Secret-backed and account bindings.
+or PAT through stdin on the direct Secret path. For managed model authentication
+in OpenShell, use a [compatible TokenService Source](credential-sources.md#implementation-status).
 
 The dedicated gateway does not receive the selected Harness model credential.
 The revision records source references, never historical Secret bytes. A managed
-account retains its exact credential reference and Backend ownership. See
+Source records the selected owner and never exposes its credential. See
 [Agent credential grants](agents.md#harness-authentication) and
 [renewal and revocation](../guides/deploy/credential-lifecycle.md).
 

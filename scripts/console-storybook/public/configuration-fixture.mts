@@ -8,6 +8,7 @@ type SlackConfig = Extract<ReturnType<typeof slack.support>, { supported: true }
 
 type ConfigurationScenario = {
   harnessId?: string;
+  modelProviderBaseUrl?: string;
   gatewayPassword?: boolean;
   gatewayPasswordProviderless?: boolean;
   secretProviderAliasRefused?: boolean;
@@ -85,6 +86,17 @@ export function configurationValues(scenario: ConfigurationScenario): FixtureCon
     const model = "openai/gpt-5.1";
     values.agents.defaults.model = model;
     values.agents.defaults.models = { [model]: { agentRuntime: { id: "openclaw" } } };
+    if (scenario.modelProviderBaseUrl) {
+      values.models = {
+        providers: {
+          openai: {
+            api: "openai-responses",
+            baseUrl: scenario.modelProviderBaseUrl,
+            models: [{ id: "gpt-5.1" }],
+          },
+        },
+      };
+    }
   }
   if (scenario.gatewayPassword) {
     values.gateway.auth = {

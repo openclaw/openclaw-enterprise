@@ -48,7 +48,7 @@ import {
   type PlatformUnitOfWork,
 } from "../../packages/occ/src/index.ts";
 import { assertApiError } from "../helpers/api-error.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { presetVariableTemplate } from "../helpers/configuration-preset-template.ts";
 import { bindRole, grantRole, restrict } from "../helpers/iam-grants.ts";

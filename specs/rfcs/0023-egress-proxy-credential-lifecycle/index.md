@@ -10,13 +10,7 @@ status: Proposed
 
 This proposal requires human review and merge.
 
-The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
-The later proposed [TokenService instance and update amendment](token-service-instance-and-updates.md) revises source ownership records and proxy delivery notifications.
-The proposed [CredentialSource ownership amendment](credential-source-ownership.md) moves Source creation and lifecycle to TokenService.
-The proposed [OAuth client selection amendment](oauth-client-associations.md) separates templates from client selection and defines scope admission.
-The proposed [worker credential configuration amendment](worker-credential-configuration.md) defines the Driver entry points needed to configure a staged target without giving Compute a credential resolver.
-The proposed [Codex device login amendment](codex-device-login.md) moves completed account grants and renewal to TokenService and supplies the dedicated Harness with a Proxy placeholder and trusted account context.
-The proposed [generic credential presentation amendment](generic-credential-presentations.md) defines placement and value format independently of Source custody and API provider.
+[Credential Design 1.0](../20261124-credential-design-1-0/index.md) consolidates the later amendments to custody, delivery, deployment, and shared GitHub App tokens.
 
 ## Decision
 
@@ -31,7 +25,6 @@ The validated bundled `repository.openShell` Git-only installation retains a sco
 [Diagram source](assets/overview.mmd)
 
 [GitHub installation-wide access](github-installation-access.md) describes an opt-in authority for ordinary Git and GitHub API work through the same online sender.
-The [GitHub App credential proposal](github-app-template-policy.md) connects TokenService issuance and Credential Proxy delivery to saved Agent repository grants and revises ownership of credential-specific Git rules.
 A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
 OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 

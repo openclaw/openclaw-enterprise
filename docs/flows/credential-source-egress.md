@@ -8,7 +8,12 @@ last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes the supervisor to release GitHub identity replies. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+This flow records the deprecated legacy credential-egress Driver. Its protected
+metadata and repository exchanges remain in the code but are retired from the
+Credential 1.0 design and pending removal. An ordinary credential-free metadata
+GET uses an admitted Sandbox network rule and returns the upstream response. It
+does not use a Source, response filter, or request-time OpenClaw Control Plane
+(OCC) exchange. Native Credential Proxy delivery also does not use this flow. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -64,15 +69,10 @@ reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-Static admission hides incompatible types from capabilities. Creation and adoption
-return 409 on mismatch; refused adoption preserves the Gateway copy.
-`packages/occ/src/credential-egress-admission.ts:admitStaticEgressSource` rechecks both declarations before reading and injecting material.
-
-OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
-settings and consent; empty routes deny all. Plans pin execution, digest, grant
-and source generation. Deployment rechecks the unique compatible provider before
-provisioning transport credentials and saving the revision.
+For a qualifying installed sender, OCC checks Source and Secret grants.
+Version 3 binds Sandbox and protected Proxy to one Driver. `admitProxyPlan`
+pins execution, digest, grant and Source generation. An empty protected plan
+denies all. Deployment rechecks the selected provider before provisioning.
 `packages/occ/src/credential-egress-authority.ts:createEgressAuthority` rechecks
 source ownership before reading material and loads fresh policy before each send.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
@@ -96,22 +96,19 @@ owners refuse release; cold sources remain pending.
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
-Agents with ordinary Gateway sources and no protected sources or Git bindings
-need no Proxy plan. Agents with no sources retain selected Proxy admission.
-`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks availability before saving an
-empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
-Codex without inference access. Preparation repeats both Git refusals.
+`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks
+availability before saving an empty protected plan. Kubernetes uses that plan
+for runtime-authenticated Dedicated Codex without inference access.
+Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox. Protected sources require
-admission, API-key login and an exact source-key match. Only Gateway-owned sources
-receive their exact Gateway attachment and authentication environment.
+Compute passes the protected Proxy wiring to Sandbox. Retained protected
+inference uses its admitted Source and API-key login.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-emits `/**` on inference routes so any verified executable in the admitted
-execution can reach the model endpoint through credential middleware.
-The egress Driver compares the full prepared policy against the plan, including
-the explicit matcher.
+emits `/**` on retained inference routes. The egress Driver compares the
+prepared policy against the admitted plan, including that executable matcher.
+Managed model Sources follow the [native delivery flow](credential-source-lifecycle.md#3-prepare-credential-delivery).
 
 Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
 binds both policies to the Sandbox, instance, policy version, configuration and
@@ -255,7 +252,9 @@ Erase material after response handling or at deadline. Only a refusal before
 permission can settle as undispatched. After possible permission, inspect the
 exact attempt without retrying; returning bytes does not prove delivery.
 
-### 5. Configure the regular Harness caller
+<a id="5-configure-the-regular-harness-caller"></a>
+
+### 5. Run a retained protected inference caller
 
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` selects HTTP
 Responses with local tools. It disables provider tools, WebSockets, and retries.

@@ -1709,6 +1709,9 @@ for (const c of declinedCarryCases) {
   });
 }
 
+const CONFIGURATION_RESERVED =
+  "The Configuration is reserved for provisioning and is not available for this operation.";
+
 // A Configuration reserved for provisioning also answers 409 RESOURCE_CONFLICT. The console took
 // it for another browser's save and offered a Reload draft that met the same refusal forever
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
@@ -1774,9 +1777,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
   test(`a ${c.name} save refused ${generic ? "with the catch-all conflict" : "for provisioning"} shows ${generic ? "its own conflict text" : "the refusal"}, not Reload draft`, async (t) => {
     const context = await slackAgentWithNewSecrets(t, `Reserved ${c.name}`);
     const { fixture, namespace, agent } = context;
-    const refusal = generic
-      ? RESOURCE_CONFLICT
-      : "The Configuration is reserved for provisioning and is not available for this operation.";
+    const refusal = generic ? RESOURCE_CONFLICT : CONFIGURATION_RESERVED;
     let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
@@ -1964,18 +1965,80 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page
-    .getByRole("status")
-    .filter({
-      hasText:
-        'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.',
-    })
-    .waitFor();
+  const review =
+    'Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.';
+  const reloaded = `Draft reloaded. ${review}`;
+  await page.getByRole("status").filter({ hasText: reloaded }).waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  const description = await focusedDescription(page);
-  assert.ok(typeof description === "string", "Expected the focused control's description");
-  assert.match(description, /^Draft reloaded\. Your edits are applied/);
-  await page.getByRole("button", { name: "Save Configuration" }).click();
+  assert.equal(await focusedDescription(page), reloaded);
+
+  const editor = page.getByLabel("Configuration JSON");
+  const mergedText = await editor.inputValue();
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  async function refreshAndCheckReview(expected = review) {
+    const original = await editor.elementHandle();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((node) => !node.isConnected, original);
+    await original.dispose();
+    assert.equal(await editor.inputValue(), mergedText);
+    await page.getByRole("status").filter({ hasText: expected }).waitFor();
+    await save.focus();
+    assert.equal(await focusedDescription(page), expected);
+  }
+  // An unavailable permission summary must hide saved values without leaving Save unwarned.
+  const permissions = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  await page.route(
+    permissions,
+    (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }),
+    { times: 1 },
+  );
+  const summary = page.waitForResponse(permissions);
+  await refreshAndCheckReview("Review the merged draft. Saving may replace other changes.");
+  assert.equal((await summary).status(), 503);
+  assert.equal(await save.isEnabled(), true);
+  await refreshAndCheckReview();
+
+  // A failed preflight takes priority, but the same unsaved merge still needs review.
+  const url = fixture.origin + configurationPath(context);
+  await page.route(url, (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }), {
+    times: 1,
+  });
+  const read = page.waitForResponse(url);
+  await save.click();
+  const failedRead = await read;
+  assert.equal(failedRead.request().method(), "GET");
+  assert.equal(failedRead.status(), 503);
+  await page.getByRole("alert").filter({ hasText: "The read could not be completed" }).waitFor();
+  await refreshAndCheckReview();
+
+  // Neither a rate limit nor a provisioning reservation changes the saved generation.
+  for (const refusal of [
+    {
+      response: { status: 429, json: { error: "too_many_requests" } },
+      message: "Too many requests",
+    },
+    {
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", CONFIGURATION_RESERVED, {
+        requestId: "req_00000000-0000-4000-8000-000000000001",
+      }),
+      message: CONFIGURATION_RESERVED,
+    },
+  ]) {
+    const refusePatch = (route: Route) =>
+      route.request().method() === "PATCH" ? route.fulfill(refusal.response) : route.fallback();
+    await page.route(url, refusePatch);
+    const patched = page.waitForResponse(
+      (r) => r.url() === url && r.request().method() === "PATCH",
+    );
+    await save.click();
+    assert.equal((await patched).status(), refusal.response.status);
+    await page.unroute(url, refusePatch);
+    await page.getByRole("alert").filter({ hasText: refusal.message }).waitFor();
+    assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
+    await refreshAndCheckReview();
+  }
+
+  await save.click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.equal(saved.generation, 3);

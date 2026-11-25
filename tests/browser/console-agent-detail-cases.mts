@@ -22,7 +22,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   AGENT_READ,
