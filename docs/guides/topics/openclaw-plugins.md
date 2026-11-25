@@ -16,7 +16,7 @@ Dedicated Codex Agents use their own catalog and approval policy. [Add Codex app
 ## Before you start
 
 - Use a dedicated OpenClaw Agent on Kubernetes. Select the bundled OpenClaw Plugin Driver, OCC TokenService, and the OpenShell Sandbox that supplies native Credential Proxy delivery. [Driver selections](../../reference/drivers/selection.md#supported-selections)
-- Verify the Agent's [managed model Source configuration](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source). To edit and deploy a Plugin selection you need read, update, and deploy access to the Agent, plus `credential_source:operate` on the selected Source.
+- Verify the Agent's [managed model Source configuration](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source). To edit and deploy a Plugin selection you need read, update, and deploy access to the Agent.
 - For Slack, ensure that the OCC API can reach `mcp.slack.com:443` for tool discovery. The Agent's Sandbox applies separate policy to runtime requests.
 
 <a id="2-add-a-hosted-mcp-plugin-slack"></a>
@@ -29,8 +29,8 @@ Slack uses the fixed endpoint `https://mcp.slack.com/mcp`. Live Slack MCP tool e
 
 ### Set up the credential source
 
-1. In **Credentials → Connection templates**, create a **Static Bearer** Template available in the Agent's Namespace. Add the exact destination `POST`, host `mcp.slack.com`, port `443`, path `/mcp`. Record the Template ID. [Create a Template](../../reference/connection-templates.md#create-a-template)
-2. Register the Slack token as a managed static Source in the ready Namespace. Set `NAMESPACE_ID` and `TEMPLATE_ID` to the exact IDs, and `TOKEN_FILE` to the path of your private token file. The command prints the new Source ID. [Static Source registration](../../reference/credential-sources/managed-static.md#register-a-source)
+1. Ask an Installation administrator to create a **Static Bearer** Template in **Credentials → Connection templates**, available in the Agent's Namespace. Add the exact destination `POST`, host `mcp.slack.com`, port `443`, path `/mcp`. Record the Template ID. [Create a Template](../../reference/connection-templates.md#create-a-template)
+2. Obtain a valid Slack MCP OAuth user token for an eligible registered Slack app outside this procedure. It must have the [Slack scopes required by the selected tools](https://docs.slack.dev/ai/slack-mcp-server/#oauth-scopes-needed-on-user-token-for-different-tools). With `credential_source:create` in the ready Namespace, register it as a managed static Source. Set `NAMESPACE_ID` and `TEMPLATE_ID` to the exact IDs, and `TOKEN_FILE` to the path of your private token file. The command prints the new Source ID. [Static Source registration](../../reference/credential-sources/managed-static.md#register-a-source)
 
    ```bash
    (
@@ -46,7 +46,7 @@ Slack uses the fixed endpoint `https://mcp.slack.com/mcp`. Live Slack MCP tool e
    )
    ```
 
-3. Grant `credential_source:operate` on the exact Source to the deploying operator and Agent service principal. With OCC-managed Native IAM, saving an eligible Plugin selection can grant the Agent access as part of the same transaction.
+3. Give the selecting operator exact `credential_source:read` and `credential_source:operate` on the Source. The deployer and Agent service principal also need exact `credential_source:operate`. With OCC-managed Native IAM, saving an eligible Plugin selection can grant the Agent access as part of the same transaction.
 
 ### Load and select MCP tools
 

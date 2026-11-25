@@ -122,9 +122,13 @@ transport-token rotation is provided.
 
 ### Replace a Backend-managed account credential
 
-For a ChatGPT ServiceAccount PAT, issue a replacement account before the old
-token expires. Select its TokenService Source and deploy each intended consumer.
-Normal ServiceAccount deletion revokes the upstream token. If the Backend has
+Create a replacement ChatGPT ServiceAccount and
+[issue its PAT](../../reference/service-accounts.md#account-and-credential-lifecycle)
+before the old token expires. For each intended consumer, Stop and wait until no
+active revision remains. Give the deployer and Agent exact `credential_source:operate`
+on the replacement Source, select it, deploy, and verify a model response.
+After all consumers work, delete the old ServiceAccount to revoke its
+upstream token. If the Backend has
 been removed, [forced deletion](../../reference/service-accounts.md#force-delete-when-the-backend-is-gone)
 can skip revocation. Retire the old Source after removing its Agent references.
 
@@ -146,11 +150,13 @@ remains available to its other bindings.
 Codex OAuth login is experimental. Use dedicated Codex with OCC TokenService,
 the OpenShell Sandbox, and native Credential Proxy. [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 
-1. In **Create Agent**, choose **ChatGPT OAuth (Experimental)**, then open the
+1. From the intended owner's signed-in Console session, open **Create Agent**,
+   choose **ChatGPT OAuth (Experimental)**, then open the
    verification link and complete sign-in using the displayed code.
-2. Use the ready Source with the [Agent API deployment path](deploy-first-agent.md#2-create-the-configuration-and-agent).
+2. Select **Create Agent**. Confirm that the deployer and Agent service principal
+   have exact Source `operate` access, then deploy from the draft that opens.
    The Installation must allow the [preset requests](../../reference/credential-sources.md#codex-account-model-requests)
-   for the Codex executable. Verify a model response after deployment.
+   for the Codex executable. Verify a model response.
 3. For later Plugin edits, select the saved Source. For reauthorization, sign
    in again, select the replacement Source, stop the running Agent, and deploy
    the new draft. Delete the old Source after removing its Agent references.

@@ -53,7 +53,17 @@ Otherwise, use one of the methods below.
 
 ### Sign in with Codex OAuth
 
-Start device login using your operator session. Open the returned verification URL and enter the code there. Keep the code and saved response private.
+This operator shell authenticates as an OCC service principal. That principal
+will own the Source, even if another person completes Codex sign-in. A different
+person needs exact `credential_source:delete` permission to disconnect it.
+For personal ownership, start from the intended person's Console session:
+choose **Create Agent → ChatGPT OAuth (Experimental)**, complete sign-in,
+select **Create Agent**, then deploy from the draft that opens. Use that draft
+instead of the shell creation steps below. See
+[personal Codex login](credential-lifecycle.md#use-a-personal-codex-login).
+
+For a service-principal-owned Source, start device login below. Open the returned
+verification URL and enter the code there. Keep the code and saved response private.
 
 ```bash
 device_login="$base/agents/device-authorizations"

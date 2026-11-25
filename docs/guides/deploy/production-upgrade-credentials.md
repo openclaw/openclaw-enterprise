@@ -1,15 +1,19 @@
 # Upgrade retired credential delivery
 
-When upgrading a release that used Credential Gateway or Credential Refresh,
-inventory each affected Namespace, Source ID, Agent binding, active revision,
-and pending operation without recording credential values. Keep this inventory
-for the OpenShell operator. Stop affected Agents and settle work with the old
-release. Complete, cancel, or let pending Codex device logins expire. Revoke
+Before stopping Agents for an upgrade from Credential Gateway or Credential
+Refresh, inventory each affected Namespace, Source type and ID, Agent binding,
+active and retained Repository revision, and pending operation without recording
+credential values. A retained standalone v8 Repository revision without
+Source-backed authorization blocks the migration even after Stop. Legacy Gateway
+OAuth client-credentials tool Sources are dropped and have no TokenService
+successor. Obtain an approved disposition for retained revisions and a replacement
+workflow for those tools before starting the cutover. Keep the inventory for
+the OpenShell operator. Existing OAuth grant or confidential Client custody
+also requires an approved transfer or confirmed reset; Stop does not resolve it.
+
+Stop affected Agents and settle work with the old release. Complete, cancel, or
+let pending Codex device logins expire. Revoke
 older ServiceAccount-issued PATs through their original release before migration.
-Existing OAuth grant or confidential Client custody requires an approved transfer
-or confirmed reset; stopping Agents does not resolve that custody.
-If the migration refuses other retained credential or Repository state, resolve
-the reported dependency with the matching old release before retrying.
 
 Remove `credential_gateway` and `credential_refresh` from the Installation and
 OpenShell Backend configuration. The image upgrade helper rejects these Driver
