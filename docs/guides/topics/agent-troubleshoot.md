@@ -256,37 +256,32 @@ not establish that the certificate covers the advertised hostname. Keep
 hostname verification enabled; correct the owning network or certificate
 configuration, then [verify a model response](../operate/model-verification.md).
 
-On OpenShell, OCE asks the gateway to restart the Harness whenever its process
-exits. `occ agent runtime AGENT_ID` shows
-`Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)` for
-the few seconds this takes, then `running`; chat usually answers again within a
-minute. A plain `starting`, with no code, is a first start. A Harness that keeps
-exiting stays `HARNESS_RESTARTING` with a growing restart number while OpenShell
-backs off (up to three minutes between attempts), and the version's diagnostics
-lead with a failed `agent` `sandbox` check with that code. Read the [Sandbox
-logs](agent-logs.md#sandbox-source) for the cause.
+OCE asks OpenShell to restart an exited Harness. `occ agent runtime AGENT_ID`
+briefly shows `Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)`,
+then `running`. Chat usually recovers within a minute. Repeated exits increase
+the restart count and delay (up to three minutes). Diagnostics flag the failed
+`agent` `sandbox` check. Read [Sandbox logs](agent-logs.md#sandbox-source).
+Plain `starting` can mean the Harness has yet to start.
 
-OCE does not replace a Sandbox whose Pod was deleted or evicted, or that a node
-restart stopped. The Agent stays `active` while every chat fails. `occ agent get`
-and `occ agent runtime` show `Harness Sandbox: lost (CODE)` (`SANDBOX_FAILED`
-here, `SANDBOX_STOPPED` after a node restart or supervisor Pod deletion, or
-`HARNESS_EXITED` for an older version whose Harness exited), the Console's
-**Live serving** shows **Sandbox lost**, and the version's diagnostics lead with
-a failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
-(`occ agent deploy AGENT_ID`): the new version replaces the old Sandbox.
-`unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+OCE leaves the Agent `active` after Sandbox loss, but chat fails. Console
+**Live serving** shows **Sandbox lost**. `occ agent get` and `occ agent runtime`
+show `Harness Sandbox: lost (CODE)`. Diagnostics report the same code on the
+failed `agent` `sandbox` check.
 
-If a controller upgrade changes an older development Sandbox's immutable
-command, exact-content adoption can fail; deploy the Agent again.
+- `SANDBOX_FAILED` follows Harness Pod deletion or eviction.
+- `SANDBOX_STOPPED` follows node restart or supervisor Pod deletion.
+- `HARNESS_EXITED` indicates an exited Harness on older versions.
+
+Deploy again (`occ agent deploy AGENT_ID`) to replace a lost Sandbox, or if a
+controller upgrade prevents adoption of an older development Sandbox by changing
+its immutable command. `unknown (UNAVAILABLE)` means OCC couldn't read the
+Sandbox record.
 
 ## Read OpenShell sandbox and supervisor logs
 
-The [Sandbox source](agent-logs.md#sandbox-source) shows only what the OpenShell
-gateway recorded. An operator with `pods/log` access to the Agent's Kubernetes
-namespace can read the Harness output and the supervisor's own log. Each
-version's Sandbox has two Pods that share an `openshell.ai/sandbox-id`: the
-Harness Pod, which keeps OCC's `openclaw.dev/revision` label, and the
-supervisor Pod, labeled `openshell.ai/boundary-role=supervisor`:
+The [Sandbox source](agent-logs.md#sandbox-source) shows only gateway records.
+With `pods/log` access, use the shared Sandbox ID to read both Pods. Handle
+Kubernetes output as sensitive. It bypasses OCC redaction.
 
 ```bash
 REVISION_ID=<revision-id>
@@ -300,10 +295,27 @@ kubectl -n "$NS" logs --all-containers --tail=200 \
   -l "openshell.ai/sandbox-id=${SANDBOX_ID:?no Sandbox ID on the Harness Pod},openshell.ai/boundary-role=supervisor"
 ```
 
-`no Harness Pod for this revision` means the version never started a Sandbox or
-its Pods are gone; read the
-[deployment status](../../reference/agents.md#deployment-status) instead.
+For `no Harness Pod for this revision`, check
+[deployment status](../../reference/agents.md#deployment-status).
+The Sandbox never started or its Pods are gone.
 
-`kubectl -n "$NS" get sandbox,pod -l "openshell.ai/sandbox-id=$SANDBOX_ID"`
-shows the Sandbox and its supervisor Pod. This output bypasses OCC's log
-redaction, so handle it as sensitive.
+If the Harness cannot reach its supervisor, inspect the pair with
+`kubectl -n "$NS" get sandbox,pod -l "openshell.ai/sandbox-id=$SANDBOX_ID" -o wide`.
+Check events with `kubectl -n "$NS" describe pod SUPERVISOR_POD`. If `FailedMount` names a missing
+`csi.spiffe.io` driver, check `kubectl get csinode NODE -o yaml` on **every**
+eligible node.
+
+Choose a RuntimeClass with a compatible handler and `scheduling.nodeSelector`
+restricted to nodes with working SPIFFE mounts. Merge its name into OpenShell
+Helm values.
+
+```yaml
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    supervisor_runtime_class_name: openshell-identity-supervisor
+```
+
+Plan for a gateway restart. This affects every new dedicated supervisor on
+that gateway. Preserve the Harness class. After a failed deployment finishes
+cleanup, redeploy the Agent. Replacing the supervisor Pod alone can lose its
+bootstrap Secret.
