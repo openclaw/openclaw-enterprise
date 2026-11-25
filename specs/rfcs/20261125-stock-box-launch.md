@@ -9,6 +9,8 @@ author: freeqaz-openai
 - **ID:** RFC-20261125-stock-box-launch
 - **Created:** 2026-11-25
 - **Last updated:** 2026-11-25
+- **RFC PR:** [#7370](https://github.com/openclaw/openclaw-enterprise/pull/7370)
+- **Implementation:** [#7373](https://github.com/openclaw/openclaw-enterprise/pull/7373)
 - **Related:** [Strands Box protected execution](https://github.com/openclaw/openclaw-enterprise/pull/6505) and [pluggable credential delivery](https://github.com/openclaw/openclaw-enterprise/pull/7209)
 
 ## Summary
@@ -29,8 +31,9 @@ private process view.
 
 For a dedicated Codex Agent using API key login, set
 `kubernetes.stockLauncher.namespace` to the exact Kubernetes tenant name in
-the Strands Box Sandbox configuration. This opts into both the stock launcher
-and the model route. Omit it to keep the current receiver and credential behavior.
+the Strands Box Sandbox configuration. Use a dedicated installation. This
+option enables the stock launcher and model route and refuses deployments
+outside that tenant. Omit it to keep the current receiver and credential behavior.
 For this tenant, the stock option replaces the separate preview flag proposed in
 [#6948](https://github.com/openclaw/openclaw-enterprise/pull/6948). It applies only
 to Agents with their own approved key and the reviewed endpoint. Reject aliases,
@@ -44,7 +47,11 @@ flowchart LR
     Box -. authorized request with key .-> OpenAI
 ```
 
-The trusted launcher alone receives the Secret. Box gives the workload a
+Only the trusted launcher receives the model key from the revision Secret.
+The listener waits for the Worker to pin its certificate in an immutable
+receipt. If the receipt is missing or belongs to a different Pod, Box cannot
+start. A replacement's trusted launcher still receives the key. Revoke it at
+the provider if access must end immediately. Box gives the workload a
 fresh placeholder per execution and substitutes the key on HTTPS `POST api.openai.com/v1/responses`.
 The workload chooses the body, including model and tools. Use a provider project
 with appropriate permissions and spending limits. Reject unsupported credentials
@@ -66,9 +73,10 @@ would remove this protection. Restrict policy editing and class selection to
 trusted operators. Limit Pod creation, exec and debug access.
 
 Only the Box container requests unmasked procfs. It uses private user and process
-namespaces, enforced AppArmor and local seccomp. Box starts the workload in its
-own process and network namespaces. Require the workload and its children to
-retain the sensitive-path restrictions of an ordinary Pod on that node.
+namespaces, enforced AppArmor and local seccomp. In the workload's private
+mount namespace, Box covers sensitive procfs entries with empty mounts so
+the workload and its children cannot inspect the underlying metadata.
+Compare the result with an ordinary Restricted Pod on the same node.
 Missing or unenforced profiles must prevent launch. Assume no harness sandbox.
 
 ## Interface changes
@@ -87,8 +95,9 @@ No changes.
 
 ### Driver contracts
 
-Add the optional stock launcher configuration above. Reuse the prepared
-dedicated key and existing revision lifecycle. This mode cannot satisfy
+Add the optional stock launcher configuration above. Pin the mode to the
+saved revision to refuse a Worker using the wrong launcher. Reuse the prepared
+dedicated key and ordinary execution admission. This mode cannot satisfy
 executable-specific grants or staged credential delivery. Reject them.
 
 ## Simplifications
@@ -112,6 +121,11 @@ and the user deploys a saved Agent. All three goals require runtime evidence.
   are unchanged.
 
 ## Delivery and verification
+
+In [#7373](https://github.com/openclaw/openclaw-enterprise/pull/7373), a saved
+Agent answered through a controlled TLS origin while the Worker was stopped.
+A replacement could not start Box. The operator must qualify each node image
+and separately verify live provider access.
 
 Qualify this preview independently of the broader #6505 proposal. Keep Git
 disabled until OCE can deliver scoped installation tokens, verify credential
