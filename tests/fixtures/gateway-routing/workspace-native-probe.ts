@@ -16,7 +16,7 @@ import type {
 } from "../../../packages/contracts/src/index.ts";
 import { createDevelopmentComputeDriver } from "../../helpers/development.ts";
 import { createTestSecretDriver } from "../../helpers/secret-driver.ts";
-import { bindRole } from "../../helpers/iam-grants.ts";
+import { bindRole, liftRestriction, restrict } from "../../helpers/iam-grants.ts";
 import {
   createTenantReaderFixture,
   tenantRequest,
@@ -224,6 +224,13 @@ const read = await call(path);
 assert.equal(read.response.status, 200, JSON.stringify(read.payload));
 assert.equal(responseRecord(read.payload.data).content, scenario.content);
 
+let handoff:
+  | {
+      staleWrite: number;
+      revoked: { action: string; status: number; denials: number }[];
+      readAfter: number;
+    }
+  | undefined;
 const { explicitAgentId } = scenario;
 if (explicitAgentId !== undefined) {
   const revision = await controller.getRevision(
@@ -290,7 +297,8 @@ if (explicitAgentId !== undefined) {
     };
     const upstreamUrl = new URL(endpoint);
     const sockets = new Set<Socket>();
-    let activation: Promise<void> | undefined;
+    let beforeHello = activate;
+    let change: Promise<void> | undefined;
     const relay = createServer((client) => {
       const upstream = connect(Number(upstreamUrl.port), upstreamUrl.hostname);
       for (const [socket, peer] of [
@@ -304,10 +312,9 @@ if (explicitAgentId !== undefined) {
           peer.destroy();
         });
       }
-      // OCC has opened the predecessor connection. Withhold the TLS handshake until
-      // activation commits, then forward unchanged bytes to the same real Gateway.
-      activation ??= activate();
-      void activation.then(
+      // OCC has admitted the request. Apply the change before forwarding the TLS handshake.
+      change ??= beforeHello();
+      void change.then(
         () => client.pipe(upstream).pipe(client),
         () => client.destroy(),
       );
@@ -322,16 +329,64 @@ if (explicitAgentId !== undefined) {
       gatewayEndpoint = relayUrl.href;
 
       const stale = await put("Stale predecessor write");
-      assert.ok(activation, "The predecessor PUT must reach the TCP relay");
-      await activation;
+      assert.ok(change, "The predecessor PUT must reach the TCP relay");
+      await change;
       assert.equal(stale.response.status, 503, "The PUT crossed activation before native Hello");
       assert.equal(responseRecord(stale.payload.error).code, "DEPENDENCY_UNAVAILABLE");
 
-      // The successor uses the same route and admin key. Its live file must retain
-      // the earlier successful PUT even though the stale PUT targeted this Gateway.
+      // Revoke the exact caller permission only after its request connects. The native
+      // operator still has admin scope, so the second OCC check must stop dispatch.
+      const revoked = [];
+      for (const action of ["read", "operate"] as const) {
+        change = undefined;
+        let restriction: ReturnType<typeof restrict> | undefined;
+        beforeHello = async () => {
+          restriction = restrict(fixture.state, action, "agent", {
+            namespaceId,
+            resourceId: agent.id,
+          });
+        };
+        const reading = action === "read";
+        const denied = reading ? await call(path) : await put("Revoked caller write");
+        assert.ok(restriction, "The request must reach the relay before revocation");
+        assert.equal(
+          denied.response.status,
+          403,
+          `Revoked ${action} must deny the connected request`,
+        );
+        assert.equal(responseRecord(denied.payload.error).code, "FORBIDDEN");
+        const events = fixture.auditSink.events.filter(
+          (event) =>
+            event.requestId === denied.response.headers.get("x-request-id") &&
+            event.action.startsWith("openclaw.agents.workspace.files."),
+        );
+        assert.equal(events.length, 1);
+        const [event] = events;
+        assert.ok(event);
+        assert.equal(event.kind, "authorization_denial");
+        assert.equal(event.outcome, "denied");
+        assert.equal(event.reasonCode, "AUTHORIZATION_DENIED");
+        assert.equal(event.actorId, fixture.administrator.id);
+        assert.equal(event.action, `openclaw.agents.workspace.files.${reading ? "read" : "write"}`);
+        const resource = { kind: "agent", id: agent.id, namespaceId };
+        assert.deepEqual(event.resource, resource);
+        assert.deepEqual(event.authorization, {
+          principalId: fixture.administrator.id,
+          action,
+          resource,
+        });
+        assert.deepEqual(responseRecord(event.details?.iamEvidence).restrictionIds, [
+          restriction.id,
+        ]);
+        revoked.push({ action, status: denied.response.status, denials: events.length });
+        liftRestriction(fixture.state, restriction);
+      }
+
+      // Neither the stale predecessor nor the revoked caller changed the native file.
       const current = await call(path);
       assert.equal(current.response.status, 200, "Expected a live GET on the cutover route");
       assert.equal(responseRecord(current.payload.data).content, scenario.content);
+      handoff = { staleWrite: stale.response.status, revoked, readAfter: current.response.status };
     } finally {
       gatewayEndpoint = endpoint;
       for (const socket of sockets) {
@@ -353,5 +408,6 @@ process.stdout.write(
     apiRead: 200,
     scopeControls: true,
     deniedIdentity: deniedWrite.identity,
+    handoff,
   }) + "\n",
 );

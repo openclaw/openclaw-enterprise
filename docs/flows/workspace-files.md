@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
 updated: 2026-11-25
-last_updated_session: authoring-run/52c85723-3ec0-4354-a1ca-a6ec6f52eccb
+last_updated_session: authoring-run/03b30e0b-9613-4f54-ad3b-77c6daec670f
 ---
 
 # Agent Workspace Files Flow
@@ -324,11 +324,11 @@ settings fail deployment. `allowRealIpFallback` accepts the genuine nonloopback
 OCC connection address even within a shared Pod CIDR. NetworkPolicy admits only
 Envoy to the native gateway; the CIDR is not an independent authentication
 boundary. The Gateway must grant `operator.admin` to write a file.
-For reads, `operator.read` also suffices. After the WebSocket handshake,
-OCC rechecks authorization and the active revision before sending the file
-request on that connection. If a successor took over or the predecessor
-entered `stopping` during connection, OCC returns `503`. The original HTTP
-deadline covers the handshake, recheck and file request.
+For reads, `operator.read` also suffices. After the handshake, OCC rechecks IAM
+and the active revision before sending the file request on that socket.
+Revoked permission returns `403` and records one authorization denial.
+OCC returns `503` if a successor takes over or the predecessor enters `stopping`.
+One HTTP deadline covers handshake, recheck and dispatch.
 
 <span id="8-native-file-access-returns-a-bounded-result" class="anchor-alias"></span>
 
@@ -385,9 +385,9 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-11-25 04:29: Document IAM revocation during connection. (authoring-run/03b30e0b-9613-4f54-ad3b-77c6daec670f - b467a205442cf4dfec03df64fd393349cef1cea8)
 - 2026-11-25 03:35: Document workspace file access during predecessor replacement. (authoring-run/52c85723-3ec0-4354-a1ca-a6ec6f52eccb - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-23 00:59: Clarify browser checks. (authoring-run/49bec6dd-1c1d-4c16-932a-ea8c0ccfdae0 - fc352442c5ac75f023ec877deeb93636e238dd33)
-- 2026-11-22 09:27: Explain bounded reply policy selection. (authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8 - 1a8d9d9f46da702b830d50cc53215317d602ab4c)
 
 [Agent workspace files documentation history](workspace-files/history.md) preserves the older dated entries.

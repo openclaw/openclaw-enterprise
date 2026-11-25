@@ -8,6 +8,7 @@ This record preserves the dated changes to the Agent workspace files flow. See t
 
 ## Changelog
 
+- 2026-11-22 09:27: Explain bounded reply policy selection. (authoring-run/50df6805-135e-42e6-a549-2a24c9b17fb8 - 1a8d9d9f46da702b830d50cc53215317d602ab4c)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
 

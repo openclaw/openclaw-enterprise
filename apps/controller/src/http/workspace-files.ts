@@ -1,6 +1,10 @@
 import type { AuditSink } from "@openclaw-enterprise/audit";
 import type { UpdateWorkspaceFileBody } from "@openclaw-enterprise/contracts";
-import { NoActiveAgentRevisionError } from "@openclaw-enterprise/occ";
+import {
+  AuthorizationDeniedError,
+  DependencyUnavailableError,
+  NoActiveAgentRevisionError,
+} from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
@@ -178,8 +182,22 @@ export function createWorkspaceFileHandlers(
       }
 
       const { agent, revision } = selection;
+      let recheckDenial: AuthorizationDeniedError | undefined;
       const isRevisionCurrent = async () => {
-        const current = await selectRevision();
+        let current;
+        try {
+          current = await selectRevision();
+        } catch (error) {
+          if (
+            !(error instanceof AuthorizationDeniedError) ||
+            error instanceof DependencyUnavailableError
+          ) {
+            throw error;
+          }
+          // The provider needs only a dispatch decision. Keep OCC's denial for the HTTP audit.
+          recheckDenial = error;
+          return false;
+        }
         return (
           current.revision.id === revision.id && !gatewayPredecessorUnavailable(controller, current)
         );
@@ -194,7 +212,10 @@ export function createWorkspaceFileHandlers(
           }
           result = await withWorkspaceFileRequestSignal(signal, access.read(fileRequest));
         } catch {
-          throw dependencyUnavailable();
+          result = { status: "unavailable" };
+        }
+        if (recheckDenial !== undefined) {
+          throw recheckDenial;
         }
         if (result.status === "missing") {
           throw workspaceFileNotFound();
@@ -249,7 +270,11 @@ export function createWorkspaceFileHandlers(
             ),
         );
       } catch (error) {
-        if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
+        // A refusal before dispatch is conclusive even if closing the socket outlasts the deadline.
+        if (
+          error instanceof ControllerWorkspaceFileUnknownOutcomeError &&
+          recheckDenial === undefined
+        ) {
           await appendWriteAudit(
             "UNKNOWN_OUTCOME",
             () => new ControllerWorkspaceFileUnknownOutcomeError(error.message),
@@ -257,6 +282,9 @@ export function createWorkspaceFileHandlers(
           throw failure(503, "UNKNOWN_OUTCOME", error.message);
         }
         result = { status: "unavailable" };
+      }
+      if (recheckDenial !== undefined) {
+        throw recheckDenial;
       }
       if (result.status === "missing") {
         try {
