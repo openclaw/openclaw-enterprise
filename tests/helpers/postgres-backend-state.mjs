@@ -306,11 +306,16 @@ export async function createBackendFixture(context) {
     );
     worker = createControllerWorker({
       pool: workerPool,
-      drivers,
+      drivers: {
+        ...drivers,
+        ...(options.scheduleGatewayAuditMaintenance === undefined
+          ? {}
+          : { scheduleGatewayAuditMaintenance: options.scheduleGatewayAuditMaintenance }),
+      },
       pollIntervalMs: 15,
       leaseDurationMs: 30_000,
       maxAttempts: 5,
-      emit: () => {},
+      emit: options.emit ?? (() => {}),
     });
     return { worker, calls };
   }

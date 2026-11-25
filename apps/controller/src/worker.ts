@@ -1813,7 +1813,11 @@ export class ControllerWorker {
           await this.sweepConnectionRevocation();
           if (Date.now() >= this.nextPeriodicSweep) {
             this.nextPeriodicSweep = Date.now() + 30_000;
-            await this.scheduleGatewayAuditMaintenance?.(this.queue);
+            try {
+              await this.scheduleGatewayAuditMaintenance?.(this.queue);
+            } catch {
+              this.emit({ event: "worker.error", code: "GATEWAY_AUDIT_MAINTENANCE_FAILED" });
+            }
             await this.provisioningController?.cleanupCredentialClients();
           }
         }

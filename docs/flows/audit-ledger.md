@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: "2026-11-24 19:07"
+updated: "2026-11-24 19:56"
 last_updated_session: "authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8"
 ---
 
@@ -164,8 +164,9 @@ State's PostgreSQL connection. Revocation deletes the current key in State.
 The work queue commits each change with its event.
 `packages/occ/src/controller-work-recorder.ts:record` includes the API request
 ID if available. The claim and its results share an attempt ID. If the claim
-event fails, the job remains available. Repository cleanup and maintenance
-recovery record new or reopened work in the same SQL statement.
+event fails, the job remains available. Maintenance and repository cleanup
+record new or reopened work atomically. Audit scheduling failures do not stop
+credential cleanup.
 
 The worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
@@ -323,10 +324,9 @@ It matches OpenClaw HTTP inputs by the `openai-http` channel and `<turn ID>:user
 - `ScopeViolationError` on append can indicate an Installation mismatch, a
   Namespace mismatch, or reserved persistence metadata. Invalid persisted event
   values or JSON can make the entire internal list fail.
-- The `postgres-platform` test lane checks request records, Agent result scope,
-  failed admission writes, and refusals during an audit outage in
-  `tests/integration/postgres-api-request-audit.test.ts`. It checks
-  worker claim writes in `tests/integration/postgres-worker-audit.test.ts`.
+- `postgres-platform` checks API admission, result scope and outage refusals in
+  `tests/integration/postgres-api-request-audit.test.ts`, and worker claims in
+  `tests/integration/postgres-worker-audit.test.ts`.
 - `tests/integration/postgres-agent-audit-read.test.ts` exercises the Agent
   route with real PostgreSQL, grant revocation, a refused disclosure insert,
   and a lost commit acknowledgement.
@@ -347,6 +347,8 @@ It matches OpenClaw HTTP inputs by the `openai-http` channel and `<turn ID>:user
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 19:56: Trace independent worker maintenance. (authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8 - 08f6125c8a49d2d17d7bc75cfe0016eb78704215)
 
 - 2026-11-24 19:07: Trace HTTP chat projection and confirmed message-link reasons. (authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8 - c2c2c657d183f6a7beec125d1e9b05aab877c161)
 

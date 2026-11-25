@@ -779,10 +779,18 @@ test(
       [stagedClientId],
     );
     assert.equal(expired.rowCount, 1);
+    // Audit maintenance must not prevent the worker from removing an expired real Client.
+    // The scheduler fails at the same composition boundary used by the installed worker.
+    const workerEvents: Readonly<Record<string, unknown>>[] = [];
+    const privateFailure = `scheduler failure ${randomUUID()}`;
     const { worker } = recovery.startWorker({
       backends: [],
       secretDriver: driver,
       tokenServiceDriverId: owner.id,
+      scheduleGatewayAuditMaintenance: async () => {
+        throw new Error(privateFailure);
+      },
+      emit: (event: Readonly<Record<string, unknown>>) => workerEvents.push(event),
     });
     await worker.start();
     await waitFor("the worker to retire the hidden registration", async () => {
@@ -801,6 +809,11 @@ test(
     assert.deepEqual(cleanup.rows, [
       { actor_id: "unresolved", outcome: "success", request_id: null },
     ]);
+    assert.deepEqual(
+      workerEvents.filter((event) => event.code === "GATEWAY_AUDIT_MAINTENANCE_FAILED"),
+      [{ event: "worker.error", code: "GATEWAY_AUDIT_MAINTENANCE_FAILED" }],
+    );
+    assert.equal(JSON.stringify(workerEvents).includes(privateFailure), false);
     assert.equal(
       await recovered.withOAuthClientSecret(
         original.json().data,

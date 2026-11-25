@@ -94,6 +94,8 @@ Disabling the plugin prevents setup.
 Changing the setting can restart Gateways and dedicated Codex workers. A turn
 can fail or use the old setting during restart. If maintenance fails, restore
 the original deployer's permission and deploy the Agent.
+`GATEWAY_AUDIT_MAINTENANCE_FAILED` means scheduling failed. The worker retries
+after 30 seconds and can continue credential cleanup.
 
 | Action                                     | What the Gateway observed                                                                 |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------- |

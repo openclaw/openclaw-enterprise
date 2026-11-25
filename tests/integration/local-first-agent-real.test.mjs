@@ -345,9 +345,26 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function readTokenServiceCustodyVersion(kube, { installationId, namespaceId, sourceId }) {
+async function readTokenServiceCustodyVersion(
+  kube,
+  { installationId, namespaceId, sourceId, platformNamespace },
+) {
   // Read only owner and object metadata for this disposable Installation. The Source
   // API deliberately exposes no private storage version or Secret reference.
+  let secretNamespace = kube.env.OCC_INSTALLATION_SECRET_NAMESPACE ?? "oce-installation-secrets";
+  if (platformNamespace !== undefined) {
+    // The chart assigns a release-scoped custody Namespace. Read the actual API setting
+    // so this check finds the same private store that accepted the Source.
+    const api = await readKubernetesJson(
+      kube,
+      ["get", "deployment", "openclaw-enterprise-api", "--namespace", platformNamespace],
+      "the API Deployment",
+    );
+    secretNamespace = api.spec?.template?.spec?.containers
+      ?.find(({ name }) => name === "api")
+      ?.env?.find(({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE")?.value;
+    assert.match(secretNamespace ?? "", /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+  }
   const template = String.raw`{{range .items}}{{index .metadata.annotations "openclaw.dev/installation-id"}}{{"\t"}}{{index .metadata.annotations "openclaw.dev/private-secret-id"}}{{"\t"}}{{.metadata.uid}}{{"\t"}}{{.metadata.resourceVersion}}{{"\n"}}{{end}}`;
   const metadata = await readKubernetes(
     kube,
@@ -355,7 +372,7 @@ async function readTokenServiceCustodyVersion(kube, { installationId, namespaceI
       "get",
       "secrets",
       "--namespace",
-      kube.env.OCC_INSTALLATION_SECRET_NAMESPACE ?? "oce-installation-secrets",
+      secretNamespace,
       "--selector",
       "app.kubernetes.io/managed-by=openclaw-enterprise",
     ],
@@ -869,9 +886,7 @@ test(
       const configuration = createHarnessConfiguration("openclaw", expectedModel);
       const installation = await request("GET", "/installation");
       assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
-      assert.ok(
-        installation.capabilities?.credentialSources?.types.some(({ type }) => type === "static"),
-      );
+      assert.ok(installation.capabilities?.modelCredentialSourcePresets?.includes("openai"));
       // Enroll the native Agent's own separate Source through the selected TokenService.
       const nativeSource = await request("POST", `${base}/credential-sources`, {
         name: `first-agent-native-${suffix}`,
@@ -1809,6 +1824,9 @@ test(
           installationId: recorded.installationId,
           namespaceId: first.namespaceId,
           sourceId: source.id,
+          ...(recorded.deploymentMode === "k3d"
+            ? { platformNamespace: recorded.platformNamespace }
+            : {}),
         });
 
       const bindings = await requestLocalApi(
