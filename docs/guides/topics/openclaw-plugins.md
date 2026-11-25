@@ -35,7 +35,7 @@ The worker advertises the selected names. With a compatible Credential Proxy and
 
 Deploy the Agent draft to apply the account and tool selection to a new revision. Edits to the draft do not change the running Agent. Follow [verify an Agent with the OpenClaw TUI](../deploy/production-tui.md) to start a real model turn.
 
-For Google Workspace, ask the Agent to run `gog --version`, then request a read permitted by the account's granted scopes, such as listing primary-calendar events. The version check proves CLI installation; a successful API result proves credentialed access.
+For Google Workspace, ask the Agent to run `gog --version`, then request a read permitted by the account's granted scopes, such as listing one Gmail message. The version check proves CLI installation; a successful API result proves credentialed access.
 
 For Slack, ask the Agent to search a harmless term using a selected search tool. Check the actual MCP tool result. To verify enforcement, attempt an unselected tool through a direct script and inspect the Sandbox or Credential Proxy denial. Proving that the upstream received no request requires a controlled MCP server.
 

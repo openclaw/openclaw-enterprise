@@ -291,11 +291,10 @@ function managedMcpToolNameFits(install: ManagedMcpInstall, name: unknown): name
 }
 
 /** Discovery must offer only tool names that the reviewed Plugin can actually deploy. */
-export function deployableManagedMcpToolNames(endpoint: string, names: readonly string[]) {
-  const install = managedMcpInstalls.find((candidate) => candidate.url === endpoint);
-  if (!install) {
-    throw new ConfigurationHarnessError("Select a released managed MCP endpoint.");
-  }
+export function deployableManagedMcpToolNames(
+  install: ManagedMcpInstall,
+  names: readonly string[],
+) {
   const candidates = [...new Set(names)].filter((name) => managedMcpToolNameFits(install, name));
   const counts = new Map<string, number>();
   for (const name of candidates) {

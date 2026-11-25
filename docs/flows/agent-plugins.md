@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-25
-last_updated_session: authoring-run/b9f24e92-44b3-482b-9d41-92c36f1baa37
+last_updated_session: authoring-run/e0f0437d-aacb-456e-800b-6f4a189cd799
 ---
 
 # Agent Plugin Deployment Flow
@@ -75,7 +75,7 @@ graph TD
 
 `plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. OCC rechecks authority before dispatch; cancellation discards late credentials.
 
-For managed MCP, OCC resolves the Source through TokenService and rechecks authority before each request. The Plugin Driver's `managed-mcp-discovery.ts:discoverManagedMcpToolNames` reader filters undeployable aliases. `driverPolicy.toolNames` pins explicit selections; changing accounts clears them. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) reject redirects and credential echoes. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+For managed MCP, OCC lists tool names, rejects bearer echoes, and passes the names to the selected Plugin Driver's `getCatalogPlugin`. The Driver filters aliases; OCC validates unique upstream IDs and ownership. Account changes clear `driverPolicy.toolNames`. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) reject redirects and credential echoes; duplicate IDs return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 
 Console connects accounts before creation or reconnects saved Plugins. The verified callback reports the Source through a nonce-bound popup; Console stages it or PATCHes the Agent and confirms by GET. If confirmation fails, reload: the attachment may have changed.
 
@@ -304,6 +304,7 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-25 05:24: Trace MCP discovery ownership. (authoring-run/e0f0437d-aacb-456e-800b-6f4a189cd799 - 9f6ff4c897cb780a447b555abb03ccd054b414f2)
 - 2026-11-25 05:05: Trace Plugin-owned managed MCP discovery and deployable tool names. (authoring-run/b9f24e92-44b3-482b-9d41-92c36f1baa37 - d5172886e361468c5642dddb2c49c2aee1f15950)
 - 2026-11-24 05:34: Trace Plugin account connection, Source-scoped discovery, and saved binding recovery. (authoring-run/b4223689-a451-496c-b340-82c77ada247b - 1b597e9758cee83e2a084d5a54d81c6a5be088d3)
 - 2026-11-24 02:32: Trace Codex and Gateway discovery. (authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b - 1f256635c37842e2d94846259303fa17cfe83be2)

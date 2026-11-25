@@ -116,7 +116,7 @@ Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
 cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
-`getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
+`getCatalogPlugin({accessToken?, pluginId, discoveredMcpToolNames?}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Include the target `harnessId` in each request.
@@ -130,7 +130,7 @@ binding and Agent grant before using it. The supported slot flow accepts only
 TokenService Sources. An MCP bearer must contain visible ASCII without spaces or control
 characters.
 
-MCP discovery omits names that cannot map to distinct reviewed OpenClaw aliases.
+For managed MCP, OCC lists upstream tool names through its credential-authorized transport, then passes `discoveredMcpToolNames` to the selected Driver without the bearer. The Driver returns the catalog entry and omits names that cannot map to distinct reviewed OpenClaw aliases. OCC rejects tools that are duplicated, absent from the upstream inventory, or owned by another plugin.
 For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 characters) or
 `cursor` as needed. Keep the same query while paging.
 
