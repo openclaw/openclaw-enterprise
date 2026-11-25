@@ -5048,6 +5048,49 @@ for (const viewport of [
 // list is one Tab stop on the viewed version: Up/Down (wrapping) and Home/End move focus, Enter
 // opens a version, and Tab leaves the list. A poll that lands the outcome rebuilds the list and
 // keeps focus on the same version (finding 2115).
+test("Viewing version matches the Configuration snapshot when revisiting a queued version", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Saved versions", "Picker Agent", {
+    recordOperations: true,
+  });
+  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.updateConfiguration(
+    namespace.id,
+    agent.configurationId,
+    nativeValues("v2", { providerModel: "gpt-5.1" }),
+  );
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const operator = await fixture.createNamespaceMember("version-operator", namespace.id, [
+    ...AGENT_READ,
+    ["operate", "agent"],
+  ]);
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.id, "configuration"),
+    operator.credentials,
+  );
+
+  const chooser = versionChooser(page);
+  const snapshot = page.locator(settledView).getByRole("tabpanel", { name: "Configuration" });
+  const checkVersion = async (id: string, model: string) => {
+    await snapshot.getByText(model, { exact: true }).waitFor();
+    // Leaving during a read rebuilds the page on return and hides a stale picker.
+    await waitForIdleFetches(page);
+    assert.equal(new URL(page.url()).searchParams.get("revision"), id);
+    assert.equal(await chooser.inputValue(), id);
+  };
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  const queuedPicker = required(await chooser.elementHandle());
+  await chooser.selectOption(first.id);
+  await checkVersion(first.id, "openai/gpt-4.1");
+  await chooser.selectOption(second.id);
+  await checkVersion(second.id, "openai/gpt-5.1");
+  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+});
+
 test("Version picker retains selection and focus while deployment outcomes change", async (t) => {
   const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, page } = await agentPage(t, "Version picker", "Picker Agent");
