@@ -16,9 +16,12 @@ import type { createTestSecretDriver } from "../helpers/secret-driver.ts";
 type TestSecretDriver = ReturnType<typeof createTestSecretDriver>;
 
 interface RenewalRefusalFixtures {
-  oauthCustody(): Promise<{
+  oauthCustody(
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+  ): Promise<{
     driver: TestSecretDriver;
-    custody: Awaited<ReturnType<OAuthGrantStore["reserve"]>>;
+    custody: Awaited<ReturnType<OAuthGrantStore["create"]>>["custody"];
     service: OAuthGrantStore;
     worker: OAuthGrantStore;
   }>;
@@ -49,22 +52,21 @@ export function registerOAuthRenewalRefusalCases({
     });
     const port = await listen(t, server);
     const grant = connectionGrant("http://127.0.0.1:" + port);
-    const { driver, custody, service, worker } = await oauthCustody();
+    const { driver, custody, service, worker } = await oauthCustody(grant, t.signal);
     const resolveClient = async (): Promise<OAuthConnectionClient> => ({
       registration: grant,
       readSecret: async () => assert.fail("public clients have no secret"),
     });
-    await service.storeInitialGrant(custody, grant, t.signal);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
     assert.ok(accepted);
     t.mock.timers.setTime(Date.parse(accepted.nextRefreshAt));
     const stop = new AbortController();
-    const swap = driver.compareAndSwap.bind(driver);
+    const swap = driver.privateSecrets.compareAndSwap.bind(driver.privateSecrets);
     // The control plane cancels while the Secret Driver is committing the intent.
     t.mock.method(
-      driver,
+      driver.privateSecrets,
       "compareAndSwap",
-      async (...args: Parameters<TestSecretDriver["compareAndSwap"]>) => {
+      async (...args: Parameters<TestSecretDriver["privateSecrets"]["compareAndSwap"]>) => {
         stop.abort(new Error("Worker stopped during the custody claim."));
         return swap(...args);
       },
@@ -93,6 +95,7 @@ export function registerOAuthRenewalRefusalCases({
     const server = createServer(async (req, res) => {
       const form = await readRefreshForm(req);
       requests++;
+      assert.equal(req.url, "/token");
       assert.equal(form.get("grant_type"), "refresh_token");
       assert.ok(form.get("refresh_token") === grant.refreshToken);
       assert.equal(form.get("client_id"), "test-client");
@@ -118,13 +121,7 @@ export function registerOAuthRenewalRefusalCases({
       ...connectionGrant("http://127.0.0.1:" + port),
       tokenEndpointAuthMethod: "client_secret_post",
     };
-    const { custody, driver, service, worker } = await oauthCustody();
-    await service.storeInitialGrant(custody, grant, t.signal);
-    const material = driver.valueFor(custody.secret);
-    assert.ok(material);
-    const saved: unknown = JSON.parse(material);
-    const record = asRecord(saved);
-    assert.ok(record);
+    const { custody, driver, service, worker } = await oauthCustody(grant, t.signal);
     const accepted = (await service.observe(custody, t.signal, 0)).token;
     assert.ok(accepted);
     const { version } = accepted;
@@ -133,21 +130,6 @@ export function registerOAuthRenewalRefusalCases({
       registration: grant,
       readSecret,
     });
-    // Changing the private custody reference cannot export another client's secret or redirect
-    // the issuer request. The controller supplies an independent registration for this source.
-    for (const edited of [
-      { oauthClientId: "another-registration" },
-      { tokenUrl: grant.tokenUrl + "/unapproved" },
-      { resource: "https://unapproved.test" },
-    ]) {
-      await driver.update(custody.secret, JSON.stringify({ ...record, ...edited }));
-      const refused = await service.renew(custody, t.signal, resolveClient, version);
-      assert.equal(refused.failureCode, "client_registration_mismatch");
-      assert.equal((await service.observe(custody, t.signal, 0)).token, undefined);
-    }
-    assert.equal(requests, 0);
-    assert.equal(readSecret.mock.callCount(), 0);
-    await driver.update(custody.secret, material);
     // A registration store outage keeps the same upstream grant. Re-observing the old SQL due
     // version after interruption must recover the persisted retry without making another read.
     const unavailable = t.mock.fn(async () => {
@@ -173,6 +155,22 @@ export function registerOAuthRenewalRefusalCases({
     assert.deepEqual(previousDue, down);
     assert.equal(unavailable.mock.callCount(), 1);
     assert.equal(requests, 0);
+    // Source metadata, not private token custody, chooses the registered client and endpoint.
+    const retryMaterial = await driver.privateSecrets.withValue(
+      custody.secret,
+      async (value) => value,
+    );
+    const record = asRecord(JSON.parse(retryMaterial));
+    assert.ok(record);
+    await driver.privateSecrets.update(
+      custody.secret,
+      JSON.stringify({
+        ...record,
+        oauthClientId: "another-registration",
+        tokenUrl: grant.tokenUrl + "/unapproved",
+        resource: "https://unapproved.test",
+      }),
+    );
     const refused = await service.renew(custody, t.signal, resolveClient, down.schedule.version);
     assert.equal(refused.state, "failed");
     assert.equal(refused.failureCode, "client_refused");
@@ -193,8 +191,10 @@ export function registerOAuthRenewalRefusalCases({
       (await worker.renew(custody, t.signal, resolveClient, refusedAgain.schedule.version)).state,
       "ready",
     );
-    const renewedMaterial = driver.valueFor(custody.secret);
-    assert.ok(renewedMaterial);
+    const renewedMaterial = await driver.privateSecrets.withValue(
+      custody.secret,
+      async (value) => value,
+    );
     assert.ok(!renewedMaterial.includes(currentSecret));
     // A definitive grant refusal is terminal, even with a working client credential.
     revoked = true;

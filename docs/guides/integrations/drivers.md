@@ -11,11 +11,12 @@ documented in [Deploy and verify Agents](../deploy/production-agents.md). Use th
 [Drivers quickstart](../../reference/drivers/selection.md#choose-a-bundled-driver)
 to find the required settings.
 
-## Credential delivery during cutover
+<a id="credential-delivery-during-cutover"></a>
 
-For a build of the [unmerged 1.0 cutover candidate](https://github.com/openclaw/openclaw-enterprise/pull/7224),
-use bundled Kubernetes Compute and select OCC TokenService in the trusted
-Installation configuration. Add this entry under `drivers`.
+## Configure managed credential delivery
+
+Use bundled Kubernetes Compute and add OCC TokenService under `drivers` in the
+trusted Installation configuration.
 
 ```yaml
 token_service:
@@ -29,15 +30,13 @@ registration supplies native Credential Proxy delivery. Leave the separate
 legacy `credential_proxy` selection unset for this workflow.
 
 Use [Deploy your first Agent](../deploy/deploy-first-agent.md) to enroll a model
-Source and [OpenShell Git access](../repository-credentials/openshell-git-push.md)
-to grant a dedicated Codex Agent access to a repository. The live run at
-`a009380c` exercised a Codex turn and allowed and denied Git reads. Native Git
-push and a genuine Codex PAT turn still need live qualification.
+Source or [set up GitHub App access](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+for a dedicated Codex Agent.
 
-Main still supports the [legacy Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/selection.md#supported-selections)
-`credential_gateway` and `credential_refresh`. The cutover retires both and
-drops Gateway-owned Sources. The separate `credential_proxy` selector remains
-available for [legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
+Remove the retired `credential_gateway` and `credential_refresh` selectors when
+[upgrading an older installation](../deploy/production-upgrade.md). The
+separate `credential_proxy` selector still serves
+[legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
 
 ## Available implementations
 

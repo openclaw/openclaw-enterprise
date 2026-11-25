@@ -39,10 +39,9 @@ The current `SecretBackendRef` contains `namespaceName`, `name`, `key`, and
 `SecretMetadata` contains only `id`, `namespaceId`, `name`, and a platform `ref`.
 OCC rejects empty values, NUL, invalid text, and values above 65,536 UTF-8 bytes.
 
-OCC uses `withValue` to register and update [credential sources](../credential-sources.md)
-with the Credential Gateway. Other callers include
-Secret-backed plugin discovery, channel credential validation and directory
-lookup, and OAuth connection token custody.
+OCC uses `withValue` for trusted operations that need the current Namespace
+Secret, such as Channel credential validation and directory lookup. Managed
+model and Plugin credentials use the separate TokenService custody path.
 
 For `readCredentialInput`, [`CredentialInputRead`](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
 supplies the stored `secret`, `retention: "none"`, and a `lifetime`. Honor its
@@ -52,7 +51,7 @@ optional `expiresAt`. Read each value from the authoritative store without
 caching it. Kubernetes verifies the stored UID and returns the object's
 `resourceVersion` as the version.
 
-The optional `installationSecrets` store supports confidential [OAuth client registrations](../connection-templates.md). OCC supplies the Installation ID and registration ID before the first write. The Driver creates, replaces, reads and deletes the private value at that identity. Deleting an absent value succeeds so the worker can finish an interrupted operation. Namespace Secret APIs and workload projections cannot resolve this private material.
+The optional `privateSecrets` store holds [TokenService Sources](../credential-sources.md) and [credential client secrets](../connection-templates.md). OCC supplies the Installation ID and an opaque address for the resource and its owner. The Driver creates, replaces, reads and deletes that value. Compare-and-swap fences OAuth grant replacement. An absent value counts as deleted, so the Worker can finish an interrupted retirement. Namespace Secret APIs and workload projections cannot access this material.
 
 ## IAM
 
@@ -64,20 +63,10 @@ means no readable Secrets. Exact Secret reads, updates, and deletion require
 they do not call the Driver or return a value. Binding or assigning a Secret
 also requires the caller to have `operate` on it. Deployment requires both the
 deploying actor and the consuming Agent's ServicePrincipal to have `operate` on
-each Secret; the worker rechecks them before preparing delivery. Registering a
-credential source requires the caller's `operate` on each referenced Secret. Namespace
-membership, possession of a reference, and backend permissions grant no OCC
-authority. A Secret binding, Harness authentication source, credential source
-Secret, or plugin discovery Secret that names another Namespace is rejected with
-`400 INVALID_REQUEST`; a Secret the Namespace does not hold is `404`. Plugin discovery using a Secret also
-requires caller `operate` on that exact Secret. Create Agent discovery also
-requires Namespace Agent `create`; it does not require an Agent ServicePrincipal.
-Saved-Agent discovery requires exact Agent `read` and `update`, plus `operate`
-for both the caller and the Agent's ServicePrincipal. OCC derives the `codex_pat`
-source from the Agent rather than accepting a Secret ID from the browser. It
-rechecks those grants and the binding after the backend read, before sending
-the value to the selected Plugin Driver. Never expose values in responses,
-configuration documents, audit, or logs. A running version may still use an
+each Secret. The worker rechecks access before delivery. Namespace membership,
+possession of a reference, and backend permissions grant no OCC authority.
+Secret references must belong to the target Namespace. Keep values out of
+responses, Configuration, audit, and logs. A running version can still use an
 older projected value.
 For channel directory lookup, the caller selects an existing same-Namespace
 Secret while creating an Agent or editing an Agent or Configuration. OCC requires

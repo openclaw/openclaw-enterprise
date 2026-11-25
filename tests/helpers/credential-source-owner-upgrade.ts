@@ -3,9 +3,8 @@ import { randomUUID } from "node:crypto";
 import type pg from "pg";
 
 /** Exercise real main source metadata and Secret relationships before owner admission exists. */
-export async function retainGatewaySourcesAcrossProxyAdmission(
+export async function discardRetiredGatewaySourcesAcrossCutover(
   app: pg.Client,
-  migrator: pg.Client,
   namespaceId: string,
 ) {
   const secretId = `sec_${randomUUID()}`;
@@ -35,44 +34,30 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
       );
     }
   }
-  async function sources() {
-    return (
-      await app.query(
-        `SELECT to_jsonb(s) AS source
-         FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
-        [ids],
-      )
-    ).rows.map((row) => row.source);
-  }
-  async function relationships() {
-    return (
-      await app.query(
-        "SELECT * FROM occ.credential_source_secrets WHERE credential_source_id=ANY($1) ORDER BY credential_source_id",
-        [ids],
-      )
-    ).rows;
-  }
-  const before = await sources();
-  const secretsBefore = await relationships();
+  const readSecret = () =>
+    app.query("SELECT to_jsonb(s) AS secret FROM occ.secrets s WHERE id = $1", [secretId]);
+  const before = await readSecret();
+  assert.equal(before.rows.length, 1);
   return async function assertOwnershipAfterUpgrade() {
-    const after = await sources();
     assert.deepEqual(
-      after.map((source, index) =>
-        Object.fromEntries(Object.keys(before[index]).map((key) => [key, source[key]])),
-      ),
-      before,
-      "main source fields survive unchanged",
+      (await app.query("SELECT id FROM occ.credential_sources WHERE id = ANY($1)", [ids])).rows,
+      [],
+      "retired Gateway Sources are discarded",
     );
-    assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
-      after.map(({ owner_capability, egress }) => ({ owner_capability, egress })),
-      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
-      "main sources retain Gateway ownership without acquiring proxy authority",
+      (
+        await app.query(
+          "SELECT secret_id FROM occ.credential_source_secrets WHERE credential_source_id = ANY($1)",
+          [ids],
+        )
+      ).rows,
+      [],
     );
-    const relabel =
-      "UPDATE occ.credential_sources SET owner_capability='credential_proxy' WHERE id=$1";
-    await assert.rejects(app.query(relabel, [ids[0]]), { code: "42501" });
-    await assert.rejects(migrator.query(relabel, [ids[0]]), { code: "55000" });
+    assert.deepEqual(
+      (await readSecret()).rows,
+      before.rows,
+      "Source retirement preserves the Namespace Secret",
+    );
     // A stale writer must fail rather than implicitly select a source owner.
     await assert.rejects(
       app.query(

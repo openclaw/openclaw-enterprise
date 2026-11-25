@@ -1,44 +1,33 @@
 # Protected static inference
 
-New local development launches of this profile are retired. The launcher rejects
-`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, with no fallback.
-Unset, empty or `0` protected-egress selections retain ordinary authenticated
-OpenShell startup. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+The bundled OpenShell protected static inference profile is retired for new
+Sources, adoption, and deployments. Use a
+[managed model Source](managed-static.md) for new model access. This reference
+records the request and response policy for existing protected revisions and
+separately qualified installed senders.
 
-The controller contracts below remain for existing installations, source owners
-and historical specifications. Launcher retirement does not remove their admission,
-withdrawal or cleanup responsibilities.
-
-Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell pair that
-enforces the whole-execution profile below. The security principal is one freshly
-admitted Agent execution. Its parent, a sibling and an ordinary client can use the
-same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. The generated model routes use OpenShell's `/**` binary
-matcher to accept any verified absolute executable path in that execution.
-OpenShell still checks process identity, and credential middleware checks the
-admitted operation. Clients need no hook.
-
-The bundled legacy OpenShell release cannot enforce this profile. Before using a
-candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)
-and test the actual static inference path. A repository metadata read exercises the
-shared exchange but does not establish static inference or Git transport support.
+The local launcher rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence
+of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before preparing workloads.
+Unset, empty, or `0` protected-egress settings retain ordinary OpenShell startup.
+See the [local profile settings](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 ## Bundled OpenShell admission
 
-The bundled OpenShell Credential Proxy Driver refuses new protected static
-OpenAI sources, live adoption or re-admission of a saved source, and new
-protected revisions using one. OCC returns `409 RESOURCE_CONFLICT`. Source
-admission is refused before reading its Secret material. Deployment retirement
-is checked before contacting the counterpart, so an unavailable Gateway cannot
-turn the refusal into a retryable error. Ask an Installation administrator to
-configure a supported model access path.
+OCC returns `409 RESOURCE_CONFLICT` for a new bundled protected OpenAI Source
+before reading Secret material. It also refuses a new revision using a retired
+Source before contacting the counterpart. For a retained revision, its original
+owner handles authorization, withdrawal, and cleanup under the recorded policy.
 
-Existing revisions keep the recorded provider for request authorization and recovery
-under the current Sandbox contract. Adoption still requires the exact current spec,
-including the inference `/**` matcher; older Sandboxes without it are unsupported.
-Withdrawal and cleanup still go to their original owners.
-This restriction does not change ordinary Gateway-only OpenAI sources.
+In this profile, authority belongs to one admitted Agent execution. A
+parent, sibling, or ordinary client in that execution can use the allowed
+operation. A different execution of the same Agent needs its own admission. The
+profile uses the OpenShell `/**` matcher for verified absolute executable
+paths. The supervisor checks process identity, and the middleware checks each
+credentialed operation.
+
+An installed sender needs its own [dispatch and response custody qualification](../../testing/protected-repository-custody.md)
+for this profile. A credential-free metadata request exercises only the shared
+exchange.
 
 ## Execution admission cutoff
 
@@ -105,7 +94,7 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
-Fresh static sources select the first provider for their type in catalog order.
+A qualifying installed sender selects the first provider for a Source type in catalog order.
 The selected provider ID and generation must identify one registration; duplicates
 return `409` before credential material is read. Multiple distinct providers for
 the same type remain supported. Reordering distinct providers does not change the
@@ -153,11 +142,9 @@ the same type and local-tool restrictions. Namespace descriptions remain text. T
 the effective policy reported by the provider. Missing or unknown members and other
 values are refused; the request-only `"auto"` value is not an effective response policy.
 
-Static provider generation two identifies whole-execution authority. A generation-one
-grant remains narrower. Adopting live material and authorizing the broader execution
-are explicit, separate decisions; a Secret edit grants neither. The first cutover
-requires an unbound source and an explicitly admitted new binding. Leave an existing
-approved copy available until its owner can make that transition safely.
+Static provider generation two records whole-execution authority. A recorded
+generation-one grant keeps its narrower authority. A Secret update does not
+change the admitted scope.
 
 The supervisor withholds the complete bounded response, including the last trailer,
 until Credential Proxy permits its release. The 30-second operation deadline bounds
@@ -201,11 +188,10 @@ client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-For retained controller installations, consult the
-[OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
-These settings describe the existing installation and do not enable new bundled
-protected static inference admission.
-The retired local launcher cannot prepare this configuration.
+For recovery of a retained installation, use its recorded Driver settings and
+[OpenShell Backend](../backends.md#openshell-gateway). The settings below apply to
+the protected exchange. Use the managed Source procedure for new bundled model
+credentials.
 Select the same Driver ID in `backend[].drivers.credential_proxy` and the
 Installation's `drivers.credential_proxy` selection. Configuring only one is an
 error, not a request to disable protection. Startup also rejects the retired
@@ -214,9 +200,3 @@ use `drivers.credential_proxy` instead.
 Set its middleware name and `authorityScope: execution`. Provide an authenticated
 HTTPS Gateway, the authority's TLS identity and trusted Gateway issuer public key.
 Keep the single authority process reachable for the whole exchange.
-
-Prepared GitHub metadata is a separate, bodyless GET grant isolated to the named
-Agent. Deleting that Agent stops renewal and use at once; the worker then revokes the
-source's token. Delete the source afterwards. The grant's optional custody and trusted
-issuer settings belong to the Installation operator, not the credential source. [Credential preparation](../../flows/credential-source-refresh.md)
-describes the worker, cold behavior and recovery.

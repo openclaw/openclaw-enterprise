@@ -1,18 +1,13 @@
 # Protected repository access with OpenShell
 
-Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-OCE verifies middleware denial before issuing credentials and releasing the Agent.
-Repositories must share explicit permissions. OCE checks GitHub's scope against
-canonical IDs; GitHub governs refs and REST/GraphQL. Grant changes block use.
+The protected OpenShell sender verifies middleware denial before preparing
+credentials and releasing the Agent. Repositories must share permissions. OCE
+checks token scope against canonical repository IDs. GitHub governs refs and
+API permissions. Select model authentication separately.
 
-`git-write` retains exact ref policy. Qualification requires configured capabilities
-and runtime evidence. `git-read` and
-`git-full` keep their existing semantics. Installation preview requires separate
-opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
-
-Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
-repository access, while model access uses a Gateway Harness source. For upgrades, see
-[compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
+`Ready` and an accepted hook do not prove exact dispatch or v7 reduction.
+`github-installation` requires a separate preview opt-in. For Source-backed
+native Git, see [GitHub App setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 
 ## Prerequisites
 
@@ -32,7 +27,7 @@ repository access, while model access uses a Gateway Harness source. For upgrade
 
 Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from one
 Driver registration. Use
-[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) and
+[protected sender settings](../drivers/selection.md#select-a-protected-sender) and
 [artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
 Set repository eligibility in the registry at
 `/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
@@ -52,7 +47,7 @@ Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 Startup and the upgrade check refuse other values with
 `CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
 inputs select the registry ConfigMap, worker-only App-key and existing custody
-Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
+Secrets. Preserve the custody key across restarts;
 never put either key in Agent configuration or Helm values.
 
 ## Prepare the request-phase service
@@ -166,7 +161,7 @@ for membership and permissions, and the
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+`profile: github-installation` in the Agent's `repositoryAccess.repositories`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. The bundled OpenShell Credential Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers
@@ -196,7 +191,15 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 Process-scoped `safe.directory` permits the Sandbox's root-owned mount without trusting
 nested repositories or changing persistent Git configuration. `push.negotiate=true`
-reduces transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+reduces transfers.
+
+<a id="plan-for-request-limits"></a>
+
+OpenShell 0.1.6 buffers requests. Selected-repository REST JSON and Git fetch
+negotiation each allow 1 MiB. GraphQL, installation-preview API, and ref-scoped
+draft JSON allow 64 KiB. Git push allows 4 MiB. Contents API writes count base64,
+metadata and whitespace. Resource segments allow letters, digits, underscores,
+hyphens and dots. Percent-escaped filenames are refused.
 
 With `github-repository`, use selected HTTPS Git URLs; API operations use token
 permissions. Both API scopes refuse runner-token and deploy-key creation.
@@ -266,9 +269,8 @@ The draft helper reports
 | `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
 | `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
 
-Retry advice applies only to known pre-send refusals, never uncertain sends.
-
-Deploying versions lack credentials; requests answer `route_not_ready` until activation.
+Retry only known pre-send refusals. Deploying versions return `route_not_ready`
+until activation.
 
 ### Worker log
 
@@ -321,7 +323,7 @@ Stop or revision replacement withdraws the binding; starting requires new author
 The observed-only preview forbids process recovery and worker adoption.
 See [Provider write deadlines](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty),
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
-its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core)
+[prepared Git recovery](../../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership)
 for expiry, quarantine and retirement.
 
 Use `worker.openshell-git-denied` for request denials and
@@ -370,10 +372,6 @@ issued material within about a minute, even when GitHub rejects the new key.
 
 ## Move from the earlier trial
 
-Use [stop and settle](../../guides/deploy/credential-proxy-upgrade.md#stop-and-settle-before-upgrading)
+Use [stop and settle](../../guides/deploy/production-upgrade-credentials.md)
 before changing the old owner. New startup rejects the broker trial. Keep
 [explicit native Git](prepared-native-git.md) separate from protected delivery.
-
-Earlier documentation URLs remain as anchor bridges:
-[setup](openshell-git.md), [refusals](openshell-git-refusals.md), and
-[restarts](openshell-git-restarts.md).

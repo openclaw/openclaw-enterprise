@@ -133,9 +133,10 @@ no default is inferred.
 
 The reference is independent of native model names and Harness selection.
 OpenAI or Anthropic API keys and directly supplied service account tokens need
-no Backend. An OCE-issued ChatGPT account token requires the matching Backend and
-account at deployment request and again before startup.
-Creating an Agent does not create a provider account or issue credentials.
+no Backend. The ChatGPT Backend and ServiceAccount Driver issue a PAT through
+[the ServiceAccount lifecycle](service-accounts.md#account-and-credential-lifecycle).
+The Agent selects the resulting Credential Source. Creating an Agent does not
+create a provider account or issue a PAT.
 
 ## Harness authentication
 
@@ -164,10 +165,9 @@ Personal [Codex OAuth device login](../guides/deploy/credential-lifecycle.md#use
 is **Experimental**. Bind the returned credential source with
 `{ "method": "credential_source", "sourceId": "cs_…" }`.
 
-For an already issued ChatGPT account credential, use
-`{ "method": "codex_pat", "source": { "kind": "service_account", "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000", "id": "sa_123e4567-e89b-42d3-a456-426614174000" } }`.
-This requires dedicated Codex and the account's matching `backendId`. Binding
-an account does not issue its credential or change the model, Harness, or Backend.
+For an OCC-issued ChatGPT ServiceAccount PAT, select the
+[issued Credential Source](service-accounts.md#version-snapshots-and-credential-delivery).
+A ServiceAccount reference in `harnessAuth` returns `409 RESOURCE_CONFLICT`.
 
 **Development upgrade limitation:** migration `0049` rejects retained
 `chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
@@ -180,7 +180,7 @@ bindings and requests that never created an Agent, see
 
 For dedicated OpenClaw or Codex, use
 `{ "method": "credential_source", "sourceId": "cs_…" }` with a supported
-TokenService and Credential Proxy or legacy Credential Gateway. List it in
+TokenService and its compatible Sandbox and Credential Proxy. List it in
 `credentialSources`; see [Source grants](credential-sources.md#bind-a-source-to-an-agent).
 
 Replacing a revision from or to managed credential delivery currently returns `409` before queueing. Complete Stop before deploying again. See [implementation status](credential-sources.md#implementation-status).
@@ -344,26 +344,25 @@ deployed Agents keep separate gateways and stable service principals.
 
 The public API has no Agent revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Credential Gateway or the paired Credential Proxy delivers model credentials; direct Secret delivery remains unsupported. Check its compatibility limits.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes
+Compute with dedicated Codex or worker-capable native OpenClaw. The paired
+Credential Proxy delivers managed model credentials. Direct model Secret
+delivery into that Sandbox is unsupported.
 
 ## Failure semantics
 
 - `400 INVALID_REQUEST`: The Backend ID is malformed or empty, the plugin map is
   structurally invalid, or a runtime `modelApiKey` selector is supplied (use
   `harnessAuth`). Also when the Namespace does not approve the repository
-  selections, the request sends both `repositoryAccess` and
-  `repositoryBindings`, or `harnessAuth.source` names a ServiceAccount in another
-  Namespace; the message names the rule.
+  selections or `harnessAuth` refers to a credential outside the Agent's
+  Namespace. The message names the rule.
 - `404 NOT_FOUND`: The nonempty Backend ID does not name a configured Backend.
 - `401`: The session cookie is missing, invalid, expired, or revoked.
 - `403`: Your principal lacks the exact permission for the Agent or Namespace.
-- `404`: The Namespace or Agent does not exist under the requested parent, or
-  the selected Configuration or associated service account does not exist in the
-  Agent's Namespace.
-- `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
-  account has no issued access token, or its Backend binding or topology is incompatible.
-- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
-  and the Installation has no ChatGPT Backend to issue one.
+- `404`: The Namespace or Agent does not exist under the requested parent,
+  or the selected Configuration does not exist in the Agent's Namespace.
+- `409 RESOURCE_CONFLICT`: Harness authentication is missing or incompatible
+  with the selected topology, or the request binds a ServiceAccount directly.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation. Also for a standing repository approval that

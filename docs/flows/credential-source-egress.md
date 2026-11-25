@@ -24,14 +24,13 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-For an admitted `github-app-metadata` route to repository `12345`,
+For an admitted `credential-free-repository-metadata` route to repository `12345`,
 `acme/widgets`, at `https://api.github.com`:
 
 1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
    to its exchange. The adapter checks method, URL, headers and body against the route.
-2. **Resolve.** OCC authorizes the Agent and registered grant. The Token Service
-   starts or joins issuance; OCC rechecks authority and token version before returning the header.
-3. **Permit.** OCC rechecks the same-stream binding. Sending must start by the permit deadline.
+2. **Resolve.** OCC authorizes the Agent and registered grant. It records `no_material_required` and selects the admitted operation.
+3. **Permit.** OCC rechecks access and the same-stream binding. The sender starts the GET without a credential header before the permit deadline.
 4. **Release.** The adapter requires complete `200` JSON, at most 64 KiB, matching
    the admitted ID and name (ASCII case may differ). The caller receives `200`,
    `Content-Type: application/json`, `Cache-Control: no-store` and only this body.
@@ -40,15 +39,14 @@ For an admitted `github-app-metadata` route to repository `12345`,
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-ID `67890` under the same name is withheld after GitHub receives the request.
-The credential-free profile applies the same filters, records
-`no_material_required` and sends no credential header.
-[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+The sender withholds ID `67890` even if GitHub returns it under the same name.
+The [metadata adapter](../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+defines the request and response checks.
 
 ```mermaid
 graph TD
-  A["<b>Resolve token</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
-  A -->|Header ready| B["<b>Authorize send</b><br/>Recheck grant and version"]
+  A["<b>Resolve operation</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
+  A -->|No material required| B["<b>Authorize send</b><br/>Recheck current access"]
   B -->|Denied| X
   B -->|Permit| C["<b>Send GET</b><br/>Hold GitHub's reply"]
   C --> D{"Valid identity<br/>and live caller?"}
@@ -66,15 +64,10 @@ reads; deployment refusal precedes counterpart probes. Retained revisions keep
 their provider, authorization, withdrawal and cleanup under the
 [current Sandbox contract](../reference/credential-sources/protected-inference.md#bundled-openshell-admission).
 
-Static admission hides incompatible types from capabilities. Creation and adoption
-return 409 on mismatch; refused adoption preserves the Gateway copy.
-`packages/occ/src/credential-egress-admission.ts:admitStaticEgressSource` rechecks both declarations before reading and injecting material.
-
-OCC checks source and Secret grants; adoption requires consent. Version 3 binds
-Sandbox and Proxy to one Driver. `admitProxyPlan` derives routes from Harness
-settings and consent; empty routes deny all. Plans pin execution, digest, grant
-and source generation. Deployment rechecks the unique compatible provider before
-provisioning transport credentials and saving the revision.
+For a qualifying installed sender, OCC checks Source and Secret grants.
+Version 3 binds Sandbox and protected Proxy to one Driver. `admitProxyPlan`
+pins execution, digest, grant and Source generation. An empty protected plan
+denies all. Deployment rechecks the selected provider before provisioning.
 `packages/occ/src/credential-egress-authority.ts:createEgressAuthority` rechecks
 source ownership before reading material and loads fresh policy before each send.
 `apps/controller/src/console/agents/detail.mts:requestedHarnessOverrides` captures
@@ -98,22 +91,19 @@ owners refuse release; cold sources remain pending.
 Deploy returns `409` for missing Git delivery profiles
 (`REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled `git-write`
 (`REPOSITORY_GIT_SENDER_UNQUALIFIED`), unadmitted bindings, and Installation limits.
-Agents with ordinary Gateway sources and no protected sources or Git bindings
-need no Proxy plan. Agents with no sources retain selected Proxy admission.
-`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks availability before saving an
-empty protected plan; Kubernetes uses it for runtime-authenticated Dedicated
-Codex without inference access. Preparation repeats both Git refusals.
+`packages/occ/src/credential-egress-admission.ts:admitProxyPlan` checks
+availability before saving an empty protected plan. Kubernetes uses that plan
+for runtime-authenticated Dedicated Codex without inference access.
+Preparation repeats both Git refusals.
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding and requires proof of the recipient before release.
 
-Compute passes Credential Proxy wiring to Sandbox. Protected sources require
-admission, API-key login and an exact source-key match. Only Gateway-owned sources
-receive their exact Gateway attachment and authentication environment.
+Compute passes the protected Proxy wiring to Sandbox. Retained protected
+inference uses its admitted Source and API-key login.
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-emits `/**` on inference routes so any verified executable in the admitted
-execution can reach the model endpoint through credential middleware.
-The egress Driver compares the full prepared policy against the plan, including
-the explicit matcher.
+emits `/**` on retained inference routes. The egress Driver compares the
+prepared policy against the admitted plan, including that executable matcher.
+Managed model Sources follow the [native delivery flow](credential-source-lifecycle.md#3-prepare-credential-delivery).
 
 Authenticated [V1 evidence](../reference/credential-sources/protected-inference.md#loaded-enforcement)
 binds both policies to the Sandbox, instance, policy version, configuration and
@@ -191,24 +181,11 @@ without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The Secret Driver verifies ownership and reads authoritative UID/resourceVersion.
-Static and prepared GitHub reads share one `{ signal, deadlineAt }` lifetime through
-namespace verification, GET and retries. Child scopes inherit cancellation and the earliest
-deadline. Each HTTP dispatch checks expiry independently of timers. Invalid deadlines
-fail closed; per-attempt timeouts cannot extend the lifetime.
-GitHub acquisition validation, transport and metadata injection share a wire check:
-1–16,384 bytes of nonspace printable ASCII, not authentication.
-
-`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks source registration and token lifetime, reading ciphertext only for the selected issuer, attempt and version. Decryption rechecks deadline and cancellation. Without a timely eligible token, OCC withholds the header. Background cleanup can access retired material.
-
-Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
-queries current material metadata in the active platform transaction, without another
-checkout. Lifecycle issuer/trust identity, shared metadata predicates and exact evidence
-fence stale selections. The port exposes neither ciphertext nor caller-supplied SQL.
-Statement and lock timeouts respect tighter caller limits. Successful SQL restores the
-original settings in the same unit before rechecking cancellation and absolute expiry;
-SQL errors leave rollback to the transaction owner. OCC checks withdrawal, rejection
-and binding in that unit.
+For a credential-bearing static request, the Secret Driver verifies ownership and
+reads the authoritative UID and resource version. Resolution and dispatch share
+one `{ signal, deadlineAt }` lifetime. Child scopes inherit cancellation and the
+earliest deadline. A credential-free metadata read skips the material lookup and
+records an empty injection digest.
 
 Same-stream authorization echoes the original deadline, evidence and injection digest.
 The registry reserves the handle; `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`
@@ -263,16 +240,16 @@ Only this exchange can claim the response. `EgressSendReceipts.observe` atomical
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
 Failure withholds bytes; success still requires checking cancellation and deadline.
 
-Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
-its next scheduled check, the prepared owner excludes a positively rejected version.
-Concurrent owners coalesce replacement; uncertain issuance blocks it; late feedback
-cannot invalidate its successor. GitHub metadata has no positive rejection classifier.
+Structured OpenAI `invalid_api_key` can establish credential rejection. A bare
+`401` is insufficient. The rejection applies to the exact observed version.
 
 Erase material after response handling or at deadline. Only a refusal before
 permission can settle as undispatched. After possible permission, inspect the
 exact attempt without retrying; returning bytes does not prove delivery.
 
-### 5. Configure the regular Harness caller
+<a id="5-configure-the-regular-harness-caller"></a>
+
+### 5. Run a retained protected inference caller
 
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` selects HTTP
 Responses with local tools. It disables provider tools, WebSockets, and retries.

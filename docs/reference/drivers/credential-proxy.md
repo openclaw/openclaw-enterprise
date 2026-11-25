@@ -12,15 +12,7 @@ kind: reference/driver
 
 OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Legacy provider adapters define scope, injection, and response rules. The Proxy enforces injection. It resolves a Source for OCC delivery copies or directly attaches a native OpenShell Provider.
 
-TokenService owns [managed static Sources](../credential-sources.md#implementation-status). Gateway-owned Sources use the recorded Gateway. When the legacy protected path requires static material, neither
-the Gateway nor the Proxy may declare refresh, device authorization or managed
-login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
-before the Secret read, creation and adoption return 409 without reading material.
-OCC checks again after the read and refuses injection if either declaration
-changed. Refused adoption preserves the prior Gateway copy.
-Protected sources and
-repository bindings require Proxy admission; an Agent with neither needs no Proxy
-plan. An unavailable Proxy never permits Gateway fallback for a protected source.
+TokenService owns [managed Sources](../credential-sources.md), including model keys, Codex PATs, OAuth grants, and GitHub installation tokens. Credential Proxy enables injection only for the bindings and requests admitted in the Agent revision. Credential-free metadata and protected repository grants use the separate protected-egress admission path.
 
 ## Interface
 

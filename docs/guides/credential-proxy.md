@@ -1,24 +1,23 @@
 # Set up and operate Credential Proxy
 
-Credential Proxy injects credentials only on approved requests. The cutover
-candidate uses TokenService to hold the material and pairs native OpenShell
-Credential Proxy with the Sandbox that enforces network access. See the
-[Credential Proxy reference](../reference/drivers/credential-proxy.md).
-For Gateway-owned model or Plugin Sources, use the
-[pre-cutover procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/credential-proxy.md).
+OCC admits each Credential Source binding. TokenService owns the credential,
+Credential Proxy prepares and updates its delivery, and Sandbox enforces the
+network policy when the Agent sends a request. See the
+[credential Source reference](../reference/credential-sources.md) for the current
+contract.
 
 ## Choose the path before changing an installation
 
 - For managed model Sources, use OCC TokenService and an OpenShell Sandbox
   registration that exposes native Credential Proxy delivery.
-  [Candidate Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/drivers/selection.md#supported-selections)
-- For native Git, follow [OpenShell repository enrollment](repository-credentials/openshell-enrollment.md).
+  [Driver selections](../reference/drivers/selection.md#supported-selections)
+- For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
   TokenService renews the GitHub installation token, and Credential Proxy
   injects it only on requests admitted for the Agent.
 - For credential-free repository metadata, select a qualified protected sender
   and Sandbox registration. The sender restricts the request and its response
   without injecting a credential.
-  [Credential-free Source procedure](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/other-delivery-modes.md#register-a-source)
+  [Credential-free Source procedure](../reference/credential-sources/protected-repository-metadata.md#register-a-source)
 - For the separate Kubernetes prepared Git path without a Sandbox or
   Credential Proxy, use the [prepared native Git reference](../reference/repository-credentials/prepared-native-git.md).
 
@@ -28,28 +27,27 @@ For Gateway-owned model or Plugin Sources, use the
 ## Register, authorize, and deploy an OpenAI static inference source
 
 1. Select OCC TokenService and the paired OpenShell Sandbox and native Proxy.
-   [Candidate Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/drivers/selection.md#supported-selections)
-2. [Register a static Source](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/managed-static.md#register-a-source)
+   [Driver selections](../reference/drivers/selection.md#supported-selections)
+2. [Register a static Source](../reference/credential-sources/managed-static.md#register-a-source)
    in the Agent's Namespace with the `openai` provider preset.
 3. Select the Source in Harness authentication, grant the Agent permission to
-   use it, and save the network rule for its executable and model destination.
-   [Candidate Agent deployment](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source)
+   use it, and use the stock preset request grant when available. Save an explicit network grant for a custom runtime.
+   [Agent deployment](../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source)
 
-For a dedicated Codex example, see [local static Source setup](deploy/openshell-credential-sources.md).
+For a dedicated Codex example, see [first Agent setup](deploy/deploy-first-agent.md).
 
 <a id="enroll-prepared-github-access"></a>
 
 ## Enroll GitHub App access
 
-[Register a GitHub App Client and select repositories for the Agent](repository-credentials/openshell-enrollment.md).
+[Register a GitHub App Client and select repositories for the Agent](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 Keep the model Source and Git Source permissions separate.
 
 ## Enable Google Workspace requests from a dedicated worker
 
 Live Google Workspace OAuth delivery through the native Proxy remains deferred
 to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673). Follow the
-[Plugin setup guide](topics/openclaw-plugins.md) for the cutover candidate's
-managed static Slack MCP setup.
+[Plugin setup guide](topics/openclaw-plugins.md) for managed static Slack MCP setup.
 
 ## Verify use, loss, and withdrawal
 
@@ -62,7 +60,7 @@ request at the upstream and confirm the denied request never reached it.
 For credential-free metadata, verify the approved repository read with no
 credential injected. Check that the selected sender refuses another repository
 or method. Record the selected revision and the enforcement and origin evidence.
-[Credential-free Source policy](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/other-delivery-modes.md#bind-a-source-to-an-agent)
+[Credential-free Source policy](../reference/credential-sources/protected-repository-metadata.md#bind-a-source-to-an-agent)
 
 For an active managed model Source, [request withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent)
 and verify that the affected Agent can no longer use it. Wait for confirmed
@@ -75,9 +73,7 @@ may finish.
 Remove the Agent's Source-backed repository selection using its **Repositories**
 settings. Check that the deployment's Git delivery is withdrawn and that a fresh
 Git read fails. Send a model request through the same Agent to verify that its
-independent model credential continues to work. This continuity check still
-needs live qualification on the cutover candidate.
-[Candidate withdrawal behavior](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/flows/agent-repository-credentials.md#2-freeze-a-deployable-revision)
+independent model credential continues to work. See the [Git withdrawal flow](../flows/agent-repository-credentials.md#2-freeze-a-deployable-revision).
 
 Legacy prepared Git uses a separate standing or finite session procedure.
 [Prepared native Git access](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes)

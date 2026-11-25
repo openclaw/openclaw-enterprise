@@ -175,17 +175,16 @@ list, use the policy editor on an undeployed draft. Once an Agent has deployed
 without a list, including with **Access profiles**, you need a new Agent to
 use per-repository access.
 
-Check each owner/name. Each selection starts at **Contributor** if
-the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.
-Read-only allows clone and fetch. Contributor adds push. Creating pull requests
-or issues also requires deployment support, GitHub permissions and applicable
-API rules. Choose Read-only wherever the Agent does not need write access.
+Check each owner/name and choose **Read-only Git** for clone and fetch or
+**Read/write Git** if the Agent needs to push. These grants cover Git
+transport. [GitHub App access](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
 With one or more repositories selected, choose **Save Agent draft**. The Agent
-and its grants are saved together, with
-policy editing off. This requires Installation and Agent administration, permission
-to manage, read and update policy, and a supported Dedicated runtime and model
-Credential Source. If saving is refused, the Configuration and model credentials
+and its grants are saved together, with policy editing off. This requires
+Installation and Agent administration, permission to manage, read and update policy,
+a dedicated Codex Agent with a supported model Credential Source, and a GitHub
+App Client available to its Namespace.
+If saving is refused, the Configuration and model credentials
 can remain saved. If the Console cannot confirm the grants, do not deploy.
 Select **Recheck saved GitHub access** to read the same draft again.
 

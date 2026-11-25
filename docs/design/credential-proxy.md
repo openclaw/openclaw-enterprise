@@ -1,24 +1,27 @@
 # Why an Agent needs a Credential Proxy
 
-This chapter uses a protected GitHub request to explain a trusted sender. For the broader proposed model and plugin credential flow, start with [credential sources](../reference/credential-sources.md#intended-credential-flow) and its [implementation status](../reference/credential-sources.md#implementation-status).
+An Agent sends a placeholder instead of the upstream credential. TokenService
+owns the credential. At deployment, OCC authorizes the Source and records
+separate network and injection policies. Sandbox enforces network access.
+Credential Proxy injects the credential only into matching requests. Start with
+[Credential Sources](../reference/credential-sources.md#implementation-status)
+for supported model, Git, and Plugin paths.
 
-An Agent needs to confirm that a private GitHub repository is the one its
-operator approved. Giving the Agent an installation token would also give
-any script it runs a credential it could copy and use elsewhere. A proxy that
-attaches the token to any GitHub request still lets the script exercise the
-token's GitHub permissions.
+The separate protected egress path can restrict what a caller receives from
+an upstream service. This example explains the trusted sender on that path.
 
-The Credential Proxy lets the Agent use one approved operation without receiving
-the token. A trusted sender controls the connection to GitHub. The OpenClaw
-Control Plane (OCC) checks which credential the sender can use and whether it
-can send this particular request. A GitHub adapter decides which fields the Agent receives.
+An Agent needs to confirm that a repository is the one its operator approved.
+A trusted sender controls the connection to GitHub. The OpenClaw Control Plane
+(OCC) checks whether the sender can make the exact request. A GitHub adapter
+decides which fields the Agent receives. The credential-free metadata grant
+below works for repository identities GitHub serves without authentication.
 
 The [architecture diagrams](credential-proxy-architecture.md) show where the worker prepares Git credentials, where OpenShell asks for authorization, and how the generic exchange handles replies.
 
 ## Read one repository's identity
 
 Suppose an operator binds a GitHub metadata source to a dedicated Agent. The
-grant names the GitHub App, its installation, the Agent and the expected identity of
+grant names the Agent, origin and expected identity of
 `acme/widgets` (ID `12345`). This example requires an installed sender and Sandbox
 that force the execution's GitHub requests through the protected exchange.
 Stock OpenShell does not provide this path.
@@ -30,9 +33,8 @@ GET /repos/acme/widgets HTTP/1.1
 Host: api.github.com
 ```
 
-The worker prepares a short-lived installation token with the App signing key.
-The sender asks OCC for the credential header, then asks again for permission
-to send. If the Agent loses access between those steps, the request stops there.
+The sender asks OCC to select the approved operation, then asks for permission
+to send. A loss of access between those steps stops the request.
 
 ```mermaid
 sequenceDiagram
@@ -42,10 +44,10 @@ sequenceDiagram
     participant G as GitHub
     A->>S: GET /repos/acme/widgets
     S->>C: Check request and connection
-    C-->>S: Authorization header
+    C-->>S: No credential required
     S->>C: Authorize this send
     C-->>S: Permit if still authorized
-    S->>G: GET + token
+    S->>G: GET
     G-->>S: Full JSON
     S->>C: Check complete response
     C-->>S: Approved ID and name
@@ -61,14 +63,14 @@ the caller receives this body.
 
 The adapter discards other repository fields. If the ID differs, the sender
 withholds the response. If the same process tries `POST /repos/acme/widgets/pulls`
-on the same host, the adapter refuses the request before OCC selects a token.
+on the same host, the adapter refuses the request before it reaches GitHub.
 
 ## Which checks does OpenShell provide?
 
 | Delivery path               | What happens to a request                                                                                                                                                                                                         |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary Credential Gateway | A matching process can use a placeholder at an allowed endpoint. The supervisor substitutes the credential. The profile does not check each request body or filter the reply.                                                     |
-| Selected repositories       | Before issuing credentials, OCE matches the held launcher request to an authenticated middleware denial. The worker checks subsequent GitHub requests against the grant. GitHub enforces token permissions and branch rules.      |
+| Native Credential Proxy     | OpenShell applies the revision's network and injection rules. It substitutes the credential on a matching request. Managed MCP can also restrict RPC methods and tools. The native Proxy does not filter upstream replies.        |
+| Protected repository sender | Before issuing credentials, OCE matches the held launcher request to an authenticated middleware denial. The worker checks subsequent GitHub requests against the grant. GitHub enforces token permissions and branch rules.      |
 | Online GitHub preview       | On stock OpenShell 0.1.5, a one-use probe must receive the expected denial before the Agent starts. This observes the hook at startup. The opt-in profile grants installation-wide GitHub access.                                 |
 | Protected exchange above    | A qualified sender must capture the request, obtain permission to send it and release only the approved response to the original caller. Stock OpenShell lacks the protected exchange’s exact-send and filtered-reply guarantees. |
 
@@ -76,10 +78,10 @@ on the same host, the adapter refuses the request before OCC selects a token.
 
 ## Follow the credential through the system
 
-1. [Register the metadata source](../reference/credential-sources/other-delivery-modes.md#register-a-source) and [bind it to the Agent](../reference/credential-sources/other-delivery-modes.md#bind-a-source-to-an-agent).
+1. [Register the metadata source](../reference/credential-sources/protected-repository-metadata.md#register-a-source) and [bind it to the Agent](../reference/credential-sources/protected-repository-metadata.md#bind-a-source-to-an-agent).
 2. [Follow the GET and its reply](../flows/credential-source-egress.md#follow-the-metadata-get). See [what a child process can do](../reference/security/credential-proxy.md#what-can-a-process-inside-the-execution-do) with the same grant.
-3. [Trace GitHub token issuance and renewal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token). The [repository credential reference](../reference/repository-credentials.md#token-service-lifecycle) distinguishes metadata access from Git access.
-4. [Follow a placeholder through the ordinary Gateway](../reference/drivers/openshell-credential-gateway.md#follow-a-codex-request-through-openshell) or inspect the [installation-wide GitHub preview](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation).
+3. [Trace GitHub token issuance and renewal](../flows/credential-source-lifecycle.md#issue-and-renew-a-github-installation-token). The [repository credential reference](../reference/repository-credentials.md#token-service-lifecycle) distinguishes metadata access from Git access.
+4. [Follow native Proxy delivery](../flows/credential-source-lifecycle.md#3-prepare-credential-delivery) or inspect the [installation-wide GitHub preview](../reference/repository-credentials/protected-openshell-git.md#grant-access-to-a-github-app-installation).
 
 For setup, use the [operator guide](../guides/credential-proxy.md). For a new
 sender, start with the [Driver contract](../reference/drivers/credential-proxy.md).

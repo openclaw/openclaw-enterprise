@@ -16,9 +16,7 @@ selects it; an Agent cannot choose its own Sandbox.
 integration for dedicated Codex. The stock OpenShell gateway version documented
 there cannot honor the projected identity and app-server token Secret reference
 that OCC requires. Managed Source delivery uses TokenService and the paired
-Credential Proxy; the older [Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
-is available only before the 1.0 cutover. Both paths keep model credential
-material out of the Harness. Local verification uses development-only workarounds; it is not a
+Credential Proxy. The Harness receives a placeholder. Local verification uses development-only workarounds; it is not a
 supported production deployment path. If the selected Sandbox cannot enforce
 required containment or preserve workload identity, deployment stops.
 

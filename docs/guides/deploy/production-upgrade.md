@@ -1,7 +1,5 @@
 # Upgrade production images
 
-See [One Off Upgrades](one-off-upgrades.md).
-
 Upgrade [Kubernetes Compute releases](production-installation.md) with
 `scripts/upgrade-production-images` or [profile commands](production-upgrade-command.md)
 and the [OCC CLI](../cli.md#connect-to-your-installation).
@@ -247,6 +245,8 @@ acknowledged candidate write.
 
 ## Upgrade the control plane
 
+Complete [credential upgrade preparation](production-upgrade-credentials.md).
+
 Before maintenance, [check for split-layout tenants](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations); shared-namespace releases refuse them.
 
 With `--controller-image`, add `--controller-compatibility-results FILE` to require
@@ -272,9 +272,9 @@ Upgrade: Verifying upgrade completion. [2026-11-20T10:05:12Z]
 Upgraded controller image; no Agent deployments were requested.
 ```
 
-Stderr shows phases with UTC timestamps when available. Stdout reports
-completion. `--verbose` shows native output. Private evidence retains
-scale/rollout logs. Reconcile uncertain writes.
+Stderr shows phases with UTC timestamps when available. Numbered Doctor checks
+include memory waits. Stdout confirms completion. `--verbose` shows native
+output. Private evidence retains scale/rollout logs. Reconcile uncertain writes.
 
 Repository-enabled releases also require immutable `--broker-image "$BROKER_IMAGE"`.
 Keep protected values equal to live values. The helper preserves the broker hostname,

@@ -11,28 +11,26 @@ Dedicated Codex Agents use their own catalog and approval policy. [Add Codex app
 
 <a id="use-a-pre-cutover-release"></a>
 
-For a release that uses Credential Gateway, use the [pre-cutover Plugin runbook](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/topics/openclaw-plugins.md).
-
 <a id="evaluate-plugin-credentials-in-the-cutover-candidate"></a>
 
 ## Before you start
 
-- Use a dedicated OpenClaw Agent on Kubernetes. Select the bundled OpenClaw Plugin Driver, OCC TokenService, and the OpenShell Sandbox that supplies native Credential Proxy delivery. [Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/drivers/selection.md#supported-selections)
-- Verify the Agent's [managed model Source configuration](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source). To edit and deploy a Plugin selection you need read, update, and deploy access to the Agent, plus `credential_source:operate` on the selected Source.
+- Use a dedicated OpenClaw Agent on Kubernetes. Select the bundled OpenClaw Plugin Driver, OCC TokenService, and the OpenShell Sandbox that supplies native Credential Proxy delivery. [Driver selections](../../reference/drivers/selection.md#supported-selections)
+- Verify the Agent's [managed model Source configuration](../../reference/credential-sources/managed-static.md#deploy-an-agent-with-the-source). To edit and deploy a Plugin selection you need read, update, and deploy access to the Agent, plus `credential_source:operate` on the selected Source.
 - For Slack, ensure that the OCC API can reach `mcp.slack.com:443` for tool discovery. The Agent's Sandbox applies separate policy to runtime requests.
 
 <a id="2-add-a-hosted-mcp-plugin-slack"></a>
 
 ## 1. Add a hosted MCP plugin (Slack)
 
-Slack uses the fixed endpoint `https://mcp.slack.com/mcp`. Live Slack MCP tool execution through the cutover's native Proxy remains unqualified. The steps below cover Source setup and admission. [Plugin binding rules](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources.md#bind-a-source-to-an-agent)
+Slack uses the fixed endpoint `https://mcp.slack.com/mcp`. Live Slack MCP tool execution through native Credential Proxy remains unqualified. The steps below cover Source setup and admission. [Plugin binding rules](../../reference/credential-sources.md#bind-a-source-to-an-agent)
 
 <a id="installation-prerequisites"></a>
 
 ### Set up the credential source
 
-1. In **Credentials → Connection templates**, create a **Static Bearer** Template available in the Agent's Namespace. Add the exact destination `POST`, host `mcp.slack.com`, port `443`, path `/mcp`. Record the Template ID. [Create a Template](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/connection-templates.md#create-a-template)
-2. Register the Slack token as a managed static Source in the ready Namespace. Set `NAMESPACE_ID` and `TEMPLATE_ID` to the exact IDs, and `TOKEN_FILE` to the path of your private token file. The command prints the new Source ID. [Static Source registration](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/credential-sources/managed-static.md#register-a-source)
+1. In **Credentials → Connection templates**, create a **Static Bearer** Template available in the Agent's Namespace. Add the exact destination `POST`, host `mcp.slack.com`, port `443`, path `/mcp`. Record the Template ID. [Create a Template](../../reference/connection-templates.md#create-a-template)
+2. Register the Slack token as a managed static Source in the ready Namespace. Set `NAMESPACE_ID` and `TEMPLATE_ID` to the exact IDs, and `TOKEN_FILE` to the path of your private token file. The command prints the new Source ID. [Static Source registration](../../reference/credential-sources/managed-static.md#register-a-source)
 
    ```bash
    (
@@ -69,7 +67,7 @@ The Google Workspace package (`occ-plugin:google@1.0.0`) includes the `gog` comm
 
 ## 3. Deploy the new revision
 
-Before replacing a running managed-credential deployment, use **Stop** and wait for it to finish. Deploy the saved draft from the Console or from an [authenticated OCC CLI session](../cli.md#connect-to-your-installation):
+If the Agent is running, use **Stop** and wait until it has no active revision. Deploy the saved draft from the Console or from an [authenticated OCC CLI session](../cli.md#connect-to-your-installation):
 
 ```bash
 occ agent deploy "$AGENT_ID" --output json > deployment.json

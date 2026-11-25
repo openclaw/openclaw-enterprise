@@ -45,7 +45,7 @@ const CONSOLE_ASSETS = new Map([
       "sign-in-presentation.mts",
       "configuration-fields.mts",
       "connection-templates.mts",
-      "oauth-clients.mts",
+      "credential-clients.mts",
       "oauth-catalog.mts",
       "oauth-deletion.mts",
       "oauth-client-registration.mts",
@@ -70,6 +70,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/presets.mts",
       "agents/create.mts",
       "agents/provisioning-job.mts",
+      "agents/plugin-connection.mts",
       "agents/plugin-discovery.mts",
       "agents/slack-directory.mts",
       "agents/slack-approvers.mts",
@@ -177,7 +178,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/namespaces",
   "/console/secrets",
   "/console/credentials/connection-templates",
-  "/console/credentials/oauth-clients",
+  "/console/credentials/credential-clients",
   "/console/settings",
 ]);
 

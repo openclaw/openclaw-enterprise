@@ -322,8 +322,8 @@ integration, real-cluster, and live-provider outcomes.
 ## References
 
 - [Credential sources](../../../docs/reference/credential-sources.md)
-- [Current Credential Refresh Driver contract](../../../docs/reference/drivers/credential-refresh.md)
-- [OpenShell Credential Gateway](../../../docs/reference/drivers/openshell-credential-gateway.md)
+- [Historical Credential Refresh contract](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/credential-refresh.md)
+- [Historical OpenShell Credential Gateway](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/openshell-credential-gateway.md)
 - [Console Agent creation](../../../docs/reference/console/create-and-deploy.md)
 - [Per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md)
 - [Shared Driver contracts](../../../packages/contracts/src/index.ts)

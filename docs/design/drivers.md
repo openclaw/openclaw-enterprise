@@ -8,8 +8,7 @@ current behavior from remaining design work.
 
 Compute, IAM, Configuration, Secret, ServiceAccount, Plugin, Repo, Channel,
 optional Sandbox, TokenService, and Credential Proxy integrations have current
-contracts. Credential Gateway and Credential Refresh still serve legacy delivery
-on main; the 1.0 cutover retires both selections. The `InferenceDriver` and general `SandboxPolicy` enforcement described
+contracts. The `InferenceDriver` and general `SandboxPolicy` enforcement described
 below remain planned. Current Channel operations validate credentials and look up provider
 directories; runtime messaging is not a general OCC dispatch contract. Current
 Sandbox is optional, can provision the dedicated Harness, and
@@ -102,23 +101,20 @@ execution Driver receives admitted intent only after OCC verifies that
 authorization. A Driver reports its decision, readiness, or operational result
 without acquiring platform-resource ownership or permission to select itself.
 
-| Driver contract           | Responsibility                                                                                                                                                                                                       |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IAMDriver`               | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                              |
-| `ServiceAccountDriver`    | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority. |
-| `InferenceDriver`         | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.               |
-| `ComputeDriver`           | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with matching Namespace, Agent, and Agent revision IDs.      |
-| `SandboxDriver`           | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                        |
-| `SecretDriver`            | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                  |
-| `TokenServiceDriver`      | Register managed Sources and own their credential custody and lifecycle.                                                                                                                                             |
-| `CredentialProxyDriver`   | Prepare and withdraw delivery for admitted bindings and configure credential injection.                                                                                                                              |
-| `CredentialGatewayDriver` | **Legacy.** Hold credentials for existing Gateway-owned Sources and issue revision attachments that the paired Sandbox applies.                                                                                      |
-| `CredentialRefreshDriver` | **Legacy.** Obtain and renew tokens for existing Gateway refresh Sources.                                                                                                                                            |
-| `ChannelDriver`           | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                              |
+| Driver contract         | Responsibility                                                                                                                                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IAMDriver`             | Evaluate the exact platform action and resource using its selected native or external authority. `OCCIAMDriver` evaluates OCC-owned roles and bindings.                                                              |
+| `ServiceAccountDriver`  | Create upstream service accounts and separately issue their credentials after exact OCC authorization; privately own Backend bindings and credential lifecycle while the provider retains its independent authority. |
+| `InferenceDriver`       | Perform authorized inference against an admitted external-provider model or local model source without exposing provider credentials, secret values, or reusable model credentials to Agent workloads.               |
+| `ComputeDriver`         | Ensure Namespace infrastructure, store authorized account credentials, and reconcile each Agent's gateway and Harness in their selected runtime targets with matching Namespace, Agent, and Agent revision IDs.      |
+| `SandboxDriver`         | Enforce and verify the complete admitted containment policy before an Agent workload can execute Agent turns.                                                                                                        |
+| `SecretDriver`          | Store Namespace-owned secret material and validate safe delivery references. KubernetesSecretDriver is the default.                                                                                                  |
+| `TokenServiceDriver`    | Register managed Sources and own their credential custody and lifecycle.                                                                                                                                             |
+| `CredentialProxyDriver` | Prepare and withdraw delivery for admitted bindings and configure credential injection.                                                                                                                              |
+| `ChannelDriver`         | Realize authorized Namespace-local messaging operations while the messaging provider retains independent authorization and credentials.                                                                              |
 
-The two legacy contracts serve pre-cutover main. Credential Design 1.0 replaces their custody and renewal with
-`TokenServiceDriver` and their delivery with `CredentialProxyDriver`. See the
-[credential implementation status](../reference/credential-sources.md#implementation-status).
+See [credential implementation status](../reference/credential-sources.md#implementation-status)
+for the supported custody and delivery compositions.
 
 One implementation may satisfy multiple Driver contracts, but OCC selects each
 role explicitly. Authority for one role does not grant another role, resource

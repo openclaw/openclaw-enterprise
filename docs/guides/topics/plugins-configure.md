@@ -74,15 +74,14 @@ that Source in the Plugin slot, grant the operator and Agent service principal
 Sandbox. Follow [managed OpenClaw plugins](openclaw-plugins.md) for the commands.
 Plugin OAuth serving remains deferred to [#4673](https://github.com/openclaw/openclaw-enterprise/pull/4673).
 
-Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
-set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
-them when DNS changes. Other ports need the Installation's managed egress policy.
-This setting is separate from model discovery. Worker calls use the Sandbox policy.
+For **Load tools**, verify that the OCC API can resolve and reach the MCP
+endpoint. The chart permits API egress. Runtime tool calls use the Agent's
+Sandbox policy.
 
 Open **Plugins**, add the plugin, choose the Source, and choose **Load tools**.
-Choose the tools to enable, then save and [deploy the change](#deploy-the-change). Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
-can use them. An empty selection leaves the worker server disabled.
+Choose the tools to enable, then save and [deploy the change](#deploy-the-change). Loading tools again refreshes the inventory and preserves your selection.
+Changing the Source clears the tools and their approval overrides. Choose and
+configure tools again before you deploy. An empty selection leaves the server disabled.
 For an enabled tool, open **Tool policy** and set **Require approval for** to
 **Every action** to require human approval for each native call. Select
 **No additional approval** to run without a prompt. The request names the server and tool;
@@ -199,7 +198,7 @@ a newer plugin map can be overwritten by the one you read.
 
 If the Agent is running and either its active revision or its draft uses managed
 credential delivery, stop it and wait until its desired runtime state is
-`stopped` and `activeRevisionId` is empty. The cutover rejects replacement from
+`stopped` and `activeRevisionId` is empty. OCC rejects replacement from
 or to managed delivery over an active revision with `409`.
 
 Deploy the Agent and keep the returned version ID:

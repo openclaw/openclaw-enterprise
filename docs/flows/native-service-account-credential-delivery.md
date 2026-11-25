@@ -8,13 +8,12 @@ last_updated_session: authoring-run/65ea33a1-3a10-4bd1-b35f-421997b57a4e
 
 ## Overview
 
-Select an OCC Secret or ChatGPT account credential through Agent `harnessAuth`.
+Select an OCC Secret, managed CredentialSource, or ChatGPT account credential through Agent `harnessAuth`.
 Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload, which
 authenticates before guarded activation. SSH `runtime` binds operator credentials and checks gateway readiness without model authentication.
 
-Codex OAuth device login through an external credential source is **Experimental**;
-see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
+TokenService owns Codex OAuth grants. See the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
 
 ## Entry Points
 
@@ -31,8 +30,8 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
-  DA["Refresh Driver completes device login"] -.-> B
-  G -->|external ChatGPT| OA["Sandbox supplies placeholder<br/>and account metadata"]
+  DA["TokenService completes device login"] -.-> B
+  G -->|Codex OAuth Source| OA["Sandbox supplies placeholder<br/>and account metadata"]
   OA --> J
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
@@ -64,19 +63,11 @@ graph TD
 
 `packages/occ/src/device-authorization-flow.ts:createDeviceAuthorizationFlow` handles start, poll, and cancel.
 
-Device login creates a credential source and asks its Credential Refresh Driver
-to start and poll authorization. OCC binds the login to the actor, Namespace,
-optional Agent, and source.
-The Refresh Driver hands the provider grant to the external service. Ready responses return a credential-source
-reference; Console saves a `credential_source` binding and grants the Agent
-principal exact source `operate`.
-
-OCC [claims the session in PostgreSQL](credential-source-refresh.md#device-authorization-and-configuration)
-before sending a poll. An uncertain exchange requires reconnecting. Closing or expiring a session removes its
-handle without revoking the source. Plugin discovery uses the Gateway's
-`withSourceToken` callback with current source authorization; the service may
-refresh before returning a usable access token. It continues through
-the saved source after the login session closes.
+After [device authorization](credential-source-lifecycle.md#device-authorization-and-configuration),
+TokenService creates a ready Source. Console saves its `credential_source`
+reference. Hosted Apps discovery resolves that Source through TokenService
+after checking exact Source access. Closing the completed login session
+leaves the Source available for subsequent discovery.
 
 Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
@@ -90,18 +81,11 @@ service-account catalogs remain unfiltered. Discovery does not prove a model cal
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
 API keys and imported `codex_pat` tokens use stable OCC Secret references and
 require exact Secret `operate`. Managed PATs use ServiceAccount references and
-require exact account `read`. OAuth uses a CredentialSource reference owned by
-the selected Credential Gateway and requires exact source `operate`.
-Namespace locks serialize source reference changes against deletion. Missing or
-foreign sources fail closed. Binding never selects a different model, Backend,
-Harness, or execution mode and cannot issue an account credential.
-
-Agent create and PATCH can also save a ready [TokenService Source](token-service-static-custody.md) enrolled through the public API.
-The caller must have exact source `operate`, the source must belong to the Agent's
-Namespace, and the selected TokenService must own its recorded instance. The same
-source must be selected by `harnessAuth` and listed in `credentialSources`; a
-TokenService Source cannot be attached for another use. Console picker discovery
-remains unavailable.
+require exact account `read`. For TokenService Sources, the caller needs
+exact Source `operate` and the Source must belong to the Agent's Namespace and
+the selected TokenService instance. The model Source appears in both
+`harnessAuth` and `credentialSources` on direct Agent writes. Namespace locks
+serialize reference changes against Source deletion.
 
 When PATCH changes Harness authentication but keeps the source list, OCC checks
 the previous Harness source without taking a source row lock. If that source
@@ -125,12 +109,11 @@ access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
 with `runtime`. Kubernetes `validateHarnessAuth` requires dedicated Codex for
-both imported and managed `codex_pat` sources. External ChatGPT sources require
-dedicated Codex and the paired Sandbox and Credential Gateway. Deployment and
-guided provisioning reject unsupported combinations before admitting work or
-stopping predecessors.
+both imported and account-issued `codex_pat` credentials. Codex OAuth Sources
+require dedicated Codex and the selected Sandbox and Credential Proxy.
+Unsupported combinations fail before OCC queues deployment.
 
-For a managed TokenService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the saved network permission. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only. Gateway-owned Sources retain their existing delivery path.
+For a managed TokenService Source, deployment checks the caller's and Agent principal's source `operate` grants, the approved model route, and the applicable saved or preset network grant. Supported admission saves the Source reference and separate network and injection policies in the Agent revision; see the [credential lifecycle](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision). Unsupported routes are refused before revision or work creation. If admission fails after Native IAM creates the Agent's source grant, the transaction rolls back that grant, any new Role, and its success audit. Agent save records Source references only.
 
 Host credential changes can affect a runtime version after restart without
 redeployment; see the
@@ -173,12 +156,11 @@ indefinitely; drafts, selected versions, and pending deployments block source de
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareHarnessAuth`,
 `KubernetesComputeDriver.prepareRevision`
 
-For `credential_source`, `KubernetesComputeDriver.admittedCredentialSourceType`
-checks the saved Credential Gateway ID before querying its current type catalog
-in preparation and runtime activation. A replacement Gateway receives no catalog
-call. The existing Harness authentication validator refuses the mismatch and
-still checks the source type, login mode, and paired Sandbox. Catalog lookup
-passes only an abort signal; it does not read or send a credential.
+For a TokenService Source, Compute matches the revision's model binding
+against the Source, configured provider, credential environment, and Bearer
+presentation. The Worker rechecks Source access and asks Credential Proxy to
+prepare the placeholder. Compute never projects the Source's material into a
+runtime Secret.
 
 Compute projects the admitted Secret into the combined embedded workload as
 `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or, for explicit custom providers,
@@ -211,8 +193,8 @@ inputs, failed login, or a failed primary-model probe
 (under the restricted [probe policy](../reference/harness-execution.md#harness-authentication))
 prevent app-server startup and readiness. API-key and service-account login
 state remains in the temporary home. Its volume has a `1Gi` size limit.
-External-token startup writes
-placeholder-only auth state instead of running native login (step 6).
+Managed Codex OAuth startup writes
+placeholder-only auth state (step 6).
 
 The dedicated wrapper retains `APP_SERVER_TOKEN` for local plugin
 authentication (with plugin status enabled, deriving it from the Agent revision
@@ -247,37 +229,20 @@ unchanged until preparation: deploy each consumer, verify a real turn, then
 revoke the previous key upstream. Version history cannot restore historical
 Secret values.
 
-### 6. Deliver externally managed OAuth authentication
+<a id="6-deliver-externally-managed-oauth-authentication"></a>
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:credentialSourceEnvironment`,
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
+### 6. Start Codex with a managed OAuth Source
 
-Compute checks that the returned attachments match the authorized sources exactly,
-with no missing, duplicate, or unexpected source IDs, before provisioning the
-Sandbox. It selects the attachment named by `harnessAuth.sourceId` for the Codex
-placeholder and trusted account metadata, and passes every attachment to the
-Sandbox. Attachment order does not select Harness authentication.
+`apps/controller/src/drivers/compute/kubernetes/index.ts`,
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts`
 
-Compute sends the placeholder and account metadata only to the Harness. Its
-launcher writes ephemeral `chatgptAuthTokens` auth state without a refresh token and runs the normal native
-probe before app-server startup. The external service retains refresh ownership;
-the paired Sandbox injects a warm access token into authorized outgoing requests.
-There is no native-refresh or persistent-bundle fallback. Restarts reconstruct the
-same receiving state from a current attachment; sessions and workspace keep their
-independent persistence.
-
-After withdrawal, OpenShell omits the credential binding when the same Sandbox
-restarts. `OPENSHELL_CHATGPT_AUTH_BOOTSTRAP` lets that absence reach the Harness
-launcher, which holds `AUTHENTICATION_FAILED` at the `login` phase through its
-authenticated status endpoint. The process stays alive and unready; it does not
-write auth state, start Codex, or use an earlier auth file. A present but malformed
-binding still fails the bootstrap check. Recovery requires a new authorized
-deployment, as described in the [withdrawal reference](../reference/credential-sources/withdrawal.md).
-
-The [credential source lifecycle](credential-source-lifecycle.md) owns source
-registration, authorization, withdrawal and deletion. The experimental
-OpenShell source uses the paired Refresh Driver and upstream Gateway/Sandbox
-integration described in the [Driver reference](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+Compute matches the admitted model projection to `harnessAuth.sourceId`.
+The launcher receives a placeholder and trusted account metadata. It writes
+temporary `chatgptAuthTokens` state without a refresh token and runs the
+native model probe before app-server startup. TokenService retains and renews
+the grant, and Credential Proxy substitutes the access token only for the
+admitted requests. Recovery requires an authorized model binding. See
+[credential withdrawal](../reference/credential-sources/withdrawal.md).
 
 ## Debugging and Verification
 

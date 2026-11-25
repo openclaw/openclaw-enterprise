@@ -252,9 +252,8 @@ bridge-route wait also bounds each container-engine lookup.
 
 For Credential Design 1.0, configure the OpenShell Backend and Sandbox without
 the retired Gateway or Refresh Driver selections. Select TokenService and native
-Credential Proxy delivery, then [register and bind a Source](openshell-credential-sources.md).
-Older profiles that select Credential Gateway require their matching historical
-release; see [credential implementation status](../../reference/credential-sources.md#implementation-status).
+Credential Proxy delivery, then [register and bind a Source](deploy-first-agent.md#1-select-or-register-the-model-credential).
+See [credential implementation status](../../reference/credential-sources.md#implementation-status).
 
 The profile supports [managed Codex plugins](../../reference/agent-plugins.md).
 

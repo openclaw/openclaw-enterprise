@@ -2,7 +2,7 @@
 
 For Source-backed Git, TokenService renews the GitHub installation token independently of the Agent revision's saved Repository grant. A request still needs a valid Source credential and must match that grant. Token expiry does not withdraw the grant.
 
-Use [Source-backed Git enrollment](openshell-enrollment.md) and the operator shell
+Use [Source-backed Git enrollment](../repository-credentials.md#set-github-app-access-for-an-openshell-agent) and the operator shell
 from [first Agent setup](../deploy/deploy-first-agent.md), which defines `request`
 and `base`. List the active revision's Source IDs:
 
@@ -32,4 +32,5 @@ confirm a corresponding Source/Provider version advance through qualified
 evidence, or repeat the allowed read after the original token expires. Source
 GET does not expose the material version.
 
-The earlier Worker/prepared-session SQL exercise is a [historical verification procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/repository-credentials/openshell-git-renewal.md) for pre-cutover releases.
+For the separate prepared Git path, see
+[Repository sessions and closure](../../reference/repository-credentials.md#sessions-and-closure).

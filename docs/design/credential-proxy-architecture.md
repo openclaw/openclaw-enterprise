@@ -1,8 +1,13 @@
 # Credential Proxy architecture
 
-These diagrams follow the existing protected Git path. For the broader proposed model and plugin credential flow and its implementation status, see [credential sources](../reference/credential-sources.md).
+For native OpenShell Git, TokenService maintains the Namespace installation
+token, and the Agent revision retains each admitted Repository grant. Credential
+Proxy configures OpenShell to inject that token only for the Agent's approved
+Git requests. See the [native Git flow](../flows/agent-repository-credentials.md#tokenservice-git)
+and [Credential Sources](../reference/credential-sources.md).
 
-A user asks an Agent, “Implement a feature and push a branch.” OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
+The diagrams below show protected egress. In that composition, the Worker and
+trusted sender authorize requests through a separate prepared repository session.
 
 ## From the user to GitHub
 
@@ -26,13 +31,13 @@ For selected repositories, the grant names repositories on one GitHub App instal
 
 One OpenShell Backend supplies both `SandboxDriver` and `LegacyEgressProxyDriver`. The worker binds its `ProtectedRepositoryGitAuthority` through `bindRepositoryGit`. See the [Driver contract](../reference/drivers/credential-proxy.md).
 
-The worker signs an App JWT and sends it to GitHub in a `POST /app/installations/{installation_id}/access_tokens` request. GitHub returns an installation token. The worker validates its scope and expiry before committing it to the store. The transport adapter reads that committed token through the Repository Git authority. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md) and [token renewal](../guides/repository-credentials/openshell-git-renewal.md).
+The worker signs an App JWT and sends it to GitHub in a `POST /app/installations/{installation_id}/access_tokens` request. GitHub returns an installation token. The worker validates its scope and expiry before committing it to the store. The transport adapter reads that committed token through the Repository Git authority. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [protected OpenShell configuration](../reference/repository-credentials/protected-openshell-git.md#configuration-for-a-qualified-release) and [prepared session recovery](../flows/agent-repository-credentials.md#6-maintain-recover-and-retire-ownership).
 
 ## Who controls a generic API request and its reply?
 
 ![The sender captures the request, calls the OCC exchange through the Driver listener, sends an authorized request and holds the reply for filtering.](../assets/credential-proxy/generic-exchange.png)
 
-For a GitHub metadata read, OCC asks Token Service for a token after it authorizes the request. Token Service can reuse a usable token or start or join issuance for that grant. A qualified sender can ask OCC to resolve a credential, recheck permission just before sending, and protect the complete response before releasing it to the caller. The OpenShell Git hook above returns a decision for a token the supervisor already holds. [Walk through a GitHub metadata request](credential-proxy.md#read-one-repositorys-identity).
+For a credential-free repository metadata read, OCC matches the request and checks the Agent's current grant. The qualified sender asks OCC to authorize the exact send, then holds the full origin response while OCC checks the returned identity. [Walk through a GitHub metadata request](credential-proxy.md#read-one-repositorys-identity) or see [metadata Source registration](../reference/credential-sources/protected-repository-metadata.md#register-a-source).
 
 <a id="proposed-change-pull-the-git-credential-at-the-supervisor"></a>
 <a id="proposed-git-credential-pull"></a>

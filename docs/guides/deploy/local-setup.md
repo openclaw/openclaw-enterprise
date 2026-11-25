@@ -6,11 +6,8 @@ last_verified: "2026-11-02"
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster. Use an
-[OpenShell cutover candidate checkout](https://github.com/openclaw/openclaw-enterprise/tree/a009380c8f3a0ae4cf410e5850993aa6a7567bfe) and matching images
-for OCC TokenService and native Credential Proxy delivery. For a release that
-still selects Credential Gateway, use its
-[pre-cutover local setup](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/deploy/local-setup.md).
+Install OpenClaw Enterprise (OCE) in a private k3d cluster. The OpenShell profile
+selects OCC TokenService and native Credential Proxy delivery for dedicated Codex.
 
 ## Before you start
 
@@ -41,7 +38,7 @@ RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
 ```
 
-Build images from the selected cutover checkout before starting the cluster.
+Use a checkout that includes managed credential delivery and choose a matching image pair.
 
 **Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 
@@ -49,9 +46,7 @@ Build images from the selected cutover checkout before starting the cluster.
 unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```
 
-Use published images only if their immutable controller and runtime receipts
-both identify that same cutover commit. A stable or latest publication from
-main is not a matching candidate. Select the verified images in the same shell:
+**Use published images.** Follow [published image selection](published-images.md) to verify the controller and runtime receipts and use the matching source commit. Select the verified images in the same shell:
 
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
@@ -99,16 +94,14 @@ The launcher enables TLS, mutual TLS and authentication for the OpenShell Gatewa
 
 ## 3. Prepare model credential delivery
 
-The [candidate launcher](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/internal/occdev/kubernetes.go#L483-L489)
-sets `drivers.token_service: { id: occ, configuration: {} }` and selects the
-OpenShell Sandbox. The Sandbox registration exposes native Credential Proxy
-delivery. Check the [candidate Driver selections](https://github.com/openclaw/openclaw-enterprise/blob/a009380c8f3a0ae4cf410e5850993aa6a7567bfe/docs/reference/drivers/selection.md#supported-selections)
+The launcher selects OCC TokenService and the OpenShell Sandbox that supplies
+native Credential Proxy delivery. See [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 before changing the generated configuration.
 
 Run the configuration script from the matching checkout. It removes the
 generated rule that lets Git reach `github.com:443` without inspection and
 selects the curated Codex plugin catalog. Git access requires an explicit
-[repository grant](../repository-credentials/openshell-enrollment.md).
+[repository grant](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 
 ```bash
 node "$RUN_DIR/configure-installation.mts"

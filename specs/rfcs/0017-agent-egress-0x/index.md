@@ -21,7 +21,7 @@ egress proxy. Verify these protections before release.
 OpenShell gives the Agent a placeholder; its network proxy substitutes the real
 credential for an allowed HTTP request to a bound destination. The trusted proxy
 may hold the credential. OCE's Credential Gateway Driver for OpenShell shipped in #461
-([reference](../../../docs/reference/drivers/credential-gateway.md); design proposed
+([reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/credential-gateway.md); design proposed
 in #452); it is optional,
 not selected by production installations, and OpenShell v0.1.0 is not a
 supported production runtime. Compute refuses repository credentials when a

@@ -3,7 +3,7 @@ import test from "node:test";
 import { registerStreamReceiptPersistenceCases } from "./credential-proxy-stream-lease-cases.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { readFileSync } from "node:fs";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
@@ -11,34 +11,22 @@ import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egres
 import { CredentialProxy, egressInjectionDigest } from "../../packages/occ/src/credential-proxy.ts";
 import { deploymentErrorForWork } from "../../packages/occ/src/deployment-work-status.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
-import {
-  pluginRuntimeSpecForRevision,
-  pluginRuntimeConfigMapData,
-} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
+import {} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
-  staticEgressFixture,
+  protectedMetadataFixture,
   loadGatewayDefinition,
   supervisorBearer,
   unary,
 } from "../helpers/static-egress.mjs";
 
+import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import {
   createStaticEgressAdmissionCases,
-  createReceiptPersistenceFaults,
-  registerStaticEgressResponsesAndCapacityCases,
-  runStaticEgressCredentialRejectionCase,
-  runStaticEgressElapsedDeadlineCase,
-  runStaticEgressReceiptAuthorizationFailureCase,
+  registerStaticEgressRequestCapacityCases,
   runStaticEgressReceiptCapacityCase,
-  runStaticEgressReceiptRestartCase,
-  runStaticEgressResponseCommitCase,
 } from "./static-egress-request-capacity-cases.ts";
-import {
-  registerStaticEgressResponsesPrefixCases,
-  runStaticEgressNativeAgentMessageCase,
-} from "./static-egress-responses-wire-cases.ts";
 
 const staticEgressAdmissionCases = createStaticEgressAdmissionCases({
   admissionCases,
@@ -93,227 +81,12 @@ test("supplier-produced receipt protobuf and registered-instance claims decode t
   assert.equal(identity.supervisor(token({ ...claims, instance_id: undefined })), undefined);
 });
 
-test("protected inference uses real admission, fresh IAM, versioned Secret reads and TLS authority/provider wires", async (t) => {
-  const f = await staticEgressFixture(t, { physicalPlacement: true });
-  assert.notEqual(f.namespace.name, f.runtimeNamespace.name);
-  assert.equal(f.namespace.id, f.runtimeNamespace.id);
-  assert.deepEqual(f.source.egress, { adoption: "live", retention: "none" });
-  assert.throws(
-    () => pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(f.revision)),
-    /explicit normalized model endpoint/,
-    "protected configuration cannot silently use default retry or transport behavior",
-  );
-  const runtime = pluginRuntimeSpecForRevision(
-    f.revision,
-    undefined,
-    "https://provider.example.test/v1",
-  );
-  const config = pluginRuntimeConfigMapData(runtime)["config.toml"];
-  assert.match(config, /^web_search = "disabled"/m);
-  assert.match(config, /supports_websockets = false/);
-  assert.match(config, /request_max_retries = 0\nstream_max_retries = 0/);
-  assert.deepEqual(
-    runtime.selections,
-    {},
-    "protected grant does not replace local plugin selection",
-  );
-  // Deleting the plan must never downgrade an admitted protected execution.
-  const { unprotected, refused } = admissionCases(f.revision);
-  for (const [revision, expected] of refused) {
-    assert.throws(() => pluginRuntimeSpecForRevision(revision), expected);
-  }
-  assert.doesNotMatch(
-    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(unprotected))["config.toml"],
-    /web_search/,
-  );
-  const capture = f.capture();
-  const result = await f.resolve(capture);
-  assert.ok(result.ready, JSON.stringify(result));
-  const permit = f.permitRequest(capture, result.ready);
-  assert.ok((await f.authorize(permit)).allowed);
-  const response = await f.send(capture, result.ready);
-  assert.deepEqual(f.providerRequests[0].body, {
-    model: "fixture-model",
-    input: "hello",
-    store: false,
-  });
-  assert.equal(f.providerRequests[0].authorization, "Bearer synthetic-key-initial");
-  const protectedResponse = await f.protect(capture, response);
-  assert.deepEqual(JSON.parse(protectedResponse.body), {
-    output: "fixture answer",
-  });
-  const replay = await f.beginExchange();
-  replay.stream.write({ authorize: permit });
-  await assert.rejects(replay.next(), { code: 7 });
-
-  // Rotation changes material version without replacing source configuration or grants.
-  await f.rotateSecret("synthetic-key-rotated");
-  const next = f.capture();
-  const resolved = await f.resolve(next);
-  assert.ok(resolved.ready, JSON.stringify(resolved));
-  assert.notEqual(resolved.ready.evidence.material_version, result.ready.evidence.material_version);
-  assert.equal(resolved.ready.credential_headers[0].value, "Bearer synthetic-key-rotated");
-  await f.revoke();
-  assert.ok(
-    (await f.authorize(f.permitRequest(next, resolved.ready))).refused,
-    "revocation after access must deny selected material at send",
-  );
-  assert.equal(f.providerRequests.length, 1);
-  const beforeReads = f.secretReads;
-  assert.ok((await f.resolve(f.capture())).refused);
-  assert.equal(f.secretReads, beforeReads, "current IAM denial must precede Secret access");
-  const denials = (await f.controller.transact((unit) => unit.audit.list())).filter(
-    (event) => event.action === "openclaw.egress.authorize",
-  );
-  assert.deepEqual(
-    denials.map(({ namespaceId, actorId, resource, details }) => ({
-      namespaceId,
-      actorId,
-      resource,
-      phase: details.phase,
-    })),
-    ["before_send", "before_access"].map((phase) => ({
-      namespaceId: f.namespace.id,
-      actorId: f.revision.servicePrincipalId,
-      resource: { kind: "credential_source", namespaceId: f.namespace.id, id: f.source.id },
-      phase,
-    })),
-    "runtime placement must not replace logical IAM or audit identity",
-  );
-});
-
-test("protected authority refuses forged execution, unsupported operations, replay and changed selected-material evidence", async (t) => {
-  const f = await staticEgressFixture(t);
-  const before = f.secretReads;
-  for (const body of [
-    { model: "other-model", input: "hello", store: false },
-    { model: "fixture-model", input: "hello" },
-    { model: "fixture-model", input: "hello", store: false, stream: "true" },
-    { model: "fixture-model", input: "hello", store: false, tools: [{ type: "web_search" }] },
-  ]) {
-    assert.ok((await f.resolve(f.capture(body))).refused);
-  }
-  const ambiguous = f.capture();
-  ambiguous.request.body = Buffer.from(
-    '{"model":"other-model","model":"fixture-model","input":"hello","store":false}',
-  );
-  assert.ok((await f.resolve(ambiguous)).refused);
-  const wrongPeer = f.metadata({
-    sandbox_id: "other-sandbox",
-    sub: "spiffe://openshell/sandbox/other-sandbox",
-  });
-  await assert.rejects(f.resolve(f.capture(), wrongPeer), { code: 7 });
-  await assert.rejects(f.resolve(f.capture(), f.metadata({ aud: "different-authority" })), {
-    code: 7,
-  });
-  assert.equal(
-    f.secretReads,
-    before,
-    "identity and operation refusals must not touch credential material",
-  );
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
-  assert.ok(ready);
-  assert.ok(
-    (await f.resolve({ ...captured, response_custody: randomBytes(32) })).refused,
-    "a new signed opening and custody cannot replay the captured use",
-  );
-  for (const change of [
-    (p) => {
-      p.evidence.material_version = "not-selected";
-    },
-    (p) => {
-      p.deadline.seconds = String(Number(p.deadline.seconds) + 1);
-    },
-    (p) => {
-      p.credential_headers_sha256 = Buffer.alloc(32);
-    },
-    (p) => {
-      p.context.verified_credential_connector = { path: "/usr/bin/not-authority" };
-    },
-  ]) {
-    // A malformed authorization consumes the one exchange. Start the next negative
-    // with a genuinely resolved sibling so it reaches the specific evidence guard.
-    const sibling = f.capture();
-    const resolved = await f.resolve(sibling);
-    const permit = f.permitRequest(sibling, resolved.ready);
-    change(permit);
-    assert.ok((await f.authorize(permit)).refused);
-  }
-  const permit = f.permitRequest(captured, ready);
-  const decisions = await Promise.allSettled([f.authorize(permit), f.authorize(permit)]);
-  assert.ok(decisions.filter((d) => d.value?.allowed).length <= 1);
-  assert.ok(
-    decisions.some((d) => d.status === "rejected" && d.reason.code === 7),
-    "pipelined authorizations are refused on the actual exchange",
-  );
-  assert.equal(f.providerRequests.length, 0);
-});
-
-test("provider authentication rejection fences the exact material version and encoded credential reflection is withheld", async (t) => {
-  const f = await staticEgressFixture(t);
-  let result = await f.exchangeResponse({
-    status: 200,
-    body: { output: Buffer.from("synthetic-key-initial").toString("base64") },
-  });
-  assert.ok(result.blocked, "the actual provider response must pass conservative protection");
-  result = await f.exchangeResponse({
-    status: 200,
-    rawBody: '{"output":"synthetic-key-initial","output":"hidden duplicate"}',
-  });
-  assert.ok(result.blocked, "duplicate JSON keys cannot conceal reflected material from parsing");
-  // Function arguments have their own protocol-defined JSON layer. Ordinary tool
-  // decoding must never recover the protected value from escaped response text.
-  const escaped = unicodeEscapes("synthetic-key-initial");
-  result = await f.exchangeResponse({
-    status: 200,
-    body: {
-      output: [
-        {
-          type: "function_call",
-          id: "call-escaped",
-          call_id: "tool-escaped",
-          name: "fixture_function_0",
-          arguments: '{"cmd":"' + escaped + '"}',
-        },
-      ],
-    },
-  });
-  assert.ok(
-    result.blocked,
-    "decoding supported JSON function arguments cannot expose credential material",
-  );
-  result = await f.exchangeResponse({
-    status: 401,
-    body: {
-      error: {
-        code: "invalid_api_key",
-        type: "invalid_request_error",
-        message: "Invalid credential",
-      },
-    },
-  });
-  assert.ok(result.body);
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
-  assert.ok(ready);
-  assert.ok(
-    (await f.authorize(f.permitRequest(captured, ready))).refused,
-    "authoritative reread cannot resurrect a rejected version",
-  );
-  await f.rotateSecret("synthetic-key-new-version");
-  result = await f.exchangeResponse({ status: 200, body: { output: "after rotation" } });
-  assert.ok(result.body, "new authoritative version does not inherit the old rejection");
-});
-
 test("protected admission requires the actual counterpart and exact loaded policy; revision removal deletes only its owned Sandbox", async (t) => {
-  const f = await staticEgressFixture(t, { includeLegacy: true });
+  const f = await protectedMetadataFixture(t);
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
   for (const [index, route] of f.context.plan.routes.entries()) {
-    const { binaries, endpoints } =
-      f.attachment.configuration.network_policies[`oce-egress-${index}`];
-    assert.deepEqual(binaries, [{ path: "/**" }]);
+    const { endpoints } = f.attachment.configuration.network_policies[`oce-egress-${index}`];
     assert.equal(Object.hasOwn(endpoints[0], "tls"), false);
     const origin = new URL(route.origin);
     assert.deepEqual(endpoints, [
@@ -370,32 +143,6 @@ test("protected admission requires the actual counterpart and exact loaded polic
   );
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
-  const refused = await f.request("POST", f.path, {
-    body: {
-      name: "unsupported-peer",
-      type: "openai",
-      config: { authorized_base_url: f.modelProvider.baseUrl },
-      secrets: { api_key: f.secret.ref },
-    },
-  });
-  assert.equal(refused.status, 503, JSON.stringify(refused.body));
-  assert.equal(
-    (await f.request("GET", f.path)).data.length,
-    2,
-    "failed candidate cannot leave admitted source metadata",
-  );
-  // Retained Gateway sources need explicit adoption and the same available peer.
-  const retainedBefore = (await f.request("GET", `${f.path}/${f.legacySource.id}`)).data;
-  const gatewayBefore = structuredClone([...f.providers.entries()]);
-  const effectsBefore = [...f.gatewayEffects];
-  const adoption = await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
-    body: { adoption: "live", authorityScope: "execution" },
-  });
-  assert.equal(adoption.status, 503, JSON.stringify(adoption.body));
-  assert.equal(retainedBefore.egress, undefined);
-  assert.deepEqual((await f.request("GET", `${f.path}/${f.legacySource.id}`)).data, retainedBefore);
-  assert.deepEqual([...f.providers.entries()], gatewayBefore);
-  assert.deepEqual(f.gatewayEffects, effectsBefore);
   await assert.rejects(f.egress.configureRevision(f.context), {
     name: "RetryLaterError",
     message: PROXY_REGISTRATION_UNAVAILABLE,
@@ -408,15 +155,14 @@ test("protected admission requires the actual counterpart and exact loaded polic
     false,
     "verification cannot discover a missing installation Sandbox identity",
   );
-  // A previously generated route without a binary matcher cannot stand in for
-  // the canonical attachment or establish a new installation.
-  const oldConfiguration = structuredClone(f.attachment.configuration);
-  delete oldConfiguration.network_policies["oce-egress-0"].binaries;
+  // A wider route cannot stand in for the canonical attachment or establish a new installation.
+  const widerConfiguration = structuredClone(f.attachment.configuration);
+  delete widerConfiguration.network_policies["oce-egress-0"].endpoints[0].path;
   await assert.rejects(
-    f.egress.wiringStatus(f.context, { ...f.attachment, configuration: oldConfiguration }),
+    f.egress.wiringStatus(f.context, { ...f.attachment, configuration: widerConfiguration }),
     /changed protected egress routes/,
   );
-  delete f.observed.policy.network_policies["oce-egress-0"].binaries;
+  delete f.observed.policy.network_policies["oce-egress-0"].endpoints[0].path;
   await assert.rejects(f.egress.wiringStatus(f.context, f.attachment), /differs/);
   assert.equal(await f.egress.verifyInstallation(f.context, f.installation), false);
   f.observed.policy = structuredClone(expectedPolicy);
@@ -476,153 +222,15 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.equal(f.observed.deleted.length, 1);
 });
 
-test("legacy approved copies survive Secret rotation and failed live adoption; only exact source update opts in", async (t) => {
-  const f = await staticEgressFixture(t, { includeLegacy: true });
-  const path = `${f.path}/${f.legacySource.id}`;
-  const before = structuredClone([...f.providers.values()]);
-  assert.equal(before.length, 1);
-  assert.equal(before[0].credentials.OPENAI_API_KEY, "synthetic-key-initial");
-  assert.equal(f.legacySource.egress, undefined);
-  await f.rotateSecret("synthetic-key-replacement");
-  assert.equal((await f.request("GET", path)).data.egress, undefined);
-  assert.deepEqual(
-    [...f.providers.values()],
-    before,
-    "editing the input Secret must not reinterpret a legacy approved copy as live",
-  );
-  f.observed.available = false;
-  const consent = { adoption: "live", authorityScope: "execution" };
-  assert.equal(
-    (await f.request("PATCH", path, { body: { adoption: "live" } })).status,
-    409,
-    "live reads alone are not consent to whole-execution authority",
-  );
-  assert.equal((await f.request("PATCH", path, { body: consent })).status, 503);
-  assert.equal((await f.request("GET", path)).data.egress, undefined);
-  assert.deepEqual([...f.providers.values()], before);
-  f.observed.available = true;
-  // A provider that needs managed login tokens cannot adopt a static key.
-  const proxy = f.controller.selectedDriver("credential_proxy");
-  const control = proxy.sourceControl;
-  const original = control.providers.find((entry) => entry.sourceType.type === "openai");
-  assert.ok(original);
-  const providerType = structuredClone(original.sourceType);
-  const gateway = f.controller.selectedDriver("credential_gateway");
-  const listTypes = gateway.listSourceTypes;
-  let gatewayType;
-  let changeDuringAdmission;
-  const reads = f.secretReads;
-  try {
-    // Simulate a Driver returning a retained mutable catalog entry. Keep the
-    // real catalog, peer availability check, and Secret transport.
-    gateway.listSourceTypes = async (...args) => {
-      const catalog = await listTypes.apply(gateway, args);
-      return catalog.map((entry) => {
-        if (entry.type !== "openai") {
-          return entry;
-        }
-        gatewayType ??= structuredClone(entry);
-        return gatewayType;
-      });
-    };
-    assert.ok(
-      Reflect.set(proxy, "sourceControl", {
-        ...control,
-        providers: control.providers.map((p) =>
-          p === original ? { ...p, sourceType: providerType } : p,
-        ),
-        async assertAvailable(signal) {
-          await control.assertAvailable(signal);
-          if (changeDuringAdmission) {
-            changeDuringAdmission.harnessAuth.loginMode = "chatgptAuthTokens";
-          }
-        },
-      }),
-    );
-    assert.equal(providerType.harnessAuth.loginMode, "api_key");
-    providerType.harnessAuth.loginMode = "chatgptAuthTokens";
-    const catalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-    assert.equal(catalog.status, 200);
-    const offered = catalog.data.capabilities.credentialSources.types.some(
-      (entry) => entry.type === "openai",
-    );
-    const create = await f.request("POST", f.path, {
-      body: {
-        name: "incompatible-lifecycle",
-        type: "openai",
-        config: { authorized_base_url: f.modelProvider.baseUrl },
-        secrets: { api_key: f.secret.ref },
-      },
-    });
-    const patch = await f.request("PATCH", path, { body: consent });
-    assert.deepEqual(
-      { offered, create: create.status, patch: patch.status, reads: f.secretReads - reads },
-      { offered: false, create: 409, patch: 409, reads: 0 },
-    );
-    providerType.harnessAuth.loginMode = "api_key";
-    for (const [side, type] of [
-      ["Proxy", providerType],
-      ["Gateway", gatewayType],
-    ]) {
-      // Change one declaration across the await while its counterpart stays static.
-      assert.equal(type.harnessAuth.loginMode, "api_key");
-      changeDuringAdmission = type;
-      const raced = await f.request("PATCH", path, { body: consent });
-      assert.equal(type.harnessAuth.loginMode, "chatgptAuthTokens");
-      assert.deepEqual(
-        { status: raced.status, reads: f.secretReads - reads },
-        { status: 409, reads: 0 },
-        side + " lifecycle changed before Secret access",
-      );
-      type.harnessAuth.loginMode = "api_key";
-      assert.equal((await f.request("GET", path)).data.egress, undefined);
-      assert.deepEqual([...f.providers.values()], before);
-    }
-  } finally {
-    gateway.listSourceTypes = listTypes;
-    Reflect.set(proxy, "sourceControl", control);
-  }
-  const adopted = await f.request("PATCH", path, { body: consent });
-  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
-  assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
-  assert.deepEqual(
-    [...f.providers.values()],
-    before,
-    "adoption never overwrites the previous gateway material",
-  );
-  // Restore a fixture in the *persisted* prior narrow provider generation. An
-  // old PATCH must not be able to turn that approval into whole-execution use.
-  const { id, namespaceId } = f.legacySource;
-  await f.controller.transact(async ({ credentialSources: sources }) => {
-    const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 3);
-    const key = {
-      ...egress.key,
-      source: { id, generation: egress.key.source.generation + 1 },
-      provider: { ...egress.key.provider, generation: 1 },
-    };
-    await sources.admitEgressSource(namespaceId, id, egress.key.source.generation, {
-      ...egress,
-      key,
-    });
-  });
-  assert.equal((await f.request("PATCH", path, { body: { adoption: "live" } })).status, 409);
-  assert.equal((await f.request("PATCH", path, { body: consent })).status, 200);
-  const bound = await f.request("PATCH", `${f.path}/${f.source.id}`, {
-    body: { adoption: "live" },
-  });
-  assert.equal(bound.status, 409, "running source cutover is explicitly unsupported");
-});
-
 test("current supplier evidence is required at access and send; stored receipts cannot authorize a replacement", async (t) => {
-  const f = await staticEgressFixture(t);
+  const f = await protectedMetadataFixture(t);
   const original = structuredClone(f.observed.evidence);
   const observation = f.observed.observation;
   const beforeLegacy = f.secretReads;
   delete f.observed.observation;
   // LOADED and valid legacy field 3 remain present; neither substitutes for V1.
   assert.equal(await f.egress.wiringStatus(f.context, f.attachment), undefined);
-  assert.ok((await f.resolve(f.capture())).refused);
+  assert.ok((await f.resolve(captureMetadata(f))).refused);
   assert.equal(f.secretReads, beforeLegacy);
   f.observed.observation = observation;
   // Proto3 scalar zeros can be omitted on the wire; both encodings have one fingerprint.
@@ -648,16 +256,16 @@ test("current supplier evidence is required at access and send; stored receipts 
     { ...original, instance_id: "10000000-0000-4000-8000-000000000001" },
   ]) {
     f.observed.evidence = evidence;
-    assert.ok((await f.resolve(f.capture())).refused);
+    assert.ok((await f.resolve(captureMetadata(f))).refused);
     assert.equal(f.secretReads, reads, "historical installation must not permit credential access");
   }
   f.observed.evidence = original;
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
+  const captured = captureMetadata(f);
+  const ready = (await f.resolve(captured)).ready_without_material;
   assert.ok(ready, "restoring the original current observation permits a new operation");
-  // Replacement happens after material access, while the operation still holds the old receipt.
+  // Replacement happens after resolution, while the operation still holds the old receipt.
   f.observed.evidence = { ...original, instance_id: "10000000-0000-4000-8000-000000000001" };
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).refused);
+  assert.ok((await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }))).refused);
   assert.equal(f.providerRequests.length, 0);
   const replacement = await f.egress.wiringStatus(f.context, f.attachment);
   assert.ok(replacement);
@@ -668,64 +276,10 @@ test("current supplier evidence is required at access and send; stored receipts 
 });
 
 staticEgressAdmissionCases.registerPolicyVersionCases();
-
-function unicodeEscapes(text) {
-  return [...text]
-    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
-    .join("");
-}
-
-registerStaticEgressResponsesPrefixCases();
-
-test("Responses admits bounded native agent messages", async (t) => {
-  await runStaticEgressNativeAgentMessageCase(t);
-});
-
-registerStaticEgressResponsesAndCapacityCases(unicodeEscapes);
+registerStaticEgressRequestCapacityCases();
 
 test("cancelled and denied exchanges retain capacity until receipt work settles", async (t) => {
   await runStaticEgressReceiptCapacityCase(t);
-});
-
-for (const stage of ["policy check", "Kubernetes namespace verification"]) {
-  test(`closing the accepted duplex during ${stage} prevents the Secret GET`, async (t) => {
-    const fault = createReceiptPersistenceFaults();
-    const finished = Promise.withResolvers();
-    const f = await staticEgressFixture(t, {
-      resolutionFinished: finished.resolve,
-      appFactory: fault.appFactory,
-    });
-    const captured = f.capture();
-    const exchange = await f.beginExchange();
-    const before = f.secretReads;
-    const gate =
-      stage === "policy check"
-        ? fault.arm("findCredentialWithdrawal", "pause")
-        : f.pauseNamespaceVerification();
-    t.after(gate.release);
-    exchange.stream.write(exchange.opening(captured));
-    await gate.reached;
-
-    // Wait for the real authority to acknowledge the half-close before releasing work.
-    // The final response alone could not tell us whether an unnecessary Secret GET ran.
-    const ended = Promise.withResolvers();
-    exchange.stream.once("status", ended.resolve);
-    exchange.stream.end();
-    assert.equal((await ended.promise).code, 0);
-    gate.release();
-    assert.deepEqual(await finished.promise, { kind: "refused", error: { kind: "cancelled" } });
-    assert.equal(f.secretReads, before, "a lost response owner cannot start a new Secret GET");
-    assert.equal(f.providerRequests.length, 0);
-    assert.deepEqual(
-      exchange.received.map((message) => message.event),
-      ["challenge"],
-    );
-    assert.ok((await f.resolve(f.capture())).ready, "an independent exchange still resolves");
-  });
-}
-
-test("an elapsed deadline prevents the Kubernetes Secret GET even before the timeout callback runs", async (t) => {
-  await runStaticEgressElapsedDeadlineCase(t);
 });
 
 for (const stage of ["check", "read"]) {
@@ -756,22 +310,6 @@ for (const stage of ["check", "read"]) {
 }
 
 registerStreamReceiptPersistenceCases(() => new EgressSendReceipts(new InMemoryPlatformState()));
-
-test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
-  await runStaticEgressReceiptRestartCase(t);
-});
-
-test("receipt observation fences only positive credential rejection, including blocked provider responses", async (t) => {
-  await runStaticEgressCredentialRejectionCase(t);
-});
-
-test("receipt persistence failure, lost acknowledgment and late authorization never grant send permission", async (t) => {
-  await runStaticEgressReceiptAuthorizationFailureCase(t);
-});
-
-test("response persistence must commit its observation and fence before policy bytes are acknowledged", async (t) => {
-  await runStaticEgressResponseCommitCase(t);
-});
 
 /** @param {Partial<import("../../packages/contracts/src/index.ts").AgentRevision>} revision */
 function admissionCases(revision) {
@@ -807,7 +345,7 @@ function networkPolicyGrant() {
 
 async function networkPolicyFixture(t, { admitRevision = true } = {}) {
   const grant = networkPolicyGrant();
-  const f = await staticEgressFixture(t, {
+  const f = await protectedMetadataFixture(t, {
     admitRevision,
     appFactory: (context, options) =>
       createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),

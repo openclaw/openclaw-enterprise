@@ -75,11 +75,13 @@ ambient kubeconfig fallback, unverified TLS, caller-selected Kubernetes
 namespaces, or caller-selected Kubernetes Secret names. Backend identity is
 OCC-owned metadata.
 
-## Installation-private OAuth client secrets
+<a id="installation-private-oauth-client-secrets"></a>
 
-Helm provisions a separate Kubernetes namespace for confidential registrations and configures both the API and worker to use it. Outside Helm, use `OCC_INSTALLATION_SECRET_NAMESPACE` to select a dedicated namespace. The driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the worker get and delete. Keep workloads and tenant RoleBindings out of this namespace.
+## TokenService private custody
 
-The Driver creates one Opaque Secret per registration. Rotation replaces its value in place. Before using or deleting the Secret, the Driver checks its Installation, registration, and Driver identity. Kubernetes resource versions fence concurrent changes.
+Helm provisions a Kubernetes namespace for private Source and credential Client material. Outside Helm, select a dedicated namespace with `OCC_INSTALLATION_SECRET_NAMESPACE`. The Driver defaults to `oce-installation-secrets`. Grant the API permission to get, create, update, and delete Secrets there. Grant the Worker get and delete. Keep tenant workloads and tenant RoleBindings out of this namespace.
+
+The Driver creates one Opaque Secret per private address. A Source address identifies the owning Namespace and Source. A Client address identifies the Client in its registered scope. The Kubernetes namespace is the shared physical store. Before using or deleting the Secret, the Driver checks the Installation ID, private address, and Driver identity. Kubernetes resource versions fence replacements and deletes.
 
 If Kubernetes confirms creation but returns an object that fails these checks, the Driver attempts to delete the requested object with the returned UID and resourceVersion. A replacement or changed object is preserved. Confirmed removal keeps the original refusal; missing preconditions or an unconfirmed delete report an unknown outcome. OCC retains its hidden registration until the cleanup worker confirms that the private object is absent.
 
@@ -139,9 +141,9 @@ A successful create returns HTTP `201` with metadata only:
 
 OCC stores the Secret ID, Namespace ID, selected driver ID, and opaque
 Kubernetes backend reference. The value is stored only by the driver and is
-never returned by OCC. When a credential source is registered, the API reads the
-value with the same labels, annotations, UID, and key checks as `resolve` and
-passes it only to the Credential Gateway.
+never returned by OCC. To enroll a managed model credential, use the
+[Credential Source API](../credential-sources/managed-static.md#register-a-source).
+Its custody is separate from Namespace Secret registration.
 
 List readable metadata with `GET /namespaces/:namespaceId/secrets`; see the
 [SecretDriver IAM contract](secret.md#iam) for collection and exact-Secret checks.
