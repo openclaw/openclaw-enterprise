@@ -8,7 +8,7 @@ import type {
   CredentialSourceReference,
   ResolvedCredential,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { ActivationPendingError, DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import {
   MANAGED_BY,
@@ -75,8 +75,12 @@ function deliveryOwnership(source: CredentialSourceReference): Record<string, st
 
 function profileFor(binding: DeploymentCredentialBinding): OpenShellProviderProfile {
   if (
-    (binding.consumer.kind !== "model" && binding.consumer.kind !== "plugin") ||
-    binding.projection.presentation !== "bearer" ||
+    (binding.consumer.kind !== "model" &&
+      binding.consumer.kind !== "plugin" &&
+      binding.consumer.kind !== "repository") ||
+    (binding.consumer.kind === "repository"
+      ? binding.projection.presentation !== "github_repository"
+      : binding.projection.presentation !== "bearer") ||
     !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.projection.environment)
   ) {
     refuse();
@@ -303,6 +307,7 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   readonly workspace: string;
   readonly namespaceId: string;
   readonly binding: DeploymentCredentialBinding;
+  readonly requireCurrentVersion: boolean;
   readonly resolveCredential: () => Promise<ResolvedCredential>;
   readonly signal: AbortSignal;
 }): Promise<OpenShellPushedProvider> {
@@ -341,7 +346,25 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   // Another deployment may have completed initialization while the profile was being imported.
   const prior = existing ?? (await client.getProvider(workspace, profile.id, signal));
   if (prior) {
-    return checkProvider(prior, binding.sourceRef, profile.id, workspace, owner.id, profileVersion);
+    const prepared = checkProvider(
+      prior,
+      binding.sourceRef,
+      profile.id,
+      workspace,
+      owner.id,
+      profileVersion,
+    );
+    if (
+      input.requireCurrentVersion &&
+      prepared.sourceVersion !== (await input.resolveCredential()).version
+    ) {
+      // API renewal can commit a new grant before the Proxy acknowledges delivery.
+      throw new ActivationPendingError(
+        "CREDENTIAL_ACTIVATION_PENDING",
+        "The OpenShell Provider is waiting for the current OAuth credential.",
+      );
+    }
+    return prepared;
   }
   let resolved: ResolvedCredential;
   try {
@@ -574,7 +597,8 @@ export function openShellPushedPolicyMatches(
             host: route.host,
             path: route.endpointPath,
             ports: [route.port],
-            protocol: "rest",
+            protocol: route.protocol,
+            ...(route.protocol === "mcp" ? { mcp: route.mcp } : {}),
             enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
             rules: route.rules,
             credential_binding: { provider: route.provider },
@@ -599,6 +623,54 @@ export function openShellPushedPolicyMatches(
         ),
     )
   );
+}
+
+/** Compare the complete effective policy, excluding only known inert Gateway derivations. */
+export function openShellEffectivePolicyMatches(
+  source: unknown,
+  effective: unknown,
+  approvedAttachedProviders: readonly string[],
+): boolean {
+  const sourceNetworks = asRecord(asRecord(source)?.network_policies) ?? {};
+  const policy = asRecord(effective);
+  const networks = asRecord(policy?.network_policies);
+  if (!policy || !networks) {
+    return false;
+  }
+  // Stock OpenShell 0.1.9 composes a named rule even for a Provider with no endpoints
+  // or binaries. Permit only that empty rule for an approved, attached Provider.
+  const inertRuleNames = new Set(
+    approvedAttachedProviders.map((name) => `_provider_${name.replaceAll("-", "_")}`),
+  );
+  const policyRules = Object.entries(networks).filter(
+    ([name, rule]) =>
+      !inertRuleNames.has(name) ||
+      Object.hasOwn(sourceNetworks, name) ||
+      !sameOpenShellPolicy(rule, { name }),
+  );
+  const normalized = Object.fromEntries(
+    policyRules.map(([name, value]) => {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        return [name, value];
+      }
+      return [
+        name,
+        {
+          ...rule,
+          endpoints: rule.endpoints.map((value) => {
+            const endpoint = asRecord(value);
+            if (!endpoint || !asRecord(endpoint.credential_binding)) {
+              return value;
+            }
+            const { provider_credentialed: _marker, ...rest } = endpoint;
+            return rest;
+          }),
+        },
+      ];
+    }),
+  );
+  return sameOpenShellPolicy(source, { ...policy, network_policies: normalized });
 }
 
 export function assertOpenShellPushedBindingScope(

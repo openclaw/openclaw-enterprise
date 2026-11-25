@@ -7,17 +7,19 @@ import { isDeepStrictEqual } from "node:util";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { API_REQUEST_AUDIT_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type { AuditEvent, ResourceRef } from "../../packages/contracts/src/index.ts";
-import type { PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
+import type { PlatformUnitOfWork, PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
-  createDeviceCredentialDrivers,
-  DEVICE_ACCESS_TOKEN,
+  controlDeviceIssuer,
+  installDeviceTokenService,
+  DEVICE_OAUTH_ACCESS_TOKEN,
   DEVICE_ACCOUNT_ID,
-} from "../helpers/device-credential-gateway.ts";
+} from "../helpers/device-token-service.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 const reasonCode = "DEVICE_AUTHORIZATION_SCOPE_MISMATCH";
 const genericNotFound = {
@@ -82,27 +84,19 @@ class DenialAuditSink extends InMemoryAuditSink {
 }
 
 async function createFixture(t: TestContext, { requestAudit = false } = {}) {
-  const originalFetch = globalThis.fetch;
-  const loopbackFetch: typeof fetch = (input, options) => {
-    const address = new URL(input instanceof Request ? input.url : input.toString());
-    assert.ok(
-      ["127.0.0.1", "[::1]", "localhost"].includes(address.hostname),
-      "the component proof must not contact a provider",
-    );
-    return originalFetch(input, options);
-  };
-  t.mock.method(globalThis, "fetch", loopbackFetch);
-
   const auditSink = new DenialAuditSink();
   const clock = createControlledClock();
-  const { gateway, refresh } = createDeviceCredentialDrivers({
-    now: () => clock.wallNow(),
-    approve: async () => false,
-  });
+  const issuer = controlDeviceIssuer(t, { approve: async () => false });
+  const secretDriver = createTestSecretDriver();
+  let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
     ...(requestAudit ? { durableRequestAuditSink: auditSink } : {}),
-    credentialGatewayDriver: gateway,
+    secretDriver,
+    wrapState: (value: PlatformStateStore) => {
+      state = value;
+      return value;
+    },
     now: () => new Date(clock.wallNow()),
     // Admission-only Sandbox: the real Controller still creates and validates the Agents.
     sandboxDriver: {
@@ -118,10 +112,8 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
   const namespace = await fixture.createNamespace("Device denial audit", { ready: true });
   const controller = fixture.controller;
   assert.ok(controller);
-  controller.registerDriver(gateway);
-  controller.selectDriver("credential_gateway", gateway.id);
-  controller.registerDriver(refresh);
-  controller.selectDriver("credential_refresh", refresh.id);
+  assert.ok(state);
+  await installDeviceTokenService(controller, state, secretDriver);
   const basePath = `/namespaces/${namespace.id}/agents`;
   const unsaved: Target = { path: `${basePath}/device-authorizations` };
   async function savedTarget(name: string) {
@@ -159,10 +151,8 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
       const record = await unit.authenticationStates.findDevice(namespace.id, login.id);
       assert.ok(record, "the actual start must own a session");
       const { version, ...session } = record;
-      const sourceId = string(session.sourceId);
-      const source = await unit.credentialSources.findCredentialSource(namespace.id, sourceId);
-      assert.ok(source, "the actual start must own a source");
-      return { version, session, source };
+      assert.equal(session.sourceId, undefined, "pending login has no Source");
+      return { version, session };
     });
   }
   const resource = (target: Target): ResourceRef => ({
@@ -177,7 +167,7 @@ async function createFixture(t: TestContext, { requestAudit = false } = {}) {
     namespace,
     auditSink,
     clock,
-    gateway,
+    issuer,
     unsaved,
     savedTarget,
     start,
@@ -215,16 +205,6 @@ test("device login binding denials retain generic 404 and attributable fail-clos
       resource: { kind: "agent", id: target.agentId },
     });
   }
-  for (const login of [unsavedLogin, savedLogin]) {
-    const stored = await fixture.snapshot(login);
-    const resource = { kind: "credential_source" as const, id: string(stored.session.sourceId) };
-    bindRole(fixture.policy, other.principal.id, {
-      id: `device-denial-${resource.id}`,
-      roleId: role.role.id,
-      namespaceId: fixture.namespace.id,
-      resource,
-    });
-  }
 
   const control: Refusal = {
     label: "authorized owner",
@@ -232,23 +212,23 @@ test("device login binding denials retain generic 404 and attributable fail-clos
     target: fixture.unsaved,
     actorId: owner,
   };
-  const beforeEarly = fixture.gateway.operations.length;
+  const beforeEarly = fixture.issuer.operations.length;
   const early = await fixture.send("poll", control);
   assert.equal(early.status, 200);
   assert.equal(object(object(early.body).data).status, "pending");
-  assert.equal(fixture.gateway.operations.length, beforeEarly);
+  assert.equal(fixture.issuer.operations.length, beforeEarly);
   await fixture.clock.advance(5000);
   const due = await fixture.send("poll", control);
   assert.equal(due.status, 200);
   assert.equal(object(object(due.body).data).status, "pending");
-  assert.deepEqual(fixture.gateway.operations.slice(beforeEarly), ["pollDeviceAuthorization"]);
+  assert.deepEqual(fixture.issuer.operations.slice(beforeEarly), ["poll"]);
 
   const member = await fixture.createNamespaceMember("device-denial-member", fixture.namespace.id, [
     ["read", "namespace"],
   ]);
   const memberSession = await fixture.signIn(member.credentials);
   const ordinary: Refusal = { ...control, actorId: member.principal.id, session: memberSession };
-  const beforeOrdinary = fixture.gateway.operations.length;
+  const beforeOrdinary = fixture.issuer.operations.length;
   const forbidden = await fixture.send("poll", ordinary);
   assert.equal(forbidden.status, 403);
   assert.equal(object(object(forbidden.body).error).code, "FORBIDDEN");
@@ -266,7 +246,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
     action: "create",
     resource: fixture.resource(fixture.unsaved),
   });
-  assert.equal(fixture.gateway.operations.length, beforeOrdinary);
+  assert.equal(fixture.issuer.operations.length, beforeOrdinary);
 
   // The real sink's ordinary IAM failure proves the seam before the new binding path uses it.
   fixture.auditSink.failing = true;
@@ -275,7 +255,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   assert.equal(ordinaryUnavailable.status, 503);
   assert.equal(object(object(ordinaryUnavailable.body).error).code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(fixture.auditSink.attempts, 1);
-  assert.equal(fixture.gateway.operations.length, beforeOrdinary);
+  assert.equal(fixture.issuer.operations.length, beforeOrdinary);
 
   const cases: Refusal[] = [
     {
@@ -309,7 +289,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
       assert.equal(before.session.phase, "pending");
       assert.ok(Date.parse(string(before.session.nextPollAt)) <= fixture.clock.wallNow());
       assert.ok(Date.parse(string(before.session.expiresAt)) > fixture.clock.wallNow());
-      const operations = fixture.gateway.operations.length;
+      const operations = fixture.issuer.operations.length;
       const absent = await fixture.send(operation, {
         label: "absent handle",
         target: item.target,
@@ -326,7 +306,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
         "binding refusal changed the saved session or source",
       );
       assert.equal(
-        fixture.gateway.operations.length,
+        fixture.issuer.operations.length,
         operations,
         "binding refusal reached an external service",
       );
@@ -340,8 +320,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
         item.login.id,
         item.login.userCode,
         string(before.session.privateState),
-        string(before.session.sourceId),
-        DEVICE_ACCESS_TOKEN,
+        DEVICE_OAUTH_ACCESS_TOKEN,
         DEVICE_ACCOUNT_ID,
         ...(item.actorId === owner ? [] : [owner]),
         ...(before.session.agentId === item.target.agentId || before.session.agentId === undefined
@@ -383,7 +362,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   const item = cases[0];
   assert.ok(item);
   const beforeFailure = await fixture.snapshot(item.login);
-  const beforeEffects = fixture.gateway.operations.length;
+  const beforeEffects = fixture.issuer.operations.length;
   const beforeAttempts = fixture.auditSink.attempts;
   fixture.auditSink.failing = true;
   const unavailable = await fixture.send("poll", item);
@@ -391,7 +370,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
   assert.equal(unavailable.status, 503);
   assert.equal(object(object(unavailable.body).error).code, "DEPENDENCY_UNAVAILABLE");
   assert.equal(fixture.auditSink.attempts, beforeAttempts + 1);
-  assert.equal(fixture.gateway.operations.length, beforeEffects);
+  assert.equal(fixture.issuer.operations.length, beforeEffects);
   assert.ok(isDeepStrictEqual(await fixture.snapshot(item.login), beforeFailure));
   assertPublicOnly(unavailable.body, observed[0]!.excluded);
 });
@@ -427,7 +406,7 @@ test("device login binding denials still require their own audit with request au
 
   // Request evidence remains writable. It cannot replace the required device denial record.
   const before = await fixture.snapshot(item.login);
-  const operations = fixture.gateway.operations.length;
+  const operations = fixture.issuer.operations.length;
   fixture.auditSink.failing = true;
   const unavailable = await fixture.send("poll", item);
   assert.equal(unavailable.status, 503);
@@ -445,5 +424,5 @@ test("device login binding denials still require their own audit with request au
     ],
   );
   assert.deepEqual(await fixture.snapshot(item.login), before);
-  assert.equal(fixture.gateway.operations.length, operations);
+  assert.equal(fixture.issuer.operations.length, operations);
 });

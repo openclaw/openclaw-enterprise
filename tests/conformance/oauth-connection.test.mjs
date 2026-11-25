@@ -57,14 +57,18 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   assert.deepEqual((await exchange()).grantedScopes, ["read", "write"]);
   responseScope = "read";
   assert.deepEqual((await exchange()).grantedScopes, ["read"]);
-  for (responseScope of ["read admin", ["read"], ""]) {
+  responseScope = "read admin";
+  const expanded = await exchange();
+  assert.deepEqual(expanded.requestedScopes, ["read", "write"]);
+  assert.deepEqual(expanded.grantedScopes, ["read", "admin"]);
+  for (responseScope of [["read"], ""]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
       code: "grant_scope_mismatch",
       recoveryAction: "fix_configuration",
     });
   }
-  // Only a default-scope request may adopt a provider-reported initial grant.
+  // An initial grant reflects the issuer's response, including provider defaults.
   responseScope = "provider.default";
   const defaults = await exchange([]);
   assert.deepEqual(defaults.grantedScopes, ["provider.default"]);
@@ -82,12 +86,26 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
   );
 });
 
-async function oauthCustody() {
+/** @param {import("@openclaw-enterprise/contracts").OAuthConnectionGrant} grant
+ * @param {AbortSignal} signal
+ */
+async function oauthCustody(grant, signal) {
   const driver = createTestSecretDriver();
-  const service = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const worker = new OAuthGrantStore(driver, refreshPinnedOAuthGrant);
-  const custody = await service.reserve({ namespaceId: "ns_test", sourceId: "source" });
-  return { driver, custody, service, worker };
+  const store = driver.privateSecrets;
+  const service = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
+  const worker = new OAuthGrantStore(store, refreshPinnedOAuthGrant);
+  const { custody, schedule } = await service.create(
+    {
+      sourceId: "source",
+      secret: {
+        installationId: "ins_test",
+        id: JSON.stringify(["token_service", "instance", "credential_source", "ns_test", "source"]),
+      },
+    },
+    grant,
+    signal,
+  );
+  return { driver, custody, schedule, service, worker };
 }
 
 test("the Token Service keeps the first access token in custody and serializes rotation", async (t) => {
@@ -151,7 +169,6 @@ test("the Token Service keeps the first access token in custody and serializes r
     tokenUrl: issuer + "/token",
     redirectUri: "https://oce.example.test/callback",
   };
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = await exchangeAuthorizationCode(
     request,
     "test-verifier",
@@ -159,16 +176,21 @@ test("the Token Service keeps the first access token in custody and serializes r
     clientSecret,
     t.signal,
   );
-  await service.storeInitialGrant(custody, { ...request, ...grant }, t.signal);
+  const { driver, custody, schedule, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({
     registration: request,
     readSecret: async () => rotatedClientSecret,
   });
-  const stored = driver.valueFor(custody.secret);
+  const stored = await driver.privateSecrets.withValue(custody.secret, async (value) => value);
   assert.ok(!stored.includes(clientSecret));
   assert.equal(Object.hasOwn(JSON.parse(stored), "clientSecret"), false);
   const accepted = (await worker.observe(custody, t.signal, 0)).token;
   assert.equal(accepted.accessToken, first);
+  assert.deepEqual(schedule, {
+    version: accepted.version,
+    nextRefreshAt: accepted.nextRefreshAt,
+    grantedScopes: accepted.grantedScopes,
+  });
   assert.deepEqual(Object.keys(accepted).sort(), [
     "accessToken",
     "expiresAt",
@@ -185,9 +207,9 @@ test("the Token Service keeps the first access token in custody and serializes r
   // The custody CAS takes four seconds, then the issuer takes twelve. A second worker must
   // neither replay the grant nor fence its owner at the shorter issuer-only timeout.
   t.mock.timers.tick(65_000);
-  const compareAndSwap = driver.compareAndSwap.bind(driver);
+  const compareAndSwap = driver.privateSecrets.compareAndSwap.bind(driver.privateSecrets);
   t.mock.method(
-    driver,
+    driver.privateSecrets,
     "compareAndSwap",
     (...args) => {
       t.mock.timers.tick(4_000);
@@ -231,12 +253,17 @@ test("the Token Service keeps the first access token in custody and serializes r
   assert.deepEqual((await service.observe(custody, t.signal)).status, {
     state: "failed",
     failureCode: "grant_scope_mismatch",
-    recoveryAction: "fix_configuration",
+    recoveryAction: "reauthorize",
   });
   await worker.renew(custody, t.signal, resolveClient, renewed.version);
   assert.equal(requests.length, 3, "even an operator rotation cannot replay a refused grant");
   await service.delete(custody, t.signal);
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });
 
 /** @import { OAuthConnectionGrant, OAuthConnectionRegistration } from "@openclaw-enterprise/contracts" */
@@ -285,10 +312,9 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
     server.close();
   });
   const issuer = "http://127.0.0.1:" + server.address().port;
-  const { driver, custody, service, worker } = await oauthCustody();
   const grant = connectionGrant(issuer);
+  const { driver, custody, service, worker } = await oauthCustody(grant, t.signal);
   const resolveClient = async () => ({ registration: grant });
-  await service.storeInitialGrant(custody, grant, t.signal);
   assert.equal((await worker.observe(custody, t.signal)).status.state, "ready");
   const refreshing = worker.renew(
     custody,
@@ -300,6 +326,11 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
   // Retire the exact custody identity after the issuer consumed the old refresh token and before its reply.
   await service.delete(custody, t.signal);
   respond.resolve();
-  await assert.rejects(refreshing, { message: "Secret does not exist." });
-  assert.equal(driver.has(custody.secret), false);
+  await assert.rejects(refreshing, /Secret does not exist/u);
+  await assert.rejects(
+    driver.privateSecrets.withValue(custody.secret, async () => true),
+    {
+      message: /Secret does not exist\./u,
+    },
+  );
 });

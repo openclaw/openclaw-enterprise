@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, constants, readFileSync, writeFileSync } from "node:fs";
 import {
+  access,
   chmod,
   copyFile,
+  lstat,
   mkdir,
   mkdtemp,
   realpath,
@@ -12,7 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
@@ -53,6 +55,13 @@ after(async () => {
 
 function developmentCli() {
   cliBuild ??= (async () => {
+    const prepared = process.env.OCC_TEST_DEV_UP_CLI;
+    if (prepared !== undefined) {
+      assert.ok(isAbsolute(prepared), "OCC_TEST_DEV_UP_CLI must be an absolute path");
+      assert.ok((await lstat(prepared)).isFile(), "OCC_TEST_DEV_UP_CLI must name a regular file");
+      await access(prepared, constants.X_OK);
+      return prepared;
+    }
     const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-cli-"));
     cliDirectory = directory;
     const executable = join(directory, "occ");
@@ -698,7 +707,9 @@ exit 86
   // Settings exported in the caller's shell would override the defaults the
   // tests assert (for example OCC_DEVELOPMENT_K3S_IMAGE's +v1.35 channel).
   const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
+    Object.entries(process.env).filter(
+      ([key]) => !key.startsWith("OCC_DEVELOPMENT_") && key !== "OCC_TEST_DEV_UP_CLI",
+    ),
   );
   const env = withoutShellStartup({
     ...inherited,

@@ -3,6 +3,13 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 
+export const repository = "openclaw/openclaw-enterprise";
+export const releaseWorkflow = ".github/workflows/release-oce.yml";
+
+export function isReleaseOce(env: NodeJS.ProcessEnv) {
+  return env.GITHUB_WORKFLOW_REF === `${repository}/${releaseWorkflow}@refs/heads/main`;
+}
+
 export const images = ["controller", "runtime"] as const;
 export type Image = (typeof images)[number];
 export const platforms = ["linux/amd64", "linux/arm64"] as const;
@@ -15,8 +22,8 @@ export type Producer = {
   workflowSha: string | undefined;
   runId: string | undefined;
   attempt: string | undefined;
-  ciRunId: string | undefined;
-  ciAttempt: string | undefined;
+  ciRunId?: string | undefined;
+  ciAttempt?: string | undefined;
   nodeBaseImage: string | undefined;
 };
 
@@ -49,7 +56,8 @@ export function match(value: unknown, pattern: RegExp, message?: string): assert
 
 export function validatePreparedImage(
   metadata: unknown,
-  expected: Record<(typeof receiptKeys)[number], unknown>,
+  expected: Record<Exclude<(typeof receiptKeys)[number], "ciRunId" | "ciAttempt">, unknown> &
+    Partial<Record<"ciRunId" | "ciAttempt", unknown>>,
 ): asserts metadata is PreparedImage {
   for (const key of receiptKeys) {
     assert.equal(
@@ -78,8 +86,7 @@ export function identity(env: NodeJS.ProcessEnv, image: string | undefined) {
     workflowSha: env.GITHUB_WORKFLOW_SHA,
     runId: env.GITHUB_RUN_ID,
     attempt: env.GITHUB_RUN_ATTEMPT,
-    ciRunId: env.CI_RUN_ID,
-    ciAttempt: env.CI_ATTEMPT,
+    ...(isReleaseOce(env) ? {} : { ciRunId: env.CI_RUN_ID, ciAttempt: env.CI_ATTEMPT }),
     nodeBaseImage: env.NODE_BASE_IMAGE,
     image,
     platforms,

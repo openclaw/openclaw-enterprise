@@ -15,26 +15,21 @@ const oauthKeys = [
   "sessionId",
   "redirectUri",
 ] as const;
-const deviceKeys = [
-  "agentId",
-  "harnessId",
-  "credentialGatewayId",
-  "credentialRefreshId",
-  "sourceId",
-  "intervalSeconds",
-] as const;
+const deviceKeys = ["agentId", "harnessId", "tokenServiceInstanceId", "intervalSeconds"] as const;
 type OAuthBinding = Pick<OAuthAuthenticationState, (typeof oauthKeys)[number]>;
 type DeviceBinding = Pick<DeviceAuthenticationState, (typeof deviceKeys)[number]>;
 type CommonRow = { id: string; namespace_id: string; actor_id: string; expires_at: Date };
 type OAuthRow = CommonRow & {
   binding: OAuthBinding;
-  credential_source_id: string;
   connection_template_id: string;
   connection_template_version: number;
+  oauth_client_id: string;
+  oauth_consumed_at: Date | null;
   created_at: Date;
 };
 type DeviceRow = CommonRow & {
   binding: DeviceBinding;
+  credential_source_id: string | null;
   phase: DeviceAuthenticationState["phase"];
   next_poll_at: Date;
   encrypted_challenge: string | null;
@@ -56,9 +51,10 @@ function oauthFromRow(row: OAuthRow): OAuthAuthenticationState {
     ...common(row),
     ...row.binding,
     kind: "oauth_connection",
-    credentialSourceId: row.credential_source_id,
     connectionTemplateId: row.connection_template_id,
     connectionTemplateVersion: row.connection_template_version,
+    oauthClientId: row.oauth_client_id,
+    ...(row.oauth_consumed_at === null ? {} : { consumedAt: row.oauth_consumed_at.toISOString() }),
     createdAt: row.created_at.toISOString(),
   });
 }
@@ -68,6 +64,7 @@ function deviceFromRow(row: DeviceRow): DeviceAuthenticationState {
     ...common(row),
     ...row.binding,
     kind: "device_authorization",
+    ...(row.credential_source_id === null ? {} : { sourceId: row.credential_source_id }),
     phase: row.phase,
     nextPollAt: row.next_poll_at.toISOString(),
     ...(row.encrypted_challenge === null ? {} : { encryptedChallenge: row.encrypted_challenge }),
@@ -105,7 +102,7 @@ export function postgresAuthenticationStates(
         record.kind === "oauth_connection" ? pick(record, oauthKeys) : pick(record, deviceKeys);
       await client.query(
         `INSERT INTO occ.authentication_states
-        (kind,id,namespace_id,actor_id,expires_at,credential_source_id,connection_template_id,connection_template_version,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
+        (kind,id,namespace_id,actor_id,expires_at,connection_template_id,connection_template_version,oauth_client_id,created_at,binding,phase,next_poll_at,encrypted_challenge,private_state,version)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
         [
           record.kind,
@@ -113,9 +110,9 @@ export function postgresAuthenticationStates(
           record.namespaceId,
           record.actorId,
           record.expiresAt,
-          oauth?.credentialSourceId,
           oauth?.connectionTemplateId,
           oauth?.connectionTemplateVersion,
+          oauth?.oauthClientId,
           oauth?.createdAt,
           binding,
           ...(device ? progress(device) : [null, null, null, null]),
@@ -133,39 +130,40 @@ export function postgresAuthenticationStates(
     replaceDevice: async (namespaceId, id, version, changes) => {
       const result = await client.query(
         `UPDATE occ.authentication_states SET version = version + 1, expires_at = $4,
-        phase = $5, next_poll_at = $6, encrypted_challenge = $7, private_state = $8
+        phase = $5, next_poll_at = $6, encrypted_challenge = $7, private_state = $8,
+        credential_source_id = $9
         WHERE kind = 'device_authorization' AND namespace_id = $1 AND id = $2 AND version = $3`,
-        [namespaceId, id, version, changes.expiresAt, ...progress(changes)],
+        [namespaceId, id, version, changes.expiresAt, ...progress(changes), changes.sourceId],
       );
       return result.rowCount === 1;
     },
     consumeOAuth: async (id, actorId, sessionId, at) => {
       const { rows } = await client.query(
-        `DELETE FROM occ.authentication_states WHERE kind = 'oauth_connection' AND id = $1 AND actor_id = $2
-        AND binding->>'sessionId' = $3 AND expires_at > $4 RETURNING *`,
+        `UPDATE occ.authentication_states SET oauth_consumed_at=$4 WHERE kind = 'oauth_connection' AND id = $1 AND actor_id = $2
+        AND binding->>'sessionId' = $3 AND expires_at > $4 AND oauth_consumed_at IS NULL RETURNING *`,
         [id, actorId, sessionId, at],
       );
       return rows[0] === undefined ? undefined : oauthFromRow(rows[0] as OAuthRow);
+    },
+    releaseOAuth: async (id) => {
+      await client.query(
+        "DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND id=$1 AND oauth_consumed_at IS NOT NULL",
+        [id],
+      );
     },
     expire: async (at, limit) => {
       await client.query(
         `WITH expired AS (
           SELECT id FROM occ.authentication_states WHERE kind = 'device_authorization' AND expires_at <= $1 AND phase <> 'cancelled'
           ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED
-        ) UPDATE occ.authentication_states d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL
+        ) UPDATE occ.authentication_states d SET version = d.version + 1, phase = 'cancelled', private_state = NULL, encrypted_challenge = NULL, credential_source_id = NULL
         FROM expired WHERE d.kind = 'device_authorization' AND d.id = expired.id`,
         [at, limit],
       );
-      const { rows } = await client.query(
-        `DELETE FROM occ.authentication_states WHERE kind = 'oauth_connection' AND id IN (
-          SELECT id FROM occ.authentication_states WHERE kind = 'oauth_connection' AND expires_at <= $1 ORDER BY expires_at,id LIMIT $2)
-        RETURNING namespace_id,credential_source_id`,
+      await client.query(
+        `DELETE FROM occ.authentication_states WHERE kind='oauth_connection' AND id IN (SELECT id FROM occ.authentication_states WHERE kind='oauth_connection' AND expires_at<=$1 ORDER BY expires_at,id LIMIT $2)`,
         [at, limit],
       );
-      return (rows as { namespace_id: string; credential_source_id: string }[]).map((row) => ({
-        namespaceId: row.namespace_id,
-        credentialSourceId: row.credential_source_id,
-      }));
     },
   };
 }

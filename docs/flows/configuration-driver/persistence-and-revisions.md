@@ -14,17 +14,16 @@ Configuration ownership, immutable `kind: "agent"`, generation, creation time,
 normalized Secret bindings, and server-generated `cfg_` identity are persisted by
 [PostgreSQL platform state](../../../packages/occ/src/state/postgres-state.ts);
 the live configuration document is not duplicated into Configuration metadata.
-OCC owns API-level native Configuration validation before it calls the selected
-bundled or installed Configuration Driver: model provider settings,
-`requireDeployableRoster` in
-[the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
-an `agents` roster, a model or fallback that is not `<provider>/<model>`
-(OpenClaw's `openrouter:auto` included), a fallback on another provider than
-its primary's, a `models.providers.<id>.models` entry that names no selected
-model, or model and runtime settings that conflict (`requireConsistentModelPolicy`,
-which runs the deployment resolver itself, in its order, and leaves a draft
-without a model or runtime to deployment), all of which every deployment refuses,
-with deployment's own text, and [the settings rules](../../../packages/occ/src/configuration-settings.ts).
+Before calling the bundled or installed Configuration Driver, OCC validates model
+provider settings and applies [the roster rules](../../../packages/occ/src/openclaw-roster.ts).
+`requireDeployableRoster` rejects invalid `agents` rosters, models outside the
+`<provider>/<model>` format (including `openrouter:auto`) and fallbacks on
+another provider. `requireConsistentModelPolicy` runs the deployment resolver.
+It rejects conflicting runtime settings and catalog rows without a matching
+[primary, fallback, or selectable Codex model](../../reference/harness-execution.md#native-runtime-selection).
+Save and deployment report these errors in the same order. A draft can still
+omit a required model or runtime until deployment.
+OCC also applies [the settings rules](../../../packages/occ/src/configuration-settings.ts).
 These rules reject unsupported Codex approval policies, a literal
 `gateway.auth.password` or a password SecretRef OpenClaw cannot read
 (`gatewayPasswordRequirement`), and retired settings such as `security.preset`.

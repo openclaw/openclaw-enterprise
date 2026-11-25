@@ -4,12 +4,14 @@ import { types } from "node:util";
 import {
   admitRepositoryNetworkPolicy,
   admitSandboxRepositoryNetworkPolicy,
+  assertExecutionAdmission,
   RepositoryNetworkPolicyAdmissionError,
+  type RepositoryApiLevel,
+  type RepositoryApiMaximum,
   type Agent,
-  type AgentRevision,
   type AgentRevisionRead,
   type Configuration,
-  type CredentialSource,
+  type StoredCredentialSource,
   type ComputeDriver,
   type HarnessDescriptor,
   type IAMDriver,
@@ -45,11 +47,40 @@ export type RepositoryGrantPolicy = {
 };
 
 export type RepositoryPolicyResolution = RepositoryCredentialResolution & {
+  /** The selected credential has restrictions that only the native network policy can enforce. */
+  readonly requiresNetworkPolicy?: boolean;
   /** The selected registry permits deployment-scoped Git when the Agent saves an ACL. */
   readonly nativeGit?: "v1";
+  /** Eligible native API levels, before the Agent narrows access. */
+  readonly repositoryApiMaxima?: readonly RepositoryApiMaximum[];
   /** The network access of these resolved bindings. The Namespace ceiling is independent. */
   readonly selectedRepositoryNetworkGrants?: RepositoryNetworkPolicyCeiling;
 };
+
+/** Match an operator ceiling for an editable selection before GitHub verifies its owner. */
+export function repositoryNetworkLimitForSelection(
+  ceiling: RepositoryNetworkPolicyCeiling,
+  repository: string,
+  allowShortNameMatch: boolean,
+): RepositoryNetworkGrant | undefined {
+  const isQualified = repository.includes("/");
+  const shortName = repository.slice(repository.indexOf("/") + 1);
+  const matching = ceiling.filter(
+    ({ repository: limit }) =>
+      limit === repository ||
+      (allowShortNameMatch &&
+        !(isQualified && limit.includes("/")) &&
+        limit.slice(limit.indexOf("/") + 1) === shortName),
+  );
+  const qualified = matching.filter(({ repository: limit }) => limit.includes("/"));
+  if (!matching.length || qualified.length > 1) {
+    return undefined;
+  }
+  return {
+    repository: qualified[0]?.repository ?? repository,
+    access: matching.every(({ access }) => access === "write") ? "write" : "read",
+  };
+}
 
 type RepositoryGrantMethod = NonNullable<RepositoryGrantPolicy["repositoryNetworkPolicyAllows"]>;
 
@@ -150,7 +181,7 @@ export async function readRepositoryEditTopology(
   read: {
     configurationOwnership(id: string): Promise<ConfigurationOwnership | undefined>;
     configuration(metadata: ConfigurationOwnership): Promise<Readonly<Configuration>>;
-    credentialSource(id: string): Promise<Readonly<CredentialSource> | undefined>;
+    credentialSource(id: string): Promise<Readonly<StoredCredentialSource> | undefined>;
   },
 ) {
   const { namespaceId, configurationId } = agent;
@@ -283,7 +314,7 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
       }
     };
     const fitsSelected = (grant: RepositoryNetworkGrant) =>
-      selectedRepositoryGrantAllows(resolution.selectedRepositoryNetworkGrants, grant);
+      selectedRepositoryGrantAllows(resolution, grant);
     const dedicated = { id: harness.id, version: harness.version, mode: "dedicated" } as const;
     const { type, ownerCapability, driverId } = source;
     const topology: ProtectedRepositoryNetworkPolicySaveContext = immutableCopy({
@@ -343,17 +374,45 @@ export function repositoryPolicySaveValidator(compute: ComputeDriver, owner: Ins
           return ready;
         });
       },
+      apiMaxima(delegatedCeiling: RepositoryNetworkPolicyCeiling) {
+        const options = resolution.repositoryApiMaxima;
+        if (resolution.nativeGit !== "v1" || !options) {
+          return undefined;
+        }
+        // Project only selected, delegated names. Never forward provider metadata.
+        return delegatedCeiling.flatMap(({ repository, access }) => {
+          const option = options.find((item) => item.repository === repository);
+          if (!option || !fitsSelected({ repository, access: "read" })) {
+            return [];
+          }
+          const write = access === "write" && fitsSelected({ repository, access });
+          const cap = (level: RepositoryApiLevel): RepositoryApiLevel =>
+            level === "write" && !write ? "read" : level;
+          return [
+            {
+              repository,
+              access: write ? ("write" as const) : ("read" as const),
+              issues: cap(option.issues),
+              pull_requests: cap(option.pull_requests),
+            },
+          ];
+        });
+      },
       admit: admitEdit,
     };
   };
 }
 
 function selectedRepositoryGrantAllows(
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
   grant: RepositoryNetworkGrant,
 ): boolean {
   return (
-    selected?.some(
+    (!grant.apiLimits ||
+      (selected?.nativeGit === "v1" &&
+        selected.repositoryApiMaxima?.some((option) => option.repository === grant.repository) ===
+          true)) &&
+    selected?.selectedRepositoryNetworkGrants?.some(
       ({ repository, access }) =>
         repository === grant.repository && (access === grant.access || access === "write"),
     ) === true
@@ -362,7 +421,7 @@ function selectedRepositoryGrantAllows(
 
 export function assertSelectedRepositoryGrants(
   grants: readonly RepositoryNetworkGrant[] | undefined,
-  selected: RepositoryNetworkPolicyCeiling | undefined,
+  selected: RepositoryPolicyResolution | undefined,
 ): void {
   if (grants?.some((grant) => !selectedRepositoryGrantAllows(selected, grant))) {
     throw new ResourceStateConflictError(
@@ -426,22 +485,52 @@ export function admitDeploymentRepositoryPolicy(
   }
 }
 
-// Stop retires the active pointer. A provider can still complete an earlier
-// unscoped write after its Worker loses the claim. Retained revisions identify
-// every deployment that could have targeted this Agent's shared resources.
-export function hasOnlyScopedRepositoryRevisions(
+// Stop cannot fence a delayed unscoped write to shared Agent resources. A
+// standalone model revision had no Git authority and uses its own Sandbox.
+export function supportsScopedRepositoryHistory(
   history: readonly Readonly<AgentRevisionRead>[],
+  allowStandaloneModelHistory = false,
 ): boolean {
-  return history.every(
-    (revision, index) =>
-      !("configurationReadError" in revision) &&
-      revision.revision === index + 1 &&
-      revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined,
-  );
+  return history.every((revision, index) => {
+    if ("configurationReadError" in revision || revision.revision !== index + 1) {
+      return false;
+    }
+    if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
+      return true;
+    }
+    const bindings = revision.credentialDeployment?.bindings;
+    const model = bindings?.[0];
+    const auth = revision.harnessAuth;
+    if (
+      !allowStandaloneModelHistory ||
+      revision.executionAdmission.mode !== "standalone" ||
+      revision.harness.mode !== "dedicated" ||
+      !revision.sandboxDriverId ||
+      revision.sandboxPolicy?.driverId !== revision.sandboxDriverId ||
+      revision.repositoryCredentials !== undefined ||
+      bindings?.length !== 1 ||
+      model?.consumer.kind !== "model" ||
+      auth.method !== "credential_source" ||
+      !auth.tokenServiceInstanceId ||
+      model.sourceRef.id !== auth.sourceId ||
+      revision.credentialSources?.some(({ sourceType }) => sourceType === "github-app-installation")
+    ) {
+      return false;
+    }
+    try {
+      assertExecutionAdmission(revision);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
-export function assertScopedRepositoryHistory(history: readonly Readonly<AgentRevision>[]): void {
-  if (!hasOnlyScopedRepositoryRevisions(history)) {
+export function assertScopedRepositoryHistory(
+  history: readonly Readonly<AgentRevisionRead>[],
+  allowStandaloneModelHistory = false,
+): void {
+  if (!supportsScopedRepositoryHistory(history, allowStandaloneModelHistory)) {
     throw new RepositoryPolicyDeploymentConflict("unscoped_history");
   }
 }
