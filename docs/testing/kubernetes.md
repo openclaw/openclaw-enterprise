@@ -487,7 +487,7 @@ fixture. The pass covers only the selected method.
 
 ```sh
 OCC_TEST_TWO_CLUSTER_CONFIG=/private/path/two-cluster.json \
-  node --test tests/integration/kubernetes-two-cluster-real.test.mjs
+  node --test tests/integration/kubernetes-two-cluster-real.test.ts
 ```
 
 The selected test fails on missing inputs. It checks real model turns, workspace

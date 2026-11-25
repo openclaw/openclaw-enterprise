@@ -2474,7 +2474,7 @@ test(
     const configurationFile = join(directory, "configuration.json");
     const serviceKeyFile = join(directory, "missing-service-key.json");
     const installedTest = fileURLToPath(
-      new URL("../integration/kubernetes-two-cluster-real.test.mjs", import.meta.url),
+      new URL("../integration/kubernetes-two-cluster-real.test.ts", import.meta.url),
     );
     const env = {
       HOME: directory,
@@ -2487,6 +2487,27 @@ test(
     const invalidUrl = "The two-cluster fixture requires a valid apiUrl.";
     const privateUrl =
       "The two-cluster fixture apiUrl cannot contain credentials, a query or a fragment.";
+
+    async function expectRefusal(name: string, message: string, environment = env) {
+      await assert.rejects(
+        execute(process.execPath, ["--test", installedTest], {
+          env: environment,
+          encoding: "utf8",
+          signal: t.signal,
+          timeout: 5_000,
+        }),
+        (error: unknown): boolean => {
+          expectExecFailure(error);
+          assert.equal(error.code, 1, name);
+          const diagnostic = error.stdout + error.stderr;
+          for (const [index, marker] of [username, password, requestValue].entries()) {
+            assert.equal(diagnostic.includes(marker), false, `${name} leaked marker ${index + 1}`);
+          }
+          assert.ok(diagnostic.includes(message), name);
+          return true;
+        },
+      );
+    }
 
     // The absent key file and isolated child keep any unexpected fall-through
     // from reaching an installed cluster. A valid selection reaches the
@@ -2550,24 +2571,48 @@ test(
           ? configuration
           : JSON.stringify({ serviceKeyFile, ...configuration });
       await writeFile(configurationFile, input, { mode: 0o600 });
-      await assert.rejects(
-        execute(process.execPath, ["--test", installedTest], {
-          env,
-          encoding: "utf8",
-          signal: t.signal,
-          timeout: 5_000,
-        }),
-        (error: unknown): boolean => {
-          expectExecFailure(error);
-          assert.equal(error.code, 1, name);
-          const diagnostic = error.stdout + error.stderr;
-          for (const [index, marker] of [username, password, requestValue].entries()) {
-            assert.equal(diagnostic.includes(marker), false, `${name} leaked marker ${index + 1}`);
-          }
-          assert.ok(diagnostic.includes(message), name);
-          return true;
-        },
-      );
+      await expectRefusal(name, message);
+    }
+
+    // Once the credential mode is selected, bad topology or key-file data must
+    // still fail before the isolated child can reach any cluster command.
+    const selectedEnv = { ...env, OPENAI_API_KEY: "synthetic-model-key" };
+    const plane = {
+      kubeconfigPath: join(directory, "unused-kubeconfig"),
+      kubernetesContext: "k3d-unused-fixture",
+      release: "fixture",
+      systemNamespace: "occ-system",
+    };
+    const selection = {
+      apiUrl: "https://127.0.0.1",
+      serviceKeyFile,
+      dockerContext: "unused-fixture",
+      agentConfiguration: {},
+      control: plane,
+      execution: plane,
+    };
+    await writeFile(
+      configurationFile,
+      JSON.stringify({ ...selection, execution: { ...plane, release: [requestValue] } }),
+    );
+    await expectRefusal(
+      "invalid plane selection",
+      "Invalid two-cluster observation: fixture configuration",
+      selectedEnv,
+    );
+    await writeFile(configurationFile, JSON.stringify(selection));
+    for (const [value, message] of [
+      [
+        `{"data":{"key":"${requestValue}"!`,
+        "Invalid JSON for two-cluster observation: service key file",
+      ],
+      [
+        JSON.stringify({ data: { key: [requestValue] } }),
+        "Invalid two-cluster observation: service key file",
+      ],
+    ] as const) {
+      await writeFile(serviceKeyFile, value, { mode: 0o600 });
+      await expectRefusal("invalid service key", message, selectedEnv);
     }
   },
 );
