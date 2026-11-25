@@ -216,6 +216,7 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
   // The Console polls only after the interval the login asks for, and follows a longer one a
   // poll answer asks for, as a provider's slow_down does (finding 1651). Each poll is held, so
@@ -565,8 +566,7 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method").selectOption("credential_source");
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
-  const existing = page.getByLabel("Existing Credential Source", { exact: true });
+  const existing = page.getByLabel("Model credential", { exact: true });
   await existing.selectOption(originalAuth.sourceId);
   assert.equal(await existing.locator(`option[value="${templateSource.id}"]`).count(), 0);
   // A confirmed Namespace refusal removes previously readable candidates and the staged choice.
@@ -580,6 +580,15 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   await page.getByRole("button", { name: "Retry Source list", exact: true }).waitFor();
   assert.equal(await existing.locator(`option[value="${originalAuth.sourceId}"]`).count(), 0);
   assert.equal(await existing.inputValue(), "");
+  await existing.selectOption("new");
+  assert.equal(
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isVisible(),
+    true,
+  );
+  assert.equal(
+    issuer.operations.filter((operation) => operation === "start").length,
+    loginsBeforeReuse,
+  );
   restoreRead();
   await page.getByRole("button", { name: "Retry Source list", exact: true }).click();
   await existing.selectOption(originalAuth.sourceId);
@@ -718,6 +727,9 @@ for (const savedAgent of [false, true]) {
       await page
         .getByLabel(agent ? "Authentication source" : "Authentication method")
         .selectOption(agent ? "device_login" : "credential_source");
+      if (!agent) {
+        await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+      }
       const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
       const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
       const starts = () =>
@@ -756,6 +768,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
   await waitForEnabled(start);
 
@@ -791,6 +804,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   const method = page.getByLabel("Authentication method");
   await method.selectOption("api_key");
   await method.selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal(await start.isDisabled(), true);
   await start.dispatchEvent("click");
   await settlePageRequests(page);
@@ -837,6 +851,9 @@ for (const savedAgent of [false, true]) {
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
+    if (!agent) {
+      await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+    }
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
     const held = await holdRequests(t, page, `**${beginPath}`, {
       once: true,
@@ -1222,6 +1239,7 @@ test("a refused device login start on Create Agent names the create grants it ch
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const refused = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname ===
@@ -1245,6 +1263,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal((await installationRead).status(), 403);
   await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });

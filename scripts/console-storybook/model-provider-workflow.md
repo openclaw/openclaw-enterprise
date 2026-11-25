@@ -1,8 +1,8 @@
 # Inspect model configuration and save a Credential Source
 
 Open **Pages/Create Agent → Codex with model Credential Source**. The story fills a
-dummy OpenAI API key in a masked field and leaves **Credential storage** set to
-**Credential Source**. Select **Create Agent**. Confirm that the request log shows
+dummy OpenAI API key in a masked field after selecting **Add new credential…** under
+**Model credential**. Select **Create Agent**. Confirm that the request log shows
 `POST …/credential-sources` before the Agent draft save, with no `POST …/secrets`.
 The draft uses the returned Credential Source ID. The response does not contain
 the entered key. Deploying this draft is a separate action.
@@ -13,10 +13,10 @@ Also inspect these changed states:
 - **Credential Source outcome unknown** shows a simulated TokenService outage and clears the entered key.
 - **Credential Source creation pending** shows the submitting state while the request waits.
 
-For guided provisioning with the existing Secret path, select **Namespace Secret**
-under **Credential storage** and choose a Secret. **Pages/Settings → Shared model
-provider** remains a read-only view of Installation startup configuration; Source
-creation does not change that configuration.
+For Embedded execution, a password Preset, another provider, or an Installation without
+a supported model Source preset, use the visible **Model credential Secret** picker.
+**Pages/Settings → Shared model provider** remains a read-only view of Installation
+startup configuration; Source creation does not change that configuration.
 
 ## Discover, create, and reuse a Source
 
@@ -30,10 +30,13 @@ A Template Source cannot serve as model authentication or be admitted directly t
 **Created Source without exact read access** confirms creation without adding the Source to the readable inventory.
 **Source created but inventory access denied** confirms creation, clears stale rows, and shows the denied Namespace read operation.
 
-Open **Pages/Create Agent → Reuse an existing Credential Source** and select
-**Create Agent**. Check that the draft uses the selected Source ID and the request log
+Open **Pages/Create Agent → Reuse an existing Credential Source**. Confirm the saved
+Source is selected under **Model credential**, then select **Create Agent**. Check
+that the draft uses the selected Source ID and the request log
 contains no `POST …/credential-sources`. If the Source list fails, select **Retry Source list**
-before choosing a Source. Open **Components/Credentials → Replace an existing
+before choosing a Source. **Reuse a saved ChatGPT OAuth Source** selects a compatible
+built-in OAuth Source in the same field without starting another sign-in. Open
+**Components/Credentials → Replace an existing
 Credential Source**, select **Save authentication source**, and check that the Agent
 uses the replacement ID without another Source enrollment. Deployment is separate.
 **Select a first managed Source for Codex** shows the Stop requirement and the destination check that occurs at deployment.

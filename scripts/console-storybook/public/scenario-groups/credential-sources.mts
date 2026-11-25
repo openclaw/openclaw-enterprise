@@ -104,10 +104,6 @@ const previewCodexOAuthSource: OAuthSource = {
 };
 
 const path = `/console/secrets?namespace=${namespaceId}`;
-const openExistingSource = [
-  ...form,
-  { selector: "#model-credential-storage", value: "existing_source" },
-] as const;
 const createInventorySource = [
   click("Create Source"),
   { selector: "#credential-source-name", value: "Inventory model" },
@@ -201,8 +197,9 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "Existing Source list loading",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     rules: [{ suffix: "/credential-sources", method: "GET", hold: true }],
-    actions: openExistingSource,
+    actions: form,
     description:
       "The simulated Source inventory read is pending. The picker displays a loading state and cannot select an unconfirmed Source.",
   },
@@ -210,6 +207,7 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "Retry an unavailable Source list",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     initialCredentialSources: previewModelSources,
     rules: [
       {
@@ -220,7 +218,7 @@ export const credentialSourceScenarios = {
         once: true,
       },
     ],
-    actions: openExistingSource,
+    actions: form,
     description:
       "The first simulated inventory read fails. Retry Source list makes another read without creating a Source or Agent.",
     steps: ["Select Retry Source list and confirm Research model becomes available."],
@@ -229,8 +227,9 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "No eligible model Credential Source",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     initialCredentialSources: [previewTemplateSource],
-    actions: openExistingSource,
+    actions: form,
     description:
       "The simulated inventory contains a Template Source. The model picker excludes it and explains that no matching ready static model Source is readable.",
   },
@@ -238,14 +237,14 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "Reuse an existing Credential Source",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     initialCredentialSources: previewModelSources,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Source reuse example" },
       click("Enter model ID manually"),
       { selector: "#agent-model-manual", value: "gpt-5.1" },
-      { selector: "#model-credential-storage", value: "existing_source" },
-      { selector: "#agent-model-existing-source", value: sourceId },
+      { selector: "#agent-model-credential", value: sourceId },
     ],
     description:
       "Select an existing ready model Source. Create Agent saves its exact ID on the draft without enrolling another Source.",
@@ -257,6 +256,7 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "Existing Source destination mismatch",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     initialCredentialSources: previewModelSources,
     actions: [
       ...form,
@@ -266,8 +266,7 @@ export const credentialSourceScenarios = {
       { selector: "#agent-name", value: "Custom destination Agent" },
       click("Enter model ID manually"),
       { selector: "#agent-model-manual", value: "gpt-5.1" },
-      { selector: "#model-credential-storage", value: "existing_source" },
-      { selector: "#agent-model-existing-source", value: sourceId },
+      { selector: "#agent-model-credential", value: sourceId },
       { selector: ".launch-advanced summary", click: true },
       {
         selector: "#configuration-json",
@@ -303,6 +302,7 @@ export const credentialSourceScenarios = {
     group: "Pages/Create Agent",
     name: "Existing Source operate denied after Configuration save",
     path: create,
+    modelCredentialSourcePresets: ["openai"],
     initialCredentialSources: previewModelSources,
     rules: [
       {
@@ -318,8 +318,7 @@ export const credentialSourceScenarios = {
       { selector: "#agent-name", value: "Denied Source example" },
       click("Enter model ID manually"),
       { selector: "#agent-model-manual", value: "gpt-5.1" },
-      { selector: "#model-credential-storage", value: "existing_source" },
-      { selector: "#agent-model-existing-source", value: sourceId },
+      { selector: "#agent-model-credential", value: sourceId },
       click("Create Agent"),
     ],
     description:

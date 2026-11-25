@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-11-25
-last_updated_session: authoring-run/8b9726b9-2263-4930-b132-f170f536f67e
+last_updated_session: authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc
 ---
 
 # Console Agent creation
@@ -64,7 +64,7 @@ Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
-The model credential, people search and Slack token fields use the shared
+Fields for model Namespace Secrets, people search, and Slack tokens use the shared
 [Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
 `renderCreateAgent` reads `GET /namespaces/:namespaceId/permissions/secrets`: the readable
 Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
@@ -155,7 +155,7 @@ credential access. Deployment refuses stale policy versions with HTTP 409.
 
 With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-Eligible Dedicated runtimes provision inline Configuration, repositories and Secret references. Gateway login binds its returned Source ID. **Credential Source** enrolls and clears a static key, then opens a draft. `harness-auth.mts:createModelCredentialSourceField` filters readable, ready Namespace Sources by API-key/PAT preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse skips enrollment and login, saves the ID in both Agent bindings, and checks exact Source `operate`. **New ChatGPT sign-in** starts device login.
+Dedicated provisioning passes inline Configuration, repositories, and Secret references. The **Model credential** picker (`harness-auth.mts:createModelCredentialSourceField`) lists readable, ready Namespace Sources matching the API-key/PAT preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse skips enrollment and login; save checks exact Source `operate` and stores its ID in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls a key or PAT with TokenService and clears the input. **Sign in with OAuth** starts device login. Both bind the resulting Source.
 
 Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.
 
@@ -253,6 +253,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-25 18:02: Trace the Model credential picker. (authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc - e80a503b866e06351b5557ef874183d96ab1f6b8)
 - 2026-11-25 17:02: Trace reuse of a saved built-in Codex OAuth Source in the accompanying Console changes. (authoring-run/8b9726b9-2263-4930-b132-f170f536f67e - 3b195612619556d60097c9fbd0fbfbbd3ba9b0e7)
 - 2026-11-25 11:30: Trace reuse and replacement of an existing managed model Source. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 

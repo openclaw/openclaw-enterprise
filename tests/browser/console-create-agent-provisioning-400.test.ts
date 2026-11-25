@@ -13,12 +13,12 @@ import type { TestContext } from "node:test";
 import type { Page, Response as BrowserResponse } from "playwright";
 import { createRequire } from "node:module";
 import type { Namespace, PresetTemplate } from "../../packages/contracts/src/index.ts";
+import type { SandboxDriver } from "../../packages/contracts/src/drivers/sandbox/index.ts";
 import {
   CreatePresetBody,
   ErrorResponse,
   JsonValue,
 } from "../../packages/contracts/src/api/common.ts";
-import type { SandboxDriver } from "../../packages/contracts/src/drivers/sandbox/index.ts";
 import {
   CredentialSourceResponse,
   InstallationSchema,
@@ -56,6 +56,10 @@ import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/comp
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
 import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import {
+  openShellNamespaceObjects,
+  openShellWorkspaceProtocol,
+} from "../helpers/openshell-workspace-protocol.ts";
 import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
 import {
   buildSandboxInstallation,
@@ -139,17 +143,6 @@ function present<T>(value: T | null | undefined): T {
   return value;
 }
 
-function assertSandboxDriver(
-  driver: ReturnType<typeof nativeSandboxDriver>,
-): asserts driver is ReturnType<typeof nativeSandboxDriver> & SandboxDriver {
-  assert.equal(driver.capability, "sandbox");
-  assert.ok(
-    driver.facets.every(
-      (facet) => facet === "filesystem" || facet === "networking" || facet === "process",
-    ),
-  );
-}
-
 // Legacy fixture helpers return decoded JSON. Check the fields this suite consumes.
 function resourceId(value: unknown): string {
   const { id } = object(value);
@@ -223,19 +216,58 @@ function provisioningDrivers(compute: ComputeOptions = {}) {
 // workspace files as OpenShell's does, so Create Agent's preflight admits the form's files.
 async function modelSourceFixture(
   t: TestContext,
-  { compute, ...options }: ConsoleOptions & { compute?: ComputeOptions } = {},
+  {
+    compute,
+    withDelivery = true,
+    ...options
+  }: ConsoleOptions & { compute?: ComputeOptions; withDelivery?: boolean } = {},
 ) {
-  const sandboxDriver = { ...nativeSandboxDriver(), validateWorkspaceSetup() {} };
-  assertSandboxDriver(sandboxDriver);
+  let runtime: Awaited<ReturnType<typeof loadSelectedOpenShellAgentInstallation>> | undefined;
+  if (withDelivery) {
+    const installation = buildSandboxInstallation();
+    Reflect.deleteProperty(installation.drivers, "credential_gateway");
+    Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+    runtime = await loadSelectedOpenShellAgentInstallation(t, {
+      installation,
+      computeId: "console-source-compute",
+      tokenServiceId: "occ",
+      core: new FakeSecretCoreV1Api(),
+      gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
+    });
+  }
+  const composition = runtime ? installationControllerOptions(runtime.installation) : undefined;
+  const sandboxDriver: SandboxDriver = runtime
+    ? present(runtime.sandboxDriver)
+    : nativeSandboxDriver();
   const drivers = provisioningDrivers({ ...compute, sandboxDriver });
-  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  const placements = new Map<string, string>();
+  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => {
+    let name = placements.get(namespace.id);
+    if (name === undefined) {
+      name = core.addNamespace(namespace.id);
+      placements.set(namespace.id, name);
+    }
+    return { ...namespace, name };
+  };
+  drivers.computeDriver.resolveSandboxNamespaceContext = async (namespace, signal) => ({
+    namespace: await drivers.computeDriver.resolveSandboxNamespace(namespace),
+    kubernetes: openShellNamespaceObjects(),
+    signal,
+  });
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
   let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
     ...drivers,
-    sandboxDriver,
     configurationDriver: undefined,
     filesystemConfiguration: true,
+    ...(runtime ? {} : { sandboxDriver }),
+    ...(composition && {
+      modelCredentialSourcePresets: composition.modelCredentialSourcePresets,
+      modelCredentialPreset: composition.modelCredentialPreset,
+      driverConfigurations: composition.driverConfigurations,
+    }),
     ...options,
+    namespaceLifecycleBindings,
     wrapState(current: PlatformStateStore) {
       state = current;
       return current;
@@ -259,7 +291,18 @@ async function modelSourceFixture(
   );
   controller.registerDriver(owner);
   controller.selectDriver("token_service", owner.id);
-  return { fixture, core };
+  if (runtime) {
+    const delivery = present(runtime.credentialDeliveryRegistration);
+    namespaceLifecycleBindings.push(
+      sandboxNamespaceLifecycleBinding(
+        controller.selectedDriver("compute"),
+        sandboxDriver,
+        delivery,
+      ),
+    );
+    controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
+  }
+  return { fixture, core, namespaceLifecycleBindings };
 }
 
 // Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
@@ -288,6 +331,7 @@ async function openModelSourceForm(
   await page.getByLabel("Agent name").fill("Source-backed " + harness);
   const material = "synthetic-source-model-key-" + harness;
   if (method === "api_key") {
+    await page.getByLabel("Model credential", { exact: true }).selectOption("new");
     await page.getByLabel("API key", { exact: true }).fill(material);
   } else {
     await createModelCredentialSecret(page, material);
@@ -427,7 +471,6 @@ test("A refused provisioning request reads the Secret answer again", async (t) =
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Revoked operate Agent");
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("secret");
   await selectSecret(page, "API key Secret", secret);
   await page.getByText("Secret selected. Create Agent binds it.").waitFor();
   const model = page.getByLabel("Model ID", { exact: true });
@@ -779,7 +822,7 @@ test("Create Agent saves a PAT Source before loading hosted Apps", async (t) => 
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await page.getByLabel("Credential storage").selectOption("source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const save = page.getByRole("button", { name: "Save service account token" });
   assert.equal(await save.isDisabled(), true);
   await page.getByLabel("Agent name").fill("Hosted Apps");
@@ -831,10 +874,9 @@ async function enrollModelSource(
 
 test("Credential Sources lists and creates public metadata; an exact create denial saves nothing", async (t) => {
   const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
-  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
-  const { fixture, core } = await modelSourceFixture(t, {
+  const { fixture, core, namespaceLifecycleBindings } = await modelSourceFixture(t, {
+    withDelivery: false,
     driverConfigurations,
-    namespaceLifecycleBindings,
   });
   const namespace = await readyNamespace(fixture, "Credential Source inventory");
   const placed = core.addNamespace(namespace.id);
@@ -1218,6 +1260,8 @@ test("Create Agent reuses API key and Codex PAT Sources without enrollment; repl
   assert.equal(templateSource.status, 201);
   const templateSourceId = resourceId(templateSource.data);
   const { page } = await openModelSourceForm(t, fixture, namespace, "openclaw");
+  const picker = page.getByLabel("Model credential", { exact: true });
+  await picker.locator(`option[value="${original}"]`).waitFor({ state: "attached" });
   const requests = apiRequests(page, fixture.origin);
   const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
   let failList = true;
@@ -1234,9 +1278,8 @@ test("Create Agent reuses API key and Codex PAT Sources without enrollment; repl
     }
     return route.continue();
   });
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
+  await page.getByRole("button", { name: "Refresh Source list", exact: true }).click();
   await page.getByRole("button", { name: "Retry Source list", exact: true }).click();
-  const picker = page.getByLabel("Existing Credential Source", { exact: true });
   await picker.selectOption(original);
   assert.equal(pathRequests(requests, "GET", sourcePath).length, 2);
   for (const excluded of [patSource, templateSourceId]) {
@@ -1323,8 +1366,7 @@ test("Create Agent reuses API key and Codex PAT Sources without enrollment; repl
   await patPage.getByLabel("Provider", { exact: true }).selectOption("openai");
   await patPage.getByLabel("Harness", { exact: true }).selectOption("codex");
   await patPage.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
-  await patPage.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
-  const patPicker = patPage.getByLabel("Existing Credential Source", { exact: true });
+  const patPicker = patPage.getByLabel("Model credential", { exact: true });
   await patPicker.selectOption(patSource);
   for (const excluded of [original, replacement, templateSourceId]) {
     assert.equal(await patPicker.locator(`option[value="${excluded}"]`).count(), 0);
@@ -1482,9 +1524,7 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   );
 
   const { page: createPage } = await openModelSourceForm(t, fixture, namespace, "codex");
-  await createPage
-    .getByLabel("Credential storage", { exact: true })
-    .selectOption("existing_source");
+  await createPage.getByLabel("Model credential", { exact: true }).selectOption(openaiSource);
   assert.equal(await createPage.getByText(destinationGuidance).isVisible(), true);
 });
 
@@ -1744,11 +1784,12 @@ test("Source operate denial leaves an honestly reported saved Configuration and 
   const { fixture } = await modelSourceFixture(t);
   const namespace = await readyNamespace(fixture, "Source operate denial");
   const sourceId = await enrollModelSource(fixture, namespace.id, "Model source");
+  const replacementId = await enrollModelSource(fixture, namespace.id, "Replacement model source");
   const { page } = await openModelSourceForm(t, fixture, namespace, "openclaw");
   const requests = apiRequests(page, fixture.origin);
-  await page.getByLabel("Credential storage", { exact: true }).selectOption("existing_source");
-  await page.getByLabel("Existing Credential Source", { exact: true }).selectOption(sourceId);
-  revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const credential = page.getByLabel("Model credential", { exact: true });
+  await credential.selectOption(sourceId);
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
   const denied = await submitCreateAgent(page, fixture, namespace.id, {
     path: "agents",
     status: 403,
@@ -1776,6 +1817,21 @@ test("Source operate denial leaves an honestly reported saved Configuration and 
   );
   const agents = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
   assert.deepEqual(agents.data, []);
+
+  // A retained Configuration must not lock the saved Source choice: the operator can retry
+  // with another compatible Source without creating a duplicate Configuration.
+  await credential.selectOption(replacementId);
+  restoreOperate();
+  const retried = await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
+  const agent = object(object(await retried.json()).data);
+  assert.equal(agent.configurationId, savedId);
+  assert.deepEqual(agent.harnessAuth, { method: "credential_source", sourceId: replacementId });
+  assert.deepEqual(agent.credentialSources, [{ sourceId: replacementId }]);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
 });
 
 test("Agent Credentials saves its existing model source without replacing the binding", async (t) => {
@@ -2022,7 +2078,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     exact: false,
   });
   assert.equal(await sourceModeHint.isVisible(), true);
-  assert.equal(await page.getByLabel("Credential storage").isVisible(), false);
+  assert.equal(await page.getByLabel("Model credential", { exact: true }).isVisible(), false);
   assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
     "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation selects no Sandbox Driver. Slack requires Codex.",
@@ -2043,7 +2099,8 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await sourceModeHint.isVisible(), false);
-  assert.equal(await page.getByLabel("Credential storage").isVisible(), true);
+  assert.equal(await page.getByLabel("Model credential", { exact: true }).isVisible(), false);
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), true);
   // The select is unavailable with Codex (aria-disabled, finding 2945); its option is not refused.
   assert.equal(
     await mode.locator('option[value="dedicated"]').evaluate((node) => {

@@ -130,13 +130,19 @@ export function createModelCredentialSourceField(
   context: Pick<HarnessAuthContext, "namespaceId" | "request" | "isCurrent" | "onExpired">,
   options: {
     id: string;
+    label?: string;
     initial?: CredentialSourceReference | null;
     currentId?: string;
     purpose?: ModelSourcePurpose;
+    addNew?: { label: string; initial?: boolean };
     onChange(source: CredentialSourceReference | null): void;
   },
 ) {
+  const addNewValue = "new";
   let selected = options.initial ?? null;
+  let creating = Boolean(options.addNew?.initial && !selected);
+  let addNewLabel = options.addNew?.label;
+  let addNewDisabled = false;
   let purpose = options.purpose;
   let sources: CredentialSourceSummary[] = [];
   let loaded = false;
@@ -151,7 +157,7 @@ export function createModelCredentialSourceField(
   const field = element(
     "div",
     { className: "form-field", hidden: true },
-    element("label", { for: select.id }, "Existing Credential Source"),
+    element("label", { for: select.id }, options.label ?? "Existing Credential Source"),
     select,
     hint,
     retry,
@@ -197,7 +203,11 @@ export function createModelCredentialSourceField(
   function renderOptions() {
     const eligible = sources.filter(eligibleSource);
     const choices = [
-      element("option", { value: "" }, "Choose a Credential Source"),
+      element(
+        "option",
+        { value: "" },
+        options.addNew ? "Choose a saved credential" : "Choose a Credential Source",
+      ),
       ...eligible.map((source) =>
         element("option", { value: source.id }, `${source.name} · ${source.id}`),
       ),
@@ -211,10 +221,15 @@ export function createModelCredentialSourceField(
         element("option", { value: selected.id }, `Current Credential Source · ${selected.id}`),
       );
     }
+    if (addNewLabel !== undefined) {
+      const add = element("option", { value: addNewValue }, addNewLabel);
+      add.disabled = addNewDisabled;
+      choices.push(add);
+    }
     replaceChildrenIfChanged(select, choices);
-    select.value = selected?.id ?? "";
-    select.disabled = disabled || (!loaded && !selected);
-    select.required = active;
+    select.value = creating ? addNewValue : (selected?.id ?? "");
+    select.disabled = disabled || (!loaded && !selected && addNewLabel === undefined);
+    select.required = active && !creating;
   }
   async function load(force = false) {
     if (loading || (!force && (loaded || attempted))) {
@@ -288,14 +303,18 @@ export function createModelCredentialSourceField(
     }
   }
   select.addEventListener("change", () => {
-    selected =
-      sources.find((source) => source.id === select.value)?.ref ??
-      (selected?.id === select.value ? selected : null);
+    creating = addNewLabel !== undefined && select.value === addNewValue;
+    selected = creating
+      ? null
+      : (sources.find((source) => source.id === select.value && eligibleSource(source))?.ref ??
+        (selected?.id === select.value ? selected : null));
+    select.required = active && !creating;
     options.onChange(selected);
   });
   renderOptions();
   return {
     field,
+    control: select,
     setActive(value: boolean, nextPurpose = purpose) {
       active = value;
       field.hidden = !value;
@@ -324,7 +343,23 @@ export function createModelCredentialSourceField(
     },
     reset() {
       selected = null;
+      creating = false;
       renderOptions();
+    },
+    setAddNewLabel(label: string) {
+      if (options.addNew && label !== addNewLabel) {
+        addNewLabel = label;
+        renderOptions();
+      }
+    },
+    setAddNewDisabled(value: boolean) {
+      if (addNewDisabled !== value) {
+        addNewDisabled = value;
+        renderOptions();
+      }
+    },
+    get creating() {
+      return creating;
     },
     get source() {
       return acceptedSelection();

@@ -5,7 +5,6 @@ import { AgentResponse, SecretResponse } from "../../packages/contracts/src/api/
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
 import { settledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
-import { chooseCredentialSecretStorage } from "./console-agents-browser-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 
@@ -14,7 +13,6 @@ export async function openCreateSecretDialog(
   label: string,
   options: { query?: string } = {},
 ) {
-  await chooseCredentialSecretStorage(scope, label);
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? "Create a new Secret");
   await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
@@ -23,12 +21,12 @@ export async function openCreateSecretDialog(
 export async function createModelCredentialSecret(page: Page, secretValue: string) {
   // Preset quick-start reads the installed template before rendering its credential fields.
   await page.locator("#create-agent-form").waitFor();
-  const storage = page.getByLabel("Credential storage", { exact: true });
-  if ((await storage.count()) > 0 && (await storage.isVisible())) {
-    await storage.selectOption("secret");
-  }
   const picker = page.locator("#provider-credential-secret");
   if ((await picker.count()) === 0 || !(await picker.isVisible())) {
+    const choice = page.getByLabel("Model credential", { exact: true });
+    if ((await choice.count()) > 0 && (await choice.isVisible())) {
+      await choice.selectOption("new");
+    }
     const legacyCredential = page.getByLabel("API key", { exact: true });
     await legacyCredential.fill(secretValue);
     await legacyCredential.press("Tab");
