@@ -193,13 +193,33 @@ test(
 
     const original = randomUUID();
     const deniedValue = randomUUID();
-    const replacement = randomUUID();
+    // The Gateway limit counts encoded bytes. These values span the boundary without
+    // approaching it in JavaScript string length.
+    const replacement = "é".repeat(4096);
+    const oversized = `${replacement}x`;
     const base = `/namespaces/${namespaceId}/credential-sources`;
+    const profilesBefore = await client.listProviderProfiles(workspace, t.signal);
+    const rejectedCreate = await inject("POST", base, {
+      name: "Oversized OpenAI key",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: oversized,
+    });
+    const profilesAfter = await client.listProviderProfiles(workspace, t.signal);
+    assert.deepEqual(
+      new Set(profilesAfter.map(({ id }) => id)),
+      new Set(profilesBefore.map(({ id }) => id)),
+      "Rejected enrollment must leave no native Provider profile.",
+    );
+    assert.deepEqual(await client.listProviders(workspace, t.signal), []);
+    assert.equal(rejectedCreate.statusCode, 400, rejectedCreate.body);
+    assert.equal(rejectedCreate.json().error.code, "INVALID_REQUEST");
+
     const created = await inject("POST", base, {
       name: "Isolated OpenAI key",
       type: "static",
       config: { provider_preset: "openai" },
-      secret: { opaque: original },
+      secret: original,
     });
     assert.equal(created.statusCode, 201, created.body);
     const source = created.json().data;
@@ -269,8 +289,16 @@ test(
     const read = await requestAsReader("GET", sourcePath);
     assert.equal(read.status, 200);
     assert.equal(read.data.id, sourceRef.id);
-    assert.deepEqual(read.data.secrets, {});
-    const denied = await requestAsReader("PATCH", sourcePath, { secret: { opaque: deniedValue } });
+    assert.equal(read.data.type, "static");
+    assert.equal(read.data.state, "ready");
+    assert.equal(read.data.config.provider_preset, "openai");
+    assert.ok(
+      ["secret", "secrets", "ownerCapability", "backendRef"].every(
+        (field) => !Object.hasOwn(read.data, field),
+      ),
+      "A reader receives public Source metadata without custody fields.",
+    );
+    const denied = await requestAsReader("PATCH", sourcePath, { secret: deniedValue });
     assert.equal(denied.status, 403);
     assert.ok(
       (await readNativeValue()) === original,
@@ -287,7 +315,19 @@ test(
     );
     assert.deepEqual(denialAudit.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
 
-    const updated = await inject("PATCH", sourcePath, { secret: { opaque: replacement } });
+    const rejectedUpdate = await inject("PATCH", sourcePath, { secret: oversized });
+    assert.equal(rejectedUpdate.statusCode, 400, rejectedUpdate.body);
+    assert.equal(rejectedUpdate.json().error.code, "INVALID_REQUEST");
+    assert.equal(
+      (await client.getProvider(workspace, name, t.signal))?.resourceVersion,
+      provider.resourceVersion,
+    );
+    assert.ok(
+      (await readNativeValue()) === original,
+      "A rejected replacement must leave native custody untouched.",
+    );
+
+    const updated = await inject("PATCH", sourcePath, { secret: replacement });
     assert.equal(updated.statusCode, 200, updated.body);
     const updatedProvider = await client.getProvider(workspace, name, t.signal);
     assert.ok(updatedProvider);
@@ -307,7 +347,7 @@ test(
     assert.equal(updatedSource.ownerCapability, "token_service");
     assert.equal(updatedSource.tokenServiceInstanceId, tokenServiceInstanceId);
     assert.deepEqual(updatedSource.backendRef, { workspaceId, providerId: provider.id });
-    assert.deepEqual(updatedSource.secrets, {});
+    assert.equal(Object.hasOwn(updatedSource, "secrets"), false);
     const persistent = await pool.query(
       `SELECT to_jsonb(s) AS source,
               (SELECT jsonb_agg(details) FROM occ.audit_events WHERE resource_id = $2) AS audit

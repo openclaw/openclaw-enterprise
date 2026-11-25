@@ -149,13 +149,17 @@ version and revision ID together without `--file`.
 occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version VERSION
 ```
 
-OCC returns HTTP 202 when it queues the application. The CLI prints the policy
-record with `application.state` set to `pending`. Keep the application ID,
-revision ID and policy version from that response. Run
-`occ agent policy get AGENT_ID` and match all three fields in
-`policy.application`. Wait for that application’s state to become `applied`.
-If you lose the response or see a different application, reconcile the original
-request before submitting another change.
+OCC returns HTTP 202 when it queues the application. From the CLI’s `apply`
+output, record `application.id`, `application.revisionId` and
+`application.policyVersion`. Run `occ agent policy get AGENT_ID` and match
+those three fields in `policy.application`.
+
+Poll only while the matching application is `pending`. Stop at `applied` or
+`failed`. After a failure, check `policy.application.reason` against the
+[reason codes](../../reference/sandbox-policies.md#desired-and-applied-versions).
+The provider may have applied the policy. If the outcome is unconfirmed, the
+response was lost, or the application is missing or no longer matches,
+reconcile the original request before submitting another change.
 
 An authorized administrator can enable editing with
 `occ agent policy editing AGENT_ID --enabled=true`. Policy commands print
@@ -182,10 +186,11 @@ or issues also requires deployment support, GitHub permissions and applicable
 API rules. Choose Read-only wherever the Agent does not need write access.
 
 With one or more repositories selected, choose **Save Agent draft**. The Agent
-and its grants are saved together, with
-policy editing off. This requires Installation and Agent administration, permission
-to manage, read and update policy, and a supported Dedicated runtime and model
-Credential Source. If saving is refused, the Configuration and model credentials
+and its grants are saved together, with policy editing off. This requires
+Installation and Agent administration, permission to manage, read and update policy,
+and a supported Dedicated runtime and model Credential Source. For API key
+authentication, choose a model Secret for the Credential Gateway to register.
+If saving is refused, the Configuration and model credentials
 can remain saved. If the Console cannot confirm the grants, do not deploy.
 Select **Recheck saved GitHub access** to read the same draft again.
 

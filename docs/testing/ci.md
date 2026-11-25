@@ -39,11 +39,14 @@ workflow triggers and failure consequences.
 
 - **Merge into `main`** requires [CI Required](ci/required-checks.md). It checks
   the static results and the selected test lanes. It is the only required status check.
-- **Container and CLI publication** requires the entire CI run for the push to
+- **Standalone container and CLI publication** requires the entire CI run for the push to
   `main` and its `CI Required` check to pass for the exact release commit.
   [First Agent Smoke](ci/first-agent-smoke.md) uses a simulated model provider.
   Its failure blocks publication when selected, but does not block merge.
   Container preparation also requires [native image checks](ci/required-checks.md#scenarios).
+- [Release OCE](../release/README.md) requires approval and a successful Full
+  Integration Aggregate for `lane=all` at the selected source SHA in the release
+  run. It can qualify any commit in protected `main` history without prior push CI.
 
 ### When does ordinary CI run integration tests?
 
@@ -60,8 +63,8 @@ and [lane coverage](ci/required-checks.md#scenarios).
 
 ### When do separate integration workflows run?
 
-Ordinary CI in `full` mode does not start Full Integration. The following
-workflows do not block merge or publication.
+Ordinary CI in `full` mode does not start Full Integration. These separate
+workflows have their own triggers.
 
 - [Full Integration](ci/full-integration.md#trigger) includes live model and Slack tests.
   A schedule checks `main` every 15 minutes.

@@ -356,6 +356,16 @@ export async function verifyPlatformStateTransactions(
       await state.revisions.findRevision(identifier("ns"), agent.id, revision.id),
       undefined,
     );
+    const browsed = await state.revisions.findRevisionForBrowsing(
+      namespace.id,
+      agent.id,
+      revision.id,
+    );
+    assert.equal(browsed?.id, revision.id);
+    assert.equal(
+      await state.revisions.findRevisionForBrowsing(namespace.id, providerAgent.id, revision.id),
+      undefined,
+    );
   });
 
   await store.transact(async (transaction) => {

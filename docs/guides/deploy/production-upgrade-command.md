@@ -18,7 +18,7 @@ Relative paths for the kubeconfig, rendered Installation, and CLI resolve from
 the profile directory. Relative expert paths resolve from the release checkout.
 
 For a published release, open the approved, successful
-[Enterprise Containers run](published-images.md#check-publication-and-source)
+[image publication run](published-images.md#check-publication-and-source)
 for the checkout commit on `main`. In the run's artifacts, select
 `container-publication-<run-id>-<attempt>` for the approved attempt. Extract it
 into a fresh directory. Confirm that `runId`, `attempt`, and `sourceSha` in

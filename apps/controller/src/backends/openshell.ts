@@ -4,9 +4,10 @@ import type {
   OpenShellBackendDefinition,
   OpenShellBackendConfiguration,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   GrpcOpenShellGatewayClient,
@@ -14,6 +15,7 @@ import {
   type OpenShellGatewayClientOptions,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
+  type OpenShellStoredProviderProfile,
 } from "../drivers/sandbox/openshell-gateway-client.ts";
 
 const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
@@ -243,6 +245,73 @@ export function openShellOwnedBy(provider: OpenShellProviderResponse, sourceId: 
 
 export function isOpenShellProviderName(value: string): boolean {
   return OCC_PROVIDER_NAME.test(value);
+}
+
+export function openShellStaticBearerProfile({
+  id,
+  displayName,
+  environment,
+  annotations,
+}: {
+  readonly id: string;
+  readonly displayName: string;
+  readonly environment: string;
+  readonly annotations: Readonly<Record<string, string>>;
+}): OpenShellProviderProfile {
+  return {
+    id,
+    displayName,
+    category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+    credentials: [
+      {
+        name: environment,
+        envVars: [environment],
+        required: true,
+        authStyle: "bearer",
+        headerName: "authorization",
+        stablePlaceholder: true,
+      },
+    ],
+    endpoints: [],
+    binaries: [],
+    inferenceCapable: false,
+    annotations,
+  };
+}
+
+/** Read the version if the Gateway stored the expected stable-placeholder Bearer profile. */
+export function openShellStaticBearerProfileVersion(
+  stored: OpenShellStoredProviderProfile | undefined,
+  expected: OpenShellProviderProfile,
+): string | undefined {
+  const definition = stored?.definition;
+  const credentials = Array.isArray(definition?.credentials) ? definition.credentials : [];
+  const credential = asRecord(credentials[0]);
+  const expectedCredential = expected.credentials[0];
+  if (
+    !stored ||
+    stored.id !== expected.id ||
+    !/^[1-9]\d*$/.test(stored.resourceVersion) ||
+    !isDeepStrictEqual(stored.annotations, expected.annotations) ||
+    !definition ||
+    definition.inference_capable === true ||
+    (Array.isArray(definition.endpoints) && definition.endpoints.length !== 0) ||
+    (Array.isArray(definition.binaries) && definition.binaries.length !== 0) ||
+    (Array.isArray(definition.files) && definition.files.length !== 0) ||
+    credentials.length !== 1 ||
+    !credential ||
+    !expectedCredential ||
+    credential.name !== expectedCredential.name ||
+    !isDeepStrictEqual(credential.env_vars, expectedCredential.envVars) ||
+    credential.required !== true ||
+    credential.auth_style !== expectedCredential.authStyle ||
+    credential.header_name !== expectedCredential.headerName ||
+    credential.stable_placeholder !== true ||
+    credential.refresh !== undefined
+  ) {
+    return undefined;
+  }
+  return stored.resourceVersion;
 }
 
 /** Reconcile an already-built profile using the caller's selected client and Workspace. */

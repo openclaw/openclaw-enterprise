@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { sanitizeError } from "./failure-redaction.ts";
-import { exercisedLaneStatus } from "./full-integration-coverage.ts";
+import { exercisedLaneStatus, runsFullIntegration } from "./full-integration-coverage.ts";
 import {
   exists,
   issue,
@@ -182,7 +182,7 @@ export async function aggregateGroup(
   const lanes: LaneOutcome[] = [];
   const exercised = new Map<string, "passed" | "failed">();
   const recordFullCoverage =
-    process.env.GITHUB_WORKFLOW === "Full Integration" &&
+    runsFullIntegration(process.env.GITHUB_WORKFLOW) &&
     process.env.OCC_CI_SUITE_VIEW === "full-integration" &&
     groupName === "full" &&
     selection === undefined &&

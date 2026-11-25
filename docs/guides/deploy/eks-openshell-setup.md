@@ -15,6 +15,13 @@ After preparation, [install OCE](eks-openshell-installation.md) in the same prot
 
 ## Before you start
 
+Check credential policy before provisioning resources. The EKS kubeconfig below
+uses the AWS CLI as a credential plugin. Run the [prerequisite commands](prerequisite-diagnosis.md)
+with this trusted kubeconfig only when the credential owner permits running the
+plugin without kubectl preferences. If policy requires those preferences,
+obtain the address inventory through the infrastructure workflow. For diagnosis,
+follow the [credential requirements](prerequisite-diagnosis.md#select-the-resources-and-expected-addresses).
+
 ### Prepare AWS infrastructure
 
 Provision the following through your reviewed AWS infrastructure workflow. For a dedicated cluster, use the [Terraform reference and installation handoff](production-installation-preparation.md#use-a-terraform-managed-eks-cluster). The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
@@ -128,11 +135,13 @@ Confirm the account and role, then test Kubernetes TLS from the operator host. S
 ### Refresh API network policies after the node groups join
 
 After both node groups are ready, set `EKS_CLUSTER_ARN` from your infrastructure
-outputs. Follow the [credential and permissions requirements](prerequisite-diagnosis.md#collect-eks-addresses)
-before collecting. Repeat before installing or upgrading OCC, or after webhook timeouts.
+outputs. Follow the [credential and permissions requirements](prerequisite-diagnosis.md#collect-eks-addresses).
+Run this example only with approval to disable kubectl preferences for the
+command. Otherwise use the infrastructure owner's reviewed inventory. Refresh
+the addresses before installing or upgrading OCC, or after webhook timeouts.
 
 ```bash
-inventory=$(node scripts/diagnose-kubernetes-prerequisites.ts \
+inventory=$(KUBECTL_KUBERC=false TMPDIR="$RUN_DIR" node scripts/diagnose-kubernetes-prerequisites.ts \
   --inventory-eks "${EKS_CLUSTER_ARN:?Set the intended EKS cluster ARN}" \
   --kubeconfig "$KUBECONFIG" --context "$CONTEXT")
 API_CIDRS=$(jq -ce '.apiCidrs' <<<"$inventory")
@@ -200,9 +209,15 @@ namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
 reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
 and put the intended cluster ARN in `eks.clusterArn`.
 
+Run with the trusted EKS kubeconfig if the credential owner approves disabling
+kubectl preferences for this invocation.
+
 ```bash
-node scripts/diagnose-kubernetes-prerequisites.ts --config "$RUN_DIR/prerequisites.json"
+KUBECTL_KUBERC=false TMPDIR="$RUN_DIR" node scripts/diagnose-kubernetes-prerequisites.ts \
+  --config "$RUN_DIR/prerequisites.json"
 ```
+
+If the command is killed, follow the [temporary credential cleanup instructions](prerequisite-diagnosis.md#run-and-interpret-the-checks).
 
 Resolve failed and unknown checks before installing. Matching address inventory
 does not prove that deployed NetworkPolicies or admission webhooks work; retain
