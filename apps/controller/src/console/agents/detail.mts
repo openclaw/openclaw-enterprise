@@ -6599,7 +6599,7 @@ export async function renderAgentDetail(
               (binding) =>
                 `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",
