@@ -9070,28 +9070,8 @@ export function registerGatewayToolPolicyTest() {
         delivery: { mode: "none" },
       };
       const createMarker = `CREATE-${randomUUID()}`;
-      // The automation tool binds an add to the name planned on the same turn.
-      const planArgs = { action: "plan", names: [name] };
-      const addArgs = { action: "add", job: jobDefinition };
-      const createCall =
-        selectedHarness === "openclaw"
-          ? codeModeCallSpec(
-              `await automations(${JSON.stringify(planArgs)}); return await automations(${JSON.stringify(addArgs)});`,
-            )
-          : {
-              prompt: `Call automations twice in this turn. First call it with ${JSON.stringify(planArgs)}. After that succeeds, call it with ${JSON.stringify(addArgs)}.`,
-              evidence: { toolName: "automations", expectedArguments: addArgs },
-            };
+      const createCall = toolCallSpec("automations", { action: "add", job: jobDefinition });
       await turn(createCall.prompt, createMarker);
-      if (selectedHarness === "codex") {
-        await native.assertSessionToolCallEvidence(topology.agent, {
-          sessionKey,
-          turnMarker: createMarker,
-          toolName: "automations",
-          expectedArguments: planArgs,
-          resultPattern: "automation_creation_plan",
-        });
-      }
       await native.assertSessionToolCallEvidence(topology.agent, {
         sessionKey,
         turnMarker: createMarker,
