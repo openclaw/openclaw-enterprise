@@ -180,6 +180,18 @@ export function createAgentQueries(deps: AgentQueryDependencies) {
       ) {
         return { agent, endpoint: { status: "unavailable" } };
       }
+      // A recorded withdrawal denies new model use before the Worker can
+      // detach the credential. Optional Sources do not gate inference.
+      if (
+        revision.harnessAuth.method === "credential_source" &&
+        (await state.credentialSources.findCredentialWithdrawal(
+          agent.namespaceId,
+          revision.id,
+          revision.harnessAuth.sourceId,
+        ))
+      ) {
+        return { agent, endpoint: { status: "unavailable" } };
+      }
       return { agent, revision, endpoint: compute.getChatCompletionsEndpoint(revision) };
     });
   }

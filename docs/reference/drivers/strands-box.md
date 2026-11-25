@@ -83,8 +83,9 @@ network and repository ceilings empty. Executable-specific rules cannot
 authorize a whole Agent.
 
 Stop the Agent and confirm retirement before changing the grant or key.
-Withdrawal can remain pending until an operator with Stop permission retires
-the execution. Preserve the original API, Worker and grant until cleanup
+Withdrawing a required model Source blocks new OCE HTTP chats. A running
+process can still use the installed key until an operator with Stop permission
+retires the execution. Preserve the original API, Worker and grant until cleanup
 finishes. Removing the pair disables its checks for retained copies.
 To rotate the static key, update the Source after retirement,
 then deploy a fresh revision.

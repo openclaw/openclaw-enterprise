@@ -2843,6 +2843,16 @@ test(
       // The authorized operator opens the claim. A second requester adds a model withdrawal
       // to that claim, then loses the only grant that allowed them to operate this Agent.
       await request("POST", `${sourcePath(slackSource.id)}/withdraw`, undefined, 202);
+      const chat = await nativeController.resolveAgentChat(
+        principal.id,
+        twoSourceAgent.id,
+        namespaceId,
+      );
+      assert.equal(
+        chat.revision?.id,
+        twoSourceRevision.id,
+        "optional withdrawals must preserve chat",
+      );
       const queuedModel = await memberRequest(
         "POST",
         `${sourcePath(nativeSource.id)}/withdraw`,
@@ -3038,6 +3048,8 @@ test(
         );
         assert.equal(active?.activeRevisionId, revision.id);
         assert.ok(Reflect.set(box.computeDriver, "apiClients", Reflect.get(compute, "apiClients")));
+        const selectChat = () => boxed.resolveAgentChat(principal.id, approved.id, namespaceId);
+        assert.equal((await selectChat()).revision?.id, revision.id);
         const request = await inject(
           "POST",
           `${withdrawalPath(approved.id)}/withdraw`,
@@ -3045,6 +3057,18 @@ test(
           boxApp,
         );
         assert.equal(request.statusCode, 202, request.body);
+        // The Worker is offline. OCC must already deny a new model turn
+        // before routing any bytes to the still-running Gateway.
+        assert.equal((await selectChat()).revision, undefined);
+        const denied = await inject(
+          "POST",
+          `/agents/${approved.id}/chat`,
+          {
+            messages: [{ role: "user", content: "Hello" }],
+          },
+          boxApp,
+        );
+        assert.equal(denied.statusCode, 503, denied.body);
         const worker = createControllerWorker({
           pool: new pg.Pool({ connectionString: databaseUrl }),
           drivers: withCustody(box),
