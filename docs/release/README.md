@@ -60,10 +60,24 @@ tags before moving the selected alias. Compare the digests for both aliases
 with the `container-publication-<run-id>-1` receipt in GitHub Actions.
 
 The receipt covers the two images. Version tags, the Helm chart, the OCC CLI,
-and the GitHub Release require the full release procedure above. After an
-interrupted image-only publication, check both aliases and source tags. Use
-digest references while they differ. A fresh image-only dispatch for the same
-source and alias accepts an existing source tag only if its digest matches.
+and the GitHub Release require the full release procedure above.
+
+### Recover an image-only publication
+
+If the image-only publisher fails or is cancelled after it starts writing,
+check both source tags and both aliases. Use digest references while the
+aliases point to different publications.
+
+1. Keep the original publication run at attempt 1. Its prepared images and
+   `release-image-baseline-<run-id>-1` artifact expire after seven days.
+   The baseline records the expected images and the previous state of both aliases.
+2. Dispatch **Release OCE** on `main` with the original `source_sha` and
+   `image_tag`. Select both `publish` and `images_only`. Set `recovery_run_id`
+   to the original image-only publication run ID and approve the new run.
+3. Check the receipt and both aliases. Recovery reuses the original image
+   bytes. It accepts each alias at its previous state or at the intended
+   image digest. A conflicting source tag or alias stops recovery. Preserve
+   the evidence and refer a conflict to a release maintainer.
 
 ## Recover a partial release
 

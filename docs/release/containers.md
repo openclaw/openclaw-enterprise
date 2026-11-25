@@ -250,7 +250,7 @@ Recovery restores source tags only and does not move aliases.
 
 ## Recover a partial publication
 
-For **Release OCE**, [retry image publication](README.md#publish-images-only)
+For **Release OCE**, [recover an image-only publication](README.md#recover-an-image-only-publication)
 or [recover the full release](README.md#recover-a-partial-release).
 The procedure below covers **Enterprise Containers**.
 

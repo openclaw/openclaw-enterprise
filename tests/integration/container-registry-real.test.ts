@@ -416,7 +416,13 @@ globalThis.fetch = async (url) => {
   if ([dispatch, recovery, "main"].some(head => path.endsWith("/compare/" + sha + "..." + head))) return Response.json({status:"ahead"});
   if (path.endsWith("/workflows/release-oce.yml")) return Response.json({ id:2, path:".github/workflows/release-oce.yml", state:"active" });
   if (path.endsWith("/runs/123")) return Response.json({id:123, path:".github/workflows/release-oce.yml", workflow_id:2, event:"workflow_dispatch", head_branch:"main", head_sha:dispatch, repository:repo, head_repository:repo, run_attempt:1, status:"completed", conclusion:"failure"});
-  if (path.endsWith("/runs/123/attempts/1/jobs")) return Response.json({jobs:["Approve release", "Verify approval", "Full Integration / Full Integration Aggregate", "Record qualified release"].map(name=>({name, head_sha:dispatch, status:"completed", conclusion:"success"}))});
+  if (path.endsWith("/runs/123/attempts/1/jobs")) {
+    const completed = name => ({name, head_sha:dispatch, status:"completed", conclusion:"success"});
+    const jobs = ["Approve release", "Verify approval"].map(completed);
+    if (process.env.IMAGES_ONLY === "true") jobs.push({...completed("Publish images only (Full Integration skipped)"), conclusion:"failure"});
+    else jobs.push(...["Full Integration / Full Integration Aggregate", "Record qualified release"].map(completed));
+    return Response.json({jobs});
+  }
   if (process.env.GITHUB_WORKFLOW_REF?.includes("/release-oce.yml@") && path.includes("/actions/")) {
     throw new Error("Release OCE requested unexpected Actions metadata: " + path);
   }
@@ -526,14 +532,18 @@ process.exit(result.status ?? 1);
     for (const image of records) {
       seed(image.image, `openclaw/images-only-${image.image}:latest`);
     }
-    const publishImages = (interruptAfter?: string) =>
+    const publishImages = (phase: string, changed: NodeJS.ProcessEnv = {}) =>
       execFileSync(
         process.execPath,
-        ["--import", preload, "scripts/ci/release-oce.ts", "publish-images", directory],
-        { env: { ...imageOnlyEnv, INTERRUPT_AFTER: interruptAfter }, stdio: "pipe" },
+        ["--import", preload, "scripts/ci/release-registry.ts", phase, directory],
+        { env: { ...imageOnlyEnv, ...changed }, stdio: "pipe" },
       );
+    publishImages("image-baseline");
     assert.throws(
-      () => publishImages("docker://" + imageOnlyEnv.GHCR_RUNTIME_IMAGE + ":" + runtime.sourceTag),
+      () =>
+        publishImages("publish-images", {
+          INTERRUPT_AFTER: "docker://" + imageOnlyEnv.GHCR_RUNTIME_IMAGE + ":" + runtime.sourceTag,
+        }),
       /Interrupted after registry transfer/,
     );
     for (const image of records) {
@@ -541,7 +551,31 @@ process.exit(result.status ?? 1);
       await inspectTag(registry, repo, image.sourceTag, image.currentDigest);
       await inspectTag(registry, repo, "latest", image.oldDigest);
     }
-    publishImages();
+    // Recover in a new dispatch from the original run's archives and baseline.
+    // A later publication must not be overwritten, even after a partial write.
+    git("update-ref", "HEAD", recoverySha);
+    const retry = {
+      GITHUB_RUN_ID: "701",
+      GITHUB_SHA: recoverySha,
+      GITHUB_WORKFLOW_SHA: recoverySha,
+    };
+    await writeFile(
+      imageOnlyEnv.GITHUB_EVENT_PATH,
+      JSON.stringify({
+        inputs: {
+          source_sha: sourceSha,
+          images_only: "true",
+          publish: "true",
+          recovery_run_id: "123",
+        },
+      }),
+    );
+    seed("controller", "openclaw/images-only-runtime:latest");
+    assert.throws(() => publishImages("publish-images", retry), /Refusing to move/);
+    await inspectTag(registry, "openclaw/images-only-controller", "latest", controller.oldDigest);
+    seed("runtime", "openclaw/images-only-runtime:latest");
+    publishImages("publish-images", retry);
+    git("update-ref", "HEAD", dispatchSha);
     for (const image of records) {
       const repo = `openclaw/images-only-${image.image}`;
       await inspectTag(registry, repo, "latest", image.currentDigest);

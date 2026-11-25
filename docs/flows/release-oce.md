@@ -29,7 +29,7 @@ graph TD
   Approval -->|new release| Build["Native images, chart and CLI"]
   Tests --> Check["Verify qualification and prepared bytes"]
   Build --> Check
-  Approval -->|recovery| Lock
+  Approval -->|full release recovery| Lock
   Check -->|rehearsal| End["Check destinations and report artifacts"]
   Check -->|publish| Lock["Acquire shared publication lock"]
   Lock --> Recheck["Verify original evidence and destinations"]
@@ -38,6 +38,7 @@ graph TD
   CLI --> Alias["Update selected image aliases"]
   Approval -->|images only| Native["Build and test both native images"]
   Native --> ImageLock["Acquire shared publication lock"]
+  Approval -->|image-only recovery| ImageLock
   ImageLock --> Sha["Verify both immutable source tags"]
   Sha --> Alias
 ```
@@ -84,10 +85,11 @@ Release OCE also downloads the five public assets without credentials.
 `scripts/ci/release-registry.ts:advanceReleaseAliases` then verifies each alias
 against its recorded prior digest or the intended release digest before moving it.
 
-With `images_only=true`, the caller requires `publish=true` and an empty
-`recovery_run_id`. It skips Full Integration, chart and CLI preparation, and
+With `images_only=true`, the caller requires `publish=true`.
+It skips Full Integration, chart and CLI preparation, and
 release qualification. `.github/workflows/release-oce.yml:jobs.publish-images` acquires the shared publication lock,
-verifies each image's immutable source tag, then moves both selected aliases.
+records the previous alias digests before publication, verifies each image's
+immutable source tag, then moves both selected aliases.
 The `container-publication-<run-id>-1` receipt identifies the two published images. The full release
 version tags, chart, CLI binaries, and GitHub Release belong to the qualified path.
 
@@ -102,17 +104,23 @@ Recovery uses the original bytes. It verifies completed steps and stops at a
 conflicting immutable object or an alias that another release has moved. Each
 registry or GitHub write can succeed before the next one fails.
 
-An interrupted image-only publication uses a fresh image-only dispatch. A
-conflicting digest at an existing source tag stops publication.
+For image-only recovery, `recovery_run_id` identifies the original image-only
+publish run. The workflow verifies the original preparation and approval,
+then uses the retained native image archives. It checks each alias against
+its recorded previous digest or the intended image digest. A conflict stops
+publication. Full release recovery requires the original full-suite
+qualification record.
 
 ## Debugging and Verification
 
 - For an admission failure, check whether the selected source belongs to the
   protected workflow commit's history. For a qualification failure, inspect
   that run's environment review and full-suite aggregate for the source SHA.
-- For a partial publication, inspect the protected jobs and compare registry
+- For a partial full release, inspect the protected jobs and compare registry
   digests, the Git tag target, and the five release assets with the original
   preparation evidence. Follow [release recovery](../release/README.md#recover-a-partial-release).
+- For a partial image-only publication, compare both source tags and aliases
+  with the original image evidence. Follow [image-only recovery](../release/README.md#recover-an-image-only-publication).
 - Staging qualification and Docker Hub promotion have separate entry points
   and evidence.
 
@@ -128,6 +136,8 @@ conflicting digest at an existing source tag stops publication.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 08:15: Document image-only recovery from the original image archives and alias digests. (authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2 - 684a6e0aeb28e8952f268c7b3989f172caad3f72)
 
 - 2026-11-25 08:08: Document image-only publication and its native checks. (authoring-run/7c685762-5846-42ed-80aa-4038fc0856b2 - 67865414220f9d67820f165fe932fe23df025322)
 

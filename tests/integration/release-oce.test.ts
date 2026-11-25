@@ -214,7 +214,24 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
     command("admit", { IMAGES_ONLY: "true", PUBLISH: "false" }).stderr,
     /requires publish/,
   );
-  assert.match(command("admit", { ...fresh, IMAGES_ONLY: "true" }).stderr, /cannot recover/);
+  // Each recovery must use a producer from the same release mode.
+  assert.notEqual(command("admit", { ...fresh, IMAGES_ONLY: "true" }).status, 0);
+  const imagesProducer = {
+    ...metadata,
+    [api + "/runs/123/attempts/1/jobs"]: {
+      jobs: [
+        ...jobs.slice(0, 2),
+        {
+          ...jobs[0],
+          name: "Publish images only (Full Integration skipped)",
+          conclusion: "failure",
+        },
+      ],
+    },
+  };
+  const imageRecovery = command("admit", { ...fresh, IMAGES_ONLY: "true" }, imagesProducer);
+  assert.equal(imageRecovery.status, 0, imageRecovery.stderr);
+  assert.notEqual(command("admit", fresh, imagesProducer).status, 0);
   const rehearsal = command("record", { PUBLISH: "false" });
   assert.equal(rehearsal.status, 0, rehearsal.stderr);
   assert.match(command("verify", fresh).stderr, /rehearsal/i);
@@ -296,7 +313,10 @@ test("only approved publish runs can enter the shared lock and move aliases afte
   assert.equal(permitsPublication(true, "123", "skipped", "failure"), false);
 
   const imagesOnly = present(release.jobs["publish-images"]);
-  const override = { inputs: { publish: true, recovery_run_id: "", images_only: true } };
+  const override = {
+    inputs: { publish: true, recovery_run_id: "", images_only: true },
+    needs: { approval: { result: "success" }, prepare: { result: "success" } },
+  };
   assert.equal(record(record(dispatch.inputs).images_only).default, false);
   assert.deepEqual(imagesOnly.concurrency, publish.concurrency);
   assert.deepEqual(imagesOnly.needs, ["approval", "prepare"]);
@@ -309,10 +329,22 @@ test("only approved publish runs can enter the shared lock and move aliases afte
   assert.equal(workflowCondition(imagesOnly.if, override), true);
   for (const changed of [{ publish: false }, { recovery_run_id: "123" }, { images_only: false }]) {
     assert.equal(
-      workflowCondition(imagesOnly.if, { inputs: { ...override.inputs, ...changed } }),
+      workflowCondition(imagesOnly.if, { ...override, inputs: { ...override.inputs, ...changed } }),
       false,
     );
   }
+  const retry = {
+    inputs: { ...override.inputs, recovery_run_id: "123" },
+    needs: { ...override.needs, prepare: { result: "skipped" } },
+  };
+  assert.equal(workflowCondition(imagesOnly.if, retry), true);
+  assert.equal(
+    workflowCondition(imagesOnly.if, {
+      ...retry,
+      needs: { ...retry.needs, approval: { result: "failure" } },
+    }),
+    false,
+  );
   for (const id of ["qualify", "integration", "cli", "publish"]) {
     assert.equal(workflowCondition(present(release.jobs[id]).if, override), false);
   }
