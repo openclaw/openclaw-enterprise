@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
 updated: 2026-11-25
-last_updated_session: authoring-run/766ab89a-82e8-4ebd-a059-feb8e25bf96b
+last_updated_session: authoring-run/4cdd2925-8687-45e2-8e5f-6bc296f9f54c
 ---
 
 # Credential source refresh Flow
@@ -184,10 +184,10 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/token-service/occ.ts:createGitHubAppSource` reads
 the GitHub App Client from OCC's Credential Client repository. It checks Namespace
-readiness without holding a Namespace or Client lock during the GitHub exchange.
+readiness, then releases the database connection before the GitHub exchange.
 TokenService resolves the Client's private signing key and signs an App JWT. It
 requests an installation token for the Source's exact repository and permission
-scope, then verifies the returned scope and expiry. The Source repository locks
+scope, then verifies the returned scope and expiry. In a new transaction, the Source repository locks
 and checks the Namespace when saving the Source. TokenService stores the short-lived
 token separately from the Client's signing key.
 
@@ -229,7 +229,7 @@ delivery and the separately qualified protected Git transport.
 
 ## Changelog
 
-- 2026-11-25 11:06: Separate Credential Client persistence and move Namespace locking after GitHub minting. (authoring-run/766ab89a-82e8-4ebd-a059-feb8e25bf96b - 04600d811b785bbf485ed35a58962fcf0a1b8fb8)
+- 2026-11-25 11:16: Separate Credential Client persistence and mint GitHub tokens before the Source save transaction. (authoring-run/4cdd2925-8687-45e2-8e5f-6bc296f9f54c - 8504504befce65d9cc5636351117600978a89ea8)
 
 - 2026-11-24 10:41: Keep Gateway refresh behavior and link new Codex login to its TokenService owner. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 
