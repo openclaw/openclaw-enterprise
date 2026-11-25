@@ -42,10 +42,18 @@ export function registerFirstAgentFailureAdviceCases({
   runFirstAgentAsync,
 }: LifecycleDependencies): void {
   test("first-Agent deployment failure advice follows the reported cause", async (t) => {
-    for (const code of [
-      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
-      "RUNTIME_AUTHENTICATION_FAILED",
-      "RUNTIME_STARTUP_FAILED",
+    for (const { code, waitCode, pendingReads } of [
+      {
+        code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+        waitCode: "REVISION_IMAGE_PULL_FAILED",
+        pendingReads: 1,
+      },
+      {
+        code: "RUNTIME_AUTHENTICATION_FAILED",
+        waitCode: "WORKSPACE_NODE_PENDING",
+        pendingReads: 2,
+      },
+      { code: "RUNTIME_STARTUP_FAILED", waitCode: "NAMESPACE_POD_QUOTA_EXCEEDED", pendingReads: 1 },
     ]) {
       await t.test(code, async (t) => {
         const suffix = "00000000-0000-4000-8000-000000000001";
@@ -86,7 +94,6 @@ export function registerFirstAgentFailureAdviceCases({
         let savedGrants: unknown[] | undefined;
         let editingEnabled = false;
         let deploymentReads = 0;
-        const pendingReads = code === "RUNTIME_AUTHENTICATION_FAILED" ? 2 : 0;
         const unexpected: string[] = [];
         // Run the real helper and HTTP client against supported API envelopes. The
         // fixture supplies deployment evidence, not policy or credential decisions;
@@ -264,7 +271,6 @@ export function registerFirstAgentFailureAdviceCases({
                 deploymentReads++;
                 assert.ok(agent);
                 assert.ok(revision);
-                // Two attempts report the same wait before the terminal failure.
                 const pending = deploymentReads <= pendingReads;
                 data = {
                   namespaceId: namespaceId,
@@ -276,7 +282,7 @@ export function registerFirstAgentFailureAdviceCases({
                     ? {
                         lastAttempt: {
                           at: new Date().toISOString(),
-                          code: "WORKSPACE_NODE_PENDING",
+                          code: waitCode,
                           message: "private-progress-message",
                         },
                         nextAttemptAt: null,
@@ -368,7 +374,7 @@ export function registerFirstAgentFailureAdviceCases({
         assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
         assert.doesNotMatch(
           output,
-          /private-provider-message|private-progress-message|WORKSPACE_NODE_PENDING/,
+          /private-provider-message|private-progress-message|WORKSPACE_NODE_PENDING|REVISION_IMAGE_PULL_FAILED|NAMESPACE_POD_QUOTA_EXCEEDED/,
         );
         if (code === "RUNTIME_AUTHENTICATION_FAILED") {
           assert.match(output, /Check the model key.*--replace-key/);
@@ -380,9 +386,17 @@ export function registerFirstAgentFailureAdviceCases({
         } else {
           assert.doesNotMatch(output, /Check the model key|--replace-key/);
           if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+            assert.match(
+              output,
+              /could not pull a container image for this Agent\. Ask an Installation administrator to check the image reference and the cluster's registry access\./,
+            );
             assert.match(output, /managed permission policy.*incompatible/);
             assert.match(output, /sandbox.*permission profile.*approval reviewer/);
           } else {
+            assert.match(
+              output,
+              /Namespace's Pod quota was full\. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota\./,
+            );
             assert.match(
               output,
               /Inspect the deployment in the Console and the controller worker logs/,

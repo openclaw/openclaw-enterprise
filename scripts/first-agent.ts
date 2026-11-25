@@ -1014,11 +1014,11 @@ function pendingDeploymentReason(progress: unknown): string | undefined {
     case "WORKSPACE_NODE_BINDING_PENDING":
       return "was waiting for the gateway to apply the workspace node binding";
     case "REVISION_IMAGE_PULL_FAILED":
-      return "could not pull a container image for this Agent";
+      return "could not pull a container image for this Agent. Ask an Installation administrator to check the image reference and the cluster's registry access";
     case "REVISION_UNSCHEDULABLE":
       return "found that the cluster could not schedule this Agent's Pods";
     case "NAMESPACE_POD_QUOTA_EXCEEDED":
-      return "found that the Namespace's Pod quota was full";
+      return "found that the Namespace's Pod quota was full. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota";
     case "PREDECESSOR_STOP_YIELDED":
       return "was waiting for the previous gateway to stop";
   }
