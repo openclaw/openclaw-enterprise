@@ -277,11 +277,9 @@ Stop and retirement wait for the workload to stop, then delete its projection
 and ConfigMaps for that Agent revision by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
 Account and OCC Secret lifecycles remain independent.
 
-Direct OCC Secret updates do not restart processes. Update the Secret, redeploy each
-consumer through OCE, wait for readiness and selection, then verify a model
-request. Preparation refreshes the runtime Secret; Pod or Deployment restarts
-only reread the existing projection. See
-[update and redeploy](../kubernetes-secret.md#update-and-redeploy).
+After updating a direct OCC Secret, [redeploy each consumer](../kubernetes-secret.md#update-and-redeploy)
+and verify a model request after activation. Redeployment refreshes the
+projection. A Pod restart rereads the existing projection.
 Deleting a source or runtime Secret does not revoke bytes a process loaded or a
 provider accepted.
 Transport rotation, finite token TTL and immediate revocation remain open; see
@@ -313,13 +311,11 @@ the only Kubernetes gateway mode; the API never returns the password. Plaintext 
 is rejected.
 
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
-selects the model credential. Direct API keys and imported PATs use an exact
-reference to a Secret on the selected SecretDriver. Compute selects
-the explicit login mode during workload rendering. The embedded workload
-or dedicated Harness receives a direct credential; a dedicated Gateway does not.
-With a [TokenService model Source](../../credential-sources.md), Compute renders no
-model Secret. TokenService owns the credential. The paired Credential Proxy delivers
-it through the Sandbox for the requests authorized in the Agent revision.
+selects the model credential. For a direct API key or imported PAT, Compute
+configures login and projects the selected Secret into the embedded workload
+or dedicated Harness. For a [TokenService model Source](../../credential-sources.md),
+Compute renders no model Secret. Credential Proxy delivers the credential
+through the Sandbox on approved requests.
 
 Enabled channels require [managed channel egress](channel-egress.md). Only the
 Gateway receives its assigned listener URL; Harness transport and model

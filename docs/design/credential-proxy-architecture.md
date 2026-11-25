@@ -82,10 +82,12 @@ GitHub then applies the token's permissions and its own branch rules. See the
 
 ## Renew or withdraw delivery
 
-TokenService commits a credential update and notifies Credential Proxy to update
-its delivery copy. After a delivery failure, retry with the committed value. Git
-renewal keeps the Agent's saved repository grants. OCC records withdrawal after
-it confirms policy reduction and detachment, or confirms the Sandbox is gone.
+TokenService commits a credential update. With OCC custody, it notifies
+Credential Proxy to update the delivery copy. After a delivery failure, retry
+with the committed value. With native custody, the Source's Provider holds the
+updated value. Git renewal keeps the Agent's saved repository grants. OCC marks a
+withdrawal revoked after it confirms policy reduction and detachment, or confirms
+the Sandbox is gone.
 When OpenShell reduces policy in place, independent, non-overlapping grants remain.
 See [renewal](../reference/credential-sources.md#request-renewal) and
 [withdrawal](../reference/credential-sources/withdrawal.md).
