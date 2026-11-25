@@ -158,12 +158,11 @@ Embedded OpenClaw uses `sandboxDriver: "none"`. OpenShell requires `--harness co
 `--control-ui` requires OpenShell.
 `loadLocalInstallation` uses the recorded Unix socket and clears inherited Docker
 TLS settings before Compose queries the controller port and PostgreSQL service.
-Local Setup saves its authenticated Installation ID in private state. Before
-provisioning, the tool checks that ID against OCC and reads only `data.key` from
-the credential file. It creates the Secret, Configuration, and named Agent through
-the OCC HTTP API. New Agents default to
-`openai/gpt-6-astra`; `OPENCLAW_FIRST_AGENT_MODEL` accepts an authorized plain model
-ID. Reruns retain that choice and reject conflicts.
+First Agent verifies the recorded Installation ID and reads `data.key` from
+the service-key file. It enrolls the credential and creates the Configuration
+and Agent through OCC. The default is `openai/gpt-6-astra`. Set
+`OPENCLAW_FIRST_AGENT_MODEL` to an authorized plain model ID before the first
+run. Reruns reject conflicts with the recorded choice.
 
 Without OpenShell, the tool grants the Agent's returned `servicePrincipalId`
 exact `secret:operate` through Namespace IAM operations. The server resolves the
@@ -171,10 +170,12 @@ caller from its key, authorizes through IAM, and audits mutations. Reruns reuse
 exact bindings and verify Role permissions, including a Role left by a failed
 binding. Database access only reads existing Secret metadata.
 
-With OpenShell, it registers an `openai` or `codex-pat` CredentialSource and grants
-the Agent exact `credential_source:operate`, not Secret access, through IAM.
-`--replace-key` updates the Secret and requests a Credential Gateway reread before
-deployment. The private record prevents Harness or Sandbox Driver changes on reruns.
+With OpenShell, it registers a static TokenService Source using the `openai`
+or `codex-pat` preset and grants exact `credential_source:operate`. The
+`--replace-key` option PATCHes the existing Source with the replacement value.
+TokenService commits it and notifies Credential Proxy. Without OpenShell,
+the helper updates its Namespace Secret. The private record prevents Harness
+or Sandbox Driver changes on reruns.
 `scripts/first-agent.ts:withRecord` creates the PID lock and atomic record
 replacement with explicit owner read/write mode `0600`, independent of the
 process umask. An existing lock stops the command before record access or

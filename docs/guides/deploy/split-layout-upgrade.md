@@ -111,6 +111,10 @@ not come back:
 
 Accounts, Installation service keys and the audit history stay in the database.
 
+Before you discard a Namespace, check for Agents that use a direct
+ServiceAccount PAT binding. For an upgrade to the current controller, plan to
+[restore those Namespaces manually](#restore-agents-with-legacy-serviceaccount-pats).
+
 Tested on a 2026-09-28 release Installation with three Namespaces
 and three Agents: the commands took about two minutes, plus the two image
 releases (about 35 seconds each). Run them from a checkout of the target
@@ -200,17 +204,15 @@ Configurations, workspace files, transcripts and Secret values.
    for each one, then run the same command again. The ID map records every old
    and new ID. If a write's response has an unexpected status, resource identity,
    or success/error envelope, reconcile that write before resuming; it may already have committed. Redirects are refused: correct `OCC_URL` instead of replaying a write through a redirect. Failed or deleting Namespaces require
-   lifecycle recovery, not another RoleBinding wait. Exit `4` lists what needs a
-   hand: Agents whose deploy failed, such as a service-account Agent without an
-   issued credential, and access bindings it could not re-create. The ID map does
-   not record those bindings, so each rerun lists them again and exits `4`, also
+   lifecycle recovery, not another RoleBinding wait. Exit `4` lists failed
+   deployments and access bindings the importer could not re-create. The ID map
+   omits those bindings, so each rerun lists them again and exits `4`, also
    after you re-create them by hand. Exit `0` does not restore bindings to old
    Agent revisions; the import only logs them.
 
-   Presets are restored after service-account IDs are mapped, so their Harness
-   authentication refers to the restored account. Existing mapped Presets are
-   left unchanged; inspect their account references before resuming an older
-   import. See the [tenant restore flow](../../flows/tenant-restore.md).
+   The importer remaps direct ServiceAccount references in Presets it creates.
+   It leaves existing mapped Presets unchanged. Review those references before
+   reuse. See the [tenant restore flow](../../flows/tenant-restore.md).
 
 7. Put each Harness workspace back once the new Agent's Harness Pod runs:
 
@@ -228,5 +230,19 @@ Configurations, workspace files, transcripts and Secret values.
    done
    ```
 
-8. Check the Agents (`occ agent list`) and re-issue any service-account
-   credentials.
+8. Check the Agents (`occ agent list`) and resolve any failed deployments.
+
+### Restore Agents with legacy ServiceAccount PATs
+
+The current controller rejects creation of Agents with a direct ServiceAccount
+PAT binding. The importer stops with exit `1`, including with `--no-deploy`.
+Use `--skip OLD_NAME` to leave each affected Namespace out of automated import.
+Restore it from the preserved export. If import already stopped, check the saved
+map and reuse any target resources it created.
+
+In the target Namespace, [issue a fresh ServiceAccount PAT](../../reference/service-accounts.md#account-and-credential-lifecycle).
+Use the returned `credential.sourceId` as the model Source when you
+[create the Dedicated Codex Agent through the API](deploy-first-agent.md#2-create-the-configuration-and-agent).
+Follow the guide to grant Source access and deploy. Record the new Agent ID to
+match its workspace archive. Remove direct ServiceAccount selections from any
+imported Presets you plan to reuse.

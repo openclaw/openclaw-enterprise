@@ -9,7 +9,7 @@ author: stevenlee-oai
 - **ID:** RFC-20261125-oauth-endpoint-authority
 - **Created:** 2026-11-25
 - **Last updated:** 2026-11-25
-- **Related:** [Credential Design 1.0](20261124-credential-design-1-0.md), [OAuth client selection and consent](0023-egress-proxy-credential-lifecycle/oauth-client-associations.md)
+- **Related:** [Credential Design 1.0](20261124-credential-design-1-0/index.md), [OAuth client selection and consent](20261124-credential-design-1-0/oauth-client-associations.md)
 
 ## Summary
 

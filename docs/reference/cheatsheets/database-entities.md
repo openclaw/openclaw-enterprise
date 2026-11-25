@@ -150,7 +150,7 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 
 ### `authentication_states`
 
-Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-refresh.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-lifecycle.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
 
 - Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
 - `oauth_connection`: `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scopes, redirect, and issuer data. The immutable Template version identifies the OAuth client. No Source exists yet.
@@ -187,11 +187,11 @@ Pins the saved OAuth configuration and the HTTPS destinations that can receive t
 
 ### `oauth_clients`
 
-Identifies an independently managed OAuth client. A connection template version defines the approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected TokenService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
 
-- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
-- `kind`, `token_endpoint_auth_method`, `app_id`
-- `token_service_instance_id`, `cleanup_after`, `created_at`
+- `id`, `kind`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_endpoint_auth_method`
+- `app_id`, `token_service_instance_id`, `cleanup_after`, `created_at`
 
 ### `connection_token_custody`
 
@@ -219,8 +219,8 @@ Stores the canonical static and OAuth Sources created by the selected TokenServi
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
-- `driver_id` (Gateway and Proxy sources)
+- `owner_capability` (`credential_proxy` or `token_service`)
+- `driver_id` (Proxy Sources)
 - `token_service_instance_id` (selected TokenService owner)
 - `backend_ref` (optional private, nonsecret TokenService locator)
 - `connection_template_id` (optional immutable association)
@@ -340,7 +340,7 @@ Links each credential source secret field to the Namespace Secret that supplied 
 
 ### `credential_withdrawals`
 
-Records one credential source withdrawn from one Agent revision, until the gateway confirms revocation.
+Records a Source withdrawal from one Agent revision until detachment is confirmed.
 
 - `namespace_id`
 - `agent_id`

@@ -112,7 +112,7 @@ Before applying the release, verify these network inputs:
 - The chart gives the API and worker unrestricted control-plane egress. Verify
   worker DNS, routing, and verified HTTPS access to `github.com` and
   `api.github.com`. Agent and supervisor access remains separately scoped.
-- The private credential gateway admits approved Agent workloads and rejects
+- The private repository broker admits approved Agent workloads and rejects
   unrelated workloads and external clients. A Service name alone provides no
   isolation; worker and sidecar share a Pod's network namespace.
 
