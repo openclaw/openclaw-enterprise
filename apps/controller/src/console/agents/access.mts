@@ -73,7 +73,12 @@ function bindingCapabilities(role: PolicyRole | undefined, isPrincipal: boolean)
     if (resourceKind === "agent" && action === "read") {
       labels.add(viewAgentLabel);
     } else if (resourceKind === "agent" && action === "operate") {
-      labels.add(isPrincipal ? "Chat access" : "Operate Agent");
+      if (isPrincipal) {
+        labels.add("Chat access");
+        labels.add("Stop Agent");
+      } else {
+        labels.add("Operate Agent");
+      }
     } else if (resourceKind === "agent" && action === "administer") {
       labels.add("Administer Agent");
     } else {

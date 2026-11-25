@@ -786,7 +786,7 @@ export function createAgentDetailScenarios({
           "Inspect direct grants by account display name when available. This is not a directory or an effective-access report.",
         steps: [
           "Compare Morgan Chen's chat grant to Avery Patel's administration grant.",
-          "Open Morgan Chen's row to see the full Principal ID and the Research chat binding: View Agent in OCC and Chat access.",
+          "Open Morgan Chen's row to see the full Principal ID. Research chat shows View Agent in OCC, Chat access, and Stop Agent.",
           "Open Technical details to see both agent:read and agent:operate along with the Role and binding IDs.",
           "Expand Avery Patel and the separate read-only Principal. Both show the same Technical details control, with the capabilities for their own Role.",
           "The read-only Principal uses the full ID because no account name is available. The Service Principal is listed separately.",

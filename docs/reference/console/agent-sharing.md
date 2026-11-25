@@ -55,12 +55,13 @@ available.
 
 Each binding shows its Role name and the capabilities from that Role. For a
 human Principal, a Role with both `agent:read` and `agent:operate` shows
-**View Agent in OCC** and **Chat access**. Only a Role with explicit Agent read
-shows **View Agent in OCC**. Listing the Agent also requires Namespace read
-access. **Technical details** shows the raw permissions and the Role and
-binding IDs. **Other permissions** means the Role lists permissions beyond
-those summarized here. If a Role is missing from the policy list, its binding
-and both IDs remain visible without guessing what the Role grants.
+**View Agent in OCC**, **Chat access**, and **Stop Agent**. The **View Agent in
+OCC** label requires explicit Agent read. Listing the Agent also requires
+Namespace read access. **Technical details** shows the raw permissions and
+the Role and binding IDs. **Other permissions** means the Role lists
+permissions beyond those summarized here. If a Role is missing from the
+policy list, its binding and both IDs remain visible without guessing what
+the Role grants.
 
 **Remove binding** deletes only the selected binding and preserves Namespace
 discovery. Other grants, groups, and Installation administration can still

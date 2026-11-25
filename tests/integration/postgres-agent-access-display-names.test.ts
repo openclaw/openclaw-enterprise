@@ -309,7 +309,7 @@ test(
     const adminGrant = secondRow
       .getByRole("listitem")
       .filter({ hasText: "Agent native administration" });
-    await chat.getByText("View Agent in OCC · Chat access", { exact: true }).waitFor();
+    await chat.getByText("View Agent in OCC · Chat access · Stop Agent", { exact: true }).waitFor();
     await adminGrant
       .getByText("View Agent in OCC · Administer Agent · Other permissions", { exact: true })
       .waitFor();

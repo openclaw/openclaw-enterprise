@@ -2404,6 +2404,8 @@ test("Access groups exact Agent grants and removes only the selected binding", a
   const serviceRow = otherSubjects.locator("summary").filter({ hasText: "Service Principal" });
   await serviceRow.waitFor();
   assert.doesNotMatch(await serviceRow.innerText(), /Open chat|Open Agent UI/);
+  await serviceRow.click();
+  await otherSubjects.getByText("Operate Agent", { exact: true }).waitFor();
 
   await summary.focus();
   await page.keyboard.press("Enter");
@@ -2423,7 +2425,7 @@ test("Access groups exact Agent grants and removes only the selected binding", a
     .filter({ hasText: "Runtime administration" });
   const researchChat = bindingRows.getByRole("listitem").filter({ hasText: "Research chat" });
   await administration.getByText("Administer Agent", { exact: true }).waitFor();
-  await researchChat.getByText("Chat access", { exact: true }).waitFor();
+  await researchChat.getByText("Chat access · Stop Agent", { exact: true }).waitFor();
   assert.equal(await bindingRows.getByText("View Agent in OCC", { exact: true }).count(), 0);
   await administration.getByText("Technical details", { exact: true }).click();
   await researchChat.getByText("Technical details", { exact: true }).click();
