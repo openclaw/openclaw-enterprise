@@ -9,7 +9,7 @@ import type { RepositoryCredentialSessionResult } from "../../apps/controller/sr
 import { repositoryClientData } from "../fixtures/repository-credentials/builders.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.ts";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
-import { settled } from "../helpers/child-processes.mjs";
+import { settled } from "../helpers/child-processes.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 
 type CommandOptions = NonNullable<Parameters<typeof run>[2]>;

@@ -23,7 +23,7 @@ import {
   concurrencyLimit,
   eachSettled as all,
   settled,
-} from "../helpers/child-processes.mjs";
+} from "../helpers/child-processes.ts";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.ts";
@@ -324,20 +324,7 @@ async function run(
   args: string[],
   options: ChildOptions = {},
 ): Promise<ChildResult<string | Buffer>> {
-  const capture = (): unknown => Reflect.apply(captureChild, undefined, [program, args, options]);
-  const value: unknown = await limit(capture);
-  assert.ok(value !== null && typeof value === "object");
-  assert.ok("status" in value && (value.status === null || typeof value.status === "number"));
-  assert.ok("signal" in value && (value.signal === null || typeof value.signal === "string"));
-  assert.ok(
-    "stdout" in value && (typeof value.stdout === "string" || Buffer.isBuffer(value.stdout)),
-  );
-  assert.ok(
-    "stderr" in value && (typeof value.stderr === "string" || Buffer.isBuffer(value.stderr)),
-  );
-  assert.equal(typeof value.stdout === "string", options.encoding !== null);
-  assert.equal(typeof value.stderr === "string", options.encoding !== null);
-  return { status: value.status, signal: value.signal, stdout: value.stdout, stderr: value.stderr };
+  return limit(() => captureChild(program, args, options));
 }
 
 async function settle<const T extends readonly unknown[]>(

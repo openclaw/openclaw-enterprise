@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { SpawnOptions } from "node:child_process";
 import test from "node:test";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild } from "../helpers/child-processes.ts";
 import { runStartupReadCase } from "./codex-plugin-startup-read-cases.ts";
 
 const cases = [

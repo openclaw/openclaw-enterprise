@@ -31,7 +31,7 @@ import {
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.ts";
-import { eachSettled } from "../helpers/child-processes.mjs";
+import { eachSettled } from "../helpers/child-processes.ts";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 
 type BindSettings = {

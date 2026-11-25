@@ -1,7 +1,7 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.ts";
-import { captureChild } from "./child-processes.mjs";
+import { captureChild } from "./child-processes.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
@@ -201,9 +201,8 @@ function captureQaChild(
   program: string,
   args: string[],
   options: { env?: NodeJS.ProcessEnv | undefined; timeout: number },
-): ReturnType<typeof captureChild> {
-  const captureOptions = { encoding: "utf8", ...options };
-  return captureChild(program, args, captureOptions);
+) {
+  return captureChild(program, args, options);
 }
 
 function errorMessage(error: unknown): string {

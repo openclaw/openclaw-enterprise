@@ -13,7 +13,7 @@ import {
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
-import { settled } from "../helpers/child-processes.mjs";
+import { settled } from "../helpers/child-processes.ts";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import type { ChartValues } from "../helpers/production-chart-network-fixture.ts";
 import {

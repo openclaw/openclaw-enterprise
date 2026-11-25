@@ -16,7 +16,7 @@ import {
   waitForDocsPreview,
   writeComputeMatrixReadme,
 } from "../helpers/docs-site.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 
 test("docs preview filters the ComputeDriver matrix in a browser", async (t) => {
   const preview: {

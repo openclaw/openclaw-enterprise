@@ -31,7 +31,7 @@ import {
   createKubernetesStartupEnvironment,
   grantTenantAccess,
 } from "./postgres-platform-kubernetes.ts";
-import { stopProcess } from "./stop-process.mjs";
+import { stopProcess } from "./stop-process.ts";
 import { temporaryDirectory } from "./temporary-directory.ts";
 import { waitFor } from "./wait-for.ts";
 

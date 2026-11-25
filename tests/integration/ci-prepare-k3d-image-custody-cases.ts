@@ -13,7 +13,7 @@ import {
   immutableImage,
   nodeBaseImage,
 } from "../helpers/ci-prepare-fixture.ts";
-import { eachSettled } from "../helpers/child-processes.mjs";
+import { eachSettled } from "../helpers/child-processes.ts";
 import { bashString } from "../helpers/fixture-command-server.ts";
 import { interceptFixtureDocker } from "./ci-prepare-k3d-docker-fixture.ts";
 

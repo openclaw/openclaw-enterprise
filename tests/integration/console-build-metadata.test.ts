@@ -14,7 +14,7 @@ import { readConsoleAsset } from "../../apps/controller/src/console-assets.ts";
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { caAndLeaf } from "../helpers/certificates.ts";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild } from "../helpers/child-processes.ts";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -112,7 +112,6 @@ async function serveRelease(t: TestContext, release: Release) {
     override = options.response ?? {};
     requests.length = 0;
     const childOptions = {
-      encoding: "utf8",
       cwd: options.cwd,
       env: {
         ...process.env,

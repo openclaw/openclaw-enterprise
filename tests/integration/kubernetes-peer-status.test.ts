@@ -12,7 +12,7 @@ import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/comput
 import { reservePort, reservedPortArgs } from "../helpers/available-port.ts";
 import { selfSigned } from "../helpers/certificates.ts";
 import { listen } from "../helpers/listen.ts";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
