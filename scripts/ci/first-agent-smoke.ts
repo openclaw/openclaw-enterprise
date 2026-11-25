@@ -168,7 +168,7 @@ async function smoke() {
     );
     assert.ok(modelDirectory, "First Agent smoke has no controlled provider directory");
     await smokeStep("controlled-channel-proxy", () =>
-      proveControlledChannelProxy(stack, [codex, control], modelDirectory),
+      proveControlledChannelProxy(stack, [codex, control], modelDirectory, smokeStep),
     );
   } catch (error) {
     await diagnostics(diagnosticStack);

@@ -90,6 +90,8 @@ selected.
 
 ## HTTP operations
 
+See [Plugin Source selection and delivery limits](credential-sources.md#bind-a-source-to-an-agent).
+
 Plugin selections and default approvers use Agent create/update. There are no
 separate plugin resources or install, delete, policy-mutation or tool-invocation
 endpoints.
