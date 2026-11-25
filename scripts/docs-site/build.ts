@@ -138,6 +138,8 @@ const githubAnchors = createGithubAnchorReader(md);
 const pages = new Map<string, Page>();
 const unpublished = new Set<string>();
 const escape = (value: unknown) => md.utils.escapeHtml(String(value));
+const encodeUrlPath = (value: string, separator = "/") =>
+  value.split(separator).map(encodeURIComponent).join("/");
 const route = (source: string) =>
   "/" +
   source
@@ -442,12 +444,7 @@ function resolveLink(page: PageSource, href: string): string {
     if (target.startsWith(docs + path.sep) && fs.existsSync(readme)) {
       target = readme;
     } else {
-      return (
-        repository +
-        "/tree/main/" +
-        relative.split(path.sep).map(encodeURIComponent).join("/") +
-        url.hash
-      );
+      return repository + "/tree/main/" + encodeUrlPath(relative, path.sep) + url.hash;
     }
   }
   const docSource = path.relative(docs, target).split(path.sep).join("/");
@@ -463,7 +460,7 @@ function resolveLink(page: PageSource, href: string): string {
   }
   if (/^(?:assets|snippets)\//.test(docSource)) {
     const download = quickstartDownloads.get(docSource) ?? docSource;
-    return "/" + download.split("/").map(encodeURIComponent).join("/") + url.search + url.hash;
+    return "/" + encodeUrlPath(download) + url.search + url.hash;
   }
   if (url.hash && target.endsWith(".md") && !resolveDocsFragment(url.hash, githubAnchors(target))) {
     throw new Error(page.source + ": missing heading in " + href);
@@ -471,7 +468,7 @@ function resolveLink(page: PageSource, href: string): string {
   return (
     repository +
     "/blob/main/" +
-    path.relative(root, target).split(path.sep).map(encodeURIComponent).join("/") +
+    encodeUrlPath(path.relative(root, target), path.sep) +
     (target.startsWith(docs + path.sep) ? url.search : "") +
     url.hash
   );
@@ -736,6 +733,7 @@ for (const page of pages.values()) {
         : [],
     )
     .join("");
+  const sourceHref = repository + "/blob/main/docs/" + encodeUrlPath(page.source);
   const html =
     '<!doctype html><html lang="en" data-theme="dark" data-oc-theme="product"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
     (page.searchable ? "" : '<meta name="robots" content="noindex">') +
@@ -766,9 +764,7 @@ for (const page of pages.values()) {
     renderBreadcrumb(page) +
     page.html +
     '<footer data-pagefind-ignore><a href="' +
-    repository +
-    "/blob/main/docs/" +
-    page.source +
+    escape(sourceHref) +
     '">View Markdown source</a></footer></main>' +
     '<aside class="toc" aria-label="On this page"><strong>On this page</strong>' +
     toc +
