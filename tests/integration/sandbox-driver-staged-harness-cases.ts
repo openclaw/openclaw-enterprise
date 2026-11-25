@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 import {
   openShellProviderName,
@@ -395,6 +396,14 @@ export async function verifyStagedModelPolicyObservation(
     assert.equal(denied.stdout.includes(marker), false);
   }
   const repositoryIdle = repositorySandbox.spec!.policy as Record<string, unknown>;
+  if (mode === "service") {
+    // Both image-owned worker Git files live here. Landlock must allow reading
+    // the configuration and executing the helper without granting write access.
+    const filesystem = repositoryIdle.filesystem as { read_only: string[]; read_write: string[] };
+    const containsGitFiles = (root: string) => "/usr/local/lib/oce/".startsWith(root + "/");
+    assert.ok(filesystem.read_only.some(containsGitFiles));
+    assert.equal(filesystem.read_write.some(containsGitFiles), false);
+  }
   const repositoryRoutes = narrowOpenShellRepositoryRoutes(
     repositoryRevision,
     compileOpenShellCredentialPolicy(
@@ -563,28 +572,35 @@ export async function verifyStagedNativeSourceProjection(t: TestContext): Promis
   const marker = join(home, "launch.json");
   const modelAlias = openShellSourceCredentialEnvironment("cs_model_fixture");
   const pluginAlias = openShellSourceCredentialEnvironment("cs_plugin_fixture");
+  const gitAlias = openShellSourceCredentialEnvironment("cs_git_fixture");
   const modelPlaceholder = `openshell:resolve:env:s${"a".repeat(64)}_${modelAlias}`;
   const pluginPlaceholder = `openshell:resolve:env:s${"b".repeat(64)}_${pluginAlias}`;
-  const launcher = stagedHarnessSupervisor([
-    process.execPath,
-    "-e",
-    `${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+  const gitPlaceholder = `openshell:resolve:env:s${"c".repeat(64)}_${gitAlias}`;
+  const launcher = stagedHarnessSupervisor(
+    [
+      process.execPath,
+      "-e",
+      `${MANAGED_PLUGIN_CREDENTIAL_HELPER}
 require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
   model: process.env.OPENAI_API_KEY,
   plugin: process.env.GOOGLE_TOKEN,
+  workerExecution: JSON.parse(process.env.OPENCLAW_NODE_WORKER_EXECUTION),
   pluginAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.GOOGLE_TOKEN, "cli"),
   wrongSourceAccepted: isManagedPluginPlaceholder("GOOGLE_TOKEN", process.env.OPENAI_API_KEY, "cli"),
   modelAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(modelAlias)}),
   pluginAliasPresent: Object.hasOwn(process.env, ${JSON.stringify(pluginAlias)}),
   aliasMapPresent: Object.hasOwn(process.env, ${JSON.stringify(managedCredentialAliasesEnvironment)})
 }));`,
-  ]);
+    ],
+    { sourceEnvironment: gitAlias, repositories: ["fixture/selected"] },
+  );
   const supervisor = spawn(process.execPath, ["-e", launcher], {
     env: {
       ...process.env,
       HOME: home,
       [modelAlias]: "inherited-model-value",
       [pluginAlias]: "inherited-plugin-value",
+      OPENCLAW_NODE_WORKER_EXECUTION: JSON.stringify({ pathPrepend: ["/unadmitted"] }),
       [managedCredentialAliasesEnvironment]: JSON.stringify({ GOOGLE_TOKEN: modelAlias }),
     },
     stdio: "ignore",
@@ -609,6 +625,12 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       runtimeEnvironment: pluginAlias,
       plugin: true,
     },
+    {
+      bindingRef: "repository",
+      environment: "GITHUB_TOKEN",
+      placeholder: { kind: "runtime" },
+      runtimeEnvironment: gitAlias,
+    },
   ];
   const prepare = spawnSync(process.execPath, ["-e", STAGED_HARNESS_PREPARE], {
     env: { ...process.env, HOME: home },
@@ -623,6 +645,7 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       HOME: home,
       [modelAlias]: modelPlaceholder,
       [pluginAlias]: modelPlaceholder,
+      [gitAlias]: gitPlaceholder,
     },
   });
   assert.notEqual(wrong.status, 0);
@@ -633,21 +656,61 @@ require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({
       HOME: home,
       [modelAlias]: modelPlaceholder,
       [pluginAlias]: pluginPlaceholder,
+      [gitAlias]: gitPlaceholder,
     },
   });
   assert.equal(activate.status, 0);
   await waitFor("native Source staged launch", () => existsSync(marker), 5000);
 
   // Only the requested consumer projections survive; the native aliases and private mapping do not.
-  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), {
+  const launch = JSON.parse(readFileSync(marker, "utf8"));
+  assert.deepEqual(launch, {
     model: modelPlaceholder,
     plugin: pluginPlaceholder,
+    workerExecution: {
+      gitConfigFile: "/usr/local/lib/oce/openshell-worker.gitconfig",
+      toolData: { gitRepositories: "fixture/selected", gitPlaceholder },
+    },
     pluginAccepted: true,
     wrongSourceAccepted: false,
     modelAliasPresent: false,
     pluginAliasPresent: false,
     aliasMapPresent: false,
   });
+
+  // Run the Runner configuration with stock Git. Only the immutable helper's
+  // install location changes for this checkout; the issued marker comes from activation.
+  const runtimeFiles = new URL("../../deploy/runtime/", import.meta.url);
+  const config = join(home, "worker.gitconfig");
+  writeFileSync(
+    config,
+    readFileSync(new URL("openshell-worker.gitconfig", runtimeFiles), "utf8").replace(
+      "/usr/local/lib/oce/openshell-git-credential.cjs",
+      '!exec \\"$RUNNER_NODE\\" \\"$RUNNER_GIT_HELPER\\"',
+    ),
+  );
+  for (const [host, path, allowed] of [
+    ["github.com", "fixture/selected.git", true],
+    ["github.com", "fixture/omitted.git", false],
+    ["example.invalid", "fixture/selected.git", false],
+  ] as const) {
+    const result: SpawnSyncReturns<string> = spawnSync("/usr/bin/git", ["credential", "fill"], {
+      cwd: home,
+      env: {
+        HOME: home,
+        GIT_CONFIG_SYSTEM: config,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_TERMINAL_PROMPT: "0",
+        RUNNER_NODE: process.execPath,
+        RUNNER_GIT_HELPER: fileURLToPath(new URL("openshell-git-credential.cjs", runtimeFiles)),
+        OPENCLAW_WORKER_TOOL_DATA: JSON.stringify(launch.workerExecution.toolData),
+      },
+      encoding: "utf8",
+      input: `protocol=https\nhost=${host}\npath=${path}\n\n`,
+    });
+    assert.equal(result.status === 0, allowed);
+    assert.equal(result.stdout.includes(`password=${gitPlaceholder}\n`), allowed);
+  }
 }
 
 export async function stagedManagedMcpPolicy(): Promise<Record<string, unknown>> {

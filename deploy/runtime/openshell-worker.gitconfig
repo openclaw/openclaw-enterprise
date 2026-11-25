@@ -1,0 +1,12 @@
+[include]
+	path = /etc/gitconfig
+[credential]
+	helper =
+	useHttpPath = true
+[credential "https://github.com"]
+	helper = /usr/local/lib/oce/openshell-git-credential.cjs
+[http]
+	sslVerify = true
+	followRedirects = false
+[http "https://github.com"]
+	sslCAInfo = /etc/openshell-tls/ca-bundle.pem

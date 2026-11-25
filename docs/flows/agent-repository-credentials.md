@@ -153,6 +153,13 @@ For TokenService Git, the deployment pins the Source and Git request policy.
 checks Source access and current Repository scope. Token renewal leaves the
 revision policy in place. Withdrawal removes that revision's Git delivery.
 
+For a Dedicated OpenClaw Agent, the staged Sandbox launcher selects the
+Runner's read-only Git configuration and passes the worker its admitted
+repository paths and the attached Git Source's placeholder. Stock Git asks
+the image's credential helper for the exact HTTPS repository. OpenShell
+substitutes the installation token only on the admitted request. This path
+requires an OpenClaw worker build that supports node-owned execution settings.
+
 After approval lookup, changed bound ownership returns 503 before invocation.
 Unbound deploys recheck their Driver. Denial or changes to binding or scope
 block revision creation.

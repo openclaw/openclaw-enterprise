@@ -480,6 +480,8 @@ COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+COPY --chmod=0444 deploy/runtime/openshell-worker.gitconfig /usr/local/lib/oce/openshell-worker.gitconfig
+COPY --chmod=0555 deploy/runtime/openshell-git-credential.cjs /usr/local/lib/oce/openshell-git-credential.cjs
 # OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
 RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
