@@ -2495,28 +2495,31 @@ test("Agent deployment requires a reload after repository access changes", async
   await waitForEnabled(deploy);
 });
 
-test("Agent deployment reports preflight errors and requires reload for changed draft state", async (t) => {
+async function runtimeAuthAgent(t: TestContext, name: string, marker: string) {
   const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
     t,
-    "Deployment preflight",
+    name,
   );
   const namespace = resource(rawNamespace);
   const agent = agentFields(
-    await fixture.createAgent(
-      namespace.id,
-      "Deployment preflight",
-      nativeValues("before-preflight"),
-      { harnessAuth: { method: "runtime" } },
-    ),
+    await fixture.createAgent(namespace.id, name, nativeValues(marker), {
+      harnessAuth: { method: "runtime" },
+    }),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const draftUrl = `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`;
+  return { fixture, namespace, agent, path, draftUrl };
+}
+
+test("Agent deployment reports preflight errors and requires reload for changed draft state", async (t) => {
+  const { fixture, namespace, agent, path, draftUrl } = await runtimeAuthAgent(
+    t,
+    "Deployment preflight",
+    "before-preflight",
+  );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  await login(
-    page,
-    fixture,
-    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
-  );
+  await login(page, fixture, draftUrl);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
   await page.route(`${fixture.origin}${path}`, (route) =>
@@ -2563,23 +2566,13 @@ test("Agent deployment reports preflight errors and requires reload for changed 
 // flashed "Checking Configuration…" then "Requesting deployment…" for a frame each (finding 1619).
 // One delayed status now covers the request and holds focus until the outcome is known.
 test("Deploy new version keeps keyboard focus and shows one delayed status", async (t) => {
-  const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
+  const { fixture, namespace, agent, path, draftUrl } = await runtimeAuthAgent(
     t,
     "Deployment focus",
+    "deployment-focus",
   );
-  const namespace = resource(rawNamespace);
-  const agent = agentFields(
-    await fixture.createAgent(namespace.id, "Deployment focus", nativeValues("deployment-focus"), {
-      harnessAuth: { method: "runtime" },
-    }),
-  );
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
-  await login(
-    page,
-    fixture,
-    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
-  );
+  await login(page, fixture, draftUrl);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const status = page.locator(".agent-draft-actions p[role=status]");
   await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
@@ -2731,26 +2724,13 @@ for (const [scenario, heldRead, heldMs, reader] of [
   ["a reader who moved on", "agent", 700, "moves on"],
 ] satisfies [string, "agent" | "namespaces" | "revision", number, string][]) {
   test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
-    const { fixture, namespace: rawNamespace }: NamespaceFixture = await createRuntimeAuthFixture(
+    const { fixture, path, draftUrl } = await runtimeAuthAgent(
       t,
       "Deployment hand-off",
+      "deployment-hand-off",
     );
-    const namespace = resource(rawNamespace);
-    const agent = agentFields(
-      await fixture.createAgent(
-        namespace.id,
-        "Deployment hand-off",
-        nativeValues("deployment-hand-off"),
-        { harnessAuth: { method: "runtime" } },
-      ),
-    );
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
-    await login(
-      page,
-      fixture,
-      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
-    );
+    await login(page, fixture, draftUrl);
     await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
       method: "POST",

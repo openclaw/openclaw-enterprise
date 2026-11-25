@@ -4271,6 +4271,13 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
   assert.equal((await second.getByRole("tab").allTextContents()).at(-1), "Access");
 });
 
+function holdShareWrite(t: TestContext, page: Page, fixture: Fixture, namespaceId: string) {
+  return holdRequests(t, page, `${fixture.origin}/namespaces/${namespaceId}/iam/access-bindings`, {
+    method: "POST",
+    once: true,
+  });
+}
+
 // The sharing panel is built once per page with the page's own context, as it was on the
 // overview: a share still running when the reader opens another tab finishes, and its outcome
 // shows when they come back. Each grant is written once.
@@ -4283,12 +4290,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
   assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  const write = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "POST", once: true },
-  );
+  const write = await holdShareWrite(t, page, fixture, namespace.id);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
@@ -4331,12 +4333,7 @@ test("A share in flight holds version and page changes until it finishes", async
   const person = fixture.provisionedAccounts[0];
   assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
-  const write = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "POST", once: true },
-  );
+  const write = await holdShareWrite(t, page, fixture, namespace.id);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
@@ -4410,12 +4407,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
           })
         : route.fallback(),
   );
-  const write = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "POST", once: true },
-  );
+  const write = await holdShareWrite(t, page, fixture, namespace.id);
   const url = draftConfigUrl(fixture, namespace.id, agent.id);
   await login(page, fixture, url);
   const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
@@ -4459,12 +4451,7 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   const person = fixture.provisionedAccounts[0];
   assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
-  const write = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "POST", once: true },
-  );
+  const write = await holdShareWrite(t, page, fixture, namespace.id);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
@@ -4576,12 +4563,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   const person = fixture.provisionedAccounts[0];
   assert.ok(person);
   const { page } = await newPage(t, fixture, { browser });
-  const write = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "POST", once: true },
-  );
+  const write = await holdShareWrite(t, page, fixture, namespace.id);
   await login(page, fixture, configUrl(fixture, namespace.id, agent.id, revision.id));
   await page.locator(".agent-toolbar-actions").getByRole("button", { name: "Open draft" }).click();
   const draft = page.getByRole("heading", { name: "Configuration draft" });
