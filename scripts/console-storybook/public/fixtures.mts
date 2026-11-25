@@ -43,6 +43,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
     oauthCatalog?: string;
+    initialCredentialSources?: readonly CredentialSourceResponse["data"][];
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     navigationAgentHistory?: true;
@@ -212,7 +213,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
-  const credentialSources = new Map<string, StoredCredentialSource>();
+  const credentialSources = new Map<string, StoredCredentialSource>(
+    (scenario.initialCredentialSources ?? []).map((source) => [source.id, source]),
+  );
   const deviceLogins = new Map<string, DeviceLogin>();
   const cancelledDeviceLogins = new Set<string>();
   let deniedDeviceSourceCreate = false;

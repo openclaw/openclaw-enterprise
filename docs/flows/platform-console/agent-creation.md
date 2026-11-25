@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-11-24
-last_updated_session: authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07
+updated: 2026-11-25
+last_updated_session: authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9
 ---
 
 # Console Agent creation
@@ -34,6 +34,7 @@ graph TD
   P -->|eligible for guided provisioning| C["Queue provisioning with inline Configuration"]
   C --> D["Worker creates resources, grants and first deployment"]
   P -->|member, per-repository access, or other draft| E["Save Configuration and Agent draft"]
+  B -->|existing ready model Source| E
   B -->|direct static Source| S["Validate and register the static Source with TokenService"]
   S --> E
   E -->|GitHub access per repository| I["Confirm saved GitHub grants"]
@@ -154,7 +155,7 @@ credential access. Deployment refuses stale policy versions with HTTP 409.
 
 With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-Eligible Dedicated runtimes otherwise preflight and provision inline Configuration, optional repository access and Secret references. If the selected Credential Gateway offers the login method, Console binds the returned Source ID. With **Credential Source** storage, Console validates the Agent, enrolls the OpenAI API key through TokenService, clears the key and opens a draft bound to that static Source.
+Eligible Dedicated runtimes preflight and provision inline Configuration, repository access and Secret references. A selected Gateway login binds its returned Source ID. **Credential Source** storage enrolls the key with TokenService, clears it, and opens a bound draft. Reuse saves the same Source ID in both Agent bindings; Agent save checks exact Source `operate`.
 
 The Installation capabilities do not show whether the Compute Driver supplies a Preset's
 operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
@@ -259,6 +260,8 @@ Switching methods hides that feedback without changing the lookup or saved choic
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 11:30: Trace reuse and replacement of an existing managed model Source. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-24 05:45: Reconcile Source enrollment with first-deployment repository warning. (authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07 - d6403c2401e338964f5486f8db2fcb40a3758448)
 - 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)

@@ -2,6 +2,12 @@
 
 TokenService owns a managed static Source and its credential. OCC controls who may create, bind, update, or delete it. This example uses an OpenAI model; see [implementation status](../credential-sources.md#implementation-status) for provider coverage and work still in progress.
 
+## Console
+
+Open **Credentials → Sources** to inspect readable Namespace Source metadata or create a static Source for an approved model preset or an available static Template. Creation and usable Template discovery require Credential Source `create` on the Namespace collection. If Template discovery fails for another reason, model Source creation remains available; the Source API checks permission and TokenService support on submission. Credential material is write-only. If the result is uncertain, refresh the inventory before creating another Source.
+
+Create Agent and the draft Credentials tab offer ready static model Sources with a matching preset and no Template association. Agent save checks exact Source `operate`; listing establishes only `read`. Source replacement is unavailable for unsupported model destinations. If the Agent has an active revision, complete Stop before deploying a replacement from the saved draft.
+
 ## Native model requests
 
 ### OpenAI API key

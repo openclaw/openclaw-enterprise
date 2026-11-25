@@ -1350,6 +1350,7 @@
               "flows/agent-runtime-logs",
               "flows/platform-console",
               "flows/platform-console/agent-creation",
+              "flows/platform-console/credential-sources",
               "flows/platform-console/agent-editing",
               "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",

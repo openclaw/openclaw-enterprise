@@ -52,6 +52,7 @@ import {
 import {
   configuredHarnessId,
   configuredModel,
+  credentialSourceOperateDenial,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -6103,6 +6104,8 @@ export async function renderAgentDetail(
         configuredHarnessId(values),
         {
           agentName: agent.name,
+          executionMode: agent.executionMode,
+          configuration: values,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
           onStartSettled: () => recordAuthentication(),
@@ -6506,10 +6509,20 @@ export async function renderAgentDetail(
             // A refused write names the chosen Secret when a fresh answer says the caller may not
             // operate it (finding 2453).
             const chosen = auth.changedSecret;
-            const named =
-              mutationStarted && requestFailure(error).status === 403 && chosen
-                ? await refusedSecretBinding("agent", [chosen])
+            const sourceId =
+              harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined;
+            const currentId =
+              baseline.harnessAuth?.method === "credential_source"
+                ? baseline.harnessAuth.sourceId
                 : undefined;
+            const namedSource =
+              (sourceId ? credentialSourceOperateDenial(error, sourceId) : undefined) ??
+              (currentId ? credentialSourceOperateDenial(error, currentId, true) : undefined);
+            const named =
+              namedSource ??
+              (mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding("agent", [chosen])
+                : undefined);
             if (!context.isCurrent()) {
               return;
             }

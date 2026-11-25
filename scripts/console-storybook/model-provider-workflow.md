@@ -18,6 +18,39 @@ under **Credential storage** and choose a Secret. **Pages/Settings → Shared mo
 provider** remains a read-only view of Installation startup configuration; Source
 creation does not change that configuration.
 
+## Discover, create, and reuse a Source
+
+Open **Pages/Credentials → Credential Sources** to inspect readable public metadata.
+In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, or
+an available static Bearer Template. Enter a dummy value and select **Create Source**.
+Confirm that the Source appears in the inventory and its value is not returned.
+A Template Source cannot serve as model authentication or be admitted directly to an Agent.
+
+Open **Pages/Create Agent → Reuse an existing Credential Source** and select
+**Create Agent**. Check that the draft uses the selected Source ID and the request log
+contains no `POST …/credential-sources`. If the Source list fails, select **Retry Source list**
+before choosing a Source. Open **Components/Credentials → Replace an existing
+Credential Source**, select **Save authentication source**, and check that the Agent
+uses the replacement ID without another Source enrollment. Deployment is separate.
+
+Inspect these list and failure stories:
+
+- **Pages/Credentials → No readable managed Credential Sources** shows an empty inventory.
+- **Pages/Create Agent → Existing Source list loading**, **Retry an unavailable Source list**,
+  and **No eligible model Credential Source** show pending, retry, and missing-choice states.
+- **Pages/Credentials → Credential Source inventory denied** and **Credential Source
+  creation denied** show the applicable access failure.
+- **Model Source creation when Templates are unavailable** keeps model Source creation
+  available after Template discovery fails.
+- **Credential Source create outcome unknown** clears the value and blocks another create.
+  Close the dialog and select **Refresh** to find the Source saved by the simulated API.
+- **Pages/Create Agent → Existing Source operate denied after Configuration save** reports
+  the retained Configuration and the refused Agent create.
+- **Components/Credentials → Credential Source replacement denied** leaves the saved Agent
+  bound to its previous Source.
+- **Model Source unavailable without an approved destination** preserves the current Source
+  and disables replacement for a Configuration that cannot use the approved model preset.
+
 ## Correct an edited model catalog
 
 Open **Pages/Create Agent → Model choices before credential entry**. Use the

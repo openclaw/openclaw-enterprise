@@ -2,6 +2,14 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Credentials" };
 
+export const CredentialSources = story("credentialsSourceInventory");
+export const CredentialSourcesEmpty = story("credentialsSourceEmpty");
+export const CredentialSourcesDenied = story("credentialsSourceReadDenied");
+export const CreateCredentialSource = story("credentialsSourceCreate");
+export const CredentialSourceTemplatesUnavailable = story("credentialsSourceTemplatesUnavailable");
+export const CredentialSourceCreateUnknown = story("credentialsSourceCreateUnknown");
+export const CredentialSourceCreateDenied = story("credentialsSourceCreateDenied");
+
 export const ConnectionTemplates = story("credentialsTemplateCatalog");
 export const PluginTemplatePrefill = story("credentialsPluginTemplatePrefill");
 export const PluginTemplateEdit = story("credentialsPluginTemplateEdit");

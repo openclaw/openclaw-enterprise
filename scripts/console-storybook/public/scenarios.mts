@@ -54,6 +54,7 @@ import {
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
+import { credentialSourceScenarios } from "./scenario-groups/credential-sources.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
@@ -1034,6 +1035,7 @@ const authoredScenarios = {
   } satisfies LocalScenario,
   ...namespacesScenarios,
   ...connectionTemplateScenarios,
+  ...credentialSourceScenarios,
   ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",

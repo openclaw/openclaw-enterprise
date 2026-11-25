@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-25
-last_updated_session: authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12
+last_updated_session: authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9
 ---
 
 # Platform console request flow
@@ -192,12 +192,9 @@ return Agent detail and creation to Agents.
 
 `packages/occ/src/namespace-operations.ts:listNamespaces`, `packages/occ/src/agent-queries.ts:listAgents`
 
-Agent and Secret requests use the selected Namespace. OCC filters Installation
-Namespaces and exact Agents by read permission. The Console requests Agents
-only in readable Namespaces.
-`GET /backends` ignores selection and requires Installation `administer` before
-returning safe startup summaries. Empty configuration returns an empty list;
-missing wiring or failed dependencies return errors.
+Agent, Secret and Source requests use the selected readable Namespace; OCC filters exact reads.
+`GET /backends` requires Installation `administer`; missing wiring or dependencies return errors.
+The [Credential Source flow](platform-console/credential-sources.md) traces discovery and registration.
 
 [`secrets.mts:renderSecrets`](../guides/console/secrets.md) lists metadata.
 Actions read `consumers` and advisory `callerPermissions`. Only readable Agents
@@ -379,6 +376,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 11:30: Trace Namespace Source discovery and write-only registration in Console. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-25 02:20: Trace failed replacement refresh. (authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12 - cdd3ab41242cce4734163c6edc4abe115fd90f83)
 

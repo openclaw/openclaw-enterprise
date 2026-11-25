@@ -47,7 +47,8 @@ as the reason Dedicated OpenClaw is disabled.
    token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
    For a Dedicated OpenAI API key, **Credential storage** defaults to **Credential Source**.
    Enter the key to create a TokenService-owned Source and save the Agent as a draft.
-   Deploy from the saved Agent page. Select **Namespace Secret** to use the separate
+   You can also select an existing ready model Source with the matching preset. The Agent save requires `operate` on that exact Source; listing it establishes only `read`.
+   Deploy from the saved Agent page. When offered, select **Namespace Secret** to use the separate
    Secret-backed path; Preset bindings and Service Accounts also use Secrets.
    Wait for the access check. Changing provider or method clears your choice.
    No model is preselected. Choose a starter model or **Enter model ID manually**.

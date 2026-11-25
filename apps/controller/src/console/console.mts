@@ -40,6 +40,7 @@ import {
 } from "./agents/access-reasons.mjs";
 import {
   createApiClient,
+  namedDenial,
   requestFailure,
   responseFields,
   type RequestOptions,
@@ -48,6 +49,7 @@ import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
   credentialClientsPage,
+  credentialSourcesPage,
   createNavigation,
   pages,
   type AgentsLanding,
@@ -69,6 +71,7 @@ import {
   type NamespacePageContext,
 } from "./namespaces.mjs";
 import { renderSecrets } from "./secrets.mjs";
+import { renderCredentialSources } from "./credential-sources.mjs";
 import {
   passwordSignInFailure,
   providerCallbackFailure,
@@ -531,7 +534,9 @@ async function rereadNamespacesAfterAdministration() {
   setNamespaces(readable);
   const current = route();
   if (
-    (current.feature === "agents" || current.feature === "secrets") &&
+    (current.feature === "agents" ||
+      current.feature === "secrets" ||
+      current.feature === credentialSourcesPage) &&
     !namespaces.some((item) => item.id === namespaceId)
   ) {
     clearRetainedViewsForNamespace(namespaceId);
@@ -1384,6 +1389,9 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
+  if (namespacePath !== null && feature === credentialSourcesPage) {
+    return `${namespacePath}/credential-sources`;
+  }
   return namespacePath !== null && ["secrets", "agents"].includes(feature)
     ? `${namespacePath}/${feature}`
     : null;
@@ -2227,7 +2235,7 @@ async function loadPage({
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
-      ["agents", "secrets"].includes(current.feature) &&
+      ["agents", "secrets", credentialSourcesPage].includes(current.feature) &&
       (namespacePath === null || !namespaces.some((item) => item.id === selectedNamespace));
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
@@ -2779,7 +2787,10 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
-    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
+    if (
+      current.creating ||
+      (["agents", "secrets", credentialSourcesPage].includes(current.feature) && !current.agentId)
+    ) {
       // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
@@ -2991,6 +3002,12 @@ async function loadPage({
         const rebuiltView = shell.view;
         restoreRefocus = () => focus.restore(rebuiltView, { rebuilt: restoreFocus !== null });
       }
+    } else if (current.feature === credentialSourcesPage && selectedNamespace !== null) {
+      renderCredentialSources({
+        ...agentContext,
+        namespaceId: selectedNamespace,
+        items,
+      });
     } else if (current.feature === "secrets" && selectedNamespace !== null) {
       // Only carry the reader's filter into freshly admitted rows for the same owner and route.
       const previous =
@@ -3153,7 +3170,10 @@ async function loadPage({
         : installationDenied
           ? `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`
           : status === 403
-            ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
+            ? current.feature === credentialSourcesPage
+              ? (namedDenial(error) ??
+                `Your account does not have access to Credential Sources in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`)
+              : `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
             : "The read could not be completed. Retry to check current access and saved state.",
       // Retrying a permission refusal gives the same answer; the header's Refresh checks access
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,
