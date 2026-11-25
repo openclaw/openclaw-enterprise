@@ -100,9 +100,7 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let failed = false;
     let inputCompleted = false;
     let receivedHeaders = false;
-    // Where the provider connection failed before TLS was established. A stale egress
-    // allowlist (repositoryCredentials.upstreamCidrs) refuses or drops the connect, and
-    // the operator log names this instead of a bare not_dispatched (finding 3169).
+    // Name the provider connection failure before TLS instead of logging only not_dispatched.
     const hostname = origin.hostname.replace(/^\[|\]$/g, "");
     const port = Number(origin.port || 443);
     // Every address the host resolved to, in order: a dual-stack host tries each before the

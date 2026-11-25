@@ -21,7 +21,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { databaseUrl } from "./postgres-database.mjs";
-import { createRuntimeLogComputeDriver } from "./runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "./runtime-logs.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";

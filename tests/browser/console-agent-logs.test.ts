@@ -18,7 +18,7 @@ import type {
   PermissionAction,
   SandboxLogLine,
 } from "../../packages/contracts/src/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import {
   authorizationDenials,
   createConsoleAppFixture,

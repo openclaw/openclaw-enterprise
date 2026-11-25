@@ -5,7 +5,7 @@ import { mkdir, readFile, stat, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { runDevDown, runDevUp } from "../helpers/dev-up-commands.ts";
-import { createFixture, prepareLifecycleCommands } from "../helpers/dev-up.mjs";
+import { createFixture, prepareLifecycleCommands } from "../helpers/dev-up.ts";
 import { parseDevUpResourceState } from "../helpers/dev-up-k3d-commands.ts";
 import { runDevUpModelProviderCase, type RunCommand } from "../helpers/dev-up-model-provider.ts";
 import { readJsonLines, requireLogRecord } from "../helpers/json-lines.ts";

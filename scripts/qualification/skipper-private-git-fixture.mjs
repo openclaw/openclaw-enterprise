@@ -99,7 +99,6 @@ export async function withSkipperPrivateGitFixture({ host, teamReview }, use) {
     };
     for (const [name, value] of Object.entries({
       "registry.json": JSON.stringify(registry),
-      "upstream-cidrs.json": JSON.stringify([host + "/32"]),
       "private-key.pem": origin.privateKey.export({ type: "pkcs8", format: "pem" }),
       "issuer-ca.crt": origin.tls.ca,
     })) {

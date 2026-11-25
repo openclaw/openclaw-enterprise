@@ -45,22 +45,22 @@ Configuration, native IAM, Docker Compute, and no SecretDriver. Operators can
 select installed IAM, Compute, Configuration, or Sandbox packages in trusted YAML
 in either mode.
 
-| Capability                  | Shared contract                                                             | Selection boundary                                                                                                                                   |
-| --------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `configuration`             | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                              |
-| `channel`                   | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                   |
-| `iam`                       | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                              |
-| `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                |
-| `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                       |
-| `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                 |
-| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                              |
-| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with OCC TokenService and an advertising Sandbox registration; no YAML setting.                                                             |
-| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Optional legacy OpenShell Backend member; Credential Refresh requires it.                                                                            |
-| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                      |
-| `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ`, `{}` config; [Source lifecycle][token-service-flow]; independent of Sandbox/Gateway/Proxy; uses Installation-private Secret storage. |
-| `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                              |
-| `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                         |
-| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                      |
+| Capability                  | Shared contract                                                             | Selection boundary                                                                                                                                                                                     |
+| --------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `configuration`             | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                                                                                                                |
+| `channel`                   | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                                                                                                                     |
+| `iam`                       | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                                                                                                                |
+| `compute`                   | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                                                                                                                  |
+| `secret`                    | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                                                                                                         |
+| `sandbox`                   | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.                                                                                                   |
+| `credential_proxy`          | [LegacyEgressProxyDriver](credential-proxy.md#legacy-protected-egress)      | Optional; paired Sandbox and legacy Proxy from one bundled OpenShell or installed-package registration.                                                                                                |
+| `credential_proxy_delivery` | [CredentialProxyDriver](credential-proxy.md#interface)                      | Selected with TokenService and an advertising Sandbox registration. No separate YAML setting.                                                                                                          |
+| `credential_gateway`        | [CredentialGatewayDriver](credential-gateway.md)                            | Optional legacy OpenShell Backend member; Credential Refresh requires it.                                                                                                                              |
+| `credential_refresh`        | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                                                                        |
+| `token_service`             | [TokenServiceDriver][token-service-contract]                                | Optional `occ` with Installation-private Secret storage, or `openshell` for the [development preview](../credential-sources/managed-static.md#preview-openshell-custody). Both use `{}` configuration. |
+| `service_account`           | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                                                                |
+| `plugin`                    | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                                                                           |
+| `repo`                      | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                                                                        |
 
 [token-service-contract]: ../../../packages/contracts/src/drivers/token-service/index.ts
 [token-service-flow]: ../../flows/token-service-static-custody.md
@@ -119,7 +119,7 @@ see the [Driver contract](credential-proxy.md#delivery-profiles) and
 ### Supply protected Git credentials with Helm
 
 Configure the [production chart](../../../deploy/helm/openclaw-enterprise/values.yaml)
-with your resource names and approved issuer address. Keep Secret contents out of Helm values.
+with your resource names. Keep Secret contents out of Helm values.
 
 ```yaml
 repositoryCredentials:
@@ -128,7 +128,6 @@ repositoryCredentials:
   registryConfigMapName: repository-registry-v1
   appKeySecretName: repository-app-key
   preparedCustodySecretName: git-custody
-  upstreamCidrs: ["198.51.100.23/32"]
 ```
 
 Leave `repositoryCredentials.enabled` and `openshellGit.enabled` false. The chart

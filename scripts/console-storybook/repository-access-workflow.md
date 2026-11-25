@@ -26,8 +26,10 @@ stories retain their older profile fixtures.
 ## Positive and negative checks
 
 1. In the empty story, confirm no selected repositories and a Contributor Agent
-   default. Select application through its checkbox. Save repository access;
-   the request must keep `defaultProfile: "git-full"` and explicitly select
+   default. Open **Configuration** and check that **Repository access** shows
+   **None selected**. Return to **Repositories**, select application through
+   its checkbox and save repository access. The request must keep
+   `defaultProfile: "git-full"` and explicitly select
    `{ repositoryRef: "application", profile: "github-repository" }`. Confirm
    the saved message and selection after visiting Channels and returning.
    API-only must not be selectable.
@@ -35,8 +37,11 @@ stories retain their older profile fixtures.
    awaiting verification**. Discovery must not rewrite the inherited selection,
    send a PATCH, or make Channels unavailable. Once discovery completes,
    **Choose approved access** appears and Save remains disabled. Clear **Use
-   Agent default** for application and choose **Repository collaborator**.
-   Only this explicit edit permits saving collaborator access.
+   Agent default** for application and choose **Contributor**. Only this explicit
+   edit permits saving collaborator access. Save, then choose **Account → Settings**
+   during the ten-second Agent read. Repositories stays open with the edit selected
+   and a wait message. After the saved message, open Settings and go back to confirm
+   the custom collaborator access remains saved.
 3. The Read-only story operates the default radio and repository checkbox through
    the real UI. Confirm Read-only remains selected and Save is disabled. Choose
    an explicit collaborator override: Save succeeds while the default stays
@@ -64,3 +69,26 @@ Both states direct you to your Namespace operator. In the search story, replace
 the query with `application`. Matching repository choices return and the help
 disappears. Compare with **Repository discovery pending** and **Repository
 discovery denied**, which display their own status instead.
+
+## First-deployment warning
+
+Open **GitHub repository access** under **Pages / Create Agent**
+(`createGitHubRepositoryGrants`). The story starts with two repositories
+selected. Choose a registered **GitHub App Client** before saving the draft. The
+Client and selected repository access are saved on the Agent; the Console does
+not create a GitHub credential Source. Uncheck both. Before **Create Agent**,
+check the warning about deployment without a repository policy. Select a repository
+again. The warning disappears and **Save Agent draft** returns. **Access profiles**
+retains its existing hint. Open **GitHub repository access with a registered App**
+(`createGitHubClient`) to inspect the selected application repository. The
+**GitHub App Client** list offers the Installation-wide Client and the Client
+registered in Engineering. Select **Engineering repository App** and save the
+draft. This story simulates the Console. It does not mint a token or deploy a
+Source.
+
+Open **Set permissions on a saved draft** under **Pages / Agent detail**
+(`repositoryPermissionsDraft`). Read the conditional warning before **Deploy new
+version**, then follow **Set repository permissions**. This story has a profile
+binding and simulated policy data; it does not cover an empty-binding draft or a
+confirmed deny-all policy. Neither story establishes real deployment, policy
+persistence, authorization, or runtime repository access.

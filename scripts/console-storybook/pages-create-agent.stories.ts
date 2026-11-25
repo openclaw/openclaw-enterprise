@@ -49,6 +49,7 @@ export const PluginsConfigured = {
   name: "Edit existing plugin policies",
 };
 export const PluginsCurated = story("createPluginsCurated");
+export const PluginAccountConsent = story("createPluginAccountConsent");
 export const PluginsDiscovered = story("createPluginsDiscovered");
 export const PluginsShortWindow = {
   ...story("createPluginsDiscovered", {
@@ -63,8 +64,8 @@ export const PluginsShortWindow = {
 export const PluginsPrefetch = story("createPluginsPrefetch");
 export const PluginsSearchLoading = story("createPluginsSearchLoading");
 export const PluginsToolsLoading = story("createPluginsToolsLoading");
-export const PluginsSelectedSecret = story("createPluginsSelectedSecret");
-export const PluginsSelectedSecretDenied = story("createPluginsSelectedSecretDenied");
+export const PluginsRequirePatSource = story("createPluginsRequirePatSource");
+export const PatSourceEnrollmentDenied = story("createPatSourceEnrollmentDenied");
 export const PluginsTools = story("createPluginsTools");
 export const PluginsPolicies = story("createPluginsPolicies");
 export const PluginApproversMissingSecret = story("createPluginApproversMissingSecret");
@@ -137,9 +138,8 @@ export const CreatePresetMultilineApplied = story("createPresetMultilineApplied"
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
 export const CreateCredentialRegistrationRefused = story("createCredentialRegistrationRefused");
-export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
-export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
-export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
+export const CreateCredentialSourceDenied = story("createCredentialSourceDenied");
+export const CreateCredentialSourcePending = story("createCredentialSourcePending");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateOpenclawWithoutNativeWorkers = {
   ...story("createOpenclawWithoutNativeWorkers"),
@@ -181,6 +181,26 @@ export const RepositoryNoMatches = story("createRepositoriesNoMatches");
 export const GitHubRepositoryGrants = {
   ...story("createGitHubRepositoryGrants"),
   name: "GitHub repository access",
+};
+export const GitHubClient = {
+  ...story("createGitHubClient"),
+  name: "GitHub repository access with a registered App",
+};
+export const GitHubClientNoClients = {
+  ...story("createGitHubClientNoClients"),
+  name: "GitHub repository access without a registered App",
+};
+export const GitHubClientLoading = {
+  ...story("createGitHubClientLoading"),
+  name: "GitHub App Clients loading",
+};
+export const GitHubClientError = {
+  ...story("createGitHubClientError"),
+  name: "GitHub App Client discovery failed",
+};
+export const GitHubClientMember = {
+  ...story("createGitHubClientMember"),
+  name: "GitHub repository Client selection for a member",
 };
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
@@ -243,9 +263,9 @@ export const CreateMemberGrantRefused = {
   ...story("createMemberGrantRefused"),
   name: "Member Agent created, opens its draft",
 };
-export const CreateMemberCredentialGateway = {
-  ...story("createMemberCredentialGateway"),
-  name: "Member on a Credential Gateway Installation",
+export const CreateMemberCredentialSource = {
+  ...story("createMemberCredentialSource"),
+  name: "Member creates a Credential Source",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),
@@ -411,13 +431,3 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
-
-export const SharedModelDestination = {
-  ...story("createSharedModelProviderSource"),
-  name: "Authorize shared model destination",
-};
-
-export const SharedModelDestinationRefusal = {
-  ...story("createSharedModelProviderRefusal"),
-  name: "Destination authorization refusal",
-};

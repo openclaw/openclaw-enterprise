@@ -229,6 +229,7 @@ grants in the deploy request. OCC checks each source that the Agent references:
 - Secrets in the Configuration's `secretBindings`.
 - The Secret or credential source in the Agent's `harnessAuth`.
 - Each entry in the Agent's `credentialSources`.
+- Each Source selected at a Plugin connection, even when it has no entry in `credentialSources`.
 
 For each source that the caller can `operate`, through any Role, and on which
 the Agent's ServicePrincipal does not have `operate`, OCC binds the
@@ -236,10 +237,12 @@ ServicePrincipal to that exact source. In `default`, a Default user can operate
 only the sources they own. OCC uses the Role
 `role_<namespace-id>_agent_secret_operate` or
 `role_<namespace-id>_agent_credential_source_operate`, created on first use,
-and the binding ID `binding_<agent-id>_<source-id>_operate`. Each binding
+and the binding ID `binding_<agent-id>_<source-id>_operate`. Each created binding
 records `openclaw.iam.access_bindings.create` with the source as resource and
-`reason: "agent_deploy"` and `agentId` in details. The grants commit with the
-deployment; a refused deployment writes none.
+`agentId` in details. A grant created when saving a Plugin selection records
+`reason: "agent_plugin_selection"` and commits with the Agent save. A grant
+created at deployment records `reason: "agent_deploy"` and commits with the
+deployment. A refused save or deployment writes no grant.
 
 A source that the caller cannot operate gets no grant. The Agent principal check
 then refuses the deploy until someone who can operate the source deploys, or an

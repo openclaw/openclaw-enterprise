@@ -1,10 +1,10 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import { fixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import { createOccApi, exportTenants, importTenants } from "../../scripts/split-layout-tenants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
-import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -14,12 +14,7 @@ import {
   registerRepositoryAdmissionCases,
   registerRepositoryOptionCases,
 } from "./repository-credentials-agent-access-cases.ts";
-import {
-  registerProtectedRepositoryPolicyDeploymentCase,
-  registerRepositoryCredentialsDeploymentAdmissionCases,
-  selectedRepositoryRegistry,
-  verifyRepositoryPolicyWriteProjection,
-} from "./repository-credentials-deployment-admission-cases.ts";
+import { registerRepositoryCredentialsDeploymentAdmissionCases } from "./repository-credentials-deployment-admission-cases.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
   installationControllerOptions,
@@ -31,8 +26,6 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
@@ -52,7 +45,6 @@ import {
   InMemoryPlatformState,
   DriverConfigurationRegistry,
   CredentialProxyRepositoryOnlyError,
-  CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
   RepositoryGitSenderUnqualifiedError,
@@ -642,7 +634,9 @@ registerRepositoryAdmissionCases({ fixture, kubernetesCompute, selection, backen
 
 test("Repository policy rejects invalid create and PATCH before changing stored Agents", async (t) => {
   const f = await fixture(t);
-  const agent = await f.createAgent({ repositoryBindings: selection });
+  const agent = await f.createAgent({
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
   const path = `${f.collection}/${agent.id}`;
   const before = (await f.request("GET", f.collection)).data;
   const cases = [
@@ -659,7 +653,10 @@ test("Repository policy rejects invalid create and PATCH before changing stored 
   ];
   for (const scenario of cases) {
     await t.test(scenario.name, async () => {
-      const body = { configurationId: f.configuration.id, repositoryBindings: scenario.bindings };
+      const body = {
+        configurationId: f.configuration.id,
+        repositoryAccess: { defaultProfile: "git-write", repositories: scenario.bindings },
+      };
       // The caller may edit the Agent, so the refusal names the rules instead of a 404 (finding
       // 2536). It reads the same for every cause and names no repository.
       for (const [method, target, fields] of [
@@ -681,8 +678,10 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   // only deploy refused it (hidden as a 404). Save and deploy now share the rule and name it.
   const f = await fixture(t, { installationAccess: true });
   const installation = { repositoryRef: "installation", profile: "github-installation" };
-  const sole = await f.createAgent({ repositoryBindings: [installation] });
-  assert.deepEqual(sole.repositoryBindings, [installation]);
+  const sole = await f.createAgent({
+    repositoryAccess: { defaultProfile: "git-write", repositories: [installation] },
+  });
+  assert.deepEqual(repositoryAccessSelections(sole.repositoryAccess), [installation]);
   // Installation-wide access needs a Credential Proxy, which this Installation does not select:
   // an Installation property, so deploy names it in a 409 instead of a generic 503 (finding 2536).
   await f.prepareDeployment(sole);
@@ -691,21 +690,39 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   assert.equal(unprotected.error.code, "RESOURCE_CONFLICT");
   assert.equal(unprotected.error.message, CREDENTIAL_PROXY_INSTALLATION_ACCESS);
   assert.deepEqual((await f.request("GET", `${f.collection}/${sole.id}/revisions`)).data, []);
-  const agent = await f.createAgent({ repositoryBindings: selection });
+  const agent = await f.createAgent({
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
   const path = `${f.collection}/${agent.id}`;
   const before = (await f.request("GET", f.collection)).data;
   const message =
-    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryAccess.repositories, or select each repository with its own profile instead.";
   const mixed = [installation, ...selection];
   const access = {
     defaultProfile: "git-write",
     repositories: [installation, { repositoryRef: "project" }],
   };
   for (const [method, target, fields] of [
-    ["POST", f.collection, { name: "Refused Agent", repositoryBindings: mixed }],
-    ["PATCH", path, { repositoryBindings: mixed }],
+    [
+      "POST",
+      f.collection,
+      {
+        name: "Refused Agent",
+        repositoryAccess: { defaultProfile: "git-write", repositories: mixed },
+      },
+    ],
+    ["PATCH", path, { repositoryAccess: { defaultProfile: "git-write", repositories: mixed } }],
     // In any position.
-    ["PATCH", path, { repositoryBindings: [...selection, installation] }],
+    [
+      "PATCH",
+      path,
+      {
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [...selection, installation],
+        },
+      },
+    ],
     ["POST", f.collection, { name: "Refused Agent", repositoryAccess: access }],
     ["PATCH", path, { repositoryAccess: access }],
   ]) {
@@ -729,17 +746,18 @@ test("Installation-wide repository access refuses other bindings at save, as dep
       undefined,
       undefined,
       undefined,
-      mixed,
+      undefined,
+      { defaultProfile: "git-write", repositories: mixed ?? [] },
     ),
   );
-  assert.deepEqual(stored.repositoryBindings, mixed);
+  assert.deepEqual(repositoryAccessSelections(stored.repositoryAccess), mixed);
   const deployed = await f.request("POST", `${path}/deploy`);
   assert.equal(deployed.status, 400, JSON.stringify(deployed));
   assert.equal(deployed.error.message, message);
   assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
 });
 
-registerRepositoryAccessUpdateCases({ fixture, selection });
+registerRepositoryAccessUpdateCases({ fixture });
 
 test("Agent repository access preserves request order when the Driver returns bindings in another order", async (t) => {
   // Driver resolutions are keyed by reference; their order is not part of the contract.
@@ -771,7 +789,7 @@ test("Agent repository access preserves request order when the Driver returns bi
   });
   assert.equal(created.status, 201, JSON.stringify(created));
   assert.deepEqual(created.data.repositoryAccess, access);
-  assert.deepEqual(created.data.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(created.data.repositoryAccess), [
     { repositoryRef: "project", profile: "git-read" },
     { repositoryRef: "foreign-project", profile: "git-write" },
   ]);
@@ -784,7 +802,7 @@ test("Agent repository access preserves request order when the Driver returns bi
   });
   assert.equal(updated.status, 200, JSON.stringify(updated));
   assert.deepEqual(updated.data.repositoryAccess, updatedAccess);
-  assert.deepEqual(updated.data.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(updated.data.repositoryAccess), [
     { repositoryRef: "project", profile: "git-full" },
     { repositoryRef: "foreign-project", profile: "git-write" },
   ]);
@@ -793,10 +811,13 @@ test("Agent repository access preserves request order when the Driver returns bi
   const legacy = await request("POST", f.collection, {
     name: "Defaulted repository bindings",
     configurationId: f.configuration.id,
-    repositoryBindings: [{ repositoryRef: "project" }, { repositoryRef: "foreign-project" }],
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: "project" }, { repositoryRef: "foreign-project" }],
+    },
   });
   assert.equal(legacy.status, 201, JSON.stringify(legacy));
-  assert.deepEqual(legacy.data.repositoryBindings, [
+  assert.deepEqual(repositoryAccessSelections(legacy.data.repositoryAccess), [
     { repositoryRef: "project", profile: "git-write" },
     { repositoryRef: "foreign-project", profile: "git-write" },
   ]);
@@ -853,7 +874,7 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
     executionMode: "dedicated",
     configuration: { kind: "agent", values: f.configuration.values },
     harnessAuth: { method: "api_key", source: secret.data.ref },
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   // Without a Sandbox the plan passes admission and reaches the provisioning queue, which
   // in-memory state does not provide (the PostgreSQL provisioning tests cover acceptance).
@@ -880,7 +901,7 @@ test("Provisioning refuses repository bindings on a topology Agent create refuse
     name: "Sandboxed repository Agent",
     configurationId: f.configuration.id,
     executionMode: "dedicated",
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   assert.equal(created.status, 409, JSON.stringify(created));
   const refused = await f.request("POST", `${f.collection}/provision`, plan("Sandboxed plan"));
@@ -1289,7 +1310,10 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
     (await f.request("GET", policyPath(agent))).data.policy.additions;
 
   // Policy save on a repository-bound Agent.
-  const bound = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
+  const bound = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
   await enableEditing(bound);
   const refused = await f.request("PUT", policyPath(bound), {
     expectedVersion: 1,
@@ -1325,12 +1349,12 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   assert.equal(granted.status, 200, "without a binding the grant is an ordinary one");
   const binding = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
     configurationId: f.configuration.id,
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   assert.equal(binding.status, 409, JSON.stringify(binding));
   assert.equal(binding.error.message, message);
   assert.equal(
-    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryAccess,
     undefined,
   );
   // Finding 2881: that refusal names a saved grant, so an Agent update without SandboxPolicy
@@ -1343,7 +1367,7 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   );
   const hidden = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
     configurationId: f.configuration.id,
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   assert.equal(hidden.status, 403, JSON.stringify(hidden));
   assert.equal(
@@ -1354,14 +1378,14 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   // An Agent with no saved additions has nothing to name, so its binding saves without read.
   const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
     configurationId: f.configuration.id,
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   assert.equal(plainBinding.status, 200, JSON.stringify(plainBinding));
   for (const restriction of unreadable) {
     liftRestriction(f.iamState, restriction);
   }
   assert.equal(
-    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryBindings,
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryAccess,
     undefined,
   );
   const addressed = await f.createAgent({ executionMode: "dedicated" });
@@ -1373,7 +1397,7 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   assert.equal(addressGranted.status, 200, "without a binding an IP-address grant is ordinary");
   const addressBinding = await f.request("PATCH", `${f.collection}/${addressed.id}`, {
     configurationId: f.configuration.id,
-    repositoryBindings: selection,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
   });
   assert.equal(addressBinding.status, 409, JSON.stringify(addressBinding));
   assert.equal(addressBinding.error.message, addressMessage);
@@ -1426,7 +1450,7 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
 // execution profile to the stock 0.1.5 registration, as a gateway with a stronger exchange would;
 // `registered: false` leaves the registration out of gateway info; `extension` overrides fields
 // of the registration gateway info reports; `middlewareName` names a separate egress
-// registration; `credentialGateway` also selects the bundled OpenShell Credential Gateway;
+// registration;
 // `installationAccess` offers github-installation and composes the Proxy with its Git transport,
 // as repository.openShell does; `preview` opts in to the observed-hook preview, and
 // `gatewayVersion` replaces the version the gateway reports.
@@ -1438,9 +1462,6 @@ async function protectedOpenShellComposition(
     registered = true,
     extension = {},
     middlewareName,
-    credentialGateway = false,
-    credentialRefresh = false,
-    toolBinaries,
     credentialProxy = true,
     harness = "codex",
     installationAccess = false,
@@ -1462,22 +1483,11 @@ async function protectedOpenShellComposition(
       assertExecutionAdmission(revision);
     }
   }
-  class GatewayHarnessComputeDriver extends ProtectedGitComputeDriver {
-    // Kubernetes Compute paired with the OpenShell Gateway delivers credential-source Harness
-    // authentication; this one is not bound to that pair, so its delivery check is not the subject.
-    validateHarnessAuth() {}
-    // This admission fixture has no Kubernetes cluster; placement is a separate integration.
-    async resolveSandboxNamespace(namespace) {
-      return namespace;
-    }
-  }
   const namespaceLifecycleBindings = [];
   const f = await fixture(t, {
     harness,
     inspected,
-    compute: kubernetesCompute(
-      credentialGateway ? GatewayHarnessComputeDriver : ProtectedGitComputeDriver,
-    ),
+    compute: kubernetesCompute(ProtectedGitComputeDriver),
     controllerOptions: {
       namespaceLifecycleBindings,
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
@@ -1548,8 +1558,6 @@ async function protectedOpenShellComposition(
     drivers: {
       sandbox: sandbox.id,
       credential_proxy: sandbox.id,
-      ...(credentialGateway && { credential_gateway: "openshell-credentials" }),
-      ...(credentialRefresh && { credential_refresh: "openshell-refresh" }),
     },
     client: { clientForNamespace: () => gateway, placement: () => undefined, close() {} },
   };
@@ -1591,30 +1599,11 @@ async function protectedOpenShellComposition(
     proxy = loaded.proxyDriver;
     t.after(() => owner.close());
   }
-  if (credentialGateway) {
-    const catalog = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/bin/codex"], ...(toolBinaries && { toolBinaries }) },
-      { id: "openshell-credentials", backend },
-    );
-    f.controller.registerDriver(catalog);
-    f.controller.selectDriver(catalog.capability, catalog.id);
-  }
-  if (runtimeAuthCompute || inspected) {
-    const compute = kubernetesCompute(
-      KubernetesComputeDriver,
-      {
-        id: "runtime-admission-kubernetes",
-        protectedDriver: owner,
-        ...(inspected && {
-          credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
-        }),
-      },
-      inspected,
-    );
-    if (inspected) {
-      compute.resolveSandboxNamespace =
-        GatewayHarnessComputeDriver.prototype.resolveSandboxNamespace;
-    }
+  if (runtimeAuthCompute) {
+    const compute = kubernetesCompute(KubernetesComputeDriver, {
+      id: "runtime-admission-kubernetes",
+      protectedDriver: owner,
+    });
     f.controller.registerDriver(compute);
     f.controller.selectDriver("compute", compute.id);
   }
@@ -1626,319 +1615,17 @@ async function protectedOpenShellComposition(
   if (credentialProxy) {
     f.controller.selectDriver("credential_proxy", proxy.id);
   }
-  if (credentialRefresh) {
-    const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
-    f.controller.registerDriver(refresh);
-    f.controller.selectDriver(refresh.capability, refresh.id);
-  }
   return { ...f, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
 }
-
-test("first repository policy save requires affirmative admission of the exact desired topology", async (t) => {
-  const grant = /** @type {const} */ ({ repository: "example/project", access: "read" });
-  const bindings = [{ repositoryRef: "project", profile: "github-repository" }];
-  const f = await protectedOpenShellComposition(t, {
-    bindings,
-    configureRegistry: selectedRepositoryRegistry("write"),
-    repositoryAdmission: "built-in",
-    installedProfile: "repository",
-    credentialGateway: true,
-    repositoryNetworkPolicyCeiling: [{ ...grant, access: "write" }],
-  });
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-    name: "model-key",
-    value: "synthetic-save-eligibility-key",
-  });
-  assert.equal(secret.status, 201);
-  const source = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
-    name: "model",
-    type: "openai",
-    secrets: { api_key: secret.data.ref },
-  });
-  assert.equal(source.status, 201);
-  async function editableAgent() {
-    const agent = await f.createAgent({
-      executionMode: "dedicated",
-      repositoryBindings: bindings,
-      harnessAuth: { method: "credential_source", sourceId: source.data.id },
-      credentialSources: [{ sourceId: source.data.id }],
-    });
-    const policyPath = `${f.collection}/${agent.id}/sandbox-policy/networking`;
-    assert.equal(
-      (await f.request("PATCH", `${policyPath}/editing`, { enabled: true })).status,
-      200,
-    );
-    return { agent, policyPath };
-  }
-
-  const { agent, policyPath } = await editableAgent();
-  const initial = (await f.request("GET", policyPath)).data;
-  assert.equal(initial.repositoryNetworkPolicySaveSupported, false);
-  const put = (repositoryNetworkPolicy, expectedVersion = initial.policy.version) =>
-    f.request("PUT", policyPath, { expectedVersion, additions: [], repositoryNetworkPolicy });
-  const selectedCompute = f.controller.selectedDriver("compute");
-  // A frozen-revision validator by itself cannot qualify a desired-state write.
-  const frozen = t.mock.fn(() => assert.fail("Save admitted a frozen revision"));
-  selectedCompute.validateProtectedRepositoryNetworkPolicy = frozen;
-  assert.equal((await put([])).status, 409);
-  const exactHarness = resolveApprovedHarness("codex", "dedicated");
-  assert.ok(exactHarness);
-  const admit = t.mock.fn(
-    /** @param {import("@openclaw-enterprise/contracts").ProtectedRepositoryNetworkPolicySaveContext} context */
-    (context) =>
-      isDeepStrictEqual(context.harness, { ...exactHarness, mode: "dedicated" }) &&
-      context.sandboxDriverId === f.protectedDriver.require("sandbox").id &&
-      isDeepStrictEqual(context.protectedDriver, f.protectedDriver.ref) &&
-      context.harnessCredentialSource.type === "openai" &&
-      context.harnessCredentialSource.ownerCapability === "credential_gateway" &&
-      context.harnessCredentialSource.driverId ===
-        f.controller.selectedDriver("credential_gateway").id &&
-      context.repositoryBindings.length === 1 &&
-      context.repositoryBindings[0].profile === "github-repository" &&
-      context.repositoryBindings[0].grant.repositoryId === "789",
-  );
-  selectedCompute.admitsProtectedRepositoryNetworkPolicySave = admit;
-  const sandbox = f.controller.selectedDriver("sandbox");
-  Object.assign(sandbox, {
-    admitRepositoryNetworkPolicy: undefined,
-    validateProtectedRepositoryNetworkPolicy: undefined,
-  });
-  assert.equal((await put([grant])).status, 409);
-  // This fixture opts in on the Sandbox contract. The bundled Driver still refuses.
-  sandbox.admitRepositoryNetworkPolicy = (_policy, network) => network.defaults;
-  sandbox.validateProtectedRepositoryNetworkPolicy = () =>
-    assert.fail("Save admitted a frozen Sandbox revision");
-  const storage = f.controller.selectedDriver("secret");
-  const useSecret = t.mock.method(storage, "withValue", () => assert.fail("Save read a Secret"));
-  const readsBefore = f.gatewayReads();
-  const hidden = restrict(f.iamState, "read", "configuration", {
-    namespaceId: f.namespace.id,
-    resourceId: f.configuration.id,
-  });
-  assert.equal(
-    (await f.request("GET", policyPath)).data.repositoryNetworkPolicySaveSupported,
-    false,
-  );
-  assert.equal((await put([grant])).status, 409);
-  assert.equal(admit.mock.callCount(), 0);
-  liftRestriction(f.iamState, hidden);
-
-  assert.equal(
-    (await f.request("GET", policyPath)).data.repositoryNetworkPolicySaveSupported,
-    true,
-  );
-  const wrongScope = await put([{ repository: "example/foreign-project", access: "read" }]);
-  assert.equal(wrongScope.status, 409);
-  assert.equal(wrongScope.error.details[0].code, "OUTSIDE_CEILING");
-  assert.deepEqual((await f.request("GET", policyPath)).data.policy, initial.policy);
-
-  admit.mock.mockImplementationOnce(() => false);
-  assert.equal((await put([grant])).status, 409);
-  // An invalid async implementation fails closed and cannot leak a rejected Promise.
-  selectedCompute.admitsProtectedRepositoryNetworkPolicySave = /** @type {typeof admit} */ (
-    /** @type {unknown} */ (() => Promise.reject(new Error("synthetic validator rejection")))
-  );
-  assert.equal((await put([grant])).status, 409);
-  selectedCompute.admitsProtectedRepositoryNetworkPolicySave = admit;
-  const configurationDriver = f.controller.selectedDriver("configuration");
-  const configurationRead = configurationDriver.read.bind(configurationDriver);
-  const read = t.mock.method(configurationDriver, "read");
-  const replacement = kubernetesCompute(KubernetesComputeDriver, { id: "replacement-compute" });
-  f.controller.registerDriver(replacement);
-  const admissionsBeforeDrift = admit.mock.callCount();
-  read.mock.mockImplementationOnce(async (reference) => {
-    const configuration = await configurationRead(reference);
-    f.controller.selectDriver("compute", replacement.id);
-    return configuration;
-  });
-  assert.equal((await put([grant])).status, 409);
-  assert.equal(admit.mock.callCount(), admissionsBeforeDrift);
-  f.controller.selectDriver("compute", selectedCompute.id);
-  const repo = f.repository;
-  assert.ok(repo);
-  const allows = repo.repositoryNetworkPolicyAllows.bind(repo);
-  const approval = repo.repositoryNetworkPolicyAllows;
-  repo.repositoryNetworkPolicyAllows = (input) => {
-    f.controller.selectDriver("compute", replacement.id);
-    return allows(input);
-  };
-  // A supported topology can change after save eligibility and before the policy write.
-  try {
-    assert.equal((await put([grant])).status, 409);
-  } finally {
-    repo.repositoryNetworkPolicyAllows = approval;
-    f.controller.selectDriver("compute", selectedCompute.id);
-  }
-  assert.deepEqual((await f.request("GET", policyPath)).data.policy, initial.policy);
-  async function verifyRefusedFirstSave(beforePut = () => {}, expectHint = true) {
-    const edit = await editableAgent();
-    const view = await f.request("GET", edit.policyPath);
-    assert.equal(view.status, 200, JSON.stringify(view));
-    beforePut();
-    const refused = await f.request("PUT", edit.policyPath, {
-      expectedVersion: view.data.policy.version,
-      additions: [],
-      repositoryNetworkPolicy: [grant],
-    });
-    // A refusal must preserve both the saved list and the version.
-    assert.equal(refused.status, 409, JSON.stringify(refused));
-    assert.deepEqual(
-      await f.state.read((state) => state.sandboxPolicies.find(f.namespace.id, edit.agent.id)),
-      view.data.policy,
-    );
-    assert.equal(view.data.repositoryNetworkPolicySaveSupported, expectHint);
-    return refused;
-  }
-
-  await t.test("first-save hint is unavailable if the built-in Repo owner fails", async () => {
-    const edit = await editableAgent();
-    const before = await f.request("GET", edit.policyPath);
-    assert.equal(before.status, 200);
-    assert.equal(before.data.repositoryNetworkPolicySaveSupported, true);
-    assert.equal(Object.hasOwn(before.data.policy, "repositoryNetworkPolicy"), false);
-
-    const sentinel = "synthetic private repository owner diagnostic";
-    const resolve = t.mock.fn(() => {
-      throw new Error(sentinel);
-    });
-    Object.defineProperty(repo, "resolve", { get: resolve, configurable: true });
-    try {
-      const configurationReads = read.mock.callCount();
-      const after = await f.request("GET", edit.policyPath);
-      assert.equal(after.status, 200, JSON.stringify(after));
-      assert.equal(JSON.stringify(after).includes(sentinel), false);
-      assert.deepEqual(after.data, {
-        ...before.data,
-        repositoryNetworkPolicyCeiling: [],
-        repositoryNetworkPolicySaveSupported: false,
-      });
-      assert.ok(resolve.mock.callCount() > 0);
-      assert.equal(read.mock.callCount(), configurationReads);
-    } finally {
-      Reflect.deleteProperty(repo, "resolve");
-    }
-  });
-  await t.test("a Sandbox without protected artifact admission cannot opt in", async () => {
-    const original = Object.getOwnPropertyDescriptor(sandbox, "admitProtectedCodexArtifactPolicy");
-    Object.defineProperty(sandbox, "admitProtectedCodexArtifactPolicy", {
-      value: undefined,
-      configurable: true,
-    });
-    try {
-      await verifyRefusedFirstSave(undefined, false);
-    } finally {
-      if (original) {
-        Object.defineProperty(sandbox, "admitProtectedCodexArtifactPolicy", original);
-      } else {
-        Reflect.deleteProperty(sandbox, "admitProtectedCodexArtifactPolicy");
-      }
-    }
-  });
-  await t.test("the Repo owner may approve write and refuse an exact read", async () => {
-    const previousAllows = repo.repositoryNetworkPolicyAllows;
-    repo.repositoryNetworkPolicyAllows = (input) => input.grant.access === "write" && allows(input);
-    try {
-      await verifyRefusedFirstSave();
-    } finally {
-      repo.repositoryNetworkPolicyAllows = previousAllows;
-    }
-  });
-  await t.test("typed Sandbox refusals keep Driver diagnostics private", async () => {
-    const artifacts = sandbox.admitProtectedCodexArtifactPolicy;
-    const sentinel = "synthetic-private-policy-driver-diagnostic";
-    sandbox.admitProtectedCodexArtifactPolicy = () => {
-      throw new SandboxNetworkPolicyConflictError(sentinel);
-    };
-    try {
-      const refused = await verifyRefusedFirstSave(undefined, false);
-      assert.equal(JSON.stringify(refused).includes(sentinel), false);
-    } finally {
-      sandbox.admitProtectedCodexArtifactPolicy = artifacts;
-    }
-  });
-  await t.test("a change of IAM Driver during the Configuration read refuses save", async () => {
-    const iam = f.controller.selectedDriver("iam");
-    const successor = new NativeIAMDriver(
-      {
-        async loadNativeIAMState() {
-          return f.iamState;
-        },
-      },
-      { id: "successor-policy-iam" },
-    );
-    f.controller.registerDriver(successor);
-    try {
-      await verifyRefusedFirstSave(() => {
-        read.mock.mockImplementationOnce(async (reference) => {
-          const configuration = await configurationRead(reference);
-          f.controller.selectDriver("iam", successor.id);
-          return configuration;
-        });
-      });
-    } finally {
-      f.controller.selectDriver("iam", iam.id);
-    }
-  });
-
-  await t.test(
-    "an update-only editor cannot distinguish a first empty list from withdrawal",
-    async () => {
-      await verifyRepositoryPolicyWriteProjection(f, editableAgent, source.data.id, grant);
-    },
-  );
-
-  const artifactCheck = t.mock.method(sandbox, "admitProtectedCodexArtifactPolicy");
-  const saved = await put([grant]);
-  assert.equal(saved.status, 200, JSON.stringify(saved));
-  assert.ok(artifactCheck.mock.callCount() > 0);
-  assert.ok(
-    artifactCheck.mock.calls.every(({ arguments: [version] }) => version === saved.data.version),
-  );
-  assert.deepEqual(saved.data.repositoryNetworkPolicy, [grant]);
-  const successfulAdmission = admit.mock.calls.at(-1)?.arguments[0];
-  const stored = await f.state.read((state) =>
-    state.sandboxPolicies.find(f.namespace.id, agent.id),
-  );
-  assert.deepEqual(stored.repositoryNetworkPolicy, [grant]);
-  const omitted = await put(undefined, saved.data.version);
-  assert.equal(omitted.status, 200, JSON.stringify(omitted));
-  assert.equal(Object.hasOwn(omitted.data, "repositoryNetworkPolicy"), false);
-  assert.deepEqual((await f.request("GET", policyPath)).data.policy.repositoryNetworkPolicy, [
-    grant,
-  ]);
-
-  const second = await editableAgent();
-  const denyAll = await f.request("PUT", second.policyPath, {
-    expectedVersion: initial.policy.version,
-    additions: [],
-    repositoryNetworkPolicy: [],
-  });
-  assert.equal(denyAll.status, 200, JSON.stringify(denyAll));
-  assert.deepEqual(denyAll.data.repositoryNetworkPolicy, []);
-  const empty = await f.state.read((state) =>
-    state.sandboxPolicies.find(f.namespace.id, second.agent.id),
-  );
-  assert.deepEqual(empty?.repositoryNetworkPolicy, []);
-  const approved = successfulAdmission?.repositoryNetworkPolicy;
-  assert.ok(approved);
-  assert.deepEqual(approved.grants, [grant]);
-  assert.ok(Object.isFrozen(approved));
-  assert.ok(Object.isFrozen(approved.grants));
-  assert.ok(Object.isFrozen(approved.grants[0]));
-  assert.equal(useSecret.mock.callCount(), 0);
-  assert.equal(frozen.mock.callCount(), 0);
-  assert.equal(f.gatewayReads(), readsBefore);
-  assert.deepEqual((await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data, []);
-});
 
 // Deploys a dedicated Codex Agent with `bindings` on that composition; the response and the
 // number of gateway reads are returned.
 async function protectedOpenShellDeploy(t, bindings, options = {}) {
   const f = await protectedOpenShellComposition(t, { ...options, bindings });
-  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
+  const agent = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
+  });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
   const response = await f.request("POST", `${path}/deploy`);
@@ -1988,7 +1675,7 @@ test("Deploy names what installation-wide access needs from the OpenShell Proxy 
     });
     const agent = await f.createAgent({
       executionMode: "dedicated",
-      repositoryBindings: installation,
+      repositoryAccess: { defaultProfile: "git-write", repositories: installation },
     });
     await f.prepareDeployment(agent);
     const response = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
@@ -2027,20 +1714,20 @@ test("Deploy names the Proxy's limit when a protected source sits beside reposit
   });
   const agent = await f.createAgent({
     executionMode: "dedicated",
-    repositoryBindings: installation,
+    repositoryAccess: { defaultProfile: "git-write", repositories: installation },
   });
   // Also registers the Agent's own principal.
   await f.prepareDeployment(agent);
   await f.state.transact((unit) =>
     unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
   );
-  const created = await f.request(
-    "POST",
-    `/namespaces/${f.namespace.id}/credential-sources`,
-    protectedSourceInputs["credential-free-repository-metadata"](agent.id),
-  );
-  assert.equal(created.status, 201, JSON.stringify(created));
-  const sourceId = created.data.id;
+  // Establish a Source admitted by the former Proxy enrollment owner. The deploy refusal is
+  // still a supported Agent operation; public Source POST no longer enrolls this legacy type.
+  const created = await f.controller.createCredentialSource(f.actorId, {
+    namespaceId: f.namespace.id,
+    ...protectedSourceInputs["credential-free-repository-metadata"](agent.id),
+  });
+  const sourceId = created.id;
   // The Agent's own principal may use the source, so only the Proxy's limit refuses the deploy.
   const internal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
   grantRole(f.iamState, internal.servicePrincipalId, {
@@ -2103,7 +1790,10 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   for (const profile of ["git-read", "git-full"]) {
     const agent = await f.createAgent({
       executionMode: "dedicated",
-      repositoryBindings: [{ repositoryRef: "project", profile }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project", profile }],
+      },
     });
     await f.prepareDeployment(agent);
   }
@@ -2186,402 +1876,17 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   assert.equal(f.gatewayReads(), 0);
 });
 
-test("Git Proxy selection preserves Gateway model registration and independent Git admission", async (t) => {
-  const addition = {
-    id: "docs",
-    binary: "/usr/bin/curl",
-    host: "docs.example.test",
-    ports: [{ from: 443, to: 443 }],
-  };
-  for (const [label, options, git = false, expected = 202] of [
-    ["Git-only Proxy", { installedProfile: "repository", policyEdges: true }],
-    ["Codex without repositories", { harness: "codex", installedProfile: "repository" }],
-    ["Git-only without remote registration", { installedProfile: "repository", registered: false }],
-    ["no Proxy", { credentialProxy: false, policyEdges: true }],
-    ["extra ordinary source", { installedProfile: "repository", extraOrdinary: true }, false, 409],
-    ["no Proxy with extra ordinary source", { credentialProxy: false, extraOrdinary: true }],
-    [
-      "Git with model",
-      { installedProfile: "repository", installationAccess: true, preview: true },
-      true,
-    ],
-    [
-      "Git enforcement unavailable",
-      {
-        installedProfile: "repository",
-        installationAccess: true,
-        preview: true,
-        registered: false,
-      },
-      true,
-      503,
-    ],
-  ]) {
-    const f = await protectedOpenShellComposition(t, {
-      ...options,
-      credentialGateway: true,
-      harness: git ? "codex" : (options.harness ?? "openclaw"),
-      sandboxNetworkPolicyCeiling: [addition],
-    });
-    // Exercise the shipped Compute gate through the deploy route. The original fixture
-    // bypassed it and missed rejection of ordinary Agents when a Proxy was configured.
-    const compute = kubernetesCompute(KubernetesComputeDriver, {
-      ...(options.credentialProxy !== false && { protectedDriver: f.protectedDriver }),
-      sandboxDriver: f.controller.selectedDriver("sandbox"),
-      credentialGatewayDriver: f.controller.selectedDriver("credential_gateway"),
-    });
-    f.controller.selectedDriver("compute").validateExecutionAdmission =
-      compute.validateExecutionAdmission.bind(compute);
-    const namespaceId = f.namespace.id;
-    const capabilitiesPath = `/namespaces/${namespaceId}/agent-capabilities`;
-    const outsider = await f.requestWithoutGrants(f.app);
-    assert.equal((await outsider("GET", capabilitiesPath)).status, 403, label);
-    for (const path of [capabilitiesPath, "/installation"]) {
-      const response = await f.request("GET", path);
-      assert.equal(response.status, 200, JSON.stringify(response));
-      assert.equal(response.data.capabilities.repositoryAccessRequired, undefined, label);
-      assert.ok(
-        response.data.capabilities.credentialSources.types.some(({ type }) => type === "openai"),
-      );
-    }
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(namespaceId, "provisioning", "ready"),
-    );
-    const secret = await f.request("POST", `/namespaces/${namespaceId}/secrets`, {
-      name: "model-key",
-      value: "synthetic-admission-model-key",
-    });
-    assert.equal(secret.status, 201, JSON.stringify(secret));
-    const created = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-      name: "fresh-model",
-      type: "openai",
-      config: {},
-      secrets: { api_key: secret.data.ref },
-    });
-    assert.equal(created.status, 201, `${label}: ${JSON.stringify(created)}`);
-    assert.equal(created.data.state, "ready");
-    assert.equal(created.data.egress, undefined);
-    assert.equal(f.providers.size, 1, "registration writes the model provider through the Gateway");
-    const sourceId = created.data.id;
-    const bindings = [{ sourceId }];
-    if (options.extraOrdinary) {
-      const extra = await f.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
-        name: "unrelated-model",
-        type: "openai",
-        secrets: { api_key: secret.data.ref },
-      });
-      assert.equal(extra.status, 201, JSON.stringify(extra));
-      bindings.push({ sourceId: extra.data.id });
-    }
-    const agent = await f.createAgent({
-      ...(git && {
-        repositoryBindings: [{ repositoryRef: "installation", profile: "github-installation" }],
-      }),
-      executionMode: "dedicated",
-      harnessAuth: { method: "credential_source", sourceId },
-      credentialSources: bindings,
-    });
-    const internal = await f.controller.getAgent(f.actorId, namespaceId, agent.id);
-    f.iamState.identities.push({
-      kind: "service_principal",
-      id: internal.servicePrincipalId,
-      namespaceId,
-    });
-    for (const binding of bindings) {
-      grantRole(f.iamState, internal.servicePrincipalId, {
-        id: `source-${agent.id}-${binding.sourceId}`,
-        namespaceId,
-        permissions: { credential_source: ["operate"] },
-        resource: { kind: "credential_source", id: binding.sourceId },
-      });
-    }
-    const path = `${f.collection}/${agent.id}`;
-    const deployed = await f.request("POST", `${path}/deploy`);
-    assert.equal(deployed.status, expected, `${label}: ${JSON.stringify(deployed)}`);
-    const revisions = (await f.request("GET", `${path}/revisions`)).data;
-    assert.equal(revisions.length, expected === 202 ? 1 : 0);
-    if (expected === 202) {
-      assert.equal(deployed.data.id, revisions[0].id);
-    }
-    if (!git && expected === 202) {
-      const revision = await f.state.transact((unit) =>
-        unit.revisions.findRevision(namespaceId, agent.id, revisions[0].id),
-      );
-      assert.deepEqual(revision.executionAdmission, { version: 2, mode: "unprotected" });
-      assert.equal(revision.egressPlan, undefined);
-      compute.validateExecutionAdmission(revision, "stored");
-      if (!options.extraOrdinary) {
-        const gateway = f.controller.selectedDriver("credential_gateway");
-        const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
-        let currentCatalog = catalog;
-        const catalogRead = t.mock.method(gateway, "listSourceTypes", async () => currentCatalog);
-        const attachment = t.mock.method(gateway, "attachForRevision");
-        // Stop at the first Kubernetes request, after real catalog/auth validation.
-        // This proves dispatch eligibility, not cluster readiness or model execution.
-        // A definitive 4xx stops the real Driver's retry loop after one request.
-        const placementReached = Object.assign(new Error("Kubernetes namespace lookup reached"), {
-          statusCode: 400,
-        });
-        let placementReads = 0;
-        compute.apiClients = Promise.resolve({
-          core: {
-            async listNamespace() {
-              placementReads += 1;
-              throw placementReached;
-            },
-          },
-        });
-        try {
-          for (const change of [
-            {},
-            { rotation: "refresh" },
-            { deviceAuthorization: { harnessId: "codex" } },
-          ]) {
-            currentCatalog = catalog.map((type) =>
-              type.type === "openai" ? { ...type, ...change } : type,
-            );
-            const refused = options.credentialProxy !== false && Object.keys(change).length > 0;
-            for (const lifecycle of ["prepareRevision", "activateRevision"]) {
-              const beforePlacement = placementReads;
-              const beforeCatalog = catalogRead.mock.callCount();
-              await assert.rejects(
-                compute[lifecycle](revision),
-                refused
-                  ? {
-                      message:
-                        "The selected Credential Proxy cannot preserve this credential source's lifecycle.",
-                    }
-                  : (error) => error === placementReached,
-                `${label}: ${lifecycle}: ${JSON.stringify(change)}`,
-              );
-              assert.equal(catalogRead.mock.callCount(), beforeCatalog + 1);
-              assert.equal(placementReads, beforePlacement + (refused ? 0 : 1));
-              assert.equal(attachment.mock.callCount(), 0);
-            }
-          }
-        } finally {
-          catalogRead.mock.restore();
-          attachment.mock.restore();
-        }
-      }
-      if (options.credentialProxy !== false) {
-        for (const invalid of [
-          { ...revision, harnessAuth: { method: "runtime" }, credentialSources: [] },
-          {
-            ...revision,
-            credentialSources: [...revision.credentialSources, ...revision.credentialSources],
-          },
-          {
-            ...revision,
-            harnessAuth: { ...revision.harnessAuth, credentialGatewayId: "other-owner" },
-          },
-          { ...revision, harnessAuth: { ...revision.harnessAuth, sourceId: "other-source" } },
-        ]) {
-          assert.throws(
-            () => compute.validateExecutionAdmission(invalid, "stored"),
-            /exact paired Compute release/,
-          );
-        }
-      }
-      assert.equal(f.gatewayReads(), 0, "ordinary model use does not probe the Proxy");
-    } else if (expected === 202) {
-      const revision = await f.state.read((unit) =>
-        unit.revisions.findRevision(namespaceId, agent.id, revisions[0].id),
-      );
-      assert.equal(revision.executionAdmission.mode, "protected");
-      assert.deepEqual(revision.egressPlan.harnessCredentialSource, revision.harnessAuth);
-      assert.equal(revision.egressPlan.harnessCredentialSource.sourceId, sourceId);
-      assert.ok(revision.egressPlan.repositoryGit);
-      compute.validateExecutionAdmission(revision, "stored");
-    } else if (expected === 503) {
-      assert.equal(deployed.error.message, PROXY_REGISTRATION_UNAVAILABLE);
-    } else if (expected === 409) {
-      assert.equal(deployed.error.message, CredentialSourceUnprotectedError.description);
-    }
-    if (expected === 202 || expected === 409) {
-      const protectedExecution = git || expected === 409;
-      const policyPath = `${path}/sandbox-policy/networking`;
-      const enabled = await f.request("PATCH", `${policyPath}/editing`, { enabled: true });
-      assert.equal(enabled.status, 200, JSON.stringify(enabled));
-      const view = await f.request("GET", policyPath);
-      assert.equal(view.data.protectedExecution, protectedExecution);
-      const input = { expectedVersion: view.data.policy.version, additions: [addition] };
-      const validation = await f.request("POST", `${policyPath}/validate`, input);
-      assert.equal(validation.status, protectedExecution ? 409 : 200, JSON.stringify(validation));
-      if (protectedExecution) {
-        assert.equal(validation.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
-      } else {
-        assert.equal(validation.data.success, true);
-      }
-      const saved = await f.request("PUT", policyPath, input);
-      assert.equal(saved.status, protectedExecution ? 409 : 200, JSON.stringify(saved));
-      if (protectedExecution) {
-        assert.equal(saved.error.code, "SANDBOX_POLICY_PROTECTED_EXECUTION");
-      }
-      if (options.policyEdges) {
-        const revisionId = revisions[0].id;
-        await f.state.transact((unit) =>
-          unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revisionId),
-        );
-        if (options.installedProfile) {
-          const gateway = f.controller.selectedDriver("credential_gateway");
-          const catalog = await gateway.listSourceTypes({ signal: AbortSignal.timeout(1000) });
-          // Withdrawal or lifecycle changes must revoke the ordinary-model exception,
-          // even when the source identity and Harness authentication stay unchanged.
-          for (const change of [
-            undefined,
-            { rotation: "refresh" },
-            { deviceAuthorization: { harnessId: "codex" } },
-          ]) {
-            t.mock.method(gateway, "listSourceTypes", async () =>
-              change === undefined
-                ? catalog.filter((type) => type.type !== "openai")
-                : catalog.map((type) => (type.type === "openai" ? { ...type, ...change } : type)),
-            );
-            const refused = await f.request("GET", policyPath);
-            assert.equal(refused.status, 200, JSON.stringify(refused));
-            assert.equal(refused.data.protectedExecution, true);
-            const refusedInput = {
-              expectedVersion: refused.data.policy.version,
-              additions: [addition],
-            };
-            assert.equal(
-              (await f.request("POST", `${policyPath}/validate`, refusedInput)).status,
-              409,
-            );
-            assert.equal((await f.request("PUT", policyPath, refusedInput)).status, 409);
-            const afterRefusal = await f.request("GET", policyPath);
-            assert.equal(afterRefusal.status, 200, JSON.stringify(afterRefusal));
-            assert.equal(afterRefusal.data.policy.version, refused.data.policy.version);
-            assert.deepEqual(afterRefusal.data.policy, refused.data.policy);
-            const redeploy = await f.request("POST", `${path}/deploy`);
-            assert.equal(redeploy.status, 409, JSON.stringify(redeploy));
-            if (change === undefined) {
-              assert.match(redeploy.error.message, /type|offered/i);
-            }
-            const afterDeploy = await f.request("GET", `${path}/revisions`);
-            assert.equal(afterDeploy.status, 200, JSON.stringify(afterDeploy));
-            assert.deepEqual(afterDeploy.data, revisions);
-          }
-        }
-      }
-    }
-  }
-});
-
-test("Git-only compatibility does not enroll plugin or OAuth refresh credentials", async (t) => {
-  const f = await protectedOpenShellComposition(t, {
-    installedProfile: "repository",
-    credentialGateway: true,
-    credentialRefresh: true,
-    toolBinaries: ["/usr/bin/curl"],
-  });
-  const catalog = await f.controller.selectedDriver("credential_gateway").listSourceTypes({
-    signal: AbortSignal.timeout(1000),
-  });
-  assert.ok(catalog.some(({ type }) => type === "bearer-token"));
-  const oauth = catalog.find((type) => type.deviceAuthorization !== undefined);
-  assert.ok(oauth);
+test("Git-only Proxy does not offer model Sources or device authorization", async (t) => {
+  const f = await protectedOpenShellComposition(t, { installedProfile: "repository" });
   const visible = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
   assert.equal(visible.status, 200);
-  assert.equal(
-    visible.data.capabilities.credentialSources.types.some(({ type }) => type === "bearer-token"),
-    false,
+  const capabilities = visible.data.capabilities;
+  assert.equal(capabilities.deviceAuthorization, undefined);
+  assert.equal(capabilities.modelCredentialSourcePresets, undefined);
+  assert.ok(
+    !(capabilities.credentialSources?.types ?? []).some(({ type }) => type === "bearer-token"),
   );
-  assert.equal(
-    visible.data.capabilities.credentialSources.types.some(({ type }) => type === oauth.type),
-    false,
-  );
-  await f.state.transact((unit) =>
-    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-  );
-  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-    name: "plugin-token",
-    value: "synthetic-plugin-token",
-  });
-  assert.equal(secret.status, 201);
-  const path = `/namespaces/${f.namespace.id}/credential-sources`;
-  const refused = await f.request("POST", path, {
-    name: "plugin",
-    type: "bearer-token",
-    config: { host: "plugin.example.test", env_var: "PLUGIN_TOKEN" },
-    secrets: { token: secret.data.ref },
-  });
-  assert.equal(refused.status, 409, JSON.stringify(refused));
-  assert.match(refused.error.message, /cannot protect bearer-token sources/);
-  const refreshRefused = await f.request("POST", path, {
-    name: "oauth",
-    type: oauth.type,
-    config: {},
-    secrets: {},
-  });
-  assert.equal(refreshRefused.status, 409, JSON.stringify(refreshRefused));
-  assert.match(refreshRefused.error.message, /cannot preserve.*lifecycle/);
-  t.mock.method(f.controller.selectedDriver("credential_gateway"), "listSourceTypes", async () =>
-    catalog.map((type) =>
-      type.type === "openai" ? { ...type, deviceAuthorization: { harnessId: "codex" } } : type,
-    ),
-  );
-  const deviceCatalog = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-  assert.equal(deviceCatalog.status, 200);
-  assert.equal(
-    deviceCatalog.data.capabilities.credentialSources.types.some((type) => type.type === "openai"),
-    false,
-  );
-  const deviceRefused = await f.request("POST", path, {
-    name: "model-device-login",
-    type: "openai",
-    secrets: { api_key: secret.data.ref },
-  });
-  assert.equal(deviceRefused.status, 409, JSON.stringify(deviceRefused));
-  assert.match(deviceRefused.error.message, /cannot preserve.*lifecycle/);
   assert.equal(f.providers.size, 0);
-  assert.deepEqual((await f.request("GET", path)).data, []);
-});
-
-test("full and unknown Proxy profiles never enroll ordinary sources through Gateway fallback", async (t) => {
-  for (const [options, status] of [
-    [{ installedProfile: "execution", advertised: true }, 409],
-    [{ installedProfile: "execution", registered: false }, 409],
-    [{}, 409],
-    [{ registered: false }, 503],
-    [{ advertised: true }, 503],
-  ]) {
-    const f = await protectedOpenShellComposition(t, { ...options, credentialGateway: true });
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
-    const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-      name: "model-key",
-      value: "synthetic-model-key",
-    });
-    assert.equal(secret.status, 201);
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const result = await f.request("POST", path, {
-      name: "ordinary-model",
-      type: "openai",
-      secrets: { api_key: secret.data.ref },
-    });
-    // The installed bundled provider is retired. Unknown compositions must still pass
-    // protected admission (this fixture deliberately has no versioned Secret reader).
-    assert.equal(result.status, status, JSON.stringify(result));
-    assert.equal(f.providers.size, 0);
-    assert.deepEqual((await f.request("GET", path)).data, []);
-    if (options.installedProfile) {
-      assert.match(result.error.message, /retired new uses/);
-      const listed = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
-      assert.equal(listed.status, 200);
-      assert.equal(
-        listed.data.capabilities.credentialSources.types.some(({ type }) => type === "openai"),
-        false,
-      );
-    }
-  }
-});
-
-registerProtectedRepositoryPolicyDeploymentCase({
-  protectedOpenShellComposition,
-  seedRepositoryPolicy,
 });
 
 test("runtime-authenticated Dedicated Codex requires a qualified Proxy without sources or repositories", async (t) => {
@@ -2607,7 +1912,6 @@ test("runtime-authenticated Dedicated Codex requires a qualified Proxy without s
       // Namespace lifecycle binding. Gateway discovery is simulated; no cluster is started.
       const f = await protectedOpenShellComposition(t, {
         ...options,
-        credentialGateway: options.installedProfile !== undefined,
         runtimeAuthCompute: true,
       });
       const compute = f.controller.selectedDriver("compute");
@@ -2627,7 +1931,7 @@ test("runtime-authenticated Dedicated Codex requires a qualified Proxy without s
         executionMode: "dedicated",
         harnessAuth: { method: "runtime" },
         credentialSources: [],
-        repositoryBindings: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
       });
       await f.prepareDeployment(agent);
       const path = `${f.collection}/${agent.id}`;
@@ -2666,51 +1970,6 @@ test("runtime-authenticated Dedicated Codex requires a qualified Proxy without s
       assert.equal(enrollment.inference, false);
       compute.validateExecutionAdmission(revision, "stored");
     });
-  }
-});
-
-test("explicit live adoption still requires a qualified Proxy", async (t) => {
-  for (const [label, options, status, message] of [
-    ["Git-only", {}, 409, CredentialProxyRepositoryOnlyError.description],
-    ["missing registration", { registered: false }, 503, PROXY_REGISTRATION_UNAVAILABLE],
-    ["wrong protocol", { extension: { protocol_major: 2 } }, 503, PROXY_REGISTRATION_UNAVAILABLE],
-    [
-      "partial capabilities",
-      { extension: { required_capabilities: [...openShellExchangeCapabilities] } },
-      503,
-      PROXY_REGISTRATION_UNAVAILABLE,
-    ],
-  ]) {
-    const f = await protectedOpenShellComposition(t, {
-      ...options,
-      credentialGateway: true,
-      credentialProxy: false,
-    });
-    await f.state.transact((unit) =>
-      unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
-    );
-    const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
-      name: "model-key",
-      value: "synthetic-model-key",
-    });
-    assert.equal(secret.status, 201, JSON.stringify(secret));
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const source = await f.request("POST", path, {
-      name: "model",
-      type: "openai",
-      secrets: { api_key: secret.data.ref },
-    });
-    assert.equal(source.status, 201, JSON.stringify(source));
-    f.controller.selectDriver("credential_proxy", f.protectedDriver.require("credential_proxy").id);
-    const adoption = await f.request("PATCH", `${path}/${source.data.id}`, {
-      adoption: "live",
-      authorityScope: "execution",
-    });
-    assert.equal(adoption.status, status, `${label}: ${JSON.stringify(adoption)}`);
-    assert.equal(adoption.error.message, message, label);
-    const unchanged = await f.request("GET", `${path}/${source.data.id}`);
-    assert.equal(unchanged.data.egress, undefined);
-    assert.equal(unchanged.data.status.state, "ready");
   }
 });
 

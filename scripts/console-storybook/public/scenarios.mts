@@ -41,7 +41,7 @@ import {
   create,
   createSlackBotSecret,
   presetSecretsPath,
-  readyForm,
+  provisionableForm,
 } from "./create-agent-form-data.mts";
 import {
   calendarPlugin,
@@ -732,6 +732,10 @@ const authoredScenarios = {
       "Tab to Research assistant. Switch to another window, then return to start the list refresh.",
       "While the list refreshes, Tab to the Namespace selector. Wait for the list to return and check that the selector still has focus.",
       "Press Tab to continue from the selector, then Shift+Tab to return to it.",
+      "Reset the story. Type Research in Search Agents and press Shift+Left Arrow three times to select rch backwards. Switch away and back, then switch away again while the simulated list refresh is pending. Stay away for 6.5 seconds.",
+      "Return and wait for the next successful check. Search Agents has focus with rch still selected. Type X and check that the query becomes ReseaX. Repeat at desktop and phone widths.",
+      "Reset the story. Type Research in Search Agents, select rch backwards, then switch windows and return. Stay in the foreground while the delayed healthy check is pending.",
+      "Tab to the Namespace selector, then click the plain Namespace · Research line below the Agents heading. When the check finishes, type X without clicking or tabbing. Search Agents must not regain focus, and the query must remain Research. Repeat at desktop and phone widths.",
     ],
   } satisfies LocalScenario,
   agentsRowRefocusStopped: {
@@ -797,6 +801,26 @@ const authoredScenarios = {
       "Press Enter. Stay on No matching Agents. Press Escape to restore the list.",
       "Press Down twice to focus the second name, then Up to focus the first. Escape returns to search.",
       "Type Research and press Enter to open Research assistant. Use browser Back. The query remains and the focused Agent name is visible.",
+    ],
+  } satisfies LocalScenario,
+  agentsSearchRetry: {
+    group: "Pages/Agents",
+    name: "Resume a search after Retry",
+    rules: [
+      {
+        method: "GET",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description: "The first Agents list refresh after returning to the tab fails once.",
+    steps: [
+      "Open the preview in its own tab and wait for the Agents list. Type Research in Search Agents, then press Shift+Left three times to select rch.",
+      "Switch to another browser tab and return. When Request unavailable appears, confirm Retry has focus.",
+      "Press Enter. Check that Search Agents has focus, Research assistant is visible, and Research still has its final three letters selected.",
+      "Type X without moving focus. Check that the query becomes ReseaX and the list shows No matching Agents.",
     ],
   } satisfies LocalScenario,
   noNamespaces: {
@@ -1816,6 +1840,28 @@ const authoredScenarios = {
     description: "The Agent was unavailable, so the editor cannot assume AGENTS.md is empty.",
     steps: ["Choose Reload AGENTS.md. Once its contents load, edit the file to enable Save."],
   } satisfies LocalScenario,
+  workspaceUnreachable: {
+    group: "Components/Workspace",
+    name: "Gateway unreachable",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    // The gateway answers no file's first read. Each read after that succeeds.
+    rules: ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => ({
+      suffix: `/workspace/files/${name}`,
+      method: "GET",
+      status: 503,
+      code: "DEPENDENCY_UNAVAILABLE",
+      message: "Workspace access is unavailable.",
+      once: true,
+    })),
+    description:
+      "The Agent's gateway answers none of the four file reads. One notice above the files names the four files, each file shows the reason under its editor, and no file is marked Needs attention.",
+    steps: [
+      "Switch between the four files, or use Workspace file on a phone. Each editor is disabled with the reason and request ID under it, and no file has an indicator.",
+      "Choose Retry. The notice goes, the four files load, and focus moves to the selected file.",
+    ],
+    gap: "Simulated files; no live Agent gateway. The browser test covers a Retry that fails again, a refusal for one file beside the notice, and a file with unsaved edits or an unknown save, which Retry does not read.",
+  } satisfies LocalScenario,
   workspaceUnknown: {
     group: "Components/Workspace",
     name: "Write outcome unknown",
@@ -1966,7 +2012,7 @@ const authoredScenarios = {
     description:
       "The confirmation names what will be permanently deleted and what stays in the Namespace. Open View separate cleanup commands to find the full resource IDs.",
     steps: [
-      "Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
+      "Review the Agent name and ID. Press Enter on Copy Configuration command, then on Copy Secret command if shown. Only the latest row shows feedback. If copying fails, its full command is selected. Choose Cancel.",
     ],
   } satisfies LocalScenario,
   deleting: {
@@ -2118,6 +2164,29 @@ const authoredScenarios = {
       "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
     ],
   } satisfies LocalScenario,
+  deletionStatusUnavailable: {
+    group: "Components/Deletion",
+    name: "Status unavailable after deletion request",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 1300,
+        status: 404,
+        code: "NOT_FOUND",
+      },
+    ],
+    description:
+      "An Agent is already marked for deletion. Its next status check returns 404, and the Agents list is still readable.",
+    steps: [
+      "Wait for the status check to return you to Agents. Read the notice above the list. It says deletion was requested and cleanup could not be confirmed.",
+      "Check that the Agent still shows Deleting. Open Namespaces, then return to Agents and check that the notice has cleared.",
+    ],
+  } satisfies LocalScenario,
   createFlow: {
     group: "Flows",
     name: "Create and deploy an Agent",
@@ -2138,7 +2207,7 @@ const authoredScenarios = {
     group: "Flows",
     name: "Choose provider, harness, and authentication",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
@@ -2197,7 +2266,7 @@ const authoredScenarios = {
     emptyAgents: true,
     transport: false,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
@@ -2425,7 +2494,7 @@ const authoredScenarios = {
     actions: [click("Stop Agent")],
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
     steps: [
-      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
+      "Review the Agent name and ID, then confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
       "For the revision clearing after Stop, use Flows / Stop an Agent.",
     ],
   } satisfies LocalScenario,

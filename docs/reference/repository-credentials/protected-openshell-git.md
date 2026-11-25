@@ -52,7 +52,7 @@ Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 Startup and the upgrade check refuse other values with
 `CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
 inputs select the registry ConfigMap, worker-only App-key and existing custody
-Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
+Secrets. Preserve the custody key across restarts;
 never put either key in Agent configuration or Helm values.
 
 ## Prepare the request-phase service
@@ -166,7 +166,7 @@ for membership and permissions, and the
 for policy. Prefer repository scope. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+`profile: github-installation` in the Agent's `repositoryAccess.repositories`, as its only
 binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
 `github_installation` support. The bundled OpenShell Credential Proxy requires
 `observedHookPreviewWorkspace`; otherwise deploy answers

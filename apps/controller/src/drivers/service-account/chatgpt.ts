@@ -2,6 +2,7 @@ import type {
   ServiceAccount,
   ServiceAccountCredential,
   ServiceAccountDriver,
+  StaticCredentialSource,
 } from "@openclaw-enterprise/contracts";
 import {
   DependencyUnavailableError,
@@ -9,43 +10,9 @@ import {
   PostgresPlatformState,
   ResourceConflictError,
   ScopeViolationError,
-  ServiceAccountCredentialSecretExistsError,
 } from "@openclaw-enterprise/occ";
 import type { Backend } from "@openclaw-enterprise/contracts";
 import type { ChatGPTClient } from "../../backends/chatgpt.ts";
-
-type SecretReference = ServiceAccountCredential["secretRef"];
-
-interface CredentialStorage {
-  storeServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    /** Stored beside the token, so a Secret an issuance leaves behind names what to revoke. */
-    readonly credentialId: string;
-    readonly accessToken: string;
-  }): Promise<SecretReference>;
-  /** The account's token Secret and the provider credential it records; never the token. */
-  findServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-  }): Promise<
-    | {
-        readonly secretNamespace: string;
-        readonly secretRef: SecretReference;
-        readonly credentialId: string | undefined;
-      }
-    | undefined
-  >;
-  deleteServiceAccountCredential(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly secretRef: SecretReference;
-    /** Set by failed issuance compensation: the Secret must still hold this token. */
-    readonly accessToken?: string;
-    /** When supplied, the Secret must also record this exact credential. */
-    readonly credentialId?: string;
-  }): Promise<void>;
-}
 
 interface ServiceAccountBinding {
   readonly backendId: string;
@@ -63,13 +30,11 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   private readonly client: ChatGPTClient;
   private readonly controller: OpenClawController;
   private readonly state: PostgresPlatformState;
-  private readonly compute: CredentialStorage;
 
   constructor(
     backend: Backend<ChatGPTClient>,
     controller: OpenClawController,
     state: PostgresPlatformState,
-    compute: CredentialStorage,
   ) {
     const id = backend.drivers.service_account;
     if (typeof id !== "string" || id.trim().length === 0) {
@@ -78,7 +43,6 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     this.client = backend.client;
     this.controller = controller;
     this.state = state;
-    this.compute = compute;
     this.backendId = backend.id;
     this.id = id;
   }
@@ -112,53 +76,89 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   }
 
   async createCredential(account: ServiceAccount): Promise<ServiceAccountCredential> {
-    const linked = await this.findBinding(account);
+    let linked = await this.findBinding(account);
     if (linked === undefined) {
       throw new ScopeViolationError("The service account has no exact backend binding.");
     }
-    if (linked.externalCredentialId !== null || account.credential !== undefined) {
+    if (account.credential !== undefined) {
       throw new ResourceConflictError("The service account already has a credential.");
     }
-    await this.reclaimUnrecordedCredential(account, false);
-
+    const originalCredentialId = linked.externalCredentialId;
+    if (linked.externalCredentialId !== null) {
+      await this.client.deleteCredential({
+        accountId: linked.externalAccountId,
+        credentialId: linked.externalCredentialId,
+      });
+      await this.query(
+        `UPDATE occ.service_account_driver_bindings SET external_credential_id = NULL
+         WHERE service_account_id = $1 AND namespace_id = $2 AND driver_id = $3
+           AND external_credential_id = $4`,
+        [account.id, account.namespaceId, this.id, linked.externalCredentialId],
+      );
+      linked = { ...linked, externalCredentialId: null };
+    }
+    const owner = this.controller.selectedDriver("token_service");
     const credential = await this.client.createCredential({
       accountId: linked.externalAccountId,
       name: `occ-${account.id}`,
     });
-    let secretRef: SecretReference | undefined = undefined;
-    // Rollback releases the account row lock before compensation. Revoke the exact
-    // provider credential first, then remove only its receipt; another issuance may
-    // already have stored a different Secret under the same deterministic name.
+    let source: StaticCredentialSource | undefined = undefined;
+    // The provider owns revocation. Never remove custody before revocation is confirmed.
     this.controller.registerRollback(async () => {
-      await this.client.deleteCredential({
-        accountId: linked.externalAccountId,
-        credentialId: credential.id,
-      });
-      const reference =
-        secretRef ??
-        (
-          await this.compute.findServiceAccountCredential({
-            namespaceId: account.namespaceId,
-            serviceAccountId: account.id,
-          })
-        )?.secretRef;
-      if (reference !== undefined) {
-        await this.compute.deleteServiceAccountCredential({
-          namespaceId: account.namespaceId,
-          serviceAccountId: account.id,
-          secretRef: reference,
-          accessToken: credential.accessToken,
+      try {
+        await this.client.deleteCredential({
+          accountId: linked.externalAccountId,
           credentialId: credential.id,
         });
+      } catch (error) {
+        // A known failed compensation must retain the exact private issuer ID.
+        await this.state.transact(async (unit) => {
+          const retained = await this.state.queryInTransaction(
+            unit,
+            `UPDATE occ.service_account_driver_bindings SET external_credential_id = $4
+             WHERE service_account_id = $1 AND namespace_id = $2 AND driver_id = $3
+               AND external_credential_id IS NOT DISTINCT FROM $5`,
+            [account.id, account.namespaceId, this.id, credential.id, originalCredentialId],
+          );
+          if (retained.rowCount !== 1) {
+            throw new DependencyUnavailableError(
+              "The exact ServiceAccount issuer receipt could not be retained.",
+            );
+          }
+          if (source) {
+            await unit.serviceAccounts.updateCredential(account.namespaceId, account.id, {
+              kind: "access_token",
+              sourceId: source.id,
+            });
+          }
+        });
+        throw error;
+      }
+      if (source) {
+        await this.removeSource(source);
       }
     });
-
-    secretRef = await this.compute.storeServiceAccountCredential({
-      namespaceId: account.namespaceId,
-      serviceAccountId: account.id,
-      credentialId: credential.id,
-      accessToken: credential.accessToken,
-    });
+    const created = await owner.createSource(
+      {
+        type: "static",
+        namespaceId: account.namespaceId,
+        name: `${account.name.slice(0, 145)} managed token ${account.id}`,
+        lifecycleConfig: { settings: {} },
+        secret: credential.accessToken,
+        config: { provider_preset: "codex-pat" },
+      },
+      AbortSignal.timeout(30_000),
+    );
+    if (
+      created.ownerCapability !== "token_service" ||
+      created.type !== "static" ||
+      created.namespaceId !== account.namespaceId ||
+      created.state !== "ready" ||
+      created.config.provider_preset !== "codex-pat"
+    ) {
+      throw new DependencyUnavailableError("The selected TokenService returned an invalid Source.");
+    }
+    source = created;
 
     const result = await this.query(
       `UPDATE occ.service_account_driver_bindings
@@ -169,7 +169,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     if (result.rowCount !== 1) {
       throw new DependencyUnavailableError("The exact service-account Driver binding is missing.");
     }
-    return { kind: "access_token", secretRef };
+    return { kind: "access_token", sourceId: source.id };
   }
 
   async delete(account: ServiceAccount): Promise<void> {
@@ -178,79 +178,25 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
       return;
     }
     if (linked.externalCredentialId !== null) {
-      if (account.credential?.kind !== "access_token") {
-        throw new ScopeViolationError("The exact service-account credential is missing.");
-      }
       await this.client.deleteCredential({
         accountId: linked.externalAccountId,
         credentialId: linked.externalCredentialId,
       });
-      await this.compute.deleteServiceAccountCredential({
-        namespaceId: account.namespaceId,
-        serviceAccountId: account.id,
-        secretRef: account.credential.secretRef,
-      });
-    } else {
-      await this.reclaimUnrecordedCredential(account, true);
     }
     await this.client.deleteServiceAccount(linked.externalAccountId);
   }
 
-  /**
-   * Removes what an issuance that never committed left behind: its account-owned token Secret
-   * and the provider credential that Secret records (finding 1397). A crash, or an unknown
-   * COMMIT that really failed, skips the compensations, so both stay. Callers hold the OCC
-   * account row lock, and an issuance records its credential before releasing that lock, so
-   * a Secret found while that lock is held and no credential is recorded belongs to no
-   * committed issuance. The binding is reread after the Secret, on this transaction's own
-   * connection: if the session (and with it the lock) was lost during the Kubernetes reads, a
-   * later issuance may have committed that Secret, and the read fails or shows its credential.
-   * The credential is revoked first, under this account's own provider path (so no other
-   * account's credential can be named), and the Secret is deleted only while it still records
-   * that credential, so a failure leaves the Secret to retry from. A Secret recording no
-   * credential is removed only when the account itself is being deleted, since deleting the
-   * provider account follows; issuance answers the 409 that names it for an operator, before
-   * issuing anything.
-   */
-  private async reclaimUnrecordedCredential(
-    account: ServiceAccount,
-    deletingAccount: boolean,
-  ): Promise<void> {
-    const leftover = await this.compute.findServiceAccountCredential({
-      namespaceId: account.namespaceId,
-      serviceAccountId: account.id,
+  private async removeSource(source: StaticCredentialSource): Promise<void> {
+    await this.controller.transact(async (unit) => {
+      await unit.credentialSources.markCredentialSourceDeleting(source.namespaceId, source.id);
     });
-    if (leftover === undefined) {
-      return;
-    }
-    const linked = await this.findBinding(account);
-    if (linked === undefined || linked.externalCredentialId !== null) {
-      throw new ResourceConflictError("The service account credential changed during cleanup.");
-    }
-    if (leftover.credentialId === undefined) {
-      if (!deletingAccount) {
-        throw new ServiceAccountCredentialSecretExistsError(
-          leftover.secretNamespace,
-          leftover.secretRef.name,
-        );
-      }
-      await this.compute.deleteServiceAccountCredential({
-        namespaceId: account.namespaceId,
-        serviceAccountId: account.id,
-        secretRef: leftover.secretRef,
-      });
-      return;
-    }
-    await this.client.deleteCredential({
-      accountId: linked.externalAccountId,
-      credentialId: leftover.credentialId,
-    });
-    await this.compute.deleteServiceAccountCredential({
-      namespaceId: account.namespaceId,
-      serviceAccountId: account.id,
-      secretRef: leftover.secretRef,
-      credentialId: leftover.credentialId,
-    });
+    await this.controller.selectedDriver("token_service").removeSource(
+      {
+        sourceRef: { kind: "credential_source", namespaceId: source.namespaceId, id: source.id },
+        tokenServiceInstanceId: source.tokenServiceInstanceId,
+      },
+      AbortSignal.timeout(30_000),
+    );
   }
 
   private async findBinding(account: ServiceAccount): Promise<ServiceAccountBinding | undefined> {
@@ -288,12 +234,9 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
   }
 }
 
-export function createChatGPTServiceAccountDriverFactory(
-  backend: Backend<ChatGPTClient>,
-  compute: CredentialStorage,
-) {
+export function createChatGPTServiceAccountDriverFactory(backend: Backend<ChatGPTClient>) {
   return (controller: OpenClawController, state: PostgresPlatformState): void => {
-    const driver = new ChatGPTServiceAccountDriver(backend, controller, state, compute);
+    const driver = new ChatGPTServiceAccountDriver(backend, controller, state);
     controller.registerDriver(driver);
     if (controller.selectDriver("service_account", driver.id) !== driver) {
       throw new Error("The configured ServiceAccount Driver was not selected correctly.");
