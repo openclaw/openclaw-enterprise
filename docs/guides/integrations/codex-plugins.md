@@ -30,23 +30,25 @@ Copy the deployment ID from the Console URL’s `revision` parameter. Run `wait_
 </Accordion>
 <Accordion title="CLI">
 
-### Discover Linear in the account catalog
+<a id="discover-linear-in-the-account-catalog"></a>
 
-Use the ready Credential Gateway source for the connected service account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+### Find Linear in the curated catalog
+
+The quickstarts select `openai-curated`. Search the [curated catalog](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Omit the Secret reference because this catalog rejects discovery credentials.
+The curated catalog returns one page. A match does not confirm that the service
+account can use Linear. Keep human approval for write actions.
 
 ```bash
-# POST $base/agents/plugins: use the model Secret reference to search this account.
-request GET "$base/credential-sources/${modelSource:?}" |
-  jq -e --arg ns "$namespace" '.data|select(.type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")|.secrets.access_token|select(.kind=="secret" and .namespaceId==$ns)' > "$RUN_DIR/catalog-secret-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{harnessId:"codex",secretRef:.,q:"linear"} +
-    (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-secret-ref" |
+  jq -n --arg cursor "$cursor" '{harnessId:"codex",q:"linear"} +
+    (if $cursor=="" then {} else {cursor:$cursor} end)' |
     request POST "$base/agents/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")
   if [[ -n $plugin ]]; then break; fi
   cursor=$(jq -r '.data.nextCursor // empty' "$RUN_DIR/plugins")
-  if [[ -z $cursor ]]; then echo 'Linear is unavailable for this account.' >&2; exit 1; fi
+  if [[ -z $cursor ]]; then echo 'Linear is not selectable in the curated catalog.' >&2; exit 1; fi
 done
 printf 'Linear plugin ID: %s\n' "$plugin"
 ```
