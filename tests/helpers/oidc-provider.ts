@@ -1,6 +1,6 @@
 import { createHash, randomBytes, type KeyObject, type webcrypto } from "node:crypto";
 import type { OidcTokenAuth } from "../../apps/controller/src/auth/oidc.ts";
-import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { idTokenSigner, rsaSigningKey } from "./id-token.ts";
 
 export interface OidcIssuerEndpoints {
   issuer: string;

@@ -49,7 +49,7 @@ import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   backendFixtures,
 } from "../helpers/console-app.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
 import { installDeviceTokenService } from "../helpers/device-token-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";

@@ -135,7 +135,7 @@ export async function oauthCredentialSourceMetadata(
     source.connectionTemplateId,
     source.consent.version,
   );
-  const client = await view.connectionTemplates.findCredentialClient(source.consent.oauthClientId);
+  const client = await view.credentialClients.find(source.consent.oauthClientId);
   if (
     !version ||
     !client ||

@@ -15,10 +15,10 @@ import {
   modelCredentialRejectedAsk,
 } from "./access-reasons.mjs";
 import { agentSaveDenial, agentSaveGap, namespacePath } from "./list.mjs";
-import { logTextDenied } from "./logs.mjs";
+import { runtimeReadDenials } from "./logs.mjs";
 
 type RecoveryTab = "credentials" | "configuration" | "logs";
-type RecoveryContext = Parameters<typeof logTextDenied>[0] & {
+type RecoveryContext = Parameters<typeof runtimeReadDenials>[0] & {
   agentId: string;
   isCurrent(): boolean;
   request(path: string): Promise<unknown>;
@@ -229,9 +229,15 @@ export function createDeploymentRecovery(
       : `${version} did not deploy successfully`;
     // Offer only links the caller's permission answer and this tab's remembered denials
     // allow; the API still authorizes each page they open (finding 1458).
-    const logsAllowed =
-      !logTextDenied(context, agentId) &&
+    const denied = runtimeReadDenials(context, agentId, latest.id);
+    const canOpenLogs =
+      !denied.textRefused &&
       !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
+    const logsAllowed = canOpenLogs && !denied.text && permissions?.readLogs !== false;
+    let logsLabel = logsAllowed ? `Open ${version} Logs` : null;
+    if (canOpenLogs && !logsAllowed && permissions?.operate === true && !denied.status) {
+      logsLabel = `View ${version} runtime status in Logs`;
+    }
     // Agent permissions can support opening a draft; they do not grant Configuration access.
     const configurationId = agent.configurationId;
     const configurationAvailable =
@@ -300,7 +306,7 @@ export function createDeploymentRecovery(
       impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
     }
     if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
-      // Without the Logs link this is the reader's only way to the logs (finding 1484).
+      // Runtime status alone cannot show the failed version’s log text.
       impact += " Ask someone with log access to check the failed version’s logs.";
     }
     // The code ends the first sentence, so the reader can match it to Logs and to occ.
@@ -318,13 +324,13 @@ export function createDeploymentRecovery(
       (canOpenConfiguration && !configurationEditable
         ? "Open draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
-    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}/${unavailable}`;
+    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsLabel}/${deployAgain}/${unavailable}`;
     if (recoveryTarget !== actionsFor) {
       recoveryTarget = actionsFor;
       const again = deployAgain
         ? versionLink("Deploy again", "draft", "configuration", { deploy: true })
         : null;
-      const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
+      const logs = logsLabel ? versionLink(logsLabel, latest.id, "logs") : null;
       const next = tab && nextLabel ? versionLink(nextLabel, "draft", tab) : null;
       // Put the fix first when the viewer can edit the unavailable model.
       const actions = (
@@ -333,7 +339,28 @@ export function createDeploymentRecovery(
       actions.forEach((action, index) => {
         action.className = index === 0 ? "button button--primary" : "button";
       });
-      recoveryActions.replaceChildren(...actions);
+      // Keep a surviving focused link attached. Deploy again and Open draft can share a URL
+      // but have different click handlers, so the label must match too.
+      const focused = document.activeElement;
+      const retained =
+        focused instanceof HTMLAnchorElement && focused.parentElement === recoveryActions
+          ? actions.find(
+              (link) => link.href === focused.href && link.textContent === focused.textContent,
+            )
+          : undefined;
+      if (focused && retained) {
+        for (const child of Array.from(recoveryActions.children)) {
+          if (child !== focused) {
+            child.remove();
+          }
+        }
+        const index = actions.indexOf(retained);
+        focused.className = retained.className;
+        focused.before(...actions.slice(0, index));
+        focused.after(...actions.slice(index + 1));
+      } else {
+        recoveryActions.replaceChildren(...actions);
+      }
       recoveryActions.hidden = actions.length === 0;
     }
     return { revisionId: latest.id, version, text: `${lead}. ${impact}` };

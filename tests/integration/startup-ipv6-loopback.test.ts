@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
-import { jsonEvent } from "../helpers/json-lines.mjs";
+import { jsonEvent } from "../helpers/json-lines.ts";
 
 type StartupEntryPoint =
   | { path: "apps/controller/src/server.mjs"; event: "startup-error" }

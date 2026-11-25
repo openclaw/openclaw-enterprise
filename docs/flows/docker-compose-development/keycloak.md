@@ -51,9 +51,9 @@ graph TD
 with sandbox `none`. Before claiming state, startup rejects another publication
 on reserved port 443 and checks that no listener already serves it. The engine
 must also be able to bind and forward that port. k3d publishes
-`127.0.0.1:443` to NodePort 30443. The Envoy Service routes TCP port 443 to
-Envoy's target port 10443, and the dedicated listener forwards to Keycloak on
-port 8080.
+`127.0.0.1:443` to NodePort 30443; the dedicated Envoy listener forwards to
+Keycloak on port 8080. Inside the cluster, the Envoy Service sends HTTPS traffic
+to the Envoy Pod on port 10443.
 
 ### 2. Provision the realm and its network path
 
@@ -128,10 +128,8 @@ Certificate renewal is not propagated to the copied Secret by this launcher.
 Run the [real launcher cases](../../testing/kubernetes.md#keycloak-local-launcher-coverage)
 only with their owned disposable fixture. They cover browser login, recovery,
 realm persistence, second-pass failure and cleanup. After the OIDC upgrade, the
-opt-in API probe expects access to Keycloak and expects one unrelated HTTPS
-listener to be unreachable between successful listener controls. The chart allows
-all API and worker egress and does not enforce that expectation. The browser
-imports the two printed CA files into a fresh
+test verifies HTTPS from each API Pod to the Keycloak discovery endpoint and a
+separate test listener. The browser imports the two printed CA files into a fresh
 NSS database and maps only the printed hosts line. The realm-hash warning runs only at
 installation. A retained-state error names the directory needed by `occ dev down`;
 repair access to its recorded engine and cluster before retrying cleanup.
@@ -149,6 +147,8 @@ repair access to its recorded engine and cluster before retrying cleanup.
 ## Changelog
 
 - 2026-11-25 05:27: Show startup failures and distinguish the egress probe from chart policy. (authoring-run/1d922c92-8b45-44c2-a262-4ffbc2dbb2a0 - ae11b336243e2ce8eb49621c9692f646bac50caa)
+
+- 2026-11-25 01:56: Correct the Keycloak API egress verification. (authoring-run/06feb2e3-996e-40d6-a270-aeddb1788c6e - b864dac3a0b3ff56f58a08def6ad50c8e4c0c821)
 
 - 2026-11-24 23:32: Show when failed startup retains the stack for inspection. (authoring-run/b64d1ba0-cd47-4cf2-a42e-74d6fdf1c2db - 6db04e3f96928c3ef990712fb53a5bdda596c2ff)
 

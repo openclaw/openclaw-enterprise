@@ -207,3 +207,44 @@ export async function signInToControllerApp(
     password: credentials.password,
   });
 }
+
+type InjectableApp = Pick<ReturnType<typeof createFastifyApp>, "inject">;
+type InjectionOptions = Exclude<
+  InjectableApp["inject"] extends {
+    (options: infer Options): Promise<unknown>;
+    (): unknown;
+  }
+    ? Options
+    : never,
+  string
+>;
+
+export async function createAuthenticatedControllerRequest(
+  app: SignInApp & InjectableApp,
+  credentials: SignInCredentials,
+  requestOrigin = "https://console.oce.localhost",
+) {
+  const session = await signInToControllerApp(app, credentials, { origin: requestOrigin });
+  const headers = authenticatedHeaders(session, {
+    host: new URL(requestOrigin).host,
+    origin: requestOrigin,
+  });
+  return async (
+    method: NonNullable<InjectionOptions["method"]>,
+    url: string,
+    payload?: InjectionOptions["payload"],
+  ) => {
+    const response = await app.inject({
+      method,
+      url,
+      headers,
+      ...(payload === undefined ? {} : { payload }),
+    });
+    // This fixture serves many endpoints; their suites own the response contracts.
+    // Preserve Fastify's dynamic JSON envelope rather than asserting a shared body shape.
+    return {
+      status: response.statusCode,
+      ...(response.body.length === 0 ? {} : response.json()),
+    };
+  };
+}

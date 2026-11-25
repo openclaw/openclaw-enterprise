@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { prepareNativeProfileUpgradeDatabase } from "../../scripts/ci/prepare.ts";
@@ -13,7 +13,7 @@ import {
   nativeProfileUpgradeFile,
   selectsNativeProfileUpgrade,
 } from "../../scripts/ci/native-profile-upgrade.ts";
-import { initializeNativeUpgradeInstallation } from "../helpers/native-profile-upgrade-installation.mjs";
+import { initializeNativeUpgradeInstallation } from "../helpers/native-profile-upgrade-installation.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { composePostgres, fixture, immutableImage } from "../helpers/ci-prepare-fixture.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.ts";
@@ -64,92 +64,150 @@ function commandEvidence(text: string): CommandEvidence[] {
     });
 }
 
-export function registerNativeProfileUpgradeCases({ repositoryRoot, writeState }: Inputs) {
-  registerLegacyBrowserPairingCases();
-  test("native upgrade initialization uses image entrypoints and isolates the migration credential", async (t) => {
-    const root = await fixture(t);
-    const command = join(root, "engine");
-    const log = join(root, "commands.jsonl");
-    await writeFile(
-      command,
-      String.raw`#!${process.execPath}
+type InitializerEngineMode =
+  | "ok"
+  | "run-fail"
+  | "run-and-cleanup-fail"
+  | "already-removed"
+  | "malformed-receipt"
+  | "wrong-current-catalog";
+
+const privateInitializerMarker = "private-initializer-output-marker";
+
+async function initializerEngine(t: TestContext, mode: InitializerEngineMode = "ok") {
+  const root = await fixture(t);
+  const command = join(root, "engine");
+  const log = join(root, "commands.jsonl");
+  await writeFile(
+    command,
+    String.raw`#!${process.execPath}
 const assert = require("node:assert/strict");
 const { appendFileSync, readFileSync, statSync } = require("node:fs");
 const { basename, join } = require("node:path");
 const args = process.argv.slice(2);
+const exitMode = ${JSON.stringify(mode)};
+const privateMarker = ${JSON.stringify(privateInitializerMarker)};
 const migration = args.includes("-e");
 const legacyOutputSettings = args.includes("OCC_BOOTSTRAP_PASSWORD_FILE") || args.includes("OCC_BOOTSTRAP_SERVICE_KEY_FILE");
 const inputNames = ["OCC_BOOTSTRAP_ADMIN_PASSWORD_INPUT_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_INPUT_FILE"];
 const credentialInputSettings = inputNames.some((key) => args.includes(key));
 const bootstrapConfigurationChecked = args.includes("scripts/bootstrap-installation.mjs");
 if (bootstrapConfigurationChecked) {
-  // Execute the current production parser, not a copied validation rule.
-  const { bootstrapConfiguration } = require(${JSON.stringify(fileURLToPath(new URL("../../scripts/lib/bootstrap-configuration.ts", import.meta.url)))});
-  bootstrapConfiguration("production", process.env);
+// Execute the current production parser, not a copied validation rule.
+const { bootstrapConfiguration } = require(${JSON.stringify(fileURLToPath(new URL("../../scripts/lib/bootstrap-configuration.ts", import.meta.url)))});
+bootstrapConfiguration("production", process.env);
 }
 if (credentialInputSettings) {
-  const mount = args[args.indexOf("--mount") + 1];
-  const directory = mount.match(/^type=bind,src=([^,]+),dst=\/bootstrap,readonly$/)?.[1];
-  assert.ok(directory);
-  for (const key of inputNames) {
-    assert.ok(args.includes(key));
-    const path = process.env[key];
-    assert.match(path, /^\/bootstrap\/[^/]+$/);
-    const file = join(directory, basename(path));
-    assert.equal(statSync(file).mode & 0o777, 0o600);
-    assert.ok(readFileSync(file, "utf8").trim().length >= 32);
-  }
+const mount = args[args.indexOf("--mount") + 1];
+const directory = mount.match(/^type=bind,src=([^,]+),dst=\/bootstrap,readonly$/)?.[1];
+assert.ok(directory);
+for (const key of inputNames) {
+  assert.ok(args.includes(key));
+  const path = process.env[key];
+  assert.match(path, /^\/bootstrap\/[^/]+$/);
+  const file = join(directory, basename(path));
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.ok(readFileSync(file, "utf8").trim().length >= 32);
+}
 }
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, migrator: args.includes("OCC_MIGRATION_DATABASE_URL"), modelForwarded: args.includes("OPENAI_API_KEY"), legacyOutputSettings, credentialInputSettings, bootstrapConfigurationChecked}) + "\n");
-if (args[0] === "run") {
-  process.stdout.write(JSON.stringify(migration ? {
-    event: args.includes("--require-current") ? "migration.checked" : "migration.completed",
-    history: args.includes("--expect-empty") ? "empty" : "completed"
-  } : { event: args.includes("--verify-existing") ? "installation.bootstrap-verified" : "installation.bootstrapped" }));
+if (args[0] === "rm") {
+  if (exitMode === "already-removed") {
+    process.stderr.write("Error: No such container");
+    process.exitCode = 1;
+  } else if (exitMode === "run-and-cleanup-fail") {
+    process.stderr.write(privateMarker);
+    process.exitCode = 1;
+  }
+} else if (args[0] === "run") {
+  if (exitMode === "run-fail" || exitMode === "run-and-cleanup-fail") {
+    process.stderr.write(privateMarker);
+    process.exitCode = 1;
+  } else if (exitMode === "malformed-receipt") {
+    process.stdout.write('{"receipt":"' + privateMarker);
+  } else {
+    const requireCurrent = args.includes("--require-current");
+    const history = args.includes("--expect-empty") ||
+      (requireCurrent && exitMode === "wrong-current-catalog") ? "empty" : "completed";
+    process.stdout.write(JSON.stringify(migration ? {
+      event: requireCurrent ? "migration.checked" : "migration.completed",
+      history
+    } : { event: args.includes("--verify-existing") ? "installation.bootstrap-verified" : "installation.bootstrapped" }));
+  }
 }
 `,
-      { mode: 0o700 },
-    );
-    const previous = process.env.OCC_DOCKER_BIN;
-    process.env.OCC_DOCKER_BIN = command;
-    t.after(() => {
-      if (previous === undefined) {
-        delete process.env.OCC_DOCKER_BIN;
-      } else {
-        process.env.OCC_DOCKER_BIN = previous;
-      }
-    });
-    const options = {
-      image: "sha256:" + "c".repeat(64),
-      databaseUrl: syntheticCredentialUrl({
-        protocol: "postgresql",
-        username: "occ_app",
-        password: "synthetic",
-        host: "127.0.0.1",
-        pathname: "/openclaw_k8s_owned",
-      }),
-      migrationUrl: syntheticCredentialUrl({
-        protocol: "postgresql",
-        username: "occ_migrator",
-        password: "synthetic",
-        host: "127.0.0.1",
-        pathname: "/openclaw_k8s_owned",
-      }),
-      email: "upgrade@example.test",
-      authSecret: "synthetic-auth-secret-minimum-32-bytes",
-      authBaseURL: "https://console.example.test",
-      agentDomain: "agents.example.test",
-      installationName: "Upgrade fixture",
-    };
+    { mode: 0o700 },
+  );
+  const previous = process.env.OCC_DOCKER_BIN;
+  process.env.OCC_DOCKER_BIN = command;
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.OCC_DOCKER_BIN;
+    } else {
+      process.env.OCC_DOCKER_BIN = previous;
+    }
+  });
+  return async () => commandEvidence(await readFile(log, "utf8"));
+}
+
+function nativeUpgradeOptions() {
+  return {
+    image: "sha256:" + "c".repeat(64),
+    databaseUrl: syntheticCredentialUrl({
+      protocol: "postgresql",
+      username: "occ_app",
+      password: "synthetic",
+      host: "127.0.0.1",
+      pathname: "/openclaw_k8s_owned",
+    }),
+    migrationUrl: syntheticCredentialUrl({
+      protocol: "postgresql",
+      username: "occ_migrator",
+      password: "synthetic",
+      host: "127.0.0.1",
+      pathname: "/openclaw_k8s_owned",
+    }),
+    email: "upgrade@example.test",
+    authSecret: "synthetic-auth-secret-minimum-32-bytes",
+    authBaseURL: "https://console.example.test",
+    agentDomain: "agents.example.test",
+    installationName: "Upgrade fixture",
+  };
+}
+
+export function registerNativeProfileUpgradeCases({ repositoryRoot, writeState }: Inputs) {
+  registerLegacyBrowserPairingCases();
+  test("native upgrade initialization uses image entrypoints and isolates the migration credential", async (t) => {
+    const readCommands = await initializerEngine(t);
+    const options = nativeUpgradeOptions();
     // This command fixture proves orchestration only, never database/image execution.
     const initialized = await initializeNativeUpgradeInstallation(t, options);
     assert.ok(initialized.credentials);
     assert.equal(initialized.credentials.email, options.email);
-    await initializeNativeUpgradeInstallation(t, {
+    const candidate = await initializeNativeUpgradeInstallation(t, {
       ...options,
       expectedInstallationId: "ins_" + randomUUID(),
     });
-    const records = commandEvidence(await readFile(log, "utf8"));
+    assert.equal(candidate.credentials, undefined);
+    assert.deepEqual(initialized.receipt, {
+      migration: {
+        event: "migration.completed",
+        startedEmpty: true,
+        startedCurrent: false,
+        currentHistory: "completed",
+      },
+      bootstrap: { event: "installation.bootstrapped" },
+    });
+    assert.deepEqual(candidate.receipt, {
+      migration: {
+        event: "migration.completed",
+        startedEmpty: false,
+        startedCurrent: true,
+        currentHistory: "completed",
+      },
+      bootstrap: { event: "installation.bootstrap-verified" },
+    });
+    const records = await readCommands();
     const runs = records.filter(({ args }) => args[0] === "run");
     assert.equal(runs.length, 6);
     assert.deepEqual(
@@ -203,6 +261,72 @@ if (args[0] === "run") {
     assert.equal(records.filter(({ args }) => args[0] === "rm").length, 6);
     assert.doesNotMatch(JSON.stringify(records), /postgresql:|synthetic-auth-secret/);
     assert.ok(!JSON.stringify(records).includes(initialized.credentials.password));
+  });
+
+  test("native upgrade initialization cleans up and fails closed on unsafe command receipts", async (t) => {
+    const cases = [
+      {
+        mode: "run-fail",
+        message: "Native upgrade image production initialization failed: migration",
+        runs: 1,
+      },
+      {
+        mode: "run-and-cleanup-fail",
+        message: "Native upgrade initializer cleanup failed.",
+        runs: 1,
+      },
+      {
+        mode: "malformed-receipt",
+        message: "Native upgrade initialization receipt is invalid.",
+        runs: 1,
+      },
+      {
+        mode: "wrong-current-catalog",
+        message: "the selected image must verify its own complete current catalog after migration",
+        runs: 2,
+      },
+    ] as const;
+    for (const { mode, message, runs } of cases) {
+      await t.test(mode, async (fixtureContext) => {
+        const readCommands = await initializerEngine(fixtureContext, mode);
+        await assert.rejects(
+          initializeNativeUpgradeInstallation(fixtureContext, nativeUpgradeOptions()),
+          (error) => {
+            assert.ok(error instanceof Error);
+            assert.ok(!String(error.stack).includes(privateInitializerMarker));
+            assert.equal(error.cause, undefined);
+            assert.equal(error.message, message);
+            return true;
+          },
+        );
+        const commands = await readCommands();
+        assert.deepEqual(
+          commands.map(({ args }) => args[0]),
+          Array.from({ length: runs }, () => ["run", "rm"]).flat(),
+        );
+        // Remove the exact initializer name and stop before any bootstrap can run.
+        for (let index = 0; index < commands.length; index += 2) {
+          const run = commands[index]?.args;
+          const cleanup = commands[index + 1]?.args;
+          assert.ok(run && run.includes("-e"));
+          const name = run[run.indexOf("--name") + 1];
+          assert.ok(name?.startsWith("oce-native-upgrade-init-"));
+          assert.deepEqual(cleanup, ["rm", "--force", name]);
+        }
+      });
+    }
+    await t.test("already removed", async (fixtureContext) => {
+      const readCommands = await initializerEngine(fixtureContext, "already-removed");
+      const initialized = await initializeNativeUpgradeInstallation(
+        fixtureContext,
+        nativeUpgradeOptions(),
+      );
+      assert.equal(initialized.receipt.bootstrap.event, "installation.bootstrapped");
+      assert.deepEqual(
+        (await readCommands()).map(({ args }) => args[0]),
+        ["run", "rm", "run", "rm", "run", "rm"],
+      );
+    });
   });
 
   test("native upgrade allocates separate schema-only databases without a current migration template", async (t) => {
