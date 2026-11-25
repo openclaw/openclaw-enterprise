@@ -46,7 +46,7 @@ already manages that lifecycle. Running individual tools in OpenSandbox would le
 
 ### Keep provider credentials outside the Agent
 
-OpenClaw Control Plane (OCC) admits the policy. TokenService keeps the App signing key
+OpenClaw Control Plane (OCC) admits the policy. [TokenService](20261124-credential-design-1-0.md) keeps the App signing key
 and issues and renews the scoped GitHub token. The Credential Proxy Driver pushes the token and
 policy to agentgateway. Git can fetch while OCC is offline. Model access stays independent.
 
@@ -91,7 +91,7 @@ flowchart TB
 - **Caller.** Bind access to the Installation, Namespace, Agent, revision and sandbox instance.
   Enforce the executable rule in the Sandbox. A client certificate alone cannot identify a program.
   Block direct egress, proxy administration and access by other workloads.
-- **Requests.** Pin the repository ID and name. Grant only contents and metadata reads.
+- **Requests.** Pin the repository ID and name. Refuse a Source that grants more than contents and metadata reads on that repository.
   Check the authority, method and exact `pathAndQuery` over HTTP/2 before injection.
   Allow only `GET /OWNER/REPO.git/info/refs?service=git-upload-pack` and
   `POST /OWNER/REPO.git/git-upload-pack`. Reject caller-supplied authorization, redirects and ambiguous targets.
@@ -140,7 +140,7 @@ related proposals for
 
 ## Simplifications
 
-The operator avoids a second lifecycle server. A dedicated Git endpoint avoids sending model
+The operator avoids a second lifecycle server. The [OpenSandbox Vault matcher](https://github.com/opensandbox-group/OpenSandbox/blob/d098823411816e73381cfedc7d10429e55bf5b31/components/egress/mitmscripts/system.py#L1252) discards the query that distinguishes fetch from push discovery. A dedicated Git endpoint avoids sending model
 traffic through OpenSandbox forward mode. For VM isolation alone, try a Kata RuntimeClass first.
 
 ## Acceptance Criteria
