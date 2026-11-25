@@ -165,14 +165,15 @@ const reviewedImports: ReviewedModules = {
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
   },
-  // The OAuth grant's private CAS record pins client, endpoint, and scope. Only the
-  // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
+  // Source consent pins the client and endpoint; private custody retains the grant.
+  // Only the refresh adapter can POST that grant. TokenService has no general HTTP capability.
   "backends/token-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
     "node:timers/promises": ["setTimeout"],
     "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
     "@openclaw-enterprise/occ": [
       "BrowserAuthorizationError",
+      "CredentialDeliveryFailedError",
       "ResourceStateConflictError",
       "refreshPinnedOAuthGrant",
     ],
@@ -183,23 +184,6 @@ const reviewedImports: ReviewedModules = {
   "backends/token-service/service.ts": {
     "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],
-  },
-  // The prepared owner reads only the Installation custody mount. The App issuer comes
-  // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
-  "drivers/repo/github/access/prepared-lifecycle.ts": {
-    // Wait for an existing issuance claim within this request’s deadline.
-    "node:timers/promises": ["setTimeout"],
-    "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
-    "node:fs/promises": ["readFile"],
-    "node:util": ["isDeepStrictEqual"],
-    "@openclaw-enterprise/contracts": [
-      "githubMetadataGrant",
-      "preparedGitHubProviderRef",
-      "preparedGitHubSourceFromRoute",
-    ],
-    // Bind the admitted source and its exact current version on the send transaction; the error
-    // class only reports an unsettled withdrawal and carries no material or I/O authority.
-    "@openclaw-enterprise/occ": ["CredentialTokenUnsettledError", "postgresPreparedGitHubProof"],
   },
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
   "drivers/repo/github/access/prepared-postgres.ts": {

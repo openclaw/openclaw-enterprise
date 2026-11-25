@@ -1700,11 +1700,17 @@ exec "$real_python" "$@"
       );
     });
 
-    // A deployment that never finishes stops the upgrade at its timeout. The message names
-    // the Agent (ID and name), the status last read and the status the upgrade waited for, so
-    // the operator knows which Agent to inspect without reading the evidence first.
-    test("an Agent deployment still running at the upgrade timeout is named", async (t) => {
-      const f = await fixture(t, { agent: true });
+    test("an Agent deployment still running at the upgrade timeout is named from saved inventory", async (t) => {
+      const f: RecoveryFixture = await fixture(t, {
+        inventoryNamespaces: [embeddedDoctorNamespace("agt_test")],
+        names: { agt_test: 'Mail "triage"\nNight\u202eshift\u2028' },
+        afterDeploy: async () => {
+          // Supply the Namespace ID returned by OCC in the recorded Agent.
+          const agent = record(JSON.parse(await readFile(snapshot, "utf8")), "saved Agent");
+          await writeFile(snapshot, JSON.stringify({ ...agent, namespaceId: "ns_test" }));
+        },
+      });
+      const snapshot = join(f.evidence, "inventory", "ns_test--agt_test.agent.json");
       await writeFile(
         join(f.directory, "state.json"),
         JSON.stringify({
@@ -1712,17 +1718,31 @@ exec "$real_python" "$@"
           nextDeployment: { id: "rev_new", status: "running" },
         }),
       );
-      // 8 s leaves room for at least one status poll after the deploy.
-      const failure = await expectUpgradeFailure(
-        f.run("--timeout-seconds", "8"),
-        "the upgrade must stop at the timeout",
-      );
-      assert.deepEqual(failure.stderr.trimEnd().split("\n").slice(-3), [
-        "upgrade-production-images: 1 Agent deployments remained incomplete at the upgrade timeout:",
-        '  - Agent agt_test "Mail triage": last status running, waiting for succeeded',
-        `Their last statuses are in ${f.evidence}/status.`,
-      ]);
-      assert.equal(existsSync(join(f.evidence, "completed")), false);
+
+      // The initial inventory reads the Agent once. An expired wait must report its
+      // last observation even when the evidence lacks a usable name on resume.
+      for (const resume of [false, true]) {
+        if (resume) {
+          await writeFile(snapshot, JSON.stringify({ id: "agt_test", name: "Unscoped Agent" }));
+        }
+        const failure = await expectUpgradeFailure(
+          f.run("--timeout-seconds", "8", ...(resume ? ["--resume"] : [])),
+          "the upgrade must stop at the timeout",
+        );
+        assert.deepEqual(
+          (await f.events()).filter((event) => event === "read agt_test"),
+          ["read agt_test"],
+        );
+        const name = resume
+          ? "name unavailable"
+          : String.raw`saved name "Mail \"triage\"\nNight\u202eshift\u2028"`;
+        assert.deepEqual(failure.stderr.trimEnd().split("\n").slice(-3), [
+          "upgrade-production-images: 1 Agent deployments remained incomplete at the upgrade timeout:",
+          `  - Agent "agt_test" in Namespace "ns_test" (${name}): last status running, waiting for succeeded`,
+          `Their last statuses are in ${f.evidence}/status.`,
+        ]);
+        assert.equal(existsSync(join(f.evidence, "completed")), false);
+      }
     });
 
     test("OpenClaw Doctor does not run while the gateway lacks free memory", async (t) => {

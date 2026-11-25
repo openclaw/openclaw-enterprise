@@ -32,7 +32,7 @@ Copy the deployment ID from the Console URL’s `revision` parameter. Run `wait_
 
 ### Discover Linear in the account catalog
 
-Use the ready Credential Gateway source for the connected service account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
+Use the ready TokenService Source for the connected account. The saved session supplies its Namespace source ID as `modelSource`. Search its account catalog for an available Linear plugin. Follow the continuation cursor until you find it. Select the plugin with human approval for write actions.
 
 ```bash
 # POST $base/agents/plugins: use the model Secret reference to search this account.

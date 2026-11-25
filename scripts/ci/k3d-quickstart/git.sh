@@ -121,7 +121,7 @@ if ! deploy_and_wait; then
   checking ownership
   request GET "$base/agents/$agent" | jq -e --arg r "$failed_read" --arg ref "$ref" '
     .data | (.activeRevisionId==null or .activeRevisionId==$r) and
-    .repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]' >/dev/null
+    .repositoryAccess | .defaultProfile=="github-repository" and .repositories==[{repositoryRef:$ref}]' >/dev/null
   request GET "$base/agents/$agent/repository-approvals" | jq -e '.data==[]' >/dev/null
   checking stop
   request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"

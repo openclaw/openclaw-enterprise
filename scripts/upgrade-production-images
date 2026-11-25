@@ -3835,17 +3835,51 @@ poll_deployment_status() (
   printf '%s\n' "$status"
 )
 
-# At the timeout, name each Agent whose deployment had not succeeded: its ID, its name and the
-# last status read (none when the deadline passed before the first poll), so the operator
-# knows which Agent to inspect.
+# Report from local evidence only. Each input pair is a complete deployment JSON line
+# and its last status (empty before the first poll), so IDs may contain whitespace.
 incomplete_agents() {
-  local namespace_id agent_id status agent_name observed
-  while IFS=' ' read -r namespace_id agent_id status; do
-    agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
-    observed="no status read"
-    [[ -z "$status" ]] || observed="last status $status"
-    printf '  - Agent %s %s: %s, waiting for succeeded\n' "$agent_id" "${agent_name:-(name unavailable)}" "$observed"
-  done
+  python3 - 3<&0 <<'PYTHON'
+import json, os, re, stat
+
+try:
+    inventory = os.open("inventory", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=8)
+except OSError:
+    inventory = None
+
+
+def saved_name(namespace, agent):
+    filename = f"{namespace}--{agent}.agent.json"
+    if inventory is None or not re.fullmatch(r"[A-Za-z0-9._-]+", filename):
+        return None
+    try:
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=inventory)
+        with os.fdopen(fd, "rb") as snapshot:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            limit = 1024 * 1024
+            data = snapshot.read(limit + 1)
+            if len(data) > limit:
+                return None
+        record = json.loads(data)
+        if (isinstance(record, dict) and record.get("namespaceId") == namespace
+                and record.get("id") == agent and isinstance(record.get("name"), str)):
+            return record["name"]
+    except (OSError, ValueError, RecursionError):
+        pass
+    return None
+
+
+with os.fdopen(3, encoding="utf-8") as pending:
+    for line in pending:
+        deployment = json.loads(line)
+        namespace, agent = deployment["namespaceId"], deployment["agentId"]
+        status = next(pending).rstrip("\n")
+        name = saved_name(namespace, agent)
+        label = "saved name " + json.dumps(name) if name else "name unavailable"
+        observed = f"last status {status}" if status else "no status read"
+        print(f"  - Agent {json.dumps(agent)} in Namespace {json.dumps(namespace)} ({label}): "
+              f"{observed}, waiting for succeeded")
+PYTHON
 }
 
 pending=$target_count
@@ -3854,8 +3888,7 @@ if ((target_count > 0)); then
 fi
 incomplete=()
 while IFS= read -r deployment; do
-  json_fields "$deployment" namespace_id=namespaceId agent_id=agentId
-  incomplete+=("$namespace_id $agent_id")
+  incomplete+=("$deployment" "")
 done <"$deployments"
 while ((pending > 0)); do
   ((SECONDS < deadline)) || die "$pending Agent deployments remained incomplete at the upgrade timeout:
@@ -3871,7 +3904,7 @@ Their last statuses are in $evidence_dir/status."
     case "$status" in
       queued | running)
         ((pending += 1))
-        incomplete+=("$namespace_id $agent_id $status")
+        incomplete+=("$deployment" "$status")
         ;;
       succeeded) ;;
       failed) failed=1 ;;

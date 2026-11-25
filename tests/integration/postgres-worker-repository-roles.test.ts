@@ -473,7 +473,7 @@ async function admitLegacyRepositorySession(
       namespaceId: fixture.namespace.id,
       agentId: owner.id,
       configurationId: configuration.id,
-      repositoryBindings: bindings,
+      repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
     },
     resolveApprovedHarness,
   );

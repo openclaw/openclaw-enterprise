@@ -428,8 +428,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     await released(fixture);
   });
 
-  // Finding 3169: when the provider refuses or drops the connect, as a stale egress allowlist
-  // (repositoryCredentials.upstreamCidrs) does, the Agent still receives no provider answer,
+  // When the provider refuses or drops the connection, the Agent receives no provider answer,
   // but the operator line names the host, the addresses it resolved to and the socket error,
   // so it does not read as a broker outage. The line never carries the credential or a path.
   async function stopUpstream(fixture: TransportFixture) {

@@ -23,18 +23,30 @@ export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-/** A client may send its credentials only to its configured provider endpoints. */
-export interface OAuthClient {
+interface CredentialClientRegistration {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
+  readonly createdAt: string;
+}
+
+/** A client may send its credentials only to its configured provider endpoints. */
+export interface OAuthClient extends CredentialClientRegistration {
+  readonly kind: "oauth2";
   readonly issuer: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  readonly createdAt: string;
 }
+
+/** The signing key is used only within the selected TokenService. */
+export interface GitHubAppClient extends CredentialClientRegistration {
+  readonly kind: "github-app";
+  readonly appId: string;
+}
+
+export type CredentialClient = OAuthClient | GitHubAppClient;
 
 /** Public metadata observed during MCP discovery. The administrator selects a subset. */
 export interface McpAuthorizationMetadata {
@@ -58,7 +70,6 @@ export interface ConnectionTemplateValues {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
-  readonly oauthClientId?: string;
   /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
@@ -324,7 +335,6 @@ export function connectionValuesChanged(
     current.mode !== next.mode ||
     current.mcp?.serverUrl !== next.mcp?.serverUrl ||
     current.mcp?.resource !== next.mcp?.resource ||
-    current.oauthClientId !== next.oauthClientId ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
@@ -360,33 +370,10 @@ function sameParameters(
   );
 }
 
-/** One connected credential source: who consented in this Namespace and which template version they approved. */
-export interface SavedConnection {
-  readonly namespaceId: string;
-  readonly credentialSourceId: string;
-  /** Revocation survives process restarts until the worker retires the grant. */
-  readonly revocationRequestedBy?: string;
-  readonly revokedAt?: string;
-  readonly ownerPrincipalId: string;
-  readonly oauthClientId: string;
-  readonly clientId: string;
-  readonly issuer: string;
-  readonly tokenUrl: string;
-  readonly mcpServerUrl?: string;
-  readonly destinations: ConnectionTemplateValues["destinations"];
-  readonly resource?: string;
-  readonly requestedScopes: readonly string[];
-  readonly grantedScopes: readonly string[];
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly createdAt: string;
-}
-
 /** A pending browser authorization, found by the SHA-256 of its `state` and consumed once. */
 export interface ConnectionSession {
   readonly stateHash: string;
   readonly namespaceId: string;
-  readonly credentialSourceId: string;
   /** Server-private PKCE state, erased when the callback consumes the attempt. */
   readonly pkceVerifier: string;
   readonly selectedScopes: readonly string[];
@@ -396,6 +383,7 @@ export interface ConnectionSession {
   readonly actorId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
+  readonly oauthClientId: string;
   readonly createdAt: string;
   readonly expiresAt: string;
 }

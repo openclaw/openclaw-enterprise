@@ -41,7 +41,7 @@ import {
   create,
   createSlackBotSecret,
   presetSecretsPath,
-  readyForm,
+  provisionableForm,
 } from "./create-agent-form-data.mts";
 import {
   calendarPlugin,
@@ -2207,7 +2207,7 @@ const authoredScenarios = {
     group: "Flows",
     name: "Choose provider, harness, and authentication",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     description:
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
@@ -2266,7 +2266,7 @@ const authoredScenarios = {
     emptyAgents: true,
     transport: false,
     actions: [
-      ...readyForm,
+      ...provisionableForm,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
