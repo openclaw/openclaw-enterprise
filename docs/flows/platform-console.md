@@ -286,17 +286,16 @@ Late names preserve state/focus; metadata failures keep IDs; unknown grants stay
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
 
-`deployment-recovery.mts:show` offers **Open vN Logs** for the failed version
-when `readLogs` is granted or omitted. With `operate` and `readLogs: false`,
-**View vN runtime status in Logs** stays available on return. When logs can
-help, recovery still says whom to ask. Denial of both permissions, an
-unreadable version or a server log refusal hides either link. Status denial
-hides only that version’s status link. Showing these links adds no reads.
+Recovery normally offers **Open vN Logs** for the failed version. If the
+Console skips log text, operators see **View vN runtime status in Logs**
+on every visit while status remains available. Status denial hides only
+that version’s status link. An unreadable version or a server refusal of
+log text hides both links. Neither link needs an extra read.
 Recovery focuses and scrolls to Logs, smoothly unless rebuilding or motion is reduced.
 Direct navigation focuses and scrolls to output. Tab selection preserves it. Stop and Delete stay put.
 
 [Runtime logs](agent-runtime-logs.md) explains access and row handling.
-`readLogs: false` skips the audited text read until Refresh or sign-out.
+`readLogs: false` skips the audited text read. Refresh and sign-out clear remembered denials.
 Status `403` hides Pods but preserves authorized logs. Newly granted `operate` permits one retry.
 Revoking readable text triggers a fresh status check. Back rebuilds refused
 views. Rate notices update without rereading.
