@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { prepareGatewayRouting } from "../../scripts/ci/routing.ts";
 import {
@@ -254,6 +255,72 @@ export async function checkRunnerSelectorIsolation(t: TestContext) {
   );
 
   assert.equal(result.status, 0, result.stderr);
+  await checkBrowserExecutableForwarding(t);
+}
+
+async function checkBrowserExecutableForwarding(t: TestContext) {
+  const root = await createRunnerFixture(t);
+  await mkdir(join(root, "tests/browser"));
+  const manifest = fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url));
+  const approvedPath = join(root, "selected-chromium");
+  const inherited = {
+    OCC_TEST_LEAKED_SELECTOR: "unselected",
+    OCC_PROBE_LEAKED_SELECTOR: "unselected",
+    ACTIONS_RUNTIME_TOKEN: "synthetic-transport-token",
+  };
+  const filtered = {
+    OCC_TEST_LEAKED_SELECTOR: undefined,
+    OCC_PROBE_LEAKED_SELECTOR: undefined,
+    ACTIONS_RUNTIME_TOKEN: undefined,
+  };
+  const consumers = [
+    ["checks-browser", "tests/browser/console-agent-detail-2.test.ts"],
+    ["checks-browser", "tests/browser/docs-repository-limits.test.ts"],
+    ["checks-browser-2", "tests/browser/console-agents.test.ts"],
+  ] as const;
+  const nonConsumers = [
+    ["checks-browser", "tests/integration/repository-credentials-github-prepared.test.ts"],
+    ["checks-browser-2", "tests/integration/ci-impact.test.ts"],
+    ["checks-baseline-2", "tests/integration/worker-shutdown.test.ts"],
+  ] as const;
+  const cases = [
+    ...consumers.map(([lane, file]) => ({
+      lane,
+      file,
+      input: approvedPath,
+      expected: approvedPath,
+    })),
+    ...nonConsumers.map(([lane, file]) => ({
+      lane,
+      file,
+      input: approvedPath,
+      expected: undefined,
+    })),
+    ...consumers.map(([lane, file]) => ({ lane, file, input: undefined, expected: undefined })),
+  ];
+  const failures: string[] = [];
+  for (const { lane, file, input, expected } of cases) {
+    // The shipped manifest selects a Node child at the same path as the real file.
+    // The child checks transport and never starts a browser or the sibling's fixture.
+    await writeEnvironmentTest(join(root, file), "child sees only the approved browser input", {
+      ...filtered,
+      OCC_TEST_BROWSER_EXECUTABLE: expected,
+    });
+    const result = runRunnerSync(
+      [
+        ...laneArgs(root, lane, "state/browser.json", "results/browser.json", manifest),
+        "--file",
+        file,
+      ],
+      { ...inherited, OCC_TEST_BROWSER_EXECUTABLE: input },
+    );
+    if (result.status !== 0) {
+      failures.push(
+        `${lane} ${file} with override ${input === undefined ? "unset" : "set"}\n${result.stderr}`,
+      );
+    }
+  }
+  assert.deepEqual(failures, []);
 }
 
 export async function checkQaLaneInputsAndArtifacts(t: TestContext) {

@@ -39,60 +39,78 @@
   "files": [
     {
       "path": "tests/browser/console-agent-repositories.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"],
       "expectedTests": [
         "selected repository collaborators never override an explicit Read-only Agent default"
       ]
     },
     {
-      "path": "tests/browser/console-agent-detail.test.ts"
+      "path": "tests/browser/console-agent-detail.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-deploy-again.test.ts"
+      "path": "tests/browser/console-agent-deploy-again.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-detail-2.test.ts"
+      "path": "tests/browser/console-agent-detail-2.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-workspace-editor.test.ts"
+      "path": "tests/browser/console-workspace-editor.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-logs.test.ts"
+      "path": "tests/browser/console-agent-logs.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-json-error-feedback.test.ts"
+      "path": "tests/browser/console-json-error-feedback.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-plugin-approvers.test.ts"
+      "path": "tests/browser/console-agent-plugin-approvers.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-agent-plugin-refusals.test.ts"
+      "path": "tests/browser/console-agent-plugin-refusals.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console.test.ts"
+      "path": "tests/browser/console.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-retained-revalidation.test.ts"
+      "path": "tests/browser/console-retained-revalidation.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-namespace-recheck.test.ts"
+      "path": "tests/browser/console-namespace-recheck.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-namespace-create.test.ts"
+      "path": "tests/browser/console-namespace-create.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-create-agent-member.test.ts"
+      "path": "tests/browser/console-create-agent-member.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-shell.test.ts"
+      "path": "tests/browser/console-shell.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-namespace-not-ready.test.ts"
+      "path": "tests/browser/console-namespace-not-ready.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/docs-compute-matrix.test.ts"
+      "path": "tests/browser/docs-compute-matrix.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/docs-repository-limits.test.ts"
+      "path": "tests/browser/docs-repository-limits.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
       "path": "tests/integration/repository-credentials-github-prepared.test.ts"
@@ -139,19 +157,24 @@
       "path": "tests/integration/repository-credentials-client-config.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-overview.test.ts"
+      "path": "tests/browser/console-agent-overview.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-deployment-activity.test.ts"
+      "path": "tests/browser/console-deployment-activity.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-secrets.test.ts"
+      "path": "tests/browser/console-secrets.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-namespace-delete.test.ts"
+      "path": "tests/browser/console-namespace-delete.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     },
     {
-      "path": "tests/browser/console-lifecycle-refusals.test.ts"
+      "path": "tests/browser/console-lifecycle-refusals.test.ts",
+      "optionalEnv": ["OCC_TEST_BROWSER_EXECUTABLE"]
     }
   ]
 }
