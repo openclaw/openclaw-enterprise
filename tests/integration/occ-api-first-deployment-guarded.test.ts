@@ -15,7 +15,7 @@ import {
   type Permission,
 } from "../../packages/contracts/src/index.ts";
 import type { PlatformReadView } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { request } from "./occ-api-first-deployment-cases.ts";
 import {

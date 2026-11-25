@@ -8,7 +8,7 @@ import {
   AgentPluginDetailsResponse,
   AgentPluginPolicyCapabilitiesResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";

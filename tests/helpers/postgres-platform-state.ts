@@ -24,7 +24,7 @@ import { reservePort, reservedPortArgs } from "./available-port.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { createConsoleFixtureTransport, fetchLoopback } from "./console-fixture-transport.ts";
 import { jsonRequestInit } from "./inject-json.ts";
-import { jsonLines as parseJsonLines } from "./json-lines.mjs";
+import { jsonLines as parseJsonLines } from "./json-lines.ts";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import {
   cleanupKubernetesNamespaces,
