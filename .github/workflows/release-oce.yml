@@ -14,6 +14,10 @@ on:
         description: Publish the release (default rehearses without public writes)
         type: boolean
         default: false
+      images_only:
+        description: Publish only native-tested images and skip Full Integration (requires publish)
+        type: boolean
+        default: false
       recovery_run_id:
         description: Original interrupted Release OCE publish run, to reuse its qualified bytes
         type: string
@@ -25,6 +29,7 @@ env:
   IMAGE_TAG: ${{ inputs.image_tag }}
   RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
   PUBLISH: ${{ inputs.publish }}
+  IMAGES_ONLY: ${{ inputs.images_only }}
 
 jobs:
   validate:
@@ -50,16 +55,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/release-oce.ts admit
       - name: Check the destination and show the release for approval
+        if: ${{ !inputs.images_only }}
         id: destination
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/ci/cli-release.ts preflight
       - name: Show version, source and image alias for approval
+        if: ${{ !inputs.images_only }}
         env:
           VERSION: ${{ steps.destination.outputs.version }}
         run: |
           printf 'Version %s, commit %s, alias %s, publish=%s.\n' \
             "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" >> "$GITHUB_STEP_SUMMARY"
+      - name: Show image-only publication for approval
+        if: inputs.images_only
+        run: |
+          printf 'Images only. Full Integration is skipped. Source %s, alias %s.\n' \
+            "$SOURCE_SHA" "${IMAGE_TAG:-latest}" >> "$GITHUB_STEP_SUMMARY"
 
   approve:
     name: Approve release
@@ -95,7 +107,7 @@ jobs:
 
   integration:
     name: Full Integration
-    if: inputs.recovery_run_id == ''
+    if: ${{ !inputs.images_only && inputs.recovery_run_id == '' }}
     needs: approval
     permissions:
       contents: read
@@ -116,11 +128,12 @@ jobs:
     uses: ./.github/workflows/container-check.yml
     with:
       source_sha: ${{ inputs.source_sha }}
-      prepare_chart: true
+      assemble_images: true
+      prepare_chart: ${{ !inputs.images_only }}
 
   cli:
     name: Prepare CLI
-    if: inputs.recovery_run_id == ''
+    if: ${{ !inputs.images_only && inputs.recovery_run_id == '' }}
     needs: approval
     permissions:
       actions: read
@@ -131,7 +144,7 @@ jobs:
 
   qualify:
     name: Record qualified release
-    if: ${{ !cancelled() && inputs.recovery_run_id == '' && needs.approval.result == 'success' }}
+    if: ${{ !cancelled() && !inputs.images_only && inputs.recovery_run_id == '' && needs.approval.result == 'success' }}
     needs: [validate, approval, integration, prepare, cli]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -218,7 +231,7 @@ jobs:
   publish:
     name: Publish
     if: >-
-      !cancelled() && inputs.publish && needs.validate.result == 'success' && needs.approval.result == 'success' &&
+      !cancelled() && inputs.publish && !inputs.images_only && needs.validate.result == 'success' && needs.approval.result == 'success' &&
       ((inputs.recovery_run_id == '' && needs.qualify.result == 'success') ||
       (inputs.recovery_run_id != '' && needs.qualify.result == 'skipped'))
     needs: [validate, approval, qualify]
@@ -235,3 +248,46 @@ jobs:
       version: ${{ needs.validate.outputs.version }}
       image_tag: ${{ inputs.image_tag }}
       producer_run_id: ${{ inputs.recovery_run_id || github.run_id }}
+
+  publish-images:
+    name: Publish images only (Full Integration skipped)
+    if: inputs.images_only && inputs.publish && inputs.recovery_run_id == ''
+    needs: [approval, prepare]
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: container-publish
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: container-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared
+      - uses: ./.github/actions/setup-registry
+      - name: Publish the two verified images and move their aliases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+          GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+          IMAGE_CONTROLLER: ${{ needs.prepare.outputs.controller_digest }}
+          IMAGE_RUNTIME: ${{ needs.prepare.outputs.runtime_digest }}
+        run: node scripts/ci/release-oce.ts publish-images "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/publication.json
+          if-no-files-found: error
+          retention-days: 30

@@ -9,16 +9,19 @@ import {
   publicationAlias,
   releaseWorkflow,
   repository,
+  selectPreparationSource,
   verifyEnvironment,
   verifyMainSource,
 } from "./container-release/admission.ts";
 import {
   digestPattern,
   field,
+  identity,
   integerPattern,
   match,
   shaPattern,
 } from "./container-release/metadata.ts";
+import { publishPrepared } from "./container-release/publication.ts";
 
 const api = `repos/${repository}/actions/runs`;
 const hexDigest = /^[a-f0-9]{64}$/u;
@@ -83,6 +86,10 @@ export async function verifyProducer(env: NodeJS.ProcessEnv) {
 
 async function admit(env: NodeJS.ProcessEnv) {
   publicationAlias(env.IMAGE_TAG);
+  if (env.IMAGES_ONLY === "true") {
+    assert.equal(env.PUBLISH, "true", "Image-only publication requires publish.");
+    assert.ok(!env.RECOVERY_RUN_ID, "Image-only publication cannot recover a full release.");
+  }
   await verifyMainSource(env, releaseWorkflow);
   await verifySourceAtDispatch(env.SOURCE_SHA, env.GITHUB_WORKFLOW_SHA);
   if (env.PUBLISH === "true") {
@@ -95,6 +102,7 @@ async function admit(env: NodeJS.ProcessEnv) {
 }
 
 export function validateQualification(env: NodeJS.ProcessEnv) {
+  assert.notEqual(env.IMAGES_ONLY, "true", "Image-only publication cannot qualify a full release.");
   match(env.SOURCE_SHA, shaPattern);
   match(env.GITHUB_RUN_ID, integerPattern);
   assert.equal(env.GITHUB_RUN_ATTEMPT, "1");
@@ -127,6 +135,33 @@ export function validateQualification(env: NodeJS.ProcessEnv) {
     chart: env.CHART_SHA256,
     cli: env.CLI_SHA256SUMS_DIGEST,
   };
+}
+
+async function publishImages(directory: string, env: NodeJS.ProcessEnv) {
+  assert.equal(env.IMAGES_ONLY, "true");
+  assert.ok(env.GITHUB_EVENT_PATH);
+  const inputs = field(JSON.parse(await readFile(env.GITHUB_EVENT_PATH, "utf8")), "inputs");
+  assert.equal(field(inputs, "images_only"), "true");
+  assert.equal(field(inputs, "publish"), "true");
+  assert.equal(field(inputs, "source_sha"), env.SOURCE_SHA);
+  assert.equal(field(inputs, "image_tag") ?? "", env.IMAGE_TAG ?? "");
+  assert.ok(!field(inputs, "recovery_run_id"));
+  match(env.IMAGE_CONTROLLER, digestPattern);
+  match(env.IMAGE_RUNTIME, digestPattern);
+  const { nodeBase } = selectPreparationSource(env);
+  const producer = identity({ ...env, NODE_BASE_IMAGE: nodeBase }, "controller");
+  const receipt = await publishPrepared(
+    directory,
+    env,
+    producer,
+    () => admit(env),
+    publicationAlias(env.IMAGE_TAG),
+    new Map([
+      ["controller", env.IMAGE_CONTROLLER],
+      ["runtime", env.IMAGE_RUNTIME],
+    ]),
+  );
+  await writeFile(join(directory, "publication.json"), JSON.stringify(receipt, null, 2) + "\n");
 }
 
 async function inventory(producer: string) {
@@ -195,7 +230,10 @@ if (fileURLToPath(import.meta.url) === process.argv[1]) {
     case "verify":
       await verifyManifest(directory!, process.env);
       break;
+    case "publish-images":
+      await publishImages(directory!, process.env);
+      break;
     default:
-      throw new Error("Expected admit, record or verify.");
+      throw new Error("Expected admit, record, verify or publish-images.");
   }
 }

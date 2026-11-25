@@ -250,8 +250,9 @@ Recovery restores source tags only and does not move aliases.
 
 ## Recover a partial publication
 
-For a **Release OCE** run, follow [Recover a partial release](README.md#recover-a-partial-release).
-The source-tag recovery below applies to standalone **Enterprise Containers** runs.
+For **Release OCE**, [retry image publication](README.md#publish-images-only)
+or [recover the full release](README.md#recover-a-partial-release).
+The procedure below covers **Enterprise Containers**.
 
 Preserve the original seven-day OCI artifacts. Do not rerun their producer: its
 attempt identity must remain unchanged. If those archives have expired, this

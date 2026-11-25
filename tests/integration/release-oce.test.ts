@@ -74,6 +74,7 @@ test("release requires successful full coverage for the reviewed SHA, run and fi
     { CHART_SHA256: "" },
     { CLI_SHA256SUMS_DIGEST: "" },
     { CLI_VERSION: "v1.2.2" },
+    { IMAGES_ONLY: "true" },
     { IMAGE_TAG: "sha-latest" },
     { IMAGE_TAG: "bootstrap-current" },
     { IMAGE_TAG: "1.2.3" },
@@ -208,6 +209,12 @@ test("recovery consumes the recorded inventory and rejects rehearsal, replaced o
     assert.notEqual(unrelated.status, 0, unrelated.stdout);
   }
   assert.notEqual(command("admit", { GITHUB_REF_PROTECTED: "false" }).status, 0);
+  assert.equal(command("admit", { IMAGES_ONLY: "true" }).status, 0);
+  assert.match(
+    command("admit", { IMAGES_ONLY: "true", PUBLISH: "false" }).stderr,
+    /requires publish/,
+  );
+  assert.match(command("admit", { ...fresh, IMAGES_ONLY: "true" }).stderr, /cannot recover/);
   const rehearsal = command("record", { PUBLISH: "false" });
   assert.equal(rehearsal.status, 0, rehearsal.stderr);
   assert.match(command("verify", fresh).stderr, /rehearsal/i);
@@ -261,7 +268,7 @@ test("only approved publish runs can enter the shared lock and move aliases afte
     "cancel-in-progress": false,
   });
   for (const [id, job] of Object.entries(release.jobs)) {
-    if (id !== "publish") {
+    if (id !== "publish" && id !== "publish-images") {
       assert.ok(!Object.values(record(job.permissions ?? {})).includes("write"), id);
     }
   }
@@ -287,6 +294,35 @@ test("only approved publish runs can enter the shared lock and move aliases afte
   }
   assert.equal(permitsPublication(true, "123", "skipped"), true);
   assert.equal(permitsPublication(true, "123", "skipped", "failure"), false);
+
+  const imagesOnly = present(release.jobs["publish-images"]);
+  const override = { inputs: { publish: true, recovery_run_id: "", images_only: true } };
+  assert.equal(record(record(dispatch.inputs).images_only).default, false);
+  assert.deepEqual(imagesOnly.concurrency, publish.concurrency);
+  assert.deepEqual(imagesOnly.needs, ["approval", "prepare"]);
+  assert.deepEqual(imagesOnly.permissions, {
+    contents: "read",
+    actions: "read",
+    packages: "write",
+  });
+  assert.equal(imagesOnly.environment, "container-publish");
+  assert.equal(workflowCondition(imagesOnly.if, override), true);
+  for (const changed of [{ publish: false }, { recovery_run_id: "123" }, { images_only: false }]) {
+    assert.equal(
+      workflowCondition(imagesOnly.if, { inputs: { ...override.inputs, ...changed } }),
+      false,
+    );
+  }
+  for (const id of ["qualify", "integration", "cli", "publish"]) {
+    assert.equal(workflowCondition(present(release.jobs[id]).if, override), false);
+  }
+  const preparation = record(present(release.jobs.prepare).with);
+  assert.equal(preparation.assemble_images, true);
+  assert.equal(workflowCondition(preparation.prepare_chart, override), false);
+  assert.equal(
+    workflowCondition(preparation.prepare_chart, { inputs: { images_only: false } }),
+    true,
+  );
 
   const integration = present(release.jobs.integration);
   assert.equal(integration.uses, "./.github/workflows/full-integration-execution.yml");

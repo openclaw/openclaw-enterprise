@@ -508,6 +508,47 @@ process.exit(result.status ?? 1);
       CONTROLLER_DIGEST: controller.currentDigest,
       RUNTIME_DIGEST: runtime.currentDigest,
     };
+    // Publish only the two native image archives. The public alias for either
+    // package must stay on the previous image until both new source tags exist.
+    const imageOnlyEnv = {
+      ...releaseEnv,
+      IMAGES_ONLY: "true",
+      IMAGE_TAG: "",
+      IMAGE_CONTROLLER: controller.currentDigest,
+      IMAGE_RUNTIME: runtime.currentDigest,
+      GHCR_CONTROLLER_IMAGE: "ghcr.io/openclaw/images-only-controller",
+      GHCR_RUNTIME_IMAGE: "ghcr.io/openclaw/images-only-runtime",
+    };
+    await writeFile(
+      imageOnlyEnv.GITHUB_EVENT_PATH,
+      JSON.stringify({ inputs: { source_sha: sourceSha, images_only: "true", publish: "true" } }),
+    );
+    for (const image of records) {
+      seed(image.image, `openclaw/images-only-${image.image}:latest`);
+    }
+    const publishImages = (interruptAfter?: string) =>
+      execFileSync(
+        process.execPath,
+        ["--import", preload, "scripts/ci/release-oce.ts", "publish-images", directory],
+        { env: { ...imageOnlyEnv, INTERRUPT_AFTER: interruptAfter }, stdio: "pipe" },
+      );
+    assert.throws(
+      () => publishImages("docker://" + imageOnlyEnv.GHCR_RUNTIME_IMAGE + ":" + runtime.sourceTag),
+      /Interrupted after registry transfer/,
+    );
+    for (const image of records) {
+      const repo = `openclaw/images-only-${image.image}`;
+      await inspectTag(registry, repo, image.sourceTag, image.currentDigest);
+      await inspectTag(registry, repo, "latest", image.oldDigest);
+    }
+    publishImages();
+    for (const image of records) {
+      const repo = `openclaw/images-only-${image.image}`;
+      await inspectTag(registry, repo, "latest", image.currentDigest);
+      const tags = await fetch(`${registry}/v2/${repo}/tags/list`);
+      assert.deepEqual((await tags.json()).tags.sort(), ["latest", image.sourceTag]);
+    }
+
     const chart = await withEnvironment(gitEnv, () =>
       prepareReleaseChart(join(directory, "chart"), releaseEnv),
     );
