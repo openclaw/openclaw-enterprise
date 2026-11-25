@@ -56,7 +56,7 @@ test(
         id: `sa_${randomUUID()}`,
         namespaceId: namespace.id,
         name: "Issued account with retired Backend",
-        credential: { kind: "access_token", sourceId: source.id },
+        credentialSourceId: source.id,
       });
       return { account, source };
     });

@@ -10,7 +10,9 @@
   "files": [
     {
       "path": "tests/integration/ci-prepare-postgres-real.test.ts",
-      "env": { "OCC_TEST_CI_POSTGRES_REAL": "1" },
+      "env": {
+        "OCC_TEST_CI_POSTGRES_REAL": "1"
+      },
       "expectedTests": [
         "PostgreSQL preparation uses distinct Docker-assigned loopback ports and cleans its projects"
       ]
@@ -45,7 +47,8 @@
         "Migration rejects legacy active_runtime state without changing persisted rows",
         "Migration rejects legacy harness_revision state without changing persisted rows",
         "Migration rejects legacy harness_account state without changing persisted rows",
-        "Drizzle second migration preserves the applied journal and PostgreSQL schema"
+        "Drizzle second migration preserves the applied journal and PostgreSQL schema",
+        "ServiceAccount Source migration preserves issued PATs and retires manual associations"
       ]
     },
     {

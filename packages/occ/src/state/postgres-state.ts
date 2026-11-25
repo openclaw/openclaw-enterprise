@@ -79,7 +79,6 @@ import type {
   Secret,
   SecretBindings,
   ServiceAccount,
-  ServiceAccountCredential,
   ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -602,12 +601,12 @@ function agentForBrowsingFromRow(row: PostgresRow): Readonly<AgentRead> {
 }
 
 function serviceAccountFromRow(row: PostgresRow): Readonly<ServiceAccount> {
-  const credential = row.credential as ServiceAccountCredential | null;
+  const credentialSourceId = optionalText(row, "credential_source_id");
   return immutableCopy({
     id: text(row, "id"),
     namespaceId: text(row, "namespace_id"),
     name: text(row, "name"),
-    ...(credential === null ? {} : { credential }),
+    ...(credentialSourceId === undefined ? {} : { credentialSourceId }),
   });
 }
 
@@ -3116,7 +3115,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     ): Promise<Readonly<ServiceAccount> | undefined> => {
       const found = decodeQueryRows(
         await client.query(
-          `SELECT s.id, s.namespace_id, s.name, s.credential
+          `SELECT s.id, s.namespace_id, s.name, s.credential_source_id
              FROM occ.service_accounts AS s
              JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
              WHERE s.namespace_id = $1 AND s.id = $2${lock ? " FOR UPDATE OF s" : ""}`,
@@ -3644,7 +3643,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       findServiceAccountByCredentialSource: async (namespaceId, sourceId) => {
         const found = decodeQueryRows(
           await client.query(
-            `SELECT s.id, s.namespace_id, s.name, s.credential
+            `SELECT s.id, s.namespace_id, s.name, s.credential_source_id
                FROM occ.service_accounts AS s
                JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
               WHERE s.namespace_id = $1 AND s.credential_source_id = $2`,
@@ -3657,7 +3656,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         Object.freeze(
           decodeQueryRows(
             await client.query(
-              `SELECT s.id, s.namespace_id, s.name, s.credential
+              `SELECT s.id, s.namespace_id, s.name, s.credential_source_id
                  FROM occ.service_accounts AS s
                  JOIN occ.namespaces AS n ON n.id = s.namespace_id AND n.deleted_at IS NULL
                  WHERE s.namespace_id = $1
@@ -3699,27 +3698,22 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.service_accounts
-           (id, namespace_id, name, credential)
-           VALUES ($1, $2, $3, $4::jsonb)`,
-          [
-            account.id,
-            account.namespaceId,
-            account.name,
-            account.credential === undefined ? null : JSON.stringify(account.credential),
-          ],
+           (id, namespace_id, name, credential_source_id)
+           VALUES ($1, $2, $3, $4)`,
+          [account.id, account.namespaceId, account.name, account.credentialSourceId ?? null],
         );
         return immutableCopy(account);
       },
-      updateCredential: async (namespaceId, serviceAccountId, credential) => {
+      setCredentialSource: async (namespaceId, serviceAccountId, credentialSourceId) => {
         const updated = decodeQueryRows(
           await client.query(
             `UPDATE occ.service_accounts AS s
-               SET credential = $3::jsonb
+               SET credential_source_id = $3
                FROM occ.namespaces AS n
                WHERE s.namespace_id = $1 AND s.id = $2
                  AND n.id = s.namespace_id AND n.deleted_at IS NULL
-               RETURNING s.id, s.namespace_id, s.name, s.credential`,
-            [namespaceId, serviceAccountId, JSON.stringify(credential)],
+               RETURNING s.id, s.namespace_id, s.name, s.credential_source_id`,
+            [namespaceId, serviceAccountId, credentialSourceId],
           ),
         )[0];
         return updated === undefined ? undefined : serviceAccountFromRow(updated);

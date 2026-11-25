@@ -1,4 +1,4 @@
-import type { ServiceAccount, ServiceAccountCredential } from "@openclaw-enterprise/contracts";
+import type { ServiceAccount } from "@openclaw-enterprise/contracts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientServiceAccount(account: Readonly<ServiceAccount>): Record<string, unknown> {
@@ -6,14 +6,9 @@ function clientServiceAccount(account: Readonly<ServiceAccount>): Record<string,
     id: account.id,
     namespaceId: account.namespaceId,
     name: account.name,
-    ...(account.credential === undefined
+    ...(account.credentialSourceId === undefined
       ? {}
-      : {
-          credential: {
-            kind: account.credential.kind,
-            ...("sourceId" in account.credential ? { sourceId: account.credential.sourceId } : {}),
-          },
-        }),
+      : { credentialSourceId: account.credentialSourceId }),
   };
 }
 
@@ -85,30 +80,6 @@ export const serviceAccountHandlers = {
       return clientServiceAccount(updated);
     });
     reply.status(201).send({ data: account, meta: { requestId: request.id } });
-  },
-  async updateServiceAccountCredential({
-    controller,
-    context,
-    request,
-    reply,
-    params,
-    body,
-    namespaceId,
-    mutationEvent,
-  }) {
-    const account = await controller.transact(async (unit) => {
-      const updated = await controller.updateServiceAccountCredential(
-        context.actorId,
-        namespaceId,
-        params.serviceAccountId as string,
-        body as unknown as ServiceAccountCredential,
-      );
-      await unit.audit.append(
-        mutationEvent({ kind: "service_account", id: updated.id, namespaceId }),
-      );
-      return clientServiceAccount(updated);
-    });
-    reply.send({ data: account, meta: { requestId: request.id } });
   },
   async deleteServiceAccount({
     controller,

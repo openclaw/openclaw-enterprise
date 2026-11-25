@@ -98,7 +98,7 @@ the paths.
 | [IAM](#iam) | 11 operations |
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
-| [Service accounts](#service-accounts) | 6 operations |
+| [Service accounts](#service-accounts) | 5 operations |
 
 ## Operations
 
@@ -13717,7 +13717,6 @@ Example response
 | [`POST /namespaces/{namespaceId}/service-accounts`](#post-namespacesnamespaceidserviceaccounts) | Create a native Namespace-owned ServiceAccount |
 | [`DELETE /namespaces/{namespaceId}/service-accounts/{serviceAccountId}`](#delete-namespacesnamespaceidserviceaccountsserviceaccountid) | Delete an exact unreferenced Namespace-owned ServiceAccount |
 | [`GET /namespaces/{namespaceId}/service-accounts/{serviceAccountId}`](#get-namespacesnamespaceidserviceaccountsserviceaccountid) | Get an exact Namespace-owned ServiceAccount |
-| [`PATCH /namespaces/{namespaceId}/service-accounts/{serviceAccountId}/credential`](#patch-namespacesnamespaceidserviceaccountsserviceaccountidcredential) | Associate an exact Namespace-local credential reference with a ServiceAccount |
 | [`POST /namespaces/{namespaceId}/service-accounts/{serviceAccountId}/credentials`](#post-namespacesnamespaceidserviceaccountsserviceaccountidcredentials) | Issue a managed credential for an exact Namespace-owned ServiceAccount |
 
 #### `GET /namespaces/{namespaceId}/service-accounts`
@@ -13758,9 +13757,7 @@ List authorized Namespace-owned ServiceAccounts in one exact Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
-| `data[].credential` | `object` | No | — |
-| `data[].credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
-| `data[].credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].credentialSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -13850,9 +13847,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
-| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -13973,9 +13968,7 @@ Get an exact Namespace-owned ServiceAccount
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
-| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -13986,97 +13979,6 @@ Example response
 ```json
 {
   "data": {
-    "id": "sa_123e4567-e89b-42d3-a456-426614174000",
-    "name": "Model service account",
-    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-  },
-  "meta": {
-    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-  }
-}
-```
-
-#### `PATCH /namespaces/{namespaceId}/service-accounts/{serviceAccountId}/credential`
-
-<span id="patch-namespacesnamespaceidserviceaccountsserviceaccountidcredential"></span>
-
-Associate an exact Namespace-local credential reference with a ServiceAccount
-
-**Operation ID:** `updateServiceAccountCredential`
-
-**Permissions:** Requires update permission on the requested ServiceAccount.
-
-| Action | Resource | Scope |
-| --- | --- | --- |
-| `update` | `service_account` | `requested` |
-
-##### Parameters
-
-| Name | In | Type | Required | Constraints | Example |
-| --- | --- | --- | --- | --- | --- |
-| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sa_123e4567-e89b-42d3-a456-426614174000" |
-
-##### Request body
-
-**Required:** Yes
-
-**Content type:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `kind` | `"api_key" or "oauth_access_token"` | Yes | — |
-| `secretRef` | `object` | Yes | — |
-| `secretRef.key` | `string` | Yes | max length: 253; pattern: `^(?![.]{1,2}$)[-._a-zA-Z0-9]+$` |
-| `secretRef.name` | `string` | Yes | max length: 253; pattern: `^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:[.][a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$` |
-
-Example request
-```json
-{
-  "kind": "api_key",
-  "secretRef": {
-    "key": "value",
-    "name": "model-api-key"
-  }
-}
-```
-
-##### Responses
-
-| Status | Meaning |
-| --- | --- |
-| `200` | OK |
-| `400` | The request does not match the operation contract. |
-| `401` | The caller did not provide valid credentials. |
-| `403` | The caller is not allowed to perform this operation. |
-| `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
-| `413` | The request body exceeds the permitted size. |
-| `415` | The request content type is not supported. |
-| `500` | The platform request could not be completed. |
-| `503` | A required dependency is unavailable. |
-
-**`200` response body:** `application/json`
-
-| Field | Type | Required | Constraints |
-| --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
-| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
-| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `meta` | `object` | Yes | — |
-| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-
-Example response
-```json
-{
-  "data": {
-    "credential": {
-      "kind": "api_key"
-    },
     "id": "sa_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model service account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
@@ -14141,9 +14043,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.credential` | `object` | No | — |
-| `data.credential.kind` | `"api_key" or "oauth_access_token" or "access_token"` | Yes | — |
-| `data.credential.sourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.credentialSourceId` | `string` | No | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -14154,9 +14054,7 @@ Example response
 ```json
 {
   "data": {
-    "credential": {
-      "kind": "access_token"
-    },
+    "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
     "id": "sa_123e4567-e89b-42d3-a456-426614174000",
     "name": "Model service account",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"

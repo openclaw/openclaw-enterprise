@@ -86,7 +86,8 @@ export async function verifyPostgresStateConformance(context: TestContext) {
   );
 
   const durableAccount = await pool.query(
-    "SELECT id, namespace_id, name, credential " + "FROM occ.service_accounts WHERE id = $1",
+    "SELECT id, namespace_id, name, credential_source_id " +
+      "FROM occ.service_accounts WHERE id = $1",
     [fixture.serviceAccount.id],
   );
   assert.deepEqual(durableAccount.rows, [
@@ -94,7 +95,7 @@ export async function verifyPostgresStateConformance(context: TestContext) {
       id: fixture.serviceAccount.id,
       namespace_id: fixture.serviceAccountNamespace.id,
       name: fixture.serviceAccount.name,
-      credential: fixture.serviceAccount.credential,
+      credential_source_id: null,
     },
   ]);
 

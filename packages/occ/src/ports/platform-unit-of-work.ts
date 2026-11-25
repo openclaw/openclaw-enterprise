@@ -178,7 +178,7 @@ export function bindPlatformUnitOfWork(
       ...platformReadMethods.serviceAccounts,
       "createServiceAccount",
       "lockServiceAccount",
-      "updateCredential",
+      "setCredentialSource",
       "deleteServiceAccount",
       "hasReferences",
       "findIssuedCredentialBinding",

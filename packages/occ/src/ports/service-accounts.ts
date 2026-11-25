@@ -1,4 +1,4 @@
-import type { ServiceAccount, ServiceAccountCredential } from "@openclaw-enterprise/contracts";
+import type { ServiceAccount } from "@openclaw-enterprise/contracts";
 
 export interface ServiceAccountReadRepository {
   findServiceAccount(
@@ -30,10 +30,10 @@ export interface ServiceAccountRepository extends ServiceAccountReadRepository {
     namespaceId: string,
     serviceAccountId: string,
   ): Promise<Readonly<ServiceAccount> | undefined>;
-  updateCredential(
+  setCredentialSource(
     namespaceId: string,
     serviceAccountId: string,
-    credential: ServiceAccountCredential,
+    credentialSourceId: string,
   ): Promise<Readonly<ServiceAccount> | undefined>;
   deleteServiceAccount(namespaceId: string, serviceAccountId: string): Promise<boolean>;
   hasReferences(namespaceId: string, serviceAccountId: string): Promise<boolean>;

@@ -30,9 +30,7 @@ three methods; none is optional once a Driver is selected.
 | `createCredential(account)` | Issue a credential for that account and return the exact TokenService Source ID.                                       |
 | `delete(account)`           | Revoke and remove provider resources owned by that account; do not delete a different account on an identity mismatch. |
 
-A managed credential returns `{ kind: "access_token", sourceId }`. The
-issuer key and bearer stay private. Native account references can still use
-`api_key` and `oauth_access_token` metadata.
+The Driver returns the enrolled Source ID as a string. The issuer key and bearer stay private.
 
 ## IAM
 

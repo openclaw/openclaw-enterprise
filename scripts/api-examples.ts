@@ -443,10 +443,6 @@ export const requestExamples = {
   pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
-  updateServiceAccountCredential: {
-    kind: "api_key",
-    secretRef: { name: "model-api-key", key: "value" },
-  },
   createIAMRole: { name: role.name, permissions: role.permissions },
   createIAMAccessBinding: {
     subjectKind: "identity",
@@ -826,8 +822,7 @@ export const responseExamples = {
   listServiceAccounts: [account],
   createServiceAccount: account,
   getServiceAccount: account,
-  createServiceAccountCredential: { ...account, credential: { kind: "access_token" } },
-  updateServiceAccountCredential: { ...account, credential: { kind: "api_key" } },
+  createServiceAccountCredential: { ...account, credentialSourceId: source.id },
   listIAMRoles: [role],
   getIAMRole: role,
   createIAMRole: role,

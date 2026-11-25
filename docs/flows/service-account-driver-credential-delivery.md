@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-11-20
-last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
+updated: 2026-11-25
+last_updated_session: authoring-run/4d9407a1-7805-45fe-a064-3c6084ef4a36
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -42,8 +42,7 @@ Namespace readiness and selected TokenService support before minting.
 The [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
 passes the fresh bearer in-process to the selected TokenService, which commits
 static `codex-pat` custody in its own Namespace transaction. OCC checks the
-returned ready Source, binds the creator's Source grants, and finalizes the
-account reference and issuance audit. If enrollment or finalization fails
+returned ready Source, binds the creator's Source grants, and saves the account's `credentialSourceId` and issuance audit. If enrollment or finalization fails
 with a known outcome, the Driver revokes the exact new issuer credential and
 OCC cleans up the unfinished Source when one was enrolled.
 
@@ -74,6 +73,8 @@ a model turn in an installed runtime.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 06:40: Record the issued Source directly on the ServiceAccount. (authoring-run/4d9407a1-7805-45fe-a064-3c6084ef4a36 - a6321ae62c96d1a56154d82755e21eeea83ffc5b)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
 - 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)

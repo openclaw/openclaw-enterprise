@@ -121,7 +121,6 @@ import type {
   SecretDetail,
   SecretMetadata,
   ServiceAccount,
-  ServiceAccountCredential,
   ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 
@@ -1276,20 +1275,6 @@ export class OpenClawController {
       principalId,
       namespaceId,
       serviceAccountId,
-    );
-  }
-
-  async updateServiceAccountCredential(
-    principalId: string,
-    namespaceId: string,
-    serviceAccountId: string,
-    credential: ServiceAccountCredential,
-  ): Promise<Readonly<ServiceAccount>> {
-    return this.composition.serviceAccountOperations.updateServiceAccountCredential(
-      principalId,
-      namespaceId,
-      serviceAccountId,
-      credential,
     );
   }
 

@@ -528,7 +528,7 @@ function createImportedCodexServiceAccountDriverFactory(
           ),
         );
         assert.equal(result.rowCount, 1, "imported ServiceAccount binding must be exact.");
-        return { kind: "access_token", sourceId: source.id };
+        return source.id;
       },
       async delete(account) {
         await controller.transact((unit) =>
@@ -1054,7 +1054,7 @@ export async function createPluginDriverRealFixture(
       {},
     );
     const serviceAccount = responseData(issued, 201, ServiceAccountResponse);
-    assert.equal(serviceAccount.credential?.kind, "access_token");
+    assert.match(serviceAccount.credentialSourceId ?? "", /^cs_/);
     assertNoSecretMaterial(
       issued,
       [accessToken, codexServiceAccountImport.workspaceId],

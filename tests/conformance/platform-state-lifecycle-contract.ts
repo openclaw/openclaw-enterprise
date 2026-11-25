@@ -5,7 +5,6 @@ import type {
   AgentRevision,
   AgentRevisionSummaryPage,
   Namespace,
-  ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevisionReadRepository,
@@ -230,10 +229,7 @@ async function verifyServiceAccountLifecycle(
     namespaceId: accountNamespace.id,
     name: "Account " + randomUUID(),
   };
-  const credential = {
-    kind: "access_token",
-    sourceId: identifier("cs"),
-  } satisfies ServiceAccountCredential;
+  const credentialSourceId = identifier("cs");
   const foreignSourceId = identifier("cs");
   const accountConfiguration = {
     id: identifier("cfg"),
@@ -284,7 +280,7 @@ async function verifyServiceAccountLifecycle(
     assertCreatedRevision(await transaction.revisions.createRevision(second), second);
 
     for (const [id, namespaceId] of [
-      [credential.sourceId, accountNamespace.id],
+      [credentialSourceId, accountNamespace.id],
       [foreignSourceId, namespace.id],
     ] as const) {
       await transaction.credentialSources.createCredentialSource({
@@ -301,12 +297,12 @@ async function verifyServiceAccountLifecycle(
     }
   });
 
-  const update = (issued: ServiceAccountCredential) =>
+  const update = (sourceId: string) =>
     store.transact((transaction) =>
-      transaction.serviceAccounts.updateCredential(accountNamespace.id, account.id, issued),
+      transaction.serviceAccounts.setCredentialSource(accountNamespace.id, account.id, sourceId),
     );
   await assert.rejects(
-    update({ ...credential, sourceId: foreignSourceId }),
+    update(foreignSourceId),
     storeRefusal(
       "ScopeViolationError",
       "The managed ServiceAccount Source is invalid.",
@@ -319,44 +315,13 @@ async function verifyServiceAccountLifecycle(
     await transaction.credentialSources.deleteCredentialSource(namespace.id, foreignSourceId);
   });
 
-  for (const [description, invalidCredential] of [
-    ["unsupported credential kind", { ...credential, kind: "bearer" }],
-    ["invalid issued Source identity", { ...credential, sourceId: "../foreign" }],
-    [
-      "retired issued token Secret reference",
-      { kind: "access_token", secretRef: { name: "retired-token", key: "token" } },
-    ],
-    [
-      "invalid Secret name",
-      { kind: "oauth_access_token", secretRef: { name: "../foreign", key: "valid" } },
-    ],
-    ...["../token", ".", ".."].map(
-      (key) =>
-        [
-          "invalid Secret key",
-          { kind: "oauth_access_token", secretRef: { name: "valid", key } },
-        ] as const,
-    ),
-  ] as const) {
-    await assert.rejects(
-      // @ts-expect-error Unchecked callers can pass unsupported credential shapes.
-      update(invalidCredential),
-      storeRefusal(
-        "ScopeViolationError",
-        "The ServiceAccount credential reference is invalid.",
-        postgresOwnershipViolation,
-      ),
-      description,
-    );
-  }
-
   // An aborted issuance must leave the account unissued and eligible for retry.
   await assert.rejects(
     store.transact(async (transaction) => {
-      await transaction.serviceAccounts.updateCredential(
+      await transaction.serviceAccounts.setCredentialSource(
         accountNamespace.id,
         account.id,
-        credential,
+        credentialSourceId,
       );
       throw new Error("simulated ServiceAccount credential transaction failure");
     }),
@@ -368,14 +333,12 @@ async function verifyServiceAccountLifecycle(
     ),
     account,
   );
-  const issuedAccount = { ...account, credential };
-  assert.deepEqual(await update(credential), issuedAccount);
+  const issuedAccount = { ...account, credentialSourceId };
+  assert.deepEqual(await update(credentialSourceId), issuedAccount);
   await store.read(async (state) => {
     const stored = await state.serviceAccounts.findServiceAccount(accountNamespace.id, account.id);
     assert.deepEqual(stored, issuedAccount);
-    for (const value of [stored, stored.credential]) {
-      assert.ok(Object.isFrozen(value));
-    }
+    assert.ok(Object.isFrozen(stored));
     assert.equal(
       await state.serviceAccounts.findServiceAccount(namespace.id, account.id),
       undefined,
@@ -457,13 +420,7 @@ async function verifyServiceAccountLifecycle(
     id: identifier("sa"),
     name: `Unmanaged account ${randomUUID()}`,
   };
-  const serviceAccount = {
-    ...unmanagedAccount,
-    credential: {
-      kind: "oauth_access_token",
-      secretRef: { name: "oauth-reference", key: "access-token" },
-    } satisfies ServiceAccountCredential,
-  };
+  const serviceAccount = unmanagedAccount;
   await store.transact(async (transaction) => {
     // Later contract cases can select a new TokenService after this case's own Source is gone.
     assert.equal(
@@ -472,24 +429,16 @@ async function verifyServiceAccountLifecycle(
     );
     await transaction.credentialSources.markCredentialSourceDeleting(
       accountNamespace.id,
-      credential.sourceId,
+      credentialSourceId,
     );
     assert.equal(
       await transaction.credentialSources.deleteCredentialSource(
         accountNamespace.id,
-        credential.sourceId,
+        credentialSourceId,
       ),
       true,
     );
     await transaction.serviceAccounts.createServiceAccount(unmanagedAccount);
-    assert.deepEqual(
-      await transaction.serviceAccounts.updateCredential(
-        accountNamespace.id,
-        unmanagedAccount.id,
-        serviceAccount.credential,
-      ),
-      serviceAccount,
-    );
   });
   return { accountNamespace, serviceAccount };
 }

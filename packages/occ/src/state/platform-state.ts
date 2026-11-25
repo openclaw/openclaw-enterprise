@@ -110,7 +110,6 @@ import type {
   Secret,
   SecretBindings,
   ServiceAccount,
-  ServiceAccountCredential,
   ServicePrincipal,
   Role,
   IAMPolicyRepository,
@@ -156,8 +155,10 @@ const serviceAccountIdentifier =
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
 
-function validCredential(credential: unknown): credential is ServiceAccountCredential {
-  if (
+function validLegacyHarnessCredential(
+  credential: unknown,
+): credential is { kind: "access_token"; sourceId: string } {
+  return (
     credential !== null &&
     typeof credential === "object" &&
     !Array.isArray(credential) &&
@@ -169,36 +170,6 @@ function validCredential(credential: unknown): credential is ServiceAccountCrede
     /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       credential.sourceId,
     )
-  ) {
-    return true;
-  }
-  if (
-    credential === null ||
-    typeof credential !== "object" ||
-    Array.isArray(credential) ||
-    Object.keys(credential).length !== 2 ||
-    !("kind" in credential) ||
-    !("secretRef" in credential) ||
-    (credential.kind !== "api_key" && credential.kind !== "oauth_access_token") ||
-    credential.secretRef === null ||
-    typeof credential.secretRef !== "object" ||
-    Array.isArray(credential.secretRef) ||
-    Object.keys(credential.secretRef).length !== 2 ||
-    !("name" in credential.secretRef) ||
-    !("key" in credential.secretRef)
-  ) {
-    return false;
-  }
-  const { name, key } = credential.secretRef;
-  return (
-    typeof name === "string" &&
-    name.length <= 253 &&
-    secretName.test(name) &&
-    typeof key === "string" &&
-    key.length <= 253 &&
-    secretKey.test(key) &&
-    key !== "." &&
-    key !== ".."
   );
 }
 function invalidPluginState(message: string): never {
@@ -263,7 +234,7 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       !isServiceAccountHarnessAuth(value) ||
       value.source.namespaceId !== namespaceId ||
       Object.keys(value).length !== 4 ||
-      !validCredential(value.credential) ||
+      !validLegacyHarnessCredential(value.credential) ||
       value.credential.kind !== "access_token"
     ) {
       return false;
@@ -3160,14 +3131,34 @@ function repositories(
     },
   };
 
+  async function assertServiceAccountSource(
+    namespaceId: string,
+    accountId: string,
+    sourceId: string,
+  ) {
+    const source = await findCredentialSource(namespaceId, sourceId);
+    if (
+      source?.ownerCapability !== "token_service" ||
+      source.type !== "static" ||
+      source.state !== "ready" ||
+      source.config.provider_preset !== "codex-pat" ||
+      Array.from(snapshot.serviceAccounts.values()).some(
+        (account) =>
+          account.namespaceId === namespaceId &&
+          account.id !== accountId &&
+          account.credentialSourceId === sourceId,
+      )
+    ) {
+      throw new ScopeViolationError(
+        "The managed ServiceAccount Source is invalid or already assigned.",
+      );
+    }
+  }
+
   const serviceAccounts: ServiceAccountRepository = {
     findServiceAccountByCredentialSource: async (namespaceId, sourceId) =>
       Array.from(snapshot.serviceAccounts.values()).find(
-        (account) =>
-          account.namespaceId === namespaceId &&
-          account.credential?.kind === "access_token" &&
-          "sourceId" in account.credential &&
-          account.credential.sourceId === sourceId,
+        (account) => account.namespaceId === namespaceId && account.credentialSourceId === sourceId,
       ),
     findServiceAccount: async (namespaceId, serviceAccountId) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
@@ -3199,7 +3190,8 @@ function repositories(
         Array.from(account.name).length > 200 ||
         account.name !== account.name.trim() ||
         /[\x00-\x1f\x7f]/.test(account.name) ||
-        (account.credential !== undefined && !validCredential(account.credential))
+        (account.credentialSourceId !== undefined &&
+          !credentialSourceIdentifier.test(account.credentialSourceId))
       ) {
         throw new ScopeViolationError("The ServiceAccount or its credential reference is invalid.");
       }
@@ -3227,32 +3219,26 @@ function repositories(
       ) {
         throw new ResourceStateConflictError(SERVICE_ACCOUNT_NAME_CONFLICT);
       }
+      if (account.credentialSourceId !== undefined) {
+        await assertServiceAccountSource(
+          account.namespaceId,
+          account.id,
+          account.credentialSourceId,
+        );
+      }
       const saved = immutableCopy(account);
       snapshot.serviceAccounts.set(key, saved);
       return saved;
     },
     lockServiceAccount: async (namespaceId, serviceAccountId) =>
       serviceAccounts.findServiceAccount(namespaceId, serviceAccountId),
-    updateCredential: async (namespaceId, serviceAccountId, credential) => {
-      if (!validCredential(credential)) {
-        throw new ScopeViolationError("The ServiceAccount credential reference is invalid.");
-      }
+    setCredentialSource: async (namespaceId, serviceAccountId, credentialSourceId) => {
       const current = await serviceAccounts.findServiceAccount(namespaceId, serviceAccountId);
       if (current === undefined) {
         return undefined;
       }
-      if ("sourceId" in credential) {
-        const source = await findCredentialSource(namespaceId, credential.sourceId);
-        if (
-          source?.ownerCapability !== "token_service" ||
-          source.type !== "static" ||
-          source.state !== "ready" ||
-          source.config.provider_preset !== "codex-pat"
-        ) {
-          throw new ScopeViolationError("The managed ServiceAccount Source is invalid.");
-        }
-      }
-      const updated = immutableCopy({ ...current, credential });
+      await assertServiceAccountSource(namespaceId, serviceAccountId, credentialSourceId);
+      const updated = immutableCopy({ ...current, credentialSourceId });
       snapshot.serviceAccounts.set(agentKey(namespaceId, serviceAccountId), updated);
       return updated;
     },

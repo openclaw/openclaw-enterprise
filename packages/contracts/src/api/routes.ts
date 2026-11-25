@@ -104,7 +104,6 @@ import {
   UpdateAgentBody,
   UpdateConfigurationBody,
   UpdateSecretBody,
-  UpdateServiceAccountCredentialBody,
   UpdateWorkspaceFileBody,
   WorkspaceFileParams,
 } from "./common.ts";
@@ -1498,23 +1497,6 @@ export const occApiRoutes = [
       params: ServiceAccountParams,
       body: CreateServiceAccountCredentialBody,
       response: { 201: ServiceAccountResponse, ...createErrors },
-    },
-  },
-  {
-    operationId: "updateServiceAccountCredential",
-    method: "PATCH",
-    path: "/namespaces/:namespaceId/service-accounts/:serviceAccountId/credential",
-    action: "openclaw.service_accounts.update",
-    iamAction: "update",
-    resourceKind: "service_account",
-    authorizationTarget: "service_account",
-    summary: "Associate an exact Namespace-local credential reference with a ServiceAccount",
-    tags: ["Service accounts"],
-    schema: {
-      querystring: EmptyQuery,
-      params: ServiceAccountParams,
-      body: UpdateServiceAccountCredentialBody,
-      response: { 200: ServiceAccountResponse, ...createErrors },
     },
   },
   {

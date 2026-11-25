@@ -4,7 +4,6 @@ import {
   type Namespace,
   type ResourceRef,
   type ServiceAccount,
-  type ServiceAccountCredential,
   type ServiceAccountDriver,
   type TokenServiceDriver,
   type AuditEvent,
@@ -216,7 +215,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         throw new NamespaceNotReadyError();
       }
       const account = await lockServiceAccount(state, namespace.id, serviceAccountId);
-      if (account.credential !== undefined) {
+      if (account.credentialSourceId !== undefined) {
         throw new ResourceStateConflictError("The ServiceAccount already has a credential.");
       }
       const driver = serviceAccountDriver();
@@ -229,19 +228,11 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         );
       }
       deps.ownedTokenServiceDriver();
-      const credential = await driverOperation(
+      const sourceId = await driverOperation(
         () => driver.createCredential(account),
         "ServiceAccount",
       );
-      if (credential?.kind !== "access_token" || !("sourceId" in credential)) {
-        throw new DependencyUnavailableError(
-          "The ServiceAccount Driver returned an unsupported credential.",
-        );
-      }
-      const source = await state.credentialSources.lockCredentialSource(
-        namespaceId,
-        credential.sourceId,
-      );
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (
         source?.ownerCapability !== "token_service" ||
         source.type !== "static" ||
@@ -266,44 +257,10 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
         outcome: "success",
       };
       await state.audit.append(sourceAudit);
-      const updated = await state.serviceAccounts.updateCredential(
+      const updated = await state.serviceAccounts.setCredentialSource(
         namespace.id,
         account.id,
-        credential,
-      );
-      if (updated === undefined) {
-        throw new ResourceStateConflictError(
-          "The ServiceAccount credential changed during its update.",
-        );
-      }
-      return updated;
-    });
-  }
-
-  async function updateServiceAccountCredential(
-    principalId: string,
-    namespaceId: string,
-    serviceAccountId: string,
-    credential: ServiceAccountCredential,
-  ): Promise<Readonly<ServiceAccount>> {
-    serviceAccountIdentity(namespaceId, serviceAccountId);
-    return transact(async (state) => {
-      await authorize(principalId, "update", {
-        kind: "service_account",
-        id: serviceAccountId,
-        namespaceId,
-      });
-      const namespace = await exactNamespace(state, namespaceId);
-      const account = await lockServiceAccount(state, namespace.id, serviceAccountId);
-      if (account.credential?.kind === "access_token" || credential.kind === "access_token") {
-        throw new ResourceStateConflictError(
-          "A managed ServiceAccount credential cannot be manually updated.",
-        );
-      }
-      const updated = await state.serviceAccounts.updateCredential(
-        namespace.id,
-        account.id,
-        credential,
+        sourceId,
       );
       if (updated === undefined) {
         throw new ResourceStateConflictError(
@@ -337,7 +294,7 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
       // starts, and issuance takes the same row lock, so no token can appear after this read.
       const driver = serviceAccountDriver();
       let unrevokedCredential: ServiceAccountDeletion["unrevokedCredential"];
-      if (account.credential?.kind === "access_token" && driver === undefined) {
+      if (account.credentialSourceId !== undefined && driver === undefined) {
         // Only the Backend's Driver can revoke the issued token, so deletion waits for it
         // unless the caller forces it. Only the worker sets a configured Driver id, so the API
         // always answers the 409 (or forces).
@@ -388,7 +345,6 @@ export function createServiceAccountOperations(deps: ServiceAccountOperationsDep
     listServiceAccounts,
     createServiceAccount,
     createServiceAccountCredential,
-    updateServiceAccountCredential,
     deleteServiceAccount,
   };
 }

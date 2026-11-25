@@ -256,7 +256,7 @@ export function createHarnessAuthOperations(dependencies: HarnessAuthDependencie
     binding: Extract<HarnessAuthBinding, { readonly source: ServiceAccountReference }>,
   ): Promise<HarnessAuthSnapshot> {
     const account = await state.serviceAccounts.lockServiceAccount(namespaceId, binding.source.id);
-    if (account?.credential?.kind !== "access_token") {
+    if (account?.credentialSourceId === undefined) {
       throw missingAccessTokenError();
     }
     throw new ResourceStateConflictError(
