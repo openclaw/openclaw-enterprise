@@ -483,8 +483,20 @@ export function renderCredentialSources(context: Context) {
           throw new Error("Unconfirmed Credential Source creation");
         }
         created = true;
-        sources.items = [source, ...sources.items.filter((item) => item.id !== source.id)];
-        renderList();
+        let listed = false;
+        let refreshed = false;
+        try {
+          const inventory = sourceList(await context.request(path), context.namespaceId);
+          sources.items = inventory.items;
+          sources.unavailable = inventory.unavailable;
+          listed = inventory.items.some((item) => item.id === source.id);
+          refreshed = true;
+          renderList();
+        } catch (cause) {
+          if (requestFailure(cause).status === 401) {
+            context.onExpired();
+          }
+        }
         feedback.replaceChildren(
           statusBlock(
             "success",
@@ -494,6 +506,17 @@ export function renderCredentialSources(context: Context) {
               : `${source.name} is ready. Agent access and deployment are separate steps.`,
           ),
         );
+        if (!listed) {
+          feedback.append(
+            statusBlock(
+              "warning",
+              null,
+              refreshed
+                ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
+                : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it.",
+            ),
+          );
+        }
       } catch (cause) {
         value.value = "";
         if (requestFailure(cause).status === 401) {

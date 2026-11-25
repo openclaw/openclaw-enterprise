@@ -51,9 +51,9 @@ The dialog requests the Namespace's usable Connection Templates. This operation 
 
 `apps/controller/src/console/credential-sources.mts:renderForm`
 
-Submission sends the write-only credential string with either the approved model preset or Template ID to the Source POST route, then clears the input. The Source API authorizes the collection operation; TokenService accepts or rejects registration. Console confirms the returned public Source identity, resource scope, type, state and purpose before showing success. A denied or uncertain result blocks resubmission; Refresh rechecks the inventory before another attempt. A Template-associated Source cannot authenticate a model or be admitted directly to an Agent.
+Submission sends the write-only credential string with either the approved model preset or Template ID to the Source POST route, then clears the input. The Source API authorizes the collection operation; TokenService accepts or rejects registration. Console confirms the returned public Source identity, resource scope, type, state and purpose before showing success. It reloads the filtered inventory before showing the Source in the library; creation does not grant exact Source `read`. A denied or uncertain result blocks resubmission; Refresh rechecks the inventory before another attempt. A Template-associated Source cannot authenticate a model or be admitted directly to an Agent.
 
-The next owner is [Agent creation](agent-creation.md), which refuses an incompatible configured model destination before saving Configuration or Agent state. Agent save then checks exact Source `operate` and binds the eligible Source.
+The next owner is [Agent creation](agent-creation.md), which refuses an incompatible configured OpenClaw model destination before saving Configuration or Agent state. Console cannot confirm Codex's effective Installation destination before save; deployment admission checks it. Agent save checks exact Source `operate` and binds the eligible Source.
 
 ## Debugging and Verification
 

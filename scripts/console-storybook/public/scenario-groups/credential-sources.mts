@@ -78,6 +78,22 @@ export const credentialSourceScenarios = {
     description:
       "Choose an approved model preset or static Bearer Template and enter a dummy credential. The simulated API saves only public metadata in the list.",
   },
+  credentialsSourceCreatedUnreadable: {
+    group: "Pages/Credentials",
+    name: "Created Source without exact read access",
+    path,
+    oauthCatalog: "ready",
+    rules: [{ suffix: "/credential-sources", method: "GET", data: [] }],
+    actions: [
+      click("Create Source"),
+      { selector: "#credential-source-name", value: "Created without read" },
+      { selector: "#credential-source-purpose", value: "model:openai" },
+      { selector: "#credential-source-value", value: "dummy-story-credential" },
+      { selector: 'button[form="credential-source-form"]', click: true },
+    ],
+    description:
+      "The simulated create succeeds, but the separately filtered inventory omits the new Source. The page confirms creation and explains that exact Source read is required before reuse.",
+  },
   createExistingSourceLoading: {
     group: "Pages/Create Agent",
     name: "Existing Source list loading",
@@ -215,6 +231,17 @@ export const credentialSourceScenarios = {
     actions: [{ selector: "#harness-auth-existing-source", value: replacementId }],
     description:
       "Choose another ready Source and save authentication. The simulated Agent PATCH replaces the Harness Source Reference without enrolling another Source. An active Agent must complete Stop before deployment of the replacement.",
+  },
+  credentialsFirstManagedSource: {
+    group: "Components/Credentials",
+    name: "Select a first managed Source for Codex",
+    path: `/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=${namespaceId}&revision=draft&tab=credentials`,
+    harnessId: "codex",
+    auth: null,
+    initialCredentialSources: previewModelSources,
+    actions: [{ selector: "#harness-auth-method", value: "credential_source" }],
+    description:
+      "The draft explains that an active Agent must complete Stop before deploying the managed Source, and that the effective Codex destination is checked at deployment.",
   },
   credentialsUnsupportedModelSource: {
     group: "Components/Credentials",

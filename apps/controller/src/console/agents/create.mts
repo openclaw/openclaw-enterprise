@@ -41,6 +41,7 @@ import {
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import {
+  CODEX_SOURCE_DESTINATION_HINT,
   configuredHarnessId,
   credentialSourceOperateDenial,
   createModelCredentialSourceField,
@@ -3298,7 +3299,8 @@ function renderAgentForm(
     existingModelSource.setDisabled(planLocked || Boolean(savedAgent));
     if (existingSource) {
       credentialStorageHelp.textContent =
-        "Uses the selected existing Credential Source. Saving the Agent checks your permission to operate it.";
+        "Uses the selected existing Credential Source. Saving the Agent checks your permission to operate it." +
+        (harness.value === "codex" && !usesPat ? ` ${CODEX_SOURCE_DESTINATION_HINT}` : "");
     } else {
       credentialStorageHelp.textContent = managedStatic
         ? "Saves a Credential Source with the selected TokenService. Use it to load hosted plugins and deploy the Agent."

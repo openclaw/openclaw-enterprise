@@ -79,6 +79,9 @@ export function configuredHarnessId(values: unknown): "codex" | "openclaw" | und
 type AuthBinding = HarnessAuthBinding | null | undefined;
 type ModelSourcePreset = "openai" | "codex-pat";
 
+export const CODEX_SOURCE_DESTINATION_HINT =
+  "For an OpenAI Source, deployment must use https://api.openai.com/v1/responses. The Console cannot check Codex's effective destination before saving. If the Installation default differs, set the Harness destination override before deployment.";
+
 /** Return the configured model provider only when its approved static Source presets can apply. */
 export function modelSourceProvider(
   configuration: unknown,
@@ -522,13 +525,15 @@ export function createHarnessAuthFields(
       },
     );
   }
-  const currentOAuth = element(
-    "p",
-    { className: "hint" },
-    sourceCompatible
+  let currentSourceText =
+    "If this Agent has an active revision, complete Stop before deploying this managed Source.";
+  if (binding?.method === "credential_source") {
+    currentSourceText = sourceCompatible
       ? "The Agent's current credential source is preserved until you select and save another authentication source. If this Agent has an active revision, complete Stop before deploying the replacement."
-      : "The Agent's current credential source is preserved. Source replacement is unavailable for the configured model provider or destination.",
-  );
+      : "The Agent's current credential source is preserved. Source replacement is unavailable for the configured model provider or destination.";
+  }
+  const currentSourceHint = element("p", { className: "hint" }, currentSourceText);
+  const codexSourceHint = element("p", { className: "hint" }, CODEX_SOURCE_DESTINATION_HINT);
   const accountField = element(
     "div",
     { className: "form-field" },
@@ -558,7 +563,8 @@ export function createHarnessAuthFields(
     ),
     secretField,
     sourcePicker.field,
-    currentOAuth,
+    currentSourceHint,
+    codexSourceHint,
     oauthLogin.section,
     accountField,
     runtimeHint,
@@ -575,8 +581,8 @@ export function createHarnessAuthFields(
     if (usesOAuth) {
       readOffer();
     }
-    currentOAuth.hidden =
-      method.value !== "credential_source" || binding?.method !== "credential_source";
+    currentSourceHint.hidden = method.value !== "credential_source";
+    codexSourceHint.hidden = method.value !== "credential_source" || harnessId !== "codex";
     sourcePicker.setActive(method.value === "credential_source" && sourceCompatible);
     sourcePicker.setDisabled(disabled);
     secretField.hidden = !directSecret;

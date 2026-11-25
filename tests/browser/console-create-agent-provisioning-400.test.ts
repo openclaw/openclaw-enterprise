@@ -878,6 +878,26 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   assert.equal(Object.hasOwn(templateBody, "config"), false);
   await page.getByText("Reporting credential", { exact: true }).waitFor();
 
+  // Creation does not grant exact Source read. Only the authoritative filtered list can
+  // establish that a newly enrolled Source belongs in the readable library.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  const unreadableForm = await fill("Created without read");
+  const unreadableCreated = page.waitForResponse(
+    (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
+  );
+  await unreadableForm.getByRole("button", { name: "Create Source", exact: true }).click();
+  const unreadableResponse = await unreadableCreated;
+  assert.equal(unreadableResponse.status(), 201);
+  const unreadableId = resourceId(
+    checked(CredentialSourceResponse, await unreadableResponse.json()).data,
+  );
+  await page.getByText("Credential Source created", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("row", { name: /Created without read/ }).count(), 0);
+  assert.deepEqual((await fixture.request("GET", base)).data, []);
+  restoreRead();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("row", { name: /Created without read/ }).waitFor();
+
   const deniedForm = await fill("Denied model");
   revokeAdministratorGrant(fixture, ["create", "credential_source"]);
   const refused = page.waitForResponse(
@@ -892,7 +912,7 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const inventory = await fixture.request("GET", base);
   assert.deepEqual(
     (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
-    [source.id, templateSource.id].sort(),
+    [source.id, templateSource.id, unreadableId].sort(),
   );
   revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await page.reload();
@@ -946,6 +966,31 @@ test("a lost successful Source create reply blocks another create until Refresh 
   await page.getByText("Uncertain model", { exact: true }).waitFor();
   assert.notEqual(await create.getAttribute("aria-disabled"), "true");
   assert.equal(pathRequests(requests, "POST", base).length, 1);
+
+  // A service-unavailable response can also arrive after the owner committed. It must
+  // block another enrollment just like a lost successful reply.
+  await page.unroute(fixture.origin + base);
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.continue();
+    }
+    const committed = await route.fetch();
+    assert.equal(committed.status(), 201);
+    return route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Owner unavailable."));
+  });
+  await create.click();
+  const unavailable = page.getByRole("dialog", { name: "Create Credential Source", exact: true });
+  await unavailable.getByLabel("Source name", { exact: true }).fill("Unavailable reply");
+  await unavailable.getByLabel("Credential purpose", { exact: true }).selectOption("model:openai");
+  await unavailable.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
+  await unavailable.getByRole("button", { name: "Create Source", exact: true }).click();
+  await unavailable.getByText(/outcome is unknown/i).waitFor();
+  assert.equal(
+    await unavailable.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
+    true,
+  );
+  assert.equal(pathRequests(requests, "POST", base).length, 2);
+  assert.equal(((await fixture.request("GET", base)).data as unknown[]).length, 2);
 });
 
 test("Create Agent reuses a Source without enrolling it; replacement persists the exact Reference", async (t) => {
@@ -1135,8 +1180,6 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
       name: "Codex using openai provider",
       executionMode: "dedicated",
       configurationId,
-      harnessAuth: { method: "credential_source", sourceId: openaiSource },
-      credentialSources: [{ sourceId: openaiSource }],
     },
   });
   assert.equal(created.status, 201);
@@ -1145,6 +1188,17 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
     page,
     fixture,
     `/console/agents/${resourceId(created.data)}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("credential_source");
+  assert.equal(
+    await page.getByText(/complete Stop before deploying this managed Source/).isVisible(),
+    true,
+  );
+  assert.equal(
+    await page
+      .getByText(/Console cannot check Codex's effective destination before saving/)
+      .isVisible(),
+    true,
   );
   const picker = page.getByLabel("Existing Credential Source", { exact: true });
   await page
@@ -1181,6 +1235,17 @@ test("Codex Agent Credentials with an openai model provider excludes codex-pat S
   const codexPicker = page.getByLabel("Existing Credential Source", { exact: true });
   assert.equal(await codexPicker.locator(`option[value="${openaiSource}"]`).count(), 1);
   assert.equal(await codexPicker.locator(`option[value="${codexPat}"]`).count(), 1);
+
+  const { page: createPage } = await openModelSourceForm(t, fixture, namespace, "codex");
+  await createPage
+    .getByLabel("Credential storage", { exact: true })
+    .selectOption("existing_source");
+  assert.equal(
+    await createPage
+      .getByText(/Console cannot check Codex's effective destination before saving/)
+      .isVisible(),
+    true,
+  );
 });
 
 test("Source operate denial leaves an honestly reported saved Configuration and no Agent", async (t) => {
@@ -1204,7 +1269,15 @@ test("Source operate denial leaves an honestly reported saved Configuration and 
     .waitFor();
   const writes = configurationPostRequests(requests, namespace.id);
   assert.equal(writes.length, 1);
-  await page.getByText(/Configuration saved:/).waitFor();
+  const savedNotice = await page.getByText(/Configuration saved:/).textContent();
+  const savedId = savedNotice?.match(/Configuration saved: ([^.\s]+)\./)?.[1];
+  assert.ok(savedId, "the partial-save notice names the retained Configuration");
+  const configuration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${savedId}`,
+  );
+  assert.equal(configuration.status, 200);
+  assert.equal(resourceId(configuration.data), savedId);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
     0,

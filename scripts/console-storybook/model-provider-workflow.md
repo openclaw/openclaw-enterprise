@@ -25,6 +25,7 @@ In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, 
 an available static Bearer Template. Enter a dummy value and select **Create Source**.
 Confirm that the Source appears in the inventory and its value is not returned.
 A Template Source cannot serve as model authentication or be admitted directly to an Agent.
+**Created Source without exact read access** confirms creation without adding the Source to the readable inventory.
 
 Open **Pages/Create Agent → Reuse an existing Credential Source** and select
 **Create Agent**. Check that the draft uses the selected Source ID and the request log
@@ -32,6 +33,7 @@ contains no `POST …/credential-sources`. If the Source list fails, select **Re
 before choosing a Source. Open **Components/Credentials → Replace an existing
 Credential Source**, select **Save authentication source**, and check that the Agent
 uses the replacement ID without another Source enrollment. Deployment is separate.
+**Select a first managed Source for Codex** shows the Stop requirement and the destination check that occurs at deployment.
 
 Inspect these list and failure stories:
 
