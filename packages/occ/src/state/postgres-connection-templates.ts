@@ -1,12 +1,10 @@
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
-  OAuthClient,
   ConnectionTemplate,
   ConnectionTemplateVersion,
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
-import type { StoredCredentialClient } from "../ports/oauth-client.ts";
 import type { ConnectionTemplateRepository } from "../ports/connection-templates.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
@@ -98,34 +96,6 @@ function staticVersionFromRow(
   };
 }
 
-function registrationFromRow(row: Row): Readonly<StoredCredentialClient> {
-  const common = {
-    id: text(row, "id"),
-    ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
-    displayName: text(row, "display_name"),
-    createdAt: timestamp(row, "created_at"),
-    ...(row.token_service_instance_id === null
-      ? {}
-      : { tokenServiceInstanceId: text(row, "token_service_instance_id") }),
-  };
-  if (row.kind === "github-app") {
-    return immutableCopy({ ...common, kind: "github-app", appId: text(row, "app_id") });
-  }
-  if (row.kind !== "oauth2") {
-    return invalid();
-  }
-  return immutableCopy({
-    ...common,
-    kind: "oauth2",
-    issuer: text(row, "issuer"),
-    clientId: text(row, "client_id"),
-    tokenUrl: text(row, "token_url"),
-    ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
-    tokenEndpointAuthMethod:
-      row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
-  });
-}
-
 async function insertVersion(
   client: PostgresQueryClient,
   version: ConnectionTemplateVersion,
@@ -164,7 +134,7 @@ async function insertVersion(
   );
 }
 
-/** The database enforces the template and registration scopes and immutable versions. */
+/** The database enforces the template scope and immutable versions. */
 export function postgresConnectionTemplates(
   client: PostgresQueryClient,
   requireInitialized: () => Promise<unknown>,
@@ -230,111 +200,12 @@ export function postgresConnectionTemplates(
       ).rows;
       return row === undefined ? undefined : immutableCopy(versionFromRow(row as Row));
     },
-    listCredentialClients: async () =>
-      Object.freeze(
-        (
-          await client.query(
-            "SELECT * FROM occ.oauth_clients WHERE cleanup_after IS NULL ORDER BY id",
-            [],
-          )
-        ).rows.map((row) => registrationFromRow(row as Row)),
-      ),
-    countNamespaceCredentialClients: async (namespaceId) =>
-      integer(
-        (
-          await client.query("SELECT count(*) AS n FROM occ.oauth_clients WHERE namespace_id=$1", [
-            namespaceId,
-          ])
-        ).rows[0] as Row,
-        "n",
-      ),
-    findCredentialClient: async (registrationId) => {
-      const [row] = (
-        await client.query(
-          `SELECT * FROM occ.oauth_clients WHERE id = $1 AND cleanup_after IS NULL`,
-          [registrationId],
-        )
-      ).rows;
-      return row === undefined ? undefined : registrationFromRow(row as Row);
-    },
-    lockCredentialClient: async (id) => {
-      const [row] = (
-        await client.query(
-          "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NULL FOR UPDATE",
-          [id],
-        )
-      ).rows;
-      return row === undefined ? undefined : registrationFromRow(row as Row);
-    },
-    listCredentialClientCleanups: async (limit) =>
-      (
-        await client.query(
-          "SELECT id FROM occ.oauth_clients WHERE cleanup_after<=now() ORDER BY cleanup_after,id LIMIT $1",
-          [limit],
-        )
-      ).rows.map((row) => text(row as Row, "id")),
-    lockCredentialClientForCleanup: async (id, dueOnly) => {
-      const [row] = (
-        await client.query(
-          "SELECT * FROM occ.oauth_clients WHERE id=$1 AND cleanup_after IS NOT NULL AND (NOT $2::boolean OR cleanup_after<=now()) FOR UPDATE SKIP LOCKED",
-          [id, dueOnly],
-        )
-      ).rows;
-      return row === undefined ? undefined : registrationFromRow(row as Row);
-    },
-    setCredentialClientCleanup: async (id, cleanupAfter) => {
-      await client.query("UPDATE occ.oauth_clients SET cleanup_after=$2 WHERE id=$1", [
-        id,
-        cleanupAfter,
-      ]);
-    },
     lockConnectionTemplate: async (templateId) => {
       await client.query("SELECT id FROM occ.connection_templates WHERE id = $1 FOR UPDATE", [
         templateId,
       ]);
       // A concurrent editor may have committed a new current version while we waited.
       return (await selectTemplates("WHERE t.id = $1", [templateId]))[0];
-    },
-    createCredentialClient: async (registration, cleanupAfter) => {
-      await requireInitialized();
-      const oauth = registration.kind === "oauth2" ? registration : undefined;
-      await client.query(
-        `INSERT INTO occ.oauth_clients
-         (id, kind, namespace_id, issuer, client_id, token_service_instance_id, created_at, display_name,
-          token_url, revocation_url, token_endpoint_auth_method, app_id, cleanup_after)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-        [
-          registration.id,
-          registration.kind,
-          registration.namespaceId ?? null,
-          oauth?.issuer ?? null,
-          oauth?.clientId ?? null,
-          registration.tokenServiceInstanceId ?? null,
-          registration.createdAt,
-          registration.displayName,
-          oauth?.tokenUrl ?? null,
-          oauth?.revocationUrl ?? null,
-          oauth?.tokenEndpointAuthMethod ?? null,
-          registration.kind === "github-app" ? registration.appId : null,
-          cleanupAfter ?? null,
-        ],
-      );
-      return immutableCopy(registration);
-    },
-    deleteCredentialClient: async (id, retainForCleanup) => {
-      const mutation = retainForCleanup
-        ? "UPDATE occ.oauth_clients r SET cleanup_after=now()"
-        : "DELETE FROM occ.oauth_clients r";
-      const result = await client.query(
-        `${mutation} WHERE r.id=$1
-         AND NOT EXISTS(SELECT 1 FROM occ.credential_sources s
-                        WHERE s.oauth_client_id=r.id OR s.github_app_client_id=r.id)
-         AND NOT EXISTS(SELECT 1 FROM occ.authentication_states a WHERE a.oauth_client_id=r.id)
-         AND NOT EXISTS(SELECT 1 FROM occ.agents a
-                        WHERE r.kind='github-app' AND a.repository_access->>'githubAppClientId'=r.id)`,
-        [id],
-      );
-      return result.rowCount === 1;
     },
     createConnectionTemplate: async (template) => {
       await requireInitialized();

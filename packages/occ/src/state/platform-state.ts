@@ -63,7 +63,10 @@ import type {
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
 import type { PredecessorReplacement } from "../ports/agent-reads.ts";
-import type { StoredCredentialClient } from "../ports/oauth-client.ts";
+import type {
+  CredentialClientRepository,
+  StoredCredentialClient,
+} from "../ports/credential-clients.ts";
 import type { TokenServiceInstance } from "../ports/token-service.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
@@ -1769,6 +1772,133 @@ function repositories(
       );
     }
   };
+  const credentialClients: CredentialClientRepository = {
+    list: async () =>
+      Object.freeze(
+        Array.from(snapshot.clientRegistrations.values())
+          .filter((row) => row.cleanupAfter === undefined)
+          .map(({ cleanupAfter: _cleanup, ...client }) => immutableCopy(client))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      ),
+    countNamespace: async (namespaceId) =>
+      Array.from(snapshot.clientRegistrations.values()).filter(
+        (client) => client.namespaceId === namespaceId,
+      ).length,
+    find: async (id) => {
+      const row = snapshot.clientRegistrations.get(id);
+      if (!row || row.cleanupAfter !== undefined) {
+        return undefined;
+      }
+      const { cleanupAfter: _cleanup, ...client } = row;
+      return immutableCopy(client);
+    },
+    lock: async (id) => credentialClients.find(id),
+    listCleanups: async (limit) =>
+      [...snapshot.clientRegistrations.values()]
+        .filter((row) => row.cleanupAfter && Date.parse(row.cleanupAfter) <= Date.now())
+        .sort((a, b) => a.cleanupAfter!.localeCompare(b.cleanupAfter!))
+        .slice(0, limit)
+        .map((row) => row.id),
+    lockForCleanup: async (id, dueOnly) => {
+      const row = snapshot.clientRegistrations.get(id);
+      if (!row?.cleanupAfter || (dueOnly && Date.parse(row.cleanupAfter) > Date.now())) {
+        return undefined;
+      }
+      const { cleanupAfter: _cleanup, ...client } = row;
+      return immutableCopy(client);
+    },
+    setCleanup: async (id, cleanupAfter) => {
+      const row = snapshot.clientRegistrations.get(id);
+      if (row) {
+        if (cleanupAfter !== null && row.tokenServiceInstanceId === undefined) {
+          throw new ResourceConflictError("Only confidential clients require private cleanup.");
+        }
+        const { cleanupAfter: _old, ...client } = row;
+        snapshot.clientRegistrations.set(
+          id,
+          immutableCopy({ ...client, ...(cleanupAfter && { cleanupAfter }) }),
+        );
+      }
+    },
+    create: async (registration, cleanupAfter) => {
+      assertInitialized(snapshot);
+      const confidential =
+        registration.kind === "github-app" || registration.tokenEndpointAuthMethod !== "none";
+      if (
+        confidential !== (registration.tokenServiceInstanceId !== undefined) ||
+        (confidential &&
+          registration.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id) ||
+        (!confidential && cleanupAfter !== undefined)
+      ) {
+        throw new ResourceConflictError(
+          "Private client material must belong to the selected TokenService.",
+        );
+      }
+      if (
+        registration.namespaceId !== undefined &&
+        !snapshot.namespaces.has(registration.namespaceId)
+      ) {
+        throw new ResourceStateConflictError("The client registration Namespace does not exist.");
+      }
+      if (
+        registration.kind === "github-app" &&
+        (!/^[1-9][0-9]{0,15}$/.test(registration.appId) ||
+          !Number.isSafeInteger(Number(registration.appId)))
+      ) {
+        throw new ResourceConflictError("The GitHub App ID is invalid.");
+      }
+      if (
+        snapshot.clientRegistrations.has(registration.id) ||
+        (registration.kind === "oauth2" &&
+          Array.from(snapshot.clientRegistrations.values()).some(
+            (existing) =>
+              existing.kind === "oauth2" &&
+              existing.namespaceId === registration.namespaceId &&
+              existing.issuer === registration.issuer &&
+              existing.clientId === registration.clientId,
+          ))
+      ) {
+        throw new ResourceConflictError("The client is already registered.");
+      }
+      const saved = immutableCopy(registration);
+      snapshot.clientRegistrations.set(
+        saved.id,
+        immutableCopy({ ...registration, ...(cleanupAfter && { cleanupAfter }) }),
+      );
+      return saved;
+    },
+    delete: async (registrationId, retainForCleanup) => {
+      if (
+        (snapshot.clientRegistrations.get(registrationId)?.kind === "github-app" &&
+          [...snapshot.agents.values()].some(
+            (agent) => agent.repositoryAccess?.githubAppClientId === registrationId,
+          )) ||
+        [...snapshot.credentialSources.values()].some(
+          (source) =>
+            (source.type === "oauth2-refresh-token" &&
+              source.ownerCapability === "token_service" &&
+              source.consent.kind === "connection_template" &&
+              source.consent.oauthClientId === registrationId) ||
+            (source.ownerCapability === "token_service" &&
+              source.type === "github-app-installation" &&
+              source.clientId === registrationId),
+        ) ||
+        [...snapshot.authenticationStates.values()].some(
+          (state) =>
+            state.kind === "oauth_connection" &&
+            "oauthClientId" in state &&
+            state.oauthClientId === registrationId,
+        )
+      ) {
+        return false;
+      }
+      if (retainForCleanup) {
+        await credentialClients.setCleanup(registrationId, new Date().toISOString());
+        return snapshot.clientRegistrations.has(registrationId);
+      }
+      return snapshot.clientRegistrations.delete(registrationId);
+    },
+  };
   const connectionTemplates: ConnectionTemplateRepository = {
     findConnectionTemplate,
     countNamespaceConnectionTemplates: async (namespaceId) =>
@@ -1827,135 +1957,7 @@ function repositories(
         ? undefined
         : immutableCopy(found);
     },
-    listCredentialClients: async () =>
-      Object.freeze(
-        Array.from(snapshot.clientRegistrations.values())
-          .filter((row) => row.cleanupAfter === undefined)
-          .map(({ cleanupAfter: _cleanup, ...client }) => immutableCopy(client))
-          .sort((a, b) => a.id.localeCompare(b.id)),
-      ),
-    countNamespaceCredentialClients: async (namespaceId) =>
-      Array.from(snapshot.clientRegistrations.values()).filter(
-        (client) => client.namespaceId === namespaceId,
-      ).length,
-    findCredentialClient: async (id) => {
-      const row = snapshot.clientRegistrations.get(id);
-      if (!row || row.cleanupAfter !== undefined) {
-        return undefined;
-      }
-      const { cleanupAfter: _cleanup, ...client } = row;
-      return immutableCopy(client);
-    },
-    lockCredentialClient: async (id) => connectionTemplates.findCredentialClient(id),
-    listCredentialClientCleanups: async (limit) =>
-      [...snapshot.clientRegistrations.values()]
-        .filter((row) => row.cleanupAfter && Date.parse(row.cleanupAfter) <= Date.now())
-        .sort((a, b) => a.cleanupAfter!.localeCompare(b.cleanupAfter!))
-        .slice(0, limit)
-        .map((row) => row.id),
-    lockCredentialClientForCleanup: async (id, dueOnly) => {
-      const row = snapshot.clientRegistrations.get(id);
-      if (!row?.cleanupAfter || (dueOnly && Date.parse(row.cleanupAfter) > Date.now())) {
-        return undefined;
-      }
-      const { cleanupAfter: _cleanup, ...client } = row;
-      return immutableCopy(client);
-    },
-    setCredentialClientCleanup: async (id, cleanupAfter) => {
-      const row = snapshot.clientRegistrations.get(id);
-      if (row) {
-        if (cleanupAfter !== null && row.tokenServiceInstanceId === undefined) {
-          throw new ResourceConflictError("Only confidential clients require private cleanup.");
-        }
-        const { cleanupAfter: _old, ...client } = row;
-        snapshot.clientRegistrations.set(
-          id,
-          immutableCopy({ ...client, ...(cleanupAfter && { cleanupAfter }) }),
-        );
-      }
-    },
     lockConnectionTemplate: findConnectionTemplate,
-    createCredentialClient: async (registration, cleanupAfter) => {
-      assertInitialized(snapshot);
-      const confidential =
-        registration.kind === "github-app" || registration.tokenEndpointAuthMethod !== "none";
-      if (
-        confidential !== (registration.tokenServiceInstanceId !== undefined) ||
-        (confidential &&
-          registration.tokenServiceInstanceId !== snapshot.tokenServiceInstance?.id) ||
-        (!confidential && cleanupAfter !== undefined)
-      ) {
-        throw new ResourceConflictError(
-          "Private client material must belong to the selected TokenService.",
-        );
-      }
-      if (
-        registration.namespaceId !== undefined &&
-        !snapshot.namespaces.has(registration.namespaceId)
-      ) {
-        throw new ResourceStateConflictError("The client registration Namespace does not exist.");
-      }
-      if (
-        registration.kind === "github-app" &&
-        (!/^[1-9][0-9]{0,15}$/.test(registration.appId) ||
-          !Number.isSafeInteger(Number(registration.appId)))
-      ) {
-        throw new ResourceConflictError("The GitHub App ID is invalid.");
-      }
-      if (
-        snapshot.clientRegistrations.has(registration.id) ||
-        (registration.kind === "oauth2" &&
-          Array.from(snapshot.clientRegistrations.values()).some(
-            (existing) =>
-              existing.kind === "oauth2" &&
-              existing.namespaceId === registration.namespaceId &&
-              existing.issuer === registration.issuer &&
-              existing.clientId === registration.clientId,
-          ))
-      ) {
-        throw new ResourceConflictError("The client is already registered.");
-      }
-      const saved = immutableCopy(registration);
-      snapshot.clientRegistrations.set(
-        saved.id,
-        immutableCopy({ ...registration, ...(cleanupAfter && { cleanupAfter }) }),
-      );
-      return saved;
-    },
-    deleteCredentialClient: async (registrationId, retainForCleanup) => {
-      if (
-        (snapshot.clientRegistrations.get(registrationId)?.kind === "github-app" &&
-          [...snapshot.agents.values()].some(
-            (agent) => agent.repositoryAccess?.githubAppClientId === registrationId,
-          )) ||
-        [...snapshot.credentialSources.values()].some(
-          (source) =>
-            (source.type === "oauth2-refresh-token" &&
-              source.ownerCapability === "token_service" &&
-              source.consent.kind === "connection_template" &&
-              source.consent.oauthClientId === registrationId) ||
-            (source.ownerCapability === "token_service" &&
-              source.type === "github-app-installation" &&
-              source.clientId === registrationId),
-        ) ||
-        [...snapshot.authenticationStates.values()].some(
-          (state) =>
-            state.kind === "oauth_connection" &&
-            "oauthClientId" in state &&
-            state.oauthClientId === registrationId,
-        )
-      ) {
-        return false;
-      }
-      if (retainForCleanup) {
-        await connectionTemplates.setCredentialClientCleanup(
-          registrationId,
-          new Date().toISOString(),
-        );
-        return snapshot.clientRegistrations.has(registrationId);
-      }
-      return snapshot.clientRegistrations.delete(registrationId);
-    },
     createConnectionTemplate: async (template) => {
       assertInitialized(snapshot);
       if (snapshot.connectionTemplates.has(template.id)) {
@@ -4401,6 +4403,7 @@ function repositories(
     namespaces,
     configurations,
     connectionTemplates,
+    credentialClients,
     oauthCredentials,
     authenticationStates,
     presets,
