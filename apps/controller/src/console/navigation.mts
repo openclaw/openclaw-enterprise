@@ -1,12 +1,12 @@
 export const connectionTemplatesPage = "credentials/connection-templates";
 
-export const oauthClientsPage = "credentials/oauth-clients";
+export const credentialClientsPage = "credentials/credential-clients";
 
 export const pages = Object.freeze({
   agents: "Agents",
   secrets: "Credentials",
   [connectionTemplatesPage]: "Credentials",
-  [oauthClientsPage]: "Credentials",
+  [credentialClientsPage]: "Credentials",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",
@@ -22,12 +22,15 @@ interface LoginIntent {
   secret?: string | null;
 }
 
+export type AgentsLanding = "deletion-status-unavailable";
+
 interface NavigationOptions {
   getNamespaceId(): string | null;
   isLoggingOut(): boolean;
   loadPage(options: {
     fromNavigation: boolean;
     openingAgent?: boolean;
+    agentsLanding?: AgentsLanding | null;
     restoreHistory?(url: string): void;
   }): void;
 }
@@ -185,7 +188,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     history.pushState({ consolePosition: position }, "", url);
   }
 
-  function navigate(feature: string, selection = getNamespaceId(), replace = false) {
+  function navigate(
+    feature: string,
+    selection = getNamespaceId(),
+    replace = false,
+    agentsLanding: AgentsLanding | null = null,
+  ) {
     if (isLoggingOut()) {
       return;
     }
@@ -199,7 +207,14 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
       !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
-    void loadPage({ fromNavigation: true, openingAgent });
+    void loadPage({
+      fromNavigation: true,
+      openingAgent,
+      agentsLanding:
+        feature === "agents" && current.agentId && current.namespace === selection
+          ? agentsLanding
+          : null,
+    });
   }
 
   function traverse({

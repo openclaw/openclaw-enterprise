@@ -64,6 +64,10 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      source_sha:
+        type: string
+        default: ""
+        description: Approved Release OCE checkout.
       require-export:
         type: boolean
         default: false
@@ -101,9 +105,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - name: Select the approved release checkout
+        if: inputs.source_sha != '' || github.workflow_ref == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main'
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ inputs.source_sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}

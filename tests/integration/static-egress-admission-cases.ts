@@ -8,20 +8,13 @@ import {
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
-import { createConsoleAppFixture as createConsoleAppFixtureJs } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
 import { registerStartupAdmissionCases } from "./static-egress-startup-admission-cases.ts";
 import {
   deployedContext,
   registerPolicyAdmissionCases,
-  staticEgressFixture,
-  type ConsoleFixture,
-  type ConsoleOptions,
 } from "./static-egress-policy-admission-cases.ts";
-
-const createConsoleAppFixture: <Options extends object>(
-  context: Parameters<typeof createConsoleAppFixtureJs>[0],
-  options?: Options & ConsoleOptions,
-) => Promise<ConsoleFixture> = createConsoleAppFixtureJs;
 
 interface AdmissionDependencies {
   admissionCases: (revision: AgentRevision) => unknown;
@@ -82,7 +75,7 @@ export function createStaticEgressAdmissionCases({
     registerComputeCase() {
       test("production Compute refuses protected admission and release, including empty plans", async (t) => {
         const compute = createTestKubernetesComputeDriver("admission-cutoff");
-        const f = await staticEgressFixture(t);
+        const f = await protectedMetadataFixture(t);
         const { revision } = await deployedContext(f);
         const admittingCompute = createTestKubernetesComputeDriver("admission-origin", {
           gatewayRuntime: true,
@@ -162,7 +155,7 @@ export function createStaticEgressAdmissionCases({
         // Exercise the real OCC deploy route with the shipped Compute admission policy.
         // Other Compute operations remain deterministic fixtures; this is not cluster proof.
         let admissionChecks = 0;
-        const admission = await staticEgressFixture(t, {
+        const admission = await protectedMetadataFixture(t, {
           admitRevision: false,
           appFactory: (context, options) => {
             const driver = asRecord(asRecord(options)?.computeDriver);
@@ -212,7 +205,7 @@ export function createStaticEgressAdmissionCases({
         // Finding 2053's provisioning backstop: the protected Sandbox policy is the protected egress
         // profile alone. Admission never stores additions on a protected revision; should one carry
         // them anyway, provisioning refuses it rather than silently dropping them.
-        const f = await staticEgressFixture(t);
+        const f = await protectedMetadataFixture(t);
         const context = await deployedContext(f);
         const { revision } = context;
         const grant = networkPolicyGrant();

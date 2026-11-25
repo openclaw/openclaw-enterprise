@@ -51,7 +51,7 @@ import {
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { redactedQaTail } from "../helpers/qa-secrets.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,

@@ -29,7 +29,7 @@ function parseJson(value: string): unknown {
 export function registerQaAgentLifecycleDiagnosticsCases(): void {
   // Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
   test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
-    const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+    const { deployQaAgentAndWait } = await import("../helpers/qa-agent-deployment.ts");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { registerQaSecret } = await import("../helpers/qa-secrets.ts");
     // An invented 48-character registered value. Runtime text that OCC shortened could keep
@@ -263,6 +263,67 @@ export function registerQaAgentLifecycleDiagnosticsCases(): void {
       succeeded.calls.some((call) => call.endsWith("/runtime")),
       false,
     );
+  });
+
+  test("a QA deployment refusal survives unavailable authentication and probe diagnostics", async () => {
+    const { deployQaAgentAndWait } = await import("../helpers/qa-agent-deployment.ts");
+    for (const code of ["RUNTIME_AUTHENTICATION_FAILED", "RUNTIME_MODEL_PROBE_FAILED"]) {
+      const calls: string[] = [];
+      const evidence: unknown[] = [];
+      const agent = { id: "agent-1", namespaceId: "ns-1", preset: "OpenClaw", stopped: true };
+      const root = "/namespaces/ns-1/agents/agent-1";
+      const revision = root + "/deployments/rev-1";
+      const fixture = {
+        async api(method: string, path: string, body?: object) {
+          calls.push(`${method} ${path}`);
+          if (path === root + "/deploy") {
+            assert.equal(agent.stopped, false);
+            assert.deepEqual(body, { harnessOverrides: {} });
+            return { id: "rev-1" };
+          }
+          if (path === revision) {
+            return {
+              status: "failed",
+              error: { code, data: { runtimeFailure: { component: "gateway" } } },
+            };
+          }
+          throw new Error("unavailable");
+        },
+        async kubectl(...args: string[]) {
+          assert.deepEqual(args.slice(0, 2), ["get", "pods"]);
+          calls.push("get pods");
+          throw new Error("unavailable");
+        },
+        async record(name: string, value: unknown) {
+          evidence.push({ name, value });
+        },
+      };
+      await assert.rejects(
+        deployQaAgentAndWait(fixture, agent, { harnessOverrides: {} }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /^Agent deployment failed:/);
+          assert.ok(error.message.includes(code));
+          if (code === "RUNTIME_MODEL_PROBE_FAILED") {
+            assert.match(error.message, /probe log: unavailable$/);
+          }
+          return true;
+        },
+      );
+      assert.deepEqual(calls, [
+        `POST ${root}/deploy`,
+        `GET ${revision}`,
+        code === "RUNTIME_AUTHENTICATION_FAILED"
+          ? "get pods"
+          : `GET ${revision}/runtime/logs?source=gateway&minLevel=error`,
+      ]);
+      assert.deepEqual(
+        evidence,
+        code === "RUNTIME_AUTHENTICATION_FAILED"
+          ? [{ name: "agent-1-rev-1-authentication", value: { unavailable: true } }]
+          : [],
+      );
+    }
   });
 
   test("a QA Agent stop timeout names the remaining Pods and keeps redacted platform logs", async () => {

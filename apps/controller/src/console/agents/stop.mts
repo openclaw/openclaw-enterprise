@@ -14,6 +14,7 @@ import {
   type AgentLifecycleContext,
   type LifecycleError,
   cancelsFirstDeployment,
+  confirmationAgentId,
   grantRefusal,
   stopConfirmation,
 } from "./lifecycle-confirmation.mjs";
@@ -405,10 +406,11 @@ export function createAgentStop(
     // The dialog lives in this card, so the card must not hide while it is open.
     state.used = true;
     let submitted = false;
+    const targetId = confirmationAgentId("agent-stop-confirm-id", state.agent.id);
     const dialog = element("dialog", {
       className: "dialog agent-stop-dialog",
       "aria-labelledby": "agent-stop-confirm-title",
-      "aria-describedby": "agent-stop-confirm-target agent-stop-confirm-description",
+      "aria-describedby": `agent-stop-confirm-target ${targetId.id} agent-stop-confirm-description`,
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
@@ -447,6 +449,7 @@ export function createAgentStop(
         "Agent: ",
         element("strong", {}, state.agent.name),
       ),
+      targetId,
       description,
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );

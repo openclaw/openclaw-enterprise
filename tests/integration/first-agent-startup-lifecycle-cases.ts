@@ -57,19 +57,34 @@ export function registerFirstAgentFailureAdviceCases({
         const base = `/namespaces/${namespaceId}`;
         const agentPath = `${base}/agents/${agentId}`;
         const name = "state-contract-test";
-        const secret = {
-          id: `sec_${suffix}`,
-          name: "saved-model-key",
-          ref: { kind: "secret", namespaceId: namespaceId, id: `sec_${suffix}` },
-        };
+        const sourceId = `cs_${suffix}`;
+        const sourceName = "saved-model-source";
+        const resume = code === "RUNTIME_STARTUP_FAILED";
         let configuration: Record<string, unknown> | undefined;
         let agent: Record<string, unknown> | undefined;
         let revision: Record<string, unknown> | undefined;
-        let source: Record<string, unknown> | undefined;
+        let source: Record<string, unknown> | undefined = resume
+          ? {
+              id: sourceId,
+              name: sourceName,
+              type: "static",
+              config: { provider_preset: "codex-pat" },
+              state: "ready",
+            }
+          : undefined;
         let role: Record<string, unknown> | undefined;
         let binding: Record<string, unknown> | undefined;
         let transportConfigured = false;
         let interruptBeforeTransport = code === "RUNTIME_STARTUP_FAILED";
+        const networkPath = `${agentPath}/sandbox-policy/networking`;
+        const modelGrants = ["auth.openai.com", "chatgpt.com"].map((host) => ({
+          id: `fixture-${host.replaceAll(".", "-")}`,
+          binary: "/app/fixture-linux-x64/codex/bin/codex",
+          host,
+          ports: [{ from: 443, to: 443 }],
+        }));
+        let savedGrants: unknown[] | undefined;
+        let editingEnabled = false;
         let deploymentReads = 0;
         const unexpected: string[] = [];
         // Run the real helper and HTTP client against supported API envelopes. The
@@ -113,12 +128,21 @@ export function registerFirstAgentFailureAdviceCases({
               case `GET ${base}/iam/access-bindings`:
                 data = binding ? [binding] : [];
                 break;
-              case `GET ${base}/secrets/${secret.id}`:
-                data = secret;
-                break;
               case `POST ${base}/credential-sources`:
+                assert.deepEqual(body, {
+                  name: sourceName,
+                  type: "static",
+                  config: { provider_preset: "codex-pat" },
+                  secret: "at-synthetic-source-enrollment",
+                });
                 status = 201;
-                source = { ...body, id: `cs_${suffix}`, state: "ready" };
+                source = {
+                  id: sourceId,
+                  name: sourceName,
+                  type: "static",
+                  config: { provider_preset: "codex-pat" },
+                  state: "ready",
+                };
                 data = source;
                 break;
               case `POST ${base}/configurations`:
@@ -176,7 +200,26 @@ export function registerFirstAgentFailureAdviceCases({
                 data = revision ? [{ id: revision.id }] : [];
                 meta.nextCursor = null;
                 break;
+              case `GET ${networkPath}`:
+                data = {
+                  editingEnabled,
+                  policy: { version: 1, additions: [] },
+                  ceiling: modelGrants,
+                };
+                break;
+              case `PATCH ${networkPath}/editing`:
+                assert.deepEqual(body, { enabled: true });
+                editingEnabled = true;
+                data = agent;
+                break;
+              case `PUT ${networkPath}`:
+                assert.equal(editingEnabled, true);
+                assert.deepEqual(body, { expectedVersion: 1, additions: modelGrants });
+                savedGrants = modelGrants;
+                data = { version: 2, additions: savedGrants };
+                break;
               case `POST ${agentPath}/deploy`: {
+                assert.deepEqual(savedGrants, modelGrants);
                 status = 202;
                 assert.ok(agent);
                 assert.ok(configuration);
@@ -248,8 +291,7 @@ export function registerFirstAgentFailureAdviceCases({
         const state = record(JSON.parse(await readFile(statePath, "utf8")));
         state.installationId = installationId;
         await writeFile(statePath, JSON.stringify(state));
-        // Resume an interrupted run after it saved its Secret. No model credential
-        // is needed or read, and the real helper creates the remaining resources.
+        // One run has interrupted after Source enrollment. The other verifies the new Source request.
         const recordPath = join(
           directory,
           `first-agent-${createHash("sha256").update(name).digest("hex").slice(0, 32)}.json`,
@@ -265,9 +307,9 @@ export function registerFirstAgentFailureAdviceCases({
             sandboxDriver: "openshell",
             controlUi: false,
             authMethod: "codex_pat",
-            secretId: secret.id,
-            secretName: secret.name,
-            credentialSourceName: "saved-model-source",
+            secretName: "saved-model-key",
+            credentialSourceName: sourceName,
+            ...(resume ? { credentialSourceId: sourceId } : {}),
           }),
           { mode: 0o600 },
         );
@@ -280,9 +322,14 @@ export function registerFirstAgentFailureAdviceCases({
         ]) {
           delete env[key];
         }
-        // The saved Secret is reused; parent model credentials must never reach kubectl.
-        env.CODEX_ACCESS_TOKEN = "synthetic-parent-model-token";
-        env.CODEX_ACCESS_TOKEN_FILE = join(directory, "unused-model-token");
+        // The operator credential can reach enrollment, while child processes such as kubectl
+        // must not inherit it. Resuming does not need the credential file to exist.
+        env.CODEX_ACCESS_TOKEN_FILE = join(directory, "local-model-token");
+        if (!resume) {
+          await writeFile(env.CODEX_ACCESS_TOKEN_FILE, "at-synthetic-source-enrollment", {
+            mode: 0o600,
+          });
+        }
         if (interruptBeforeTransport) {
           // Stop after the draft Agent was saved. A later controller outage must
           // refuse its retry before creating the missing transport credentials.

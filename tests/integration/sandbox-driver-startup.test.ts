@@ -1,21 +1,19 @@
 import { registerManagedOpenShellStartupCases } from "./sandbox-driver-managed-startup-cases.ts";
 import {
+  stagedManagedMcpPolicy,
   verifyStagedHarnessActivation,
+  verifyStagedCodexAccountProjection,
   verifyStagedModelPolicyObservation,
 } from "./sandbox-driver-staged-harness-cases.ts";
 import {
-  registerDedicatedCodexProviderCase,
   registerInitialWorkspaceCases,
   registerRevisionProviderRetentionCase,
   registerForeignSandboxAnnotationsCase,
 } from "./sandbox-driver-native-startup-cases.ts";
 import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import { registerSandboxDriverNamespaceProviderCases } from "./sandbox-driver-namespace-provider-cases.ts";
-import { registerProtectedOpenShellGitCases } from "./sandbox-driver-protected-git-configuration-cases.ts";
-import { verifyProtectedOpenShellGitExecution } from "./sandbox-driver-protected-git-execution-cases.ts";
 import {
   codexHarnessChecks,
-  credentialWithdrawalChecks,
   harnessLifecycleChecks,
   registerSandboxDriverStartupWiringCases,
   sandboxStartupGuardChecks,
@@ -46,16 +44,26 @@ import {
   runtimeSandboxFixture,
 } from "./sandbox-driver-startup-orchestration.ts";
 
-registerSandboxDriverStartupWiringCases(credentialGatewayOverProviders);
+registerSandboxDriverStartupWiringCases();
 
-test(
-  "OpenShell observes and applies the canonical model-only staged policy",
-  verifyStagedModelPolicyObservation,
-);
+test("OpenShell observes canonical staged model and exact Repository policies", async (t) => {
+  for (const mode of ["service", "legacy"] as const) {
+    await t.test(mode, (t) => verifyStagedModelPolicyObservation(t, mode));
+  }
+});
+
+test("OpenShell qualifies and stages the managed MCP session and selected tool policy", async () => {
+  await stagedManagedMcpPolicy();
+});
 
 test(
   "OpenShell adopts an idle Sandbox and activates with model and Google Provider placeholders",
   verifyStagedHarnessActivation,
+);
+
+test(
+  "OpenShell staged Codex launch carries a placeholder and trusted account context",
+  verifyStagedCodexAccountProjection,
 );
 
 registerManagedPluginPolicyCases(credentialGatewayOverProviders);
@@ -75,22 +83,6 @@ test(
   "OpenShell revision cleanup records a Sandbox removed only once OpenShell confirms it",
   verifyConfirmedSandboxCleanup,
 );
-
-// Finding 1676, credential path: a credential withdrawal that reports `absent` settles as
-// withdrawn, so a Sandbox hidden from the identity (GetSandbox and DetachSandboxProvider answer
-// NOT_FOUND for it) must not read as absent while it keeps resolving the credential. The gateway
-// confirms absence through GetWorkspace and fails a refusal with SANDBOX_GATEWAY_UNAUTHORIZED.
-test("the OpenShell Credential Gateway reports a withdrawal absent only once the Workspace confirms it", async () => {
-  await credentialWithdrawalChecks(
-    credentialGatewayOverProviders,
-  ).confirmsCredentialWithdrawalWithWorkspace();
-});
-
-test("OpenShell withdrawal preserves cancellation before provider lookup", async (t) => {
-  await credentialWithdrawalChecks(
-    credentialGatewayOverProviders,
-  ).preservesWithdrawalCancellationBeforeProviderLookup(t);
-});
 
 // Finding 1642: a native worker that holds a failed model check never connects its node.
 // Compute asks for the Codex bearer-passthrough exposure (APP_SERVER_PORT with the
@@ -130,13 +122,7 @@ test("OpenShell Harness endpoints expose only the Backend public CA", async (t) 
   await codexHarnessChecks.exposeOnlyBackendPublicCa(t);
 });
 
-registerDedicatedCodexProviderCase();
-
 registerSandboxDriverScratchStorageCase();
-
-test("OpenShell holds withdrawn Codex authentication after a Harness restart", async (t) => {
-  await codexHarnessChecks.holdWithdrawnCodexAuthentication(t);
-});
 
 registerInitialWorkspaceCases();
 
@@ -165,8 +151,6 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
 registerSandboxDriverNamespaceProviderCases({ sandboxStartupGuardChecks, negotiatedGoogleGuard });
 
 registerSandboxDriverHookProbeCases();
-
-registerProtectedOpenShellGitCases(verifyProtectedOpenShellGitExecution);
 
 registerSandboxDriverNamespaceGatewayCleanupCases({
   KubernetesObjectApi,

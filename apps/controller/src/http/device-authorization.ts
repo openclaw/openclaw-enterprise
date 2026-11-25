@@ -10,10 +10,10 @@ function agentTarget({ namespaceId, params }: HandlerInput): ResourceRef {
 
 export function createDeviceAuthorizationHandlers(options: {
   readonly auditSink: AuditSink;
-  readonly startEvent: (
+  readonly transitionEvent: (
     input: Pick<HandlerInput, "context" | "request">,
     resource: ResourceRef,
-    details: { readonly phase: string; readonly sourceId: string },
+    details: { readonly phase: string; readonly sourceId?: string },
   ) => AuditEvent;
 }) {
   const start: ResourceHandler = async (input) => {
@@ -23,11 +23,7 @@ export function createDeviceAuthorizationHandlers(options: {
       namespaceId,
       body?.harnessId as string,
       params.agentId,
-      (source, phase) =>
-        options.startEvent(input, phase === "session_pending" ? agentTarget(input) : source.ref, {
-          phase,
-          sourceId: source.id,
-        }),
+      options.transitionEvent(input, agentTarget(input), { phase: "session_pending" }),
     );
     reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
   };
@@ -39,6 +35,12 @@ export function createDeviceAuthorizationHandlers(options: {
       namespaceId,
       params.sessionId as string,
       params.agentId,
+      (source) =>
+        options.transitionEvent(
+          input,
+          { kind: "credential_source", namespaceId, id: source.id },
+          { phase: "source_ready", sourceId: source.id },
+        ),
     );
     // Clients poll on the provider interval; audit the transition, not every pending poll.
     if (data.status !== "pending") {

@@ -40,7 +40,7 @@ import { listen } from "../helpers/listen.ts";
 import { setEnvironment, withEnvironment } from "../helpers/environment.ts";
 import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { selectReadyAgentPod } from "../helpers/harness-topology-k3d-real.mjs";
-import { readJsonLines } from "../helpers/json-lines.mjs";
+import { readJsonLines } from "../helpers/json-lines-file.ts";
 import {
   assertAllowedCredentialRoute as assertAllowedCredentialRouteJs,
   createOpenShellKubernetesFixture as createOpenShellKubernetesFixtureJs,
