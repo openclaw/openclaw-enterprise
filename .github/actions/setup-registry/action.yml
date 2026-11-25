@@ -1,0 +1,29 @@
+name: Install release registry tools
+description: Install the OCI transport and, when requested, Helm
+inputs:
+  skopeo:
+    description: Install the OCI transport
+    default: "true"
+  helm:
+    description: Install Helm for chart publication
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Install OCI transport
+      if: inputs.skopeo == 'true'
+      shell: bash
+      run: |
+        sudo apt-get -o Acquire::Retries=3 update
+        sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
+        skopeo --version | grep -Fx 'skopeo version 1.13.3'
+    - name: Install pinned Helm
+      if: inputs.helm == 'true'
+      shell: bash
+      run: |
+        bash scripts/ci/download-pinned.sh \
+          https://get.helm.sh/helm-v3.19.2-linux-amd64.tar.gz \
+          "$RUNNER_TEMP/helm.tar.gz" \
+          2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e
+        tar -xzf "$RUNNER_TEMP/helm.tar.gz" -C "$RUNNER_TEMP" linux-amd64/helm
+        echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"

@@ -18,11 +18,12 @@ PluginDriver. Operators select plugins manually or through the API. Embedded
 OpenClaw cannot enable external Slack channels; the Standard OpenClaw preset
 must leave channels disabled.
 
-Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver. By
-default, hosted plugin discovery and Codex runtime authentication both use a
-`codex_pat` token that you supply later: add a same-Namespace Secret or enter
-the PAT during Agent creation. The renderer does not create the token or make
-catalog discovery ready.
+Use `codex` for dedicated Codex Agents with the bundled Codex PluginDriver.
+Hosted plugin discovery and runtime authentication accept a `codex_pat` token
+(a same-Namespace Secret or a PAT entered during Agent creation) or a Codex OAuth
+Source from ChatGPT sign-in. Sign-in requires a selected TokenService Driver
+that supports device authorization; the rendered profile selects only the Plugin
+Driver. Rendering supplies neither the credential nor a ready catalog.
 
 Both profiles enable:
 
@@ -168,8 +169,7 @@ ChatGPT Backend admin credential path:
     "managedServiceAccounts": {
       "workspaceId": "11111111-1111-4111-8111-111111111111",
       "adminSecretName": "occ-chatgpt-admin",
-      "adminSecretKey": "admin-key",
-      "providerCidr": "198.51.100.30/32"
+      "adminSecretKey": "admin-key"
     }
   }
 }
@@ -198,19 +198,11 @@ set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
-### Hosted discovery egress
+### Hosted discovery connectivity
 
-With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
-`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
-`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
-IPv4 `/32` hosts.
-
-Supplied lists stay unchanged without DNS queries; `[]` requires an external
-HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
-
-Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
-Rerender and upgrade Helm after address changes; this initial snapshot does not
-refresh itself.
+The chart gives API and worker Pods unrestricted egress. Verify API Pod DNS and
+HTTPS connectivity to the hosted discovery service before using **Load plugins**.
+Rendering does not resolve provider addresses or create a provider allowlist.
 
 ### External sign-in and trusted proxies
 
@@ -250,8 +242,7 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`google` and `oidc` accept `secretName`, `clientIdKey`, `clientSecretKey` and
-`egressCidrs`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
+`google` and `oidc` accept `secretName`, `clientIdKey`, and `clientSecretKey`. OIDC also accepts `tokenAuth`, `displayName` and `enrollment`.
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
@@ -323,6 +314,11 @@ Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 
+To prepare a fresh install from a previous profile, keep the original input
+JSON and checked YAML pair. Review the JSON for the target release, then render
+into a new private directory. Compare any hand edits with the new pair before
+installing. Update the JSON and render again for settings that the profile owns.
+
 Set `OCC_INPUT_DIRECTORY` to the output directory, then complete the
 [production shell and context setup](production-installation.md#configure-the-installation).
 That setup reads the cluster kubeconfig from `$OCC_INPUT_DIRECTORY/kubeconfig`:
@@ -375,9 +371,10 @@ the install as ready:
   actual Pod, Service and node ranges, including public node addresses. Rendering
   the fleet does not enable channel consumers. Slack Agents require dedicated
   Codex execution; customer upstream proxies are not supported.
-- For Codex hosted plugin discovery and runtime authentication, a
-  same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+- For Codex hosted plugin discovery and runtime authentication, a same-Namespace
+  `codex_pat` token Secret, a PAT entered during Agent creation, or a Codex OAuth
+  Source created by successful ChatGPT sign-in. See
+  [hosted discovery connectivity](#hosted-discovery-connectivity).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

@@ -75,7 +75,6 @@ function codexInput(overrides = {}) {
       ...(overrides.runtime ?? {}),
     },
     codex: {
-      modelDiscoveryCidrs: ["192.0.2.20/32"],
       ...(overrides.codex ?? {}),
     },
   };

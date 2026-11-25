@@ -63,12 +63,9 @@ export async function readWorkflow(name: string) {
   );
 }
 
-export async function readLaneAction() {
+export async function readLaneAction(name = "run-ci-lane") {
   const action = parseYaml(
-    await readFile(
-      new URL("../../.github/actions/run-ci-lane/action.yml", import.meta.url),
-      "utf8",
-    ),
+    await readFile(new URL(`../../.github/actions/${name}/action.yml`, import.meta.url), "utf8"),
   );
   const steps = array(record(action.runs).steps);
   assert.ok(steps.every(isRecord));
@@ -87,6 +84,6 @@ export function workflowCondition(expression: unknown, context: Record<string, u
       .replace(/\b(needs|steps)\.([a-z][a-z0-9-]*)/g, '$1["$2"]')
       .replace(/\.outputs\.([a-z][a-z0-9_-]*)/g, '.outputs["$1"]')
       .replace(/\.([a-z][a-z0-9]*-[a-z0-9-]+)/g, '["$1"]'),
-    { cancelled: () => false, ...context },
+    { cancelled: () => false, inputs: {}, ...context },
   );
 }

@@ -176,7 +176,10 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
       configurationId: config.id,
       executionMode: "dedicated",
       harnessAuth: { method: "api_key", source: secret.ref },
-      repositoryBindings: [{ repositoryRef, profile: "git-write" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef, profile: "git-write" }],
+      },
     }),
   );
   const agentPath = root + "/agents/" + agent.id;

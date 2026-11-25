@@ -1083,7 +1083,7 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
 });
 
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
-// uncertain outcome, an admitted provisioning job, a pending credential registration, a job that
+// uncertain outcome, an admitted provisioning job, an uncertain Credential Source write, a job that
 // created its Agent and a repository policy refusal keep none (finding 1965).
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
@@ -1180,41 +1180,30 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await expectNoKeptDraft(page);
 });
 
-test("a refused credential registration keeps no draft", async (t) => {
+test("an uncertain Credential Source creation keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Registration create", { ready: true }));
+  const namespace = resource(await fixture.createNamespace("Source create", { ready: true }));
   const { page } = await newPage(t, fixture);
-  // The Installation provisions dedicated Agents through a Credential Gateway model source.
-  await routeInstallationWithoutProvisioning(page, fixture, {
-    agentProvisioning: { executionModes: ["dedicated"] },
-    credentialSources: {
-      types: [
-        {
-          type: "openai",
-          config: [],
-          secrets: [{ name: "api_key", required: true }],
-          rotation: "none",
-          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-        },
-      ],
-    },
-  });
   await page.route(`**/namespaces/${namespace.id}/credential-sources`, async (route, request) => {
     if (request.method() !== "POST") {
       await route.fallback();
       return;
     }
-    // A rate limit in front of the API: the route itself sends no 429.
-    await route.fulfill(proxyErrorResponse(429));
+    // The response is interrupted before the Console can establish whether custody completed.
+    await route.fulfill(proxyErrorResponse(503));
   });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Registration Agent");
-  await enterManualModel(page, "synthetic-guard-model-key", "gpt-5");
+  await page.getByLabel("Agent name").fill("Source Agent");
+  await page.getByLabel("API key", { exact: true }).fill("synthetic-guard-model-key");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  // The registration keeps its frozen name for Check credential registration.
-  await page.getByRole("button", { name: "Check credential registration" }).waitFor();
+  await page
+    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
+    .waitFor();
   await expectNoKeptDraft(page);
 });
 

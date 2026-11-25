@@ -58,6 +58,8 @@ const harnessRoot = fileURLToPath(new URL("../../", import.meta.url));
 const signinSelected = process.env.OCC_TEST_PRODUCTION_SIGNIN_REHEARSAL === "1";
 const returnMode = process.env.OCC_TEST_PRODUCTION_TUI_REHEARSAL;
 const inPlaceReturn = returnMode === "in-place";
+const browserSelected = process.env.OCC_TEST_PRODUCTION_TUI_BROWSER === "1";
+const consoleHost = "console.oce.localhost";
 const ordinaryUpgrade = returnMode === "ordinary" || inPlaceReturn;
 const returnSelected = returnMode === "1" || ordinaryUpgrade;
 const onlineSelected = process.env.OCC_TEST_PRODUCTION_TUI_ONLINE_MIGRATION === "1";
@@ -100,12 +102,16 @@ test(
   selectedTestTitle(),
   {
     skip:
-      selected || rehearsalSelected
+      selected || rehearsalSelected || browserSelected
         ? false
         : "Set OCC_TEST_PRODUCTION_TUI_REAL=1 with explicit disposable k3d and real images/key.",
     timeout: rehearsalSelected ? 2_700_000 : 1_800_000,
   },
   async (context) => {
+    assert.ok(
+      !browserSelected || inPlaceReturn,
+      "OCC_TEST_PRODUCTION_TUI_BROWSER=1 requires OCC_TEST_PRODUCTION_TUI_REHEARSAL=in-place",
+    );
     assert.ok(
       [signinSelected, onlineSelected, returnSelected].filter(Boolean).length <= 1,
       "Select exactly one local controller rehearsal",
@@ -668,7 +674,7 @@ test(
         createPostgresResource: custody?.create,
         authBaseURL: signinSelected
           ? "https://console.signin-rehearsal.test"
-          : `https://console.oce.localhost:${port}`,
+          : `https://${consoleHost}:${port}`,
         agentNativeAdminDomain: "agents.oce.localhost",
         installationName: `Production TUI ${suffix}`,
         apiClients: [{ namespace: system, podLabels: { app: "production-tui-proxy" } }],
@@ -687,6 +693,10 @@ test(
 
       secrets.push(adminPassword, serviceKey);
 
+      const san = ["DNS:localhost", "IP:127.0.0.1"];
+      if (signinSelected || browserSelected) {
+        san.unshift(`DNS:${signinSelected ? "console.signin-rehearsal.test" : consoleHost}`);
+      }
       await run("openssl", [
         "req",
         "-x509",
@@ -702,9 +712,7 @@ test(
         "-subj",
         "/CN=localhost",
         "-addext",
-        signinSelected
-          ? "subjectAltName=DNS:console.signin-rehearsal.test,DNS:localhost,IP:127.0.0.1"
-          : "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        `subjectAltName=${san.join(",")}`,
       ]);
       await createSecret("proxy-tls", {
         "tls.key": await readFile(join(directory, "tls.key"), "utf8"),
@@ -921,6 +929,9 @@ test(
         installationId: installation.data.id,
         occEnv,
         runGuideOcc,
+        ...(browserSelected && {
+          consoleCredentials: { email: adminEmail, password: adminPassword },
+        }),
       };
     }
 
@@ -2067,8 +2078,15 @@ test(
       };
     }
 
-    const { api, baseURL, externalRequest, installationId, occEnv, runGuideOcc } =
-      await installProductionControlPlane();
+    const {
+      api,
+      baseURL,
+      externalRequest,
+      installationId,
+      occEnv,
+      runGuideOcc,
+      consoleCredentials,
+    } = await installProductionControlPlane();
     if (rehearsal) {
       await custody.assertPostgres();
       await custody.assertRelease();
@@ -2119,6 +2137,26 @@ test(
         rehearsalComplete = true;
         return;
       }
+      let consoleBrowser;
+      if (browserSelected) {
+        assert.ok(rehearsal.recovery && consoleCredentials);
+        const { productionUpgradeBrowser } =
+          await import("../helpers/production-upgrade-browser.ts");
+        const consoleURL = new URL(baseURL);
+        consoleURL.hostname = consoleHost;
+        consoleBrowser = productionUpgradeBrowser({
+          certificate: join(directory, "tls.crt"),
+          origin: consoleURL.origin,
+          namespaceId: namespace.id,
+          credentials: consoleCredentials,
+          revisions: {
+            previous: rehearsal.previous.revision,
+            candidate: rehearsal.candidate.revision,
+            recovery: rehearsal.recovery.revision,
+          },
+          record,
+        });
+      }
       await rehearsePopulatedReturn({
         controllers: rehearsal,
         ordinaryUpgrade,
@@ -2139,9 +2177,10 @@ test(
         custody,
         localCluster,
         waitFor,
-        record,
-      });
+        record: consoleBrowser?.observe ?? record,
+      }).finally(() => consoleBrowser?.close());
       rehearsalComplete = true;
+      consoleBrowser?.assertPassed();
       return;
     }
     const { agent, agentHash, namespace, secondaryAgent, stoppedAgent, tenant } =

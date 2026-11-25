@@ -12,15 +12,11 @@ kind: reference/driver
 
 OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Provider adapters define scope, injection, and response rules. The Proxy enforces requests and resolves credentials.
 
-Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
-the Gateway nor the Proxy may declare refresh, device authorization or managed
-login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
-before the Secret read, creation and adoption return 409 without reading material.
-OCC checks again after the read and refuses injection if either declaration
-changed. Refused adoption preserves the prior Gateway copy.
-Protected sources and
-repository bindings require Proxy admission; an Agent with neither needs no Proxy
-plan. An unavailable Proxy never permits Gateway fallback for a protected source.
+New model keys, Codex PATs, and OAuth grants use [TokenService
+custody](../../flows/token-service-static-custody.md). Enroll an old Gateway
+credential as a new TokenService Source. The selected Credential Proxy delivers
+only Sources and destinations authorized in the Agent revision. Protected
+metadata Sources and repository grants use their selected Proxy admission path.
 
 ## Interface
 
@@ -32,7 +28,7 @@ The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/ind
 
 OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
 
-OpenShell deployment attaches new or retained Providers; only creation resolves TokenService material. Source replacement updates existing Providers and verifies serving receipts; absence creates nothing. Failed push retains custody. Cleanup attempts to delete owned Providers and profiles, retaining shared copies on native refusal. Stop retains the Source and IAM grants. Retry and live rotation qualification remain pending; [implementation status](../credential-sources.md#implementation-status) lists enforcement limits.
+OpenShell prepares admitted HTTP and managed MCP bindings with a Provider per projection. Accepted temporary MCP exceptions let bodyless legacy SSE GET and unsolicited JSON-RPC response POST reach substitution without an admitted RPC or tool match. See [Source lifecycle](../../flows/credential-source-lifecycle.md) and [implementation status](../credential-sources.md#implementation-status).
 
 ## Legacy protected egress
 

@@ -214,9 +214,3 @@ use `drivers.credential_proxy` instead.
 Set its middleware name and `authorityScope: execution`. Provide an authenticated
 HTTPS Gateway, the authority's TLS identity and trusted Gateway issuer public key.
 Keep the single authority process reachable for the whole exchange.
-
-Prepared GitHub metadata is a separate, bodyless GET grant isolated to the named
-Agent. Deleting that Agent stops renewal and use at once; the worker then revokes the
-source's token. Delete the source afterwards. The grant's optional custody and trusted
-issuer settings belong to the Installation operator, not the credential source. [Credential preparation](../../flows/credential-source-refresh.md)
-describes the worker, cold behavior and recovery.

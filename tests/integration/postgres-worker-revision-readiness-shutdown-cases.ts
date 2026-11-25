@@ -115,7 +115,6 @@ async function readinessFixture(
       preparedRepositoryGit: { close: step("prepared") },
       receiptServer: { close: step("receipt") },
       closeMetrics: step("metrics"),
-      preparedGitHub: { close: step("github") },
       worker,
     };
     return closeWorkerComposition(composition);
@@ -128,7 +127,6 @@ async function readinessFixture(
       "prepared",
       "receipt",
       "metrics",
-      "github",
       "worker.stopped",
     ]);
     // The marker written by the held check must be gone after shutdown.

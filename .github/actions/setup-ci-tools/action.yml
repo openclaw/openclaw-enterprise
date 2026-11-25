@@ -14,9 +14,9 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/pinned-tool-downloads
-        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
+        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh', 'scripts/ci/kubectl-pins.json') }}-${{ inputs.profile }}
         restore-keys: |
-          pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-
+          pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh', 'scripts/ci/kubectl-pins.json') }}-
     - name: Set up CI tools
       shell: /bin/bash --noprofile --norc -p -e -o pipefail {0}
       env:
@@ -31,4 +31,4 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/pinned-tool-downloads
-        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh') }}-${{ inputs.profile }}
+        key: pinned-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/ci/setup-tools.sh', 'scripts/ci/download-pinned.sh', 'scripts/ci/kubectl-pins.json') }}-${{ inputs.profile }}

@@ -30,7 +30,7 @@ If interrupted, inspect the saved revision and `git_audit <revision>` before ano
 ```bash
 select_registry "$READ_REGISTRY" read
 request GET "$base/agents/$agent" | jq -e --arg ref "$ref" '
-  .data.repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]'
+  .data.repositoryAccess | .defaultProfile=="github-repository" and .repositories==[{repositoryRef:$ref}]'
 deploy_and_wait
 read_revision=$(cat "$RUN_DIR/requested-revision")
 request GET "$base/agents/$agent" | jq -e --arg revision "$read_revision" '

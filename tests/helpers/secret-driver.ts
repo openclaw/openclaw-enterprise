@@ -6,7 +6,7 @@ import type {
   SecretIdentity,
 } from "../../packages/contracts/src/index.ts";
 import type {
-  InstallationSecretRef,
+  PrivateSecretRef,
   SecretDriver,
 } from "../../packages/contracts/src/drivers/secret/index.ts";
 
@@ -86,10 +86,10 @@ export function createTestSecretDriver(options: TestSecretDriverOptions = {}) {
     return structuredClone(value);
   }
 
-  const privateKey = (ref: InstallationSecretRef) => JSON.stringify([ref.installationId, ref.id]);
+  const privateKey = (ref: PrivateSecretRef) => JSON.stringify([ref.installationId, ref.id]);
 
   const driver = {
-    installationSecrets: {
+    privateSecrets: {
       async create(ref, value) {
         const key = privateKey(ref);
         if (privateEntries.has(key)) {
@@ -104,10 +104,19 @@ export function createTestSecretDriver(options: TestSecretDriverOptions = {}) {
         }
         privateEntries.set(key, value);
       },
-      async withValue<T>(
-        ref: InstallationSecretRef,
-        use: (value: string) => Promise<T>,
-      ): Promise<T> {
+      async compareAndSwap(ref, expected, value) {
+        const key = privateKey(ref);
+        const current = privateEntries.get(key);
+        if (current === undefined) {
+          throw new Error("Installation Secret does not exist.");
+        }
+        if (current !== expected) {
+          return false;
+        }
+        privateEntries.set(key, value);
+        return true;
+      },
+      async withValue<T>(ref: PrivateSecretRef, use: (value: string) => Promise<T>): Promise<T> {
         const value = privateEntries.get(privateKey(ref));
         if (value === undefined) {
           throw new Error("Installation Secret does not exist.");
