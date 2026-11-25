@@ -66,7 +66,11 @@ A development Installation can select `drivers.token_service: { id: openshell, c
 
 Use a Gateway that keeps its Provider records and credentials in its own database. OCC uses the Gateway database's built-in `default` Workspace ID to recognize the store and refuses advertised external credential drivers. The management identity must be able to read Gateway info and the default Workspace. PostgreSQL stores each Source's private Workspace and Provider IDs. The selected TokenService stores the credential in the Source's OpenShell Provider, which the Proxy attaches directly.
 
-The preview accepts static Sources with the `openai` preset and the single model binding. Credentials must not exceed 8,192 UTF-8 bytes. TokenService rejects a larger credential before creating or changing Gateway resources. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
+The preview accepts static credentials, including Sources without a model preset, `openai` API keys, and `codex-pat` credentials. OAuth and GitHub App Sources and client registrations are unsupported. Custody uses one Provider per Source, independent of the consumer's environment. Admission accepts Bearer bindings and refuses other presentations. The Sandbox maps the Provider's native placeholder to the binding's environment at launch. One Sandbox cannot bind the same native Source more than once because OpenShell cannot issue distinct placeholders for those bindings. An earlier preview profile cannot be used or updated, but it can be withdrawn and its Source deleted.
+
+Console and hosted Apps discovery need to resolve a PAT outside the Sandbox. Configure separate operator mTLS before using those paths; native Agent attachment does not require credential export.
+
+Credentials must not exceed 8,192 UTF-8 bytes. TokenService rejects a larger credential before creating or changing Gateway resources. Provider RPCs still select by name. If an administrator deletes and recreates a Workspace, Provider, or Profile between verification and mutation, the Gateway can act on the replacement. Keep this preview in disposable development state. [OpenShell #5931](https://github.com/ai-openshell/openshell/issues/5931)
 
 ## Deploy an Agent with the source
 
@@ -151,7 +155,7 @@ Exact GET requires `credential_source:read`; list requires Namespace `read` and 
 
 ## Update a source
 
-Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. Keep the `openai` preset for the OpenShell preview's model binding. You can replace a credential while an active Agent revision uses the Source.
+Send `PATCH /namespaces/:namespaceId/credential-sources/:credentialSourceId` with `credential_source:update`. Supply `secret`, `config`, or both. Omitting `config` preserves the provider preset. Use `config: {}` to remove it. Changing or removing the preset requires an unbound Source and a separate request from credential or lifecycle changes. Combining those changes returns `409 RESOURCE_CONFLICT` before credential custody changes. You can replace a credential while an active Agent revision uses the Source.
 
 For OCC custody, TokenService commits the replacement and notifies the Credential Proxy. The Proxy updates existing delivery Providers. If delivery fails, PATCH returns `503 DEPENDENCY_UNAVAILABLE` and the replacement stays in custody. Use [manual credential delivery retry](../credential-sources.md#retry-credential-delivery) to deliver it without resending the secret.
 
