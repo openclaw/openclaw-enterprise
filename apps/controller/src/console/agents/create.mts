@@ -113,7 +113,6 @@ import {
   neutralDeploymentOutcome,
   preAdmissionRefusal,
   PROVISIONING_DIFFERENT_PLAN,
-  readFailure,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -4183,11 +4182,6 @@ function renderAgentForm(
               savedSecret = undefined;
               authMethod.disabled = false;
               apiKey.disabled = false;
-            } else if (
-              deleted?.[1] === "Credential source" &&
-              savedCredentialSource?.id === deleted[2]
-            ) {
-              savedCredentialSource = undefined;
             }
             // Channel settings bind their own Secrets into the Configuration the request
             // resubmits, so a deleted one is dropped the same way: the filtered record

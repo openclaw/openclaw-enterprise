@@ -1090,7 +1090,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Provisioning progress",
     path: create,
-    actions: [...readyForm, click("Create Agent")],
+    actions: [...provisionableForm, click("Create Agent")],
     provisioningPhases: ["admitted", "configuration", "transport", "handoff"],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
@@ -1110,7 +1110,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Provisioning completed, deployment unreadable",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisioningPhases: ["admitted", "configuration", "handoff"],
     provisionedDeploymentRefused: true,
     description:
@@ -1219,7 +1219,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Provisioning failed, Retry offered",
     path: create,
-    actions: readyForm,
+    actions: provisionableForm,
     provisioningPhases: ["admitted", "configuration"],
     provisionedDeploymentStatus: "failed",
     provisioningFailsBeforeDeployment: true,
