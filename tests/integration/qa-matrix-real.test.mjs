@@ -211,6 +211,27 @@ test(
         "openshell-optional-plugin-withdrawal",
       );
     }
+    if (selection.tokenServiceAgent) {
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "native Source custody, dedicated model turn, rotation and withdrawal",
+        async () => {
+          const result = await promisify(execFile)(
+            process.execPath,
+            ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
+            {
+              env: { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" },
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "openshell-token-service-agent",
+      );
+    }
     if (selection.oidcAgentChat) {
       const { runOidcAgentChatScenario } = await import("../helpers/native-admin-browser.mjs");
       await stage(

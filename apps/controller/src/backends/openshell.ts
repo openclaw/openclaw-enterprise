@@ -235,6 +235,11 @@ export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
 
+/** The native credential environment belongs to the Source, independent of its consumers. */
+export function openShellSourceCredentialEnvironment(sourceId: string): string {
+  return `OCE_SOURCE_${sha256Hex(sourceId, 24).toUpperCase()}`;
+}
+
 export function openShellOwnedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
   return (
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
