@@ -52,6 +52,19 @@ export function openShellProjectedCredentialProviderName(sourceId: string, envir
   return `${openShellProviderName(sourceId)}-${sha256Hex(environment, 24)}`;
 }
 
+export function openShellBindingProviderName(
+  binding: DeploymentCredentialBinding,
+  nativeSourceOwner: boolean,
+): string {
+  if (nativeSourceOwner) {
+    if (binding.projection.presentation !== "bearer") {
+      credentialPolicyFailure();
+    }
+    return openShellProviderName(binding.sourceRef.id);
+  }
+  return openShellCredentialProviderName(binding);
+}
+
 export function openShellCredentialProviderName(binding: DeploymentCredentialBinding): string {
   // Keep the deployed model Provider identity so retained revisions can still be observed and removed.
   if (binding.consumer.kind === "model" && binding.bindingRef === "model") {
@@ -244,6 +257,7 @@ function networkCoversRequest(
 export function compileOpenShellCredentialPolicy(
   policy: DeploymentPolicy,
   defaultNetworks?: Readonly<Record<string, unknown>>,
+  nativeSourceOwner = false,
 ): {
   readonly credentialRoutes: readonly OpenShellCredentialRoute[];
   readonly publicRoutes: readonly OpenShellPublicRoute[];
@@ -260,6 +274,16 @@ export function compileOpenShellCredentialPolicy(
     injections.size !== policy.bindings.length
   ) {
     credentialPolicyFailure();
+  }
+  // One native Provider has one placeholder. Reusing it would let either binding present the
+  // other's placeholder on an endpoint admitted for the same Provider.
+  if (
+    nativeSourceOwner &&
+    new Set(policy.bindings.map(({ sourceRef }) => sourceRef.id)).size !== policy.bindings.length
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The same native credential Source cannot be bound twice in one Sandbox.",
+    );
   }
   const environments = new Set<string>();
   const routes = new Map<string, MutableCredentialRoute>();
@@ -290,7 +314,7 @@ export function compileOpenShellCredentialPolicy(
     }
     injections.delete(binding.bindingRef);
     environments.add(environment);
-    const provider = openShellCredentialProviderName(binding);
+    const provider = openShellBindingProviderName(binding, nativeSourceOwner);
     for (const request of requests) {
       const checked = checkedRequest(request);
       const { method, path, port, protocol } = checked;

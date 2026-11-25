@@ -20,3 +20,14 @@ Enter to open. Use the keyboard, not the mouse.
    fades while more tabs are past it, and after scrolling to the end only the
    left edge fades. Press End: the focused tab scrolls into view clear of the
    fade, and stays in view if you resize again.
+
+## Return to a scrolled draft in the signed-in Console
+
+Use a disposable Agent with a failed deployment that offers **Open Configuration
+draft**. Follow the link from a version. The **Configuration** tab receives
+focus. Choose **Edit Configuration** and move the caret to the end of a long
+draft. Go Back, then Forward. If the same draft returns unchanged, check that
+the editor has focus and the caret is still in view.
+
+As a separate manual check, move focus to the account menu during a slow
+return. Check that the draft does not take focus back.

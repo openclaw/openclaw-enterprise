@@ -40,7 +40,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";

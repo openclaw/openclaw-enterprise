@@ -7,7 +7,7 @@ import test from "node:test";
 
 import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import {
   authBaseURL,
   createNativeAdminSetup,

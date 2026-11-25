@@ -26,7 +26,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
-import type { StoredCredentialClient } from "./ports/oauth-client.ts";
+import type { StoredCredentialClient } from "./ports/credential-clients.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { lockNamespace } from "./resource-scope.ts";
 import { driverOperation } from "./driver-operation.ts";
@@ -320,7 +320,7 @@ export function createConnectionAdministration({
 
   async function listCredentialClients(principalId: string) {
     await authorizeAdministration(principalId);
-    const clients = await read((view) => view.connectionTemplates.listCredentialClients());
+    const clients = await read((view) => view.credentialClients.list());
     return Object.freeze(clients.map(clientMetadata));
   }
 
@@ -451,7 +451,7 @@ export function createConnectionAdministration({
       await lockTemplateScope(state, client.namespaceId);
       const cleanupAfter =
         material === undefined ? undefined : new Date(now().getTime() + 5 * 60_000).toISOString();
-      await state.connectionTemplates.createCredentialClient(registration, cleanupAfter);
+      await state.credentialClients.create(registration, cleanupAfter);
       if (material === undefined && audit) {
         await state.audit.append(audit(id));
       }
@@ -460,7 +460,7 @@ export function createConnectionAdministration({
       await transact(async (state) => {
         await authorizeAdministration(principalId);
         await holdSession?.(state);
-        const reserved = await state.connectionTemplates.lockCredentialClientForCleanup(id, false);
+        const reserved = await state.credentialClients.lockForCleanup(id, false);
         if (!reserved) {
           throw new ResourceStateConflictError(
             "The client reservation expired. Register the client again.",
@@ -472,7 +472,7 @@ export function createConnectionAdministration({
           () => owner.registerClientSecret(instance, material!, signal()),
           "TokenService",
         );
-        await state.connectionTemplates.setCredentialClientCleanup(id, null);
+        await state.credentialClients.setCleanup(id, null);
         if (audit) {
           await state.audit.append(audit(id));
         }
@@ -491,7 +491,7 @@ export function createConnectionAdministration({
     requireIndependentMutation("Credential client secret rotation");
     await authorizeAdministration(principalId);
     const lockClient = async (state: PlatformUnitOfWork) => {
-      const client = await state.connectionTemplates.lockCredentialClient(id);
+      const client = await state.credentialClients.lock(id);
       await authorizeAdministration(principalId);
       await holdSession?.(state);
       if (!client) {
@@ -542,17 +542,14 @@ export function createConnectionAdministration({
   ) {
     await authorizeAdministration(principalId);
     await transact(async (state) => {
-      const client = await state.connectionTemplates.lockCredentialClient(id);
+      const client = await state.credentialClients.lock(id);
       await authorizeAdministration(principalId);
       await holdSession?.(state);
       if (!client) {
         throw new ScopeViolationError("The client does not exist.");
       }
       if (
-        !(await state.connectionTemplates.deleteCredentialClient(
-          id,
-          client.tokenServiceInstanceId !== undefined,
-        ))
+        !(await state.credentialClients.delete(id, client.tokenServiceInstanceId !== undefined))
       ) {
         throw new ResourceStateConflictError(
           client.kind === "github-app"
@@ -567,10 +564,10 @@ export function createConnectionAdministration({
   }
 
   async function cleanupCredentialClients(): Promise<void> {
-    const ids = await read((view) => view.connectionTemplates.listCredentialClientCleanups(32));
+    const ids = await read((view) => view.credentialClients.listCleanups(32));
     for (const id of ids) {
       await transact(async (state) => {
-        const client = await state.connectionTemplates.lockCredentialClientForCleanup(id, true);
+        const client = await state.credentialClients.lockForCleanup(id, true);
         if (!client) {
           return;
         }
@@ -579,13 +576,13 @@ export function createConnectionAdministration({
           const owner = tokenServiceDriver(instance.tokenServiceInstanceId);
           await driverOperation(() => owner.removeClientSecret(instance, signal()), "TokenService");
         } catch {
-          await state.connectionTemplates.setCredentialClientCleanup(
+          await state.credentialClients.setCleanup(
             id,
             new Date(now().getTime() + 60_000).toISOString(),
           );
           return;
         }
-        if (!(await state.connectionTemplates.deleteCredentialClient(id))) {
+        if (!(await state.credentialClients.delete(id))) {
           throw new ResourceStateConflictError("The client is still referenced.");
         }
       });
@@ -596,7 +593,7 @@ export function createConnectionAdministration({
     client: Readonly<OAuthClient>,
     use: (secret: string | undefined) => Promise<T>,
   ): Promise<T> {
-    const current = await read((view) => view.connectionTemplates.findCredentialClient(client.id));
+    const current = await read((view) => view.credentialClients.find(client.id));
     if (
       !current ||
       current.kind !== "oauth2" ||

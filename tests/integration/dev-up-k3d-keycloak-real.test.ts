@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   assertKeycloakSecondPassFailure,
   registerInstallationKeycloak,
-} from "../helpers/dev-up-installation-workflows.mjs";
+} from "../helpers/dev-up-installation-workflows.ts";
 import {
   createRunnerFixture,
   laneArgs,
@@ -54,7 +54,7 @@ test("Keycloak mismatch keeps launcher content out of CI results and full diagno
   const lane = "keycloak-mismatch";
   const file = "tests/integration/keycloak-mismatch.test.ts";
   const { statePath, resultsPath } = runnerArtifactPaths(root, lane);
-  const helper = new URL("../helpers/dev-up-installation-workflows.mjs", import.meta.url);
+  const helper = new URL("../helpers/dev-up-installation-workflows.ts", import.meta.url);
   // The same synthetic value covers adjacent keys and an opener lost to both old tail limits.
   const marker = "invented-keycloak-marker";
   const cases = [63, 64, 65].flatMap((spaces) =>

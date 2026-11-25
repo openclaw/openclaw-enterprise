@@ -35,7 +35,7 @@ import type {
   NamespaceWire,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,

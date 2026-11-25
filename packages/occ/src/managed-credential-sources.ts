@@ -321,10 +321,8 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
     draftState?: PlatformUnitOfWork,
   ): Promise<void> {
     const client = draftState
-      ? await draftState.connectionTemplates.lockCredentialClient(clientId)
-      : await dependencies.transactions.read((state) =>
-          state.connectionTemplates.findCredentialClient(clientId),
-        );
+      ? await draftState.credentialClients.lock(clientId)
+      : await dependencies.transactions.read((state) => state.credentialClients.find(clientId));
     if (
       client?.kind !== "github-app" ||
       (appId !== undefined && client.appId !== appId) ||

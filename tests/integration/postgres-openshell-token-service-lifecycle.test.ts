@@ -8,8 +8,10 @@ import { createPostgresAuthAccountProvisioner } from "../../apps/controller/src/
 import {
   MANAGED_BY,
   MANAGED_BY_LABEL,
+  SOURCE_ID_LABEL,
   createOpenShellBackend,
   openShellProviderName,
+  openShellStaticBearerProfile,
 } from "../../apps/controller/src/backends/openshell.ts";
 import {
   credentialSourceDeliveryBinding,
@@ -17,6 +19,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import type { OpenShellStoredProviderProfile } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/openshell.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
@@ -31,6 +34,14 @@ function required(name: string): string {
   const value = process.env[`OCC_TEST_OPENSHELL_TOKEN_SERVICE_${name}`];
   assert.ok(value, `Missing OpenShell TokenService test input: ${name}`);
   return value;
+}
+
+function credentialEnvironment(profile: OpenShellStoredProviderProfile | undefined): string {
+  const credentials = profile?.definition?.credentials;
+  assert.ok(Array.isArray(credentials) && credentials.length === 1);
+  const name: unknown = credentials[0]?.name;
+  assert.equal(typeof name, "string");
+  return name as string;
 }
 
 test(
@@ -164,6 +175,7 @@ test(
         backend.client.close();
         throw error;
       });
+    assert.ok(workspaceId);
     t.after(async () => {
       try {
         const signal = AbortSignal.timeout(15_000);
@@ -193,8 +205,28 @@ test(
 
     const original = randomUUID();
     const deniedValue = randomUUID();
-    const replacement = randomUUID();
+    // The Gateway limit counts encoded bytes. These values span the boundary without
+    // approaching it in JavaScript string length.
+    const replacement = "é".repeat(4096);
+    const oversized = `${replacement}x`;
     const base = `/namespaces/${namespaceId}/credential-sources`;
+    const profilesBefore = await client.listProviderProfiles(workspace, t.signal);
+    const rejectedCreate = await inject("POST", base, {
+      name: "Oversized OpenAI key",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: oversized,
+    });
+    const profilesAfter = await client.listProviderProfiles(workspace, t.signal);
+    assert.deepEqual(
+      new Set(profilesAfter.map(({ id }) => id)),
+      new Set(profilesBefore.map(({ id }) => id)),
+      "Rejected enrollment must leave no native Provider profile.",
+    );
+    assert.deepEqual(await client.listProviders(workspace, t.signal), []);
+    assert.equal(rejectedCreate.statusCode, 400, rejectedCreate.body);
+    assert.equal(rejectedCreate.json().error.code, "INVALID_REQUEST");
+
     const created = await inject("POST", base, {
       name: "Isolated OpenAI key",
       type: "static",
@@ -215,6 +247,10 @@ test(
     assert.ok(provider?.id);
     assert.equal(provider.workspace, workspace);
     assert.equal(provider.profileWorkspace, workspace);
+    const profile = await client.getProviderProfile(workspace, name, t.signal);
+    const nativeEnvironment = credentialEnvironment(profile);
+    assert.match(nativeEnvironment, /^OCE_SOURCE_[A-F0-9]+$/);
+    assert.notEqual(nativeEnvironment, "OPENAI_API_KEY");
     const custody = await owner.resolveNativeProvider(
       { sourceRef, tokenServiceInstanceId },
       t.signal,
@@ -227,7 +263,7 @@ test(
 
     // The management identity can inspect the exact Provider but lacks material export authority.
     await assert.rejects(
-      client.getProviderCredential(workspace, name, "OPENAI_API_KEY", t.signal),
+      client.getProviderCredential(workspace, name, nativeEnvironment, t.signal),
       {
         grpcStatus: 7,
       },
@@ -239,7 +275,7 @@ test(
     // The test verifier has its own operator identity. The application has only management access.
     const verifier = verificationBackend.client.credentialClientForNamespace(workspace);
     const readNativeValue = async () =>
-      (await verifier.getProviderCredential(workspace, name, "OPENAI_API_KEY", t.signal)).value;
+      (await verifier.getProviderCredential(workspace, name, nativeEnvironment, t.signal)).value;
     assert.ok(
       (await readNativeValue()) === original,
       "The native Provider must contain the enrolled key.",
@@ -295,6 +331,18 @@ test(
     );
     assert.deepEqual(denialAudit.rows, [{ kind: "authorization_denial", outcome: "denied" }]);
 
+    const rejectedUpdate = await inject("PATCH", sourcePath, { secret: oversized });
+    assert.equal(rejectedUpdate.statusCode, 400, rejectedUpdate.body);
+    assert.equal(rejectedUpdate.json().error.code, "INVALID_REQUEST");
+    assert.equal(
+      (await client.getProvider(workspace, name, t.signal))?.resourceVersion,
+      provider.resourceVersion,
+    );
+    assert.ok(
+      (await readNativeValue()) === original,
+      "A rejected replacement must leave native custody untouched.",
+    );
+
     const updated = await inject("PATCH", sourcePath, { secret: replacement });
     assert.equal(updated.statusCode, 200, updated.body);
     const updatedProvider = await client.getProvider(workspace, name, t.signal);
@@ -332,6 +380,120 @@ test(
     }
     assert.equal(occSecretStorage.calls.createNamespacedSecret, 0);
     assert.equal(occSecretStorage.secrets.size, 0);
+
+    // Custody does not depend on an OpenAI preset or the consumer's projection. A PAT and an
+    // unclassified static secret each get their own authoritative Provider and native alias.
+    const environments = new Set([nativeEnvironment]);
+    const template = await inject("POST", "/connection-templates", {
+      namespaceId,
+      displayName: "Static Plugin credential",
+      mode: "static_bearer",
+      destinations: [{ method: "GET", host: "api.example.test", port: 443, path: "/v1/**" }],
+    });
+    assert.equal(template.statusCode, 201, template.body);
+    const templateId: string = template.json().data.id;
+    for (const input of [
+      { config: {} },
+      { config: { provider_preset: "codex-pat" } },
+      { connectionTemplateId: templateId },
+    ]) {
+      const material = randomUUID();
+      const result = await inject("POST", base, {
+        name: "Generic static credential",
+        type: "static",
+        ...input,
+        secret: material,
+      });
+      assert.equal(result.statusCode, 201, result.body);
+      const id: string = result.json().data.id;
+      if ("connectionTemplateId" in input) {
+        const readSource = await inject("GET", `${base}/${id}`);
+        assert.equal(readSource.statusCode, 200, readSource.body);
+        assert.equal(readSource.json().data.connectionTemplateId, templateId);
+      }
+      const nativeName = openShellProviderName(id);
+      const nativeProfile = await client.getProviderProfile(workspace, nativeName, t.signal);
+      const nativeAlias = credentialEnvironment(nativeProfile);
+      assert.match(nativeAlias, /^OCE_SOURCE_[A-F0-9]+$/);
+      assert.ok(
+        !environments.has(nativeAlias),
+        "Distinct Sources require distinct native aliases.",
+      );
+      environments.add(nativeAlias);
+      assert.equal(
+        (await verifier.getProviderCredential(workspace, nativeName, nativeAlias, t.signal)).value,
+        material,
+      );
+      assert.equal((await inject("DELETE", `${base}/${id}`)).statusCode, 204);
+      assert.equal(await client.getProvider(workspace, nativeName, t.signal), undefined);
+    }
+    assert.equal(occSecretStorage.calls.createNamespacedSecret, 0);
+
+    // Seed a Source created by the earlier preview: exact ownership is unchanged, but its
+    // profile exported OPENAI_API_KEY directly. It must be withdrawable and deletable without
+    // allowing that obsolete format to be used for new delivery or updates.
+    const oldId = `cs_${randomUUID()}`;
+    const oldRef = { kind: "credential_source", id: oldId, namespaceId } as const;
+    const oldName = openShellProviderName(oldId);
+    const labels = {
+      [MANAGED_BY_LABEL]: MANAGED_BY,
+      [SOURCE_ID_LABEL]: oldId,
+      "openclaw.dev/namespace-id": namespaceId,
+      "openclaw.dev/token-service": owner.id,
+    };
+    await client.importProviderProfile(
+      workspace,
+      openShellStaticBearerProfile({
+        id: oldName,
+        displayName: "OpenClaw Enterprise static credential",
+        environment: "OPENAI_API_KEY",
+        annotations: labels,
+      }),
+      t.signal,
+    );
+    const oldProvider = await client.createProvider(
+      {
+        workspace,
+        name: oldName,
+        type: oldName,
+        labels,
+        credentials: { OPENAI_API_KEY: randomUUID() },
+      },
+      t.signal,
+    );
+    assert.ok(oldProvider.id);
+    const oldProviderId = oldProvider.id;
+    await state.transact(({ credentialSources }) =>
+      credentialSources.createCredentialSource({
+        id: oldId,
+        namespaceId,
+        name: "Earlier preview Source",
+        type: "static",
+        ownerCapability: "token_service",
+        tokenServiceInstanceId,
+        state: "ready",
+        config: { provider_preset: "openai" },
+        backendRef: { workspaceId, providerId: oldProviderId },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    await assert.rejects(
+      owner.resolveNativeProvider({ sourceRef: oldRef, tokenServiceInstanceId }, t.signal),
+      /unsupported credential format/,
+    );
+    assert.equal(
+      (
+        await owner.resolveNativeProvider(
+          { sourceRef: oldRef, tokenServiceInstanceId },
+          t.signal,
+          "withdrawal",
+        )
+      ).id,
+      oldProviderId,
+    );
+    const oldDeleted = await inject("DELETE", `${base}/${oldId}`);
+    assert.equal(oldDeleted.statusCode, 204, oldDeleted.body);
+    assert.equal(await client.getProviderProfile(workspace, oldName, t.signal), undefined);
 
     const deleted = await inject("DELETE", sourcePath);
     assert.equal(deleted.statusCode, 204, deleted.body);

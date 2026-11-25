@@ -2,11 +2,13 @@ import {
   keycloakBrowserRoute,
   keycloakHostPort,
   keycloakRealmAdmin,
-} from "../helpers/ci-keycloak-realm.mjs";
+  keycloakRealmRows,
+} from "../helpers/ci-keycloak-realm.ts";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { after } from "node:test";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { enrollmentWait } from "../helpers/keycloak-enrollment-wait.ts";
 import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.ts";
 import pg from "pg";
@@ -504,22 +506,25 @@ test(
     // This lane owns the disposable realm. Temporarily suppress its standard
     // email mappings so per-client mappings can exercise absent claims. Restore
     // them before any later lane file uses the realm.
-    const scopes = await admin(setup, "GET", "/client-scopes");
+    const scopes = keycloakRealmRows(await admin(setup, "GET", "/client-scopes"));
     const emailScope = scopes.find((scope) => scope.name === "email");
     assert.ok(emailScope);
-    const emailMappers = await admin(
-      setup,
-      "GET",
-      `/client-scopes/${emailScope.id}/protocol-mappers/models`,
+    const emailMappers = keycloakRealmRows(
+      await admin(setup, "GET", `/client-scopes/${emailScope.id}/protocol-mappers/models`),
     );
     for (const mapper of emailMappers) {
+      const config = asRecord(mapper.config);
+      assert.ok(
+        mapper.config === undefined || mapper.config === null || config,
+        "invalid Keycloak mapper config",
+      );
       await admin(
         setup,
         "PUT",
         `/client-scopes/${emailScope.id}/protocol-mappers/models/${mapper.id}`,
         {
           ...mapper,
-          config: { ...mapper.config, "id.token.claim": "false" },
+          config: { ...config, "id.token.claim": "false" },
         },
       );
       t.after(() =>
@@ -636,7 +641,10 @@ test(
               : [mapper("email_verified", scenario.verification)]),
           ],
         });
-        const [client] = await admin(wait, "GET", `/clients?clientId=${clientId}`);
+        const [client] = keycloakRealmRows(
+          await admin(wait, "GET", `/clients?clientId=${clientId}`),
+        );
+        assert.ok(client);
         subtest.after(() => admin(wait, "DELETE", `/clients/${client.id}`));
         await admin(wait, "POST", "/users", {
           username,
@@ -647,7 +655,10 @@ test(
           emailVerified: true,
           credentials: [{ type: "password", value: password, temporary: false }],
         });
-        const [user] = await admin(wait, "GET", `/users?username=${username}&exact=true`);
+        const [user] = keycloakRealmRows(
+          await admin(wait, "GET", `/users?username=${username}&exact=true`),
+        );
+        assert.ok(user);
         subtest.after(() => admin(wait, "DELETE", `/users/${user.id}`));
         const query = (sql, values) => wait("query-users", prepared.pool.query(sql, values));
         const count = async () =>

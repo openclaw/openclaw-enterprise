@@ -13,7 +13,7 @@ import {
   REPOSITORY_CONTROL_SOCKET,
 } from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
-import type { deployQaAgentAndWait } from "./qa-installation.mjs";
+import type { deployQaAgentAndWait } from "./qa-agent-deployment.ts";
 import { createGitHubAppRepositoryObserver } from "./github-app-observer.ts";
 import {
   createRepositoryObserver,

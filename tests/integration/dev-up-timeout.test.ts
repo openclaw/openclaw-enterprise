@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { composeOptions, readJsonLines, runDevUp } from "../helpers/dev-up-commands.ts";
-import { createFixture, serviceKey } from "../helpers/dev-up.mjs";
+import { createFixture, serviceKey } from "../helpers/dev-up.ts";
 
 test(
   "dev-up waits the full helper deadline before failing a running but unready worker",

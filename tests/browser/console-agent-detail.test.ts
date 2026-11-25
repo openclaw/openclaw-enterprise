@@ -23,7 +23,7 @@ import {
   SecretListResponse,
   IAMAccessBindingListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -2660,8 +2660,8 @@ test("a version editor without Agent update can recover a failed deployment from
     .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
     .waitFor();
   // This caller may edit the Configuration, so recovery opens it as such (finding 2450).
-  await recovery.getByRole("link", { name: "Open Configuration", exact: true }).click();
-  await recovery.getByRole("link", { name: "Open Configuration", exact: true }).waitFor();
+  await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).click();
+  await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
@@ -2685,7 +2685,7 @@ test("a version editor without Agent update can recover a failed deployment from
   await permission.requested;
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
   assert.equal(
-    await recovery.getByRole("link", { name: "Open Configuration", exact: true }).isVisible(),
+    await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).isVisible(),
     true,
   );
   const restoreGrants = revokeMemberGrant(fixture, "version-editor", ["update", "configuration"]);
@@ -2698,9 +2698,7 @@ test("a version editor without Agent update can recover a failed deployment from
   );
   // The reread applies to recovery: the Configuration is now read-only, so this deployer is
   // offered the draft to read and deploy.
-  await recovery
-    .getByRole("link", { name: "Open Configuration", exact: true })
-    .waitFor({ state: "detached" });
+  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor({ state: "detached" });
   await recovery.getByRole("link", { name: "Open draft", exact: true }).waitFor();
 
   restoreGrants();

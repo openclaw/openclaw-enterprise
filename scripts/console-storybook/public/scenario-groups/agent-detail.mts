@@ -468,7 +468,7 @@ export function createAgentDetailScenarios({
         description:
           "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
         steps: [
-          "Load older versions, then select v1. Confirm the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+          "Load older versions, then select v1. Confirm the notice begins Historical version and the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
         ],
         gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
       },
@@ -2080,6 +2080,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "On Configuration, use Viewing version to choose v6, then v7. Repeat with the keyboard. Each time you return to v7, the picker should show v7 and the notice should say Deploying version. Selected for service stays v6.",
           "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
@@ -2092,7 +2093,7 @@ export function createAgentDetailScenarios({
         description:
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
-          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot."',
           "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
@@ -2381,6 +2382,30 @@ export function createAgentDetailScenarios({
         ],
         gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
       },
+      deploymentFailedStatusOnly: {
+        group: "Pages/Agent detail",
+        name: "New version failed, viewer may inspect runtime status",
+        path: currentVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        agentPermissionSummary: {
+          update: false,
+          deploy: false,
+          operate: true,
+          readLogs: false,
+          delete: false,
+          administer: false,
+        },
+        description:
+          "The viewer can inspect failed v7’s runtime status but cannot read log text. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
+        steps: [
+          "At 1440 and 390 wide, check that View v7 runtime status in Logs and the advice about checking logs are both visible.",
+          "Press Tab to reach the action and Enter to open it. Viewing version changes from v6 to v7 and the Logs tab receives focus.",
+          "Inspect the simulated runtime status. Log text, Follow and Download remain unavailable.",
+          "Use Back to return to v6. Reach the same action with Tab and press Enter again. Check that v7’s runtime status appears again.",
+        ],
+        gap: "Permissions and runtime status are simulated. This story does not verify Controller authorization, a live runtime or which reads the Console sends.",
+      },
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
@@ -2585,10 +2610,10 @@ export function createAgentDetailScenarios({
         candidateDeploymentStatus: "failed",
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
         description:
-          "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
+          "The recovery banner names the model configured for v7 and leads with Open Configuration draft so the operator can correct the model and deploy the same Agent.",
         steps: [
-          "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
-          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+          "Open v7 Logs and confirm the failed version, then go Back. Select Open Configuration draft. The Configuration tab scrolls into view and receives focus. No deployment starts.",
+          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration draft in the recovery card.",
           "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
           "At phone width, the failure, both recovery links, and selected version are still near the top.",
         ],
@@ -2641,8 +2666,8 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
         steps: [
-          "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
-          "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
+          "Check that recovery says whom to ask for logs. The viewer cannot read logs or runtime status, so the block has no Logs link.",
+          "The header still offers Open draft. The picker includes Draft and its Configuration access.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
       },
@@ -2657,6 +2682,7 @@ export function createAgentDetailScenarios({
           update: false,
           deploy: true,
           operate: false,
+          readLogs: false,
           delete: false,
           administer: false,
           configurationUpdate: false,
@@ -2669,7 +2695,7 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
         steps: [
-          "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
+          "Confirm Open draft is the only recovery action. Select it and check that the Configuration tab opens in view, focused, without deploying.",
         ],
         gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
       },
@@ -2694,10 +2720,10 @@ export function createAgentDetailScenarios({
           sandboxPolicyRead: false,
         },
         description:
-          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
+          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration draft.",
         steps: [
-          "Check that Open Configuration is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
-          "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
+          "Check that Open Configuration draft is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
+          "Select Open Configuration draft. The Configuration tab comes into view with Edit Configuration available.",
         ],
         gap: "The failure and permissions are simulated; the API still authorizes every save.",
       },
@@ -2997,6 +3023,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
           "Open Deployment details to read the in-progress stages.",
+          'Reload and open Configuration while the first read is pending. The notice says "Read-only admitted snapshot." When v7 is in progress it says "Deploying version · read-only admitted snapshot."',
         ],
       },
       deploymentUnavailable: {
@@ -3012,6 +3039,7 @@ export function createAgentDetailScenarios({
           },
         ],
         steps: [
+          'Open Configuration: the latest version says "Read-only admitted snapshot." while its deployment record is unavailable. Return to Deployment.',
           "Fold Deployment details. The selected record still shows the read error outside the fold with one visible alert. Expand again: the activity owns that alert instead of announcing it twice.",
           "Fold and press Refresh deployment. The same failed read opens the details again; this explicit action differs from a routine transient poll.",
         ],

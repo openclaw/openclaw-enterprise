@@ -25,7 +25,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
 } from "./errors.ts";
-import type { StoredCredentialClient } from "./ports/oauth-client.ts";
+import type { StoredCredentialClient } from "./ports/credential-clients.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
@@ -161,7 +161,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       const version = template.current;
       const owner = deps.selectedTokenServiceDriver();
       const instanceId = deps.currentTokenServiceInstanceId();
-      return (await state.connectionTemplates.listCredentialClients())
+      return (await state.credentialClients.list())
         .filter(
           (client): client is Extract<typeof client, { kind: "oauth2" }> =>
             client.kind === "oauth2" &&
@@ -441,7 +441,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     version: OAuthConnectionTemplateVersion,
     clientId: string,
   ): Promise<Readonly<OAuthClient>> {
-    const client = await view.connectionTemplates.findCredentialClient(clientId);
+    const client = await view.credentialClients.find(clientId);
     if (
       !client ||
       client.kind !== "oauth2" ||
