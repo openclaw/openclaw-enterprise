@@ -3879,6 +3879,13 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   tab-size: 2;
 }
 
+@media (max-height: 480px) {
+  .configuration-document .configuration-editor {
+    /* Leave room for a wrapped syntax diagnostic in short windows. */
+    height: calc(100dvh - 4lh);
+  }
+}
+
 .workspace-files .configuration-editor {
   min-height: 200px;
 }

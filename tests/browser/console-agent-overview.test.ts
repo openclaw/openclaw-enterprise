@@ -1272,6 +1272,119 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
   }
 });
 
+for (const state of ["lost", "running"] as const) {
+  test(`A failed replacement rechecks the selected Sandbox once when it is ${state}`, async (t) => {
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+    const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+    const pending = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser });
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const statusUrl = `${agentUrl}/harness-status`;
+    const statusPath = new URL(statusUrl).pathname;
+    const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+    await page.route(recordUrl, (route) =>
+      route.fulfill(deploymentStatusResponse(pending, { status: "queued" })),
+    );
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await trackSettledFetches(page);
+    await page.clock.install();
+    sandbox.state.harness = { state: "running" };
+    const initial = nextOverviewRead(page, statusUrl);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
+    );
+    const activity = await expectDeploymentOutcome(page, "Queued");
+    const serving = liveServing(page);
+    const running = "Sandbox running.";
+    assert.deepEqual(await sandboxObservation(await initial), [revision.id, "running"]);
+    await serving.getByText(running, { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+    const refresh = activity.getByRole("button", { name: "Refresh deployment" });
+    async function readDeployment(via: "poll" | "refresh") {
+      const response = nextOverviewRead(page, recordUrl);
+      if (via === "refresh") {
+        await refresh.click();
+      } else {
+        await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      }
+      assert.equal((await response).status(), 200);
+      await waitForIdleFetches(page);
+    }
+    await readDeployment("poll");
+    assert.equal(await settledFetches(page, statusPath), 1, "unchanged poll");
+
+    // A dedicated replacement can stop v1 before failing to start v2. Selection alone
+    // cannot tell us whether v1 lost its Sandbox, and a running Sandbox cannot prove serving.
+    if (state === "lost") {
+      sandbox.state.harness = { state, code: "SANDBOX_STOPPED" };
+    }
+    await routeFailedListing(page, fixture, namespace, agent, pending);
+    await routeFailedRecord(page, fixture, namespace, agent, pending);
+    const reread = nextOverviewRead(page, agentUrl);
+    const observation = nextOverviewRead(page, statusUrl);
+    await readDeployment(state === "lost" ? "poll" : "refresh");
+    const response = await reread;
+    assert.equal(response.status(), 200);
+    const fresh = record(record(await response.json()).data);
+    assert.equal(fresh.activeRevisionId, revision.id);
+    assert.equal(fresh.desiredRuntimeState, "running");
+    await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+    assert.equal(await settledFetches(page, statusPath), 2, "recheck v1 after v2 fails");
+    assert.deepEqual(await sandboxObservation(await observation), [revision.id, state]);
+    const note = state === "lost" ? "Deploy a new version." : running;
+    await serving.getByText(note, { exact: true }).waitFor();
+    assert.equal(
+      await serving.locator(".badge").textContent(),
+      state === "lost" ? "Sandbox lost" : "May be offline",
+    );
+
+    await openDeploymentActivity(page);
+    await readDeployment("refresh");
+    assert.equal(await settledFetches(page, statusPath), 2, "the same failure needs no new read");
+  });
+}
+
+test("A failed replacement on the first version list supersedes an earlier Sandbox read", async (t) => {
+  const { fixture, namespace, agent, revision, sandbox } = await sandboxOverviewFixture(t);
+  const replacement = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const statusUrl = `${agentUrl}/harness-status`;
+  await routeFailedListing(page, fixture, namespace, agent, replacement);
+  await routeFailedRecord(page, fixture, namespace, agent, replacement);
+  sandbox.state.harness = { state: "running" };
+  const initial = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  // The replacement interrupts the Sandbox between the two entry reads.
+  await page.route(
+    (url) => url.origin + url.pathname === `${agentUrl}/revisions`,
+    async (route) => {
+      await initial.requested;
+      sandbox.state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+      await route.fallback();
+    },
+  );
+  await trackSettledFetches(page);
+  const fresh = nextOverviewRead(page, statusUrl);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  assert.deepEqual(await sandboxObservation(required(await initial.requested)), [
+    revision.id,
+    "running",
+  ]);
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  assert.deepEqual(await sandboxObservation(await fresh), [revision.id, "lost"]);
+  const serving = liveServing(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  initial.release();
+  await waitForIdleFetches(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+});
+
 test("Refocus refreshes the same Sandbox and preserves the open draft", async (t) => {
   const setup = await sandboxOverviewFixture(t);
   const { fixture, namespace, agent, revision, sandbox } = setup;
@@ -1326,6 +1439,7 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
     "one Sandbox GET after admission",
   );
 
+  assert.equal(await serving.getByText("Sandbox running.", { exact: true }).isVisible(), false);
   const lost = nextOverviewRead(page, statusUrl);
   await page.getByText("Still checking…", { exact: true }).waitFor();
   await refocusSandboxOverview(page);
@@ -1349,6 +1463,18 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   );
   assert.deepEqual(reads.slice().sort(), [agentUrl, permissionsUrl, statusUrl].sort());
 
+  // Keep the warning and recovery step visible until the same version's next read settles.
+  const repeated = await holdRequests(t, page, statusUrl, { once: true, afterServer: true });
+  const stillLost = nextOverviewRead(page, statusUrl);
+  await refocusSandboxOverview(page);
+  await repeated.requested;
+  assert.ok(await serving.getByText("Sandbox lost", { exact: true }).isVisible());
+  assert.ok(await serving.getByText("Deploy a new version.", { exact: true }).isVisible());
+  repeated.release();
+  assert.deepEqual(await sandboxObservation(await stillLost), [revision.id, "lost"]);
+  await waitForReadmittedSandbox(page);
+  assert.equal(await serving.locator(".badge").textContent(), "Sandbox lost");
+
   const unavailable = await holdRequests(t, page, statusUrl, {
     once: true,
     fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Sandbox status unavailable."),
@@ -1362,6 +1488,10 @@ test("Refocus refreshes the same Sandbox and preserves the open draft", async (t
   await waitForReadmittedSandbox(page);
   assert.equal(await editor.inputValue(), draft);
 
+  // A fresh running observation must also clear a confirmed loss directly.
+  await refocusSandboxOverview(page);
+  await serving.getByText("Sandbox lost", { exact: true }).waitFor();
+  await waitForReadmittedSandbox(page);
   const recovered = nextOverviewRead(page, statusUrl);
   sandbox.state.harness = { state: "running" };
   await refocusSandboxOverview(page);
@@ -1649,11 +1779,11 @@ test("Recovery offers Open Credentials only when an Agent update would pass its 
   await recovery.getByRole("link", { name: "Open Credentials", exact: true }).waitFor();
 });
 
-// Open Configuration leads to the Configuration editor. A Configuration save needs Configuration
+// Recovery opens the Configuration draft. Saving it needs Configuration
 // update and Secret operate on each Secret the Configuration binds, not an Agent update or the
 // Harness authentication Secret it checks, so recovery follows the Configuration's own answer
 // (finding 2450). Its label says "Open draft" only when that editor is read-only.
-test("Recovery's Open Configuration follows whether the caller may edit the Configuration", async (t) => {
+test("Recovery offers Open Configuration draft when the caller may edit the Configuration", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Configuration recovery", runtimeLogs());
   const bound = await fixture.createSecret(namespace.id, "Configuration token", "bound-value");
   const agent = await fixture.createAgent(
@@ -1725,7 +1855,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   assert.equal(answer.configurationSecretsOperate, true);
   assert.equal(answer.agentSourcesOperate, false);
   assert.equal(answer.deploy, false);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery
     .getByText("Ask someone with deploy access to redeploy this Agent.", { exact: false })
     .waitFor();
@@ -1733,7 +1863,7 @@ test("Recovery's Open Configuration follows whether the caller may edit the Conf
   role.permissions.push({ action: "deploy", resourceKind: "agent" });
   answer = await shown();
   assert.equal(answer.deploy, true);
-  assert.deepEqual(await links(), ["Open Configuration", "Open v1 Logs"]);
+  assert.deepEqual(await links(), ["Open Configuration draft", "Open v1 Logs"]);
   await recovery.getByText("then redeploy this Agent.", { exact: false }).waitFor();
 
   // Without operate on the bound Secret every Configuration save is refused, so the editor is
@@ -2031,7 +2161,10 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  const configuration = recovery.getByRole("link", { name: "Open Configuration" });
+  const configuration = recovery.getByRole("link", {
+    name: "Open Configuration draft",
+    exact: true,
+  });
   assert.equal(await configuration.getAttribute("class"), "button button--primary");
 
   // A later visit in this page session starts without the Logs link too.
@@ -2039,7 +2172,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await page.getByRole("link", { name: "Denied logs" }).click();
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await configuration.waitFor();
 });
 
 // When a failed newer version replaced the running one, the replacement sentence overrode the
@@ -2131,7 +2264,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
     "button button--primary",
   );
-  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+  await recovery.getByRole("link", { name: "Open Configuration draft", exact: true }).waitFor();
 });
 
 test("Recovery offers no draft link when the caller's permission answer fails", async (t) => {
@@ -3005,10 +3138,11 @@ const focusedTab = (page: Page) =>
 // window stayed at the top, under the banner, while the draft sat 1110-3168 px below the fold, so
 // the link looked dead (finding 1586). Every way the link opens its tab now brings it into view and
 // focuses it: the draft already open below, another tab of the draft, and another version.
+const editorLabel = "Open Configuration draft";
 for (const c of [
-  { name: "the open draft", entry: "draft", tab: "configuration", label: "Open Configuration" },
-  { name: "another draft tab", entry: "draft", tab: "plugins", label: "Open Configuration" },
-  { name: "another version", entry: "active", tab: "configuration", label: "Open Configuration" },
+  { name: "the open draft", entry: "draft", tab: "configuration", label: editorLabel },
+  { name: "another draft tab", entry: "draft", tab: "plugins", label: editorLabel },
+  { name: "another version", entry: "active", tab: "configuration", label: editorLabel },
   {
     name: "another version without update",
     entry: "active",
@@ -3054,7 +3188,7 @@ for (const c of [
             : detailUrl(fixture, namespace.id, agent.id, "draft", c.tab);
       await login(page, fixture, url);
       const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-      const open = recovery.getByRole("link", { name: c.label });
+      const open = recovery.getByRole("link", { name: c.label, exact: true });
       await open.waitFor();
       await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
@@ -3086,6 +3220,52 @@ for (const c of [
       await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
       await page.waitForFunction(versionDetailInView);
       assert.equal(await focusedTab(page), "Configuration");
+
+      if (c.entry === "active" && c.update !== false) {
+        // Forward should resume the scrolled editor where Back left it. An offscreen
+        // page heading would send the next keystroke back to the top of the page.
+        const view = page.locator(settledView);
+        await view.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+        const editor = view.getByLabel("Configuration JSON", { exact: true });
+        const original = required(await editor.elementHandle());
+        const draft = `${await editor.inputValue()} `;
+        await page.keyboard.press("Control+End");
+        await page.keyboard.insertText(" ");
+        await page.keyboard.press("Shift+ArrowLeft");
+        await nextFrames(page);
+        const place = () =>
+          original.evaluate((node) => {
+            if (!(node instanceof HTMLTextAreaElement)) {
+              throw new Error("Expected the Configuration textarea");
+            }
+            const { top, bottom, left, right } = node.getBoundingClientRect();
+            return {
+              focused: node.matches(":focus-visible"),
+              inView:
+                top < globalThis.innerHeight &&
+                bottom > 0 &&
+                left < globalThis.innerWidth &&
+                right > 0,
+              selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+              scrollTop: node.scrollTop,
+            };
+          });
+        const before = await place();
+        assert.ok(before.focused && before.inView && before.scrollTop > 0);
+        assert.deepEqual(before.selection, [draft.length - 1, draft.length, "backward"]);
+        assert.equal(await editor.inputValue(), draft);
+
+        await page.goBack();
+        await view.getByRole("heading", { name: "Configuration snapshot" }).waitFor();
+        await nextFrames(page);
+        assert.deepEqual(await page.locator("h1:focus").allTextContents(), ["Recovery Agent"]);
+
+        await page.goForward();
+        await editor.waitFor();
+        await nextFrames(page);
+        assert.deepEqual(await place(), before);
+        assert.equal(await editor.inputValue(), draft);
+      }
     });
   }
 }
@@ -3103,7 +3283,7 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   // A modified or middle click (open in a new tab or window) is left to the browser.
@@ -3963,7 +4143,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
   const open = page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" });
+    .getByRole("link", { name: "Open Configuration draft", exact: true });
   await open.waitFor();
   await settled.waitFor();
   const agentRead = await holdRequests(
@@ -4033,7 +4213,7 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
   await page.evaluate(() => globalThis.scrollTo(0, 0));
   await page
     .getByRole("region", { name: "Deployment needs attention" })
-    .getByRole("link", { name: "Open Configuration" })
+    .getByRole("link", { name: "Open Configuration draft", exact: true })
     .click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();

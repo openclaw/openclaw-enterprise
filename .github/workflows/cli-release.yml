@@ -15,76 +15,29 @@ on:
 permissions:
   contents: read
 
-env:
-  SOURCE_SHA: ${{ inputs.source_sha }}
-  CI_RUN_ID: ${{ inputs.ci_run_id }}
-
 jobs:
   prepare:
-    name: Build versioned OCC CLI binaries
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    uses: ./.github/workflows/cli-release-prepare.yml
     permissions:
       actions: read
       contents: read
-    outputs:
-      version: ${{ steps.gate.outputs.version }}
-      ci_attempt: ${{ steps.gate.outputs.ci_attempt }}
-      artifact_name: ${{ steps.package.outputs.artifact_name }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: "24.22.1"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.27.3"
-      - name: Require the exact main source and successful CI
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci/cli-release.ts validate
-      - name: Cross-compile and verify four CLI binaries
-        id: package
-        run: |
-          node scripts/ci/cli-release.ts package "$RUNNER_TEMP/occ-cli"
-          echo "artifact_name=occ-cli-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ steps.package.outputs.artifact_name }}
-          path: ${{ runner.temp }}/occ-cli/
-          if-no-files-found: error
-          retention-days: 30
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
 
   publish:
-    name: Publish verified CLI assets as a GitHub Release
     needs: prepare
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    environment: container-publish
+    uses: ./.github/workflows/cli-release-publish.yml
     concurrency:
       group: enterprise-container-publish
       cancel-in-progress: false
     permissions:
       actions: read
       contents: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: "24.22.1"
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: ${{ needs.prepare.outputs.artifact_name }}
-          path: ${{ runner.temp }}/occ-cli
-      - name: Revalidate source and publish exact prepared bytes
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CI_ATTEMPT: ${{ needs.prepare.outputs.ci_attempt }}
-        run: node scripts/ci/cli-release.ts publish "$RUNNER_TEMP/occ-cli"
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      ci_run_id: ${{ inputs.ci_run_id }}
+      ci_attempt: ${{ needs.prepare.outputs.ci_attempt }}
+      artifact_name: ${{ needs.prepare.outputs.artifact_name }}
+      artifact_run_id: ${{ format('{0}', github.run_id) }}
+      sha256sums_digest: ${{ needs.prepare.outputs.sha256sums_digest }}

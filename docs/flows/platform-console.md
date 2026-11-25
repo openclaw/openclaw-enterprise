@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-24
-last_updated_session: authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388
+updated: 2026-11-25
+last_updated_session: authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12
 ---
 
 # Platform console request flow
@@ -155,6 +155,11 @@ session. Changed reads, newly readable Namespaces and Refresh rebuild. Cancelled
 returns preserve views. Cancelled Refresh discards them. Discovery, passwords,
 mutations and pending or failed reads prevent reuse. Read-only POSTs permit it.
 
+When Back or Forward reopens an unchanged Agent draft, the **Configuration**
+tab, **Edit Configuration** button or **Configuration JSON** editor can regain
+focus unless the user moved it elsewhere. When the editor regains focus, it
+also restores its scroll position. The **Open Configuration draft** link still focuses the tab.
+
 `console.mts:revalidateMountedAgent` checks session, Namespace, Agent, and detail
 reads. Focus and visibility share checks. Navigation cancels it. Detail errors
 hide protected content. A 5xx permits one retry unless refusal, 429 or delay
@@ -299,33 +304,35 @@ rejected cursors clear rows.
 
 `apps/controller/src/console/console.mjs:loadPage`, `logout`
 
-After navigation, `loadPage` focuses the destination heading from the body with
-`preventScroll`. Agents opened from the list focus their heading. Controls keep
-focus. Tabs use one Tab stop and arrows. Navigation, Namespace changes and logout
-invalidate reads by generation. Refocus coalesces events.
-`revalidateMountedAgent` rereads session, Namespace, Agent, version, and
+`loadPage` moves body focus to the destination heading with `preventScroll`,
+including Agents opened from the list. Controls keep focus.
+Tabs use one Tab stop and arrows. Navigation, Namespace changes and logout
+invalidate reads by generation. Refocus events coalesce.
+`revalidateMountedAgent` rereads session, Namespace, Agent, version and
 [permissions](platform-console/agent-stop-and-deletion.md#stop-agent).
-`apps/controller/src/console/agents/detail.mts:syncHarnessRead` refreshes Sandbox
-status once when admission confirms the same active, desired-running dedicated
-version. Lifecycle changes clear status and cancel its read before another version
-lookup. Mismatched or unavailable results show unknown. Current access refusal retires
-protected details. The Console sends no serving test request.
-Unchanged access keeps controls, input and saves. Repeated draft 403s preserve
-partial Agents with never-readable drafts. Checks skip versions proved unreadable.
-Access loss clears protected views. Other pages revalidate before reuse, including
-403s and 404s. Forms defer checks. Unchanged views can restore control focus. If
-**Still checking…** finishes successfully in the background, the Console retains the
-Configuration editor selection. The next successful foreground check can refocus
-the same editor unless focus or selection changed. Draft save baselines
-stay Namespace-scoped.
 
-Other admission failures clear affected content;
-a current protected `401` clears all private state. `pagehide` clears
-private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
-a fresh load. Failure views show local reasons and `req_<UUID>` request IDs. The
-only backend text they show is a refusal the API explains (a 400 naming the field or
-rule, a typed 409 naming the state), set as text. Backend authorization denial clears every retained preview,
-including other Namespace selections, because the permission is Installation-wide.
+After admission, `apps/controller/src/console/agents/detail.mts:syncHarnessRead`
+rechecks the same dedicated Sandbox if the Agent remains active with desired
+state `running`. It also rechecks once per newer failed dedicated replacement,
+including on entry. Only the latest answer updates status.
+Older foreground 401/403/404 responses still retire protected details.
+Lifecycle changes cancel reads and clear status before version lookup.
+Rechecks retain same-version loss warnings and guidance. Mismatched or
+unavailable answers show unknown. No request tests live serving.
+
+Unchanged access preserves controls, input and saves. Repeated draft 403s preserve
+partial Agents with never-readable drafts. Checks skip known unreadable versions.
+Access loss clears protected views. Other pages revalidate before reuse, including
+403s and 404s. Forms defer checks. Unchanged views can restore control focus.
+If **Still checking…** succeeds in the background, the Configuration editor keeps its selection.
+The next successful foreground check can refocus it unless focus or selection changed. Draft save baselines stay Namespace-scoped.
+
+Other admission failures clear affected content. A current protected `401` clears
+all private state. `pagehide` clears private DOM, previews and drafts, including
+BFCache. Persisted `pageshow` reloads. Failure views show local reasons and
+`req_<UUID>` IDs. Backend text is limited to API-explained refusals,
+including field/rule errors (400) and typed conflicts (409).
+Installation-wide backend authorization denial clears previews across Namespaces.
 
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
 acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
@@ -378,6 +385,8 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-25 02:20: Trace failed replacement refresh. (authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12 - cdd3ab41242cce4734163c6edc4abe115fd90f83)
+
 - 2026-11-24 10:55: Trace Secret consumer return. (authoring-run/98a91bb0-a61e-44aa-99a8-48df79e1e388 - acd247bba5b03788840efc5f0d1dda7b7fe0c63d)
 
 - 2026-11-22 11:39: Trace Namespace cleanup and keyboard focus. (authoring-run/7befa996-8a20-4b54-9c7c-5d7d18dd0095 - 5768ebdac724be812904dba59ae1c31f749f6bec)
@@ -394,12 +403,5 @@ gateway startup and file availability.
 
 - 2026-11-22 02:59: Refresh the active Sandbox observation on Agent refocus. (authoring-run/2adc51f8-4b63-4436-af89-e2e8c4bb112b - 72a9006ec8c4b7a6e40947d75938f1518c7da364)
 - 2026-11-21 19:15: Bind lookup. (authoring-run/71c8077a-06c3-42e4-9baf-a6bed016ab3d - e263cecbf94cb066d7c1b7879c57f47906ad495b)
-- 2026-11-21 17:32: Preserve Agent URLs during lookup. (authoring-run/69ddfde5-0b74-4693-aebc-0deb1f64b083 - d91fdd7efd430c326419e17dacb9ce05d3aa5d2c)
-- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
-- 2026-11-20 16:29: Update source pointers for runtime observation and fleet inventory. (authoring-run/c41017eb-dc85-4c43-90e8-3040fbace6ac - c6acc7271f7753f74d3657251f23a036c08e671c)
-
-- 2026-11-10 19:58: Confirm Agent permissions on foreground replacement views. (authoring-run/57445f4b-6a65-40ef-9674-e13c069e9ba1 - 218f9a954709d3b45b33c1155ff8bd0f08c71c9b)
-
-- 2026-11-10 19:34: Apply fresh Agent permissions on tab return and honor the latest retry deadline. (authoring-run/0b2e6bf4-e95a-40bc-bb95-bfba7d8bf0d6 - 62a330c3d6f9bb36f2772b6bcbae9c6d07063c2a)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

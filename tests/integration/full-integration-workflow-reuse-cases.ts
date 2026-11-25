@@ -60,7 +60,12 @@ export async function fullIntegrationReuseCase(t: TestContext): Promise<void> {
   const freshOutput = join(directory, "fresh-output");
   const fresh = spawnSync("bash", ["-e", "-c", text(freshStep.run)], {
     encoding: "utf8",
-    env: { ...process.env, GITHUB_OUTPUT: freshOutput },
+    env: {
+      ...process.env,
+      GITHUB_OUTPUT: freshOutput,
+      RUNNER_TEMP: directory,
+      TEST_SOURCE: "HEAD",
+    },
   });
   assert.equal(fresh.status, 0, fresh.stderr);
   const freshMatrix = (await readFile(freshOutput, "utf8")).trim().slice("matrix=".length);

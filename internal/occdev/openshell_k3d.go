@@ -486,6 +486,9 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 			return err
 		}
 	}
+	if err := r.setDefaultOpenShellModelCeiling(ctx, state); err != nil {
+		return err
+	}
 	if err := writeInstallation(state, inputs.runtimeImage, inputs.openShell, openShellGatewayAddress, inputs.codexSeccompProfile, statusProxySource); err != nil {
 		return err
 	}

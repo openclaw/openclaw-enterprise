@@ -67,6 +67,16 @@ and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and conf
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
 
+## Correct an offscreen Configuration syntax error
+
+In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
+enter a long draft with an extra `x` between valid lines. Use a short desktop
+window and repeat at 200% zoom. Move to the end, then press Tab and Enter to
+activate **Save Configuration**. When the editor and error fit, check that both
+are visible and the caret is before `x`. Enlarge the editor manually
+and try saving again. If both no longer fit, check that the editor keeps its
+size and the caret stays visible. Press Delete and save the corrected draft.
+
 ## Correct an out-of-range Configuration number
 
 Open **Pages → Agent detail → Invalid Configuration JSON**

@@ -3,7 +3,8 @@ import {
   normalizePluginApprovers,
   normalizePluginDesiredState,
   pluginRuntimeHarnessRequirement,
-  type CredentialSource,
+  type ConnectionTemplateVersion,
+  type StoredCredentialSource,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
   type PluginApprovers,
@@ -23,7 +24,6 @@ interface AgentPluginValidationDependencies {
   readonly pluginDriver: (harnessId: string, forConfiguration: boolean) => PluginDriver;
   readonly computeImplementation: () => string;
   readonly sandboxImplementation: () => string | undefined;
-  readonly credentialGatewayImplementation: () => string | undefined;
 }
 
 function invalidPluginRequest(): never {
@@ -92,14 +92,16 @@ export function validatePluginSettings(
 export async function validatePluginCredentialSources(
   driver: PluginDriver | undefined,
   plugins: PluginDesiredState | undefined,
-  sources: readonly CredentialSource[],
+  sources: readonly StoredCredentialSource[],
   harnessAuth?: HarnessAuthBinding | null,
+  templates?: ReadonlyMap<string, ConnectionTemplateVersion>,
 ): Promise<void> {
   if (plugins && Object.keys(plugins).length) {
     await driver?.credentials?.validate(
       plugins,
       sources,
       harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+      templates,
     );
   }
 }
@@ -133,13 +135,15 @@ export function createAgentPluginValidation(dependencies: AgentPluginValidationD
     driver: PluginDriver,
     plugins: PluginDesiredState | undefined,
     harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    stagedPluginIds?: ReadonlySet<string>,
   ): void {
     if (plugins === undefined || Object.keys(plugins).length === 0) {
       return;
     }
     driver.validatePlacement?.(plugins, harness, dependencies.computeImplementation(), {
       sandbox: dependencies.sandboxImplementation(),
-      gateway: dependencies.credentialGatewayImplementation(),
+      gateway: undefined,
+      ...(stagedPluginIds === undefined ? {} : { stagedPluginIds }),
     });
     const required = pluginRuntimeHarnessRequirement(driver.implementation, harness);
     if (required !== undefined) {

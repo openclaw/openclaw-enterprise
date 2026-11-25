@@ -13,7 +13,7 @@ import type {
 import { openShellPluginPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import type {
   AgentRevision,
-  CredentialSource,
+  LegacyCredentialSource,
   CredentialSourceInput,
   HarnessWorkloadRequirements,
   ProxyPlan,
@@ -169,7 +169,7 @@ export function registerManagedPluginPolicyCases(
       refresh: true,
     });
     gateway.client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
-    const googleSource: CredentialSource = {
+    const googleSource: LegacyCredentialSource = {
       ...gateway.source(sourceId, context.namespace.id),
       type: "oauth2-refresh-token",
       config: {
@@ -182,13 +182,13 @@ export function registerManagedPluginPolicyCases(
         binary: managedGoogleInstall.binaryPath,
       },
     };
-    const slackSource: CredentialSource = {
+    const slackSource: LegacyCredentialSource = {
       ...gateway.source(slackId, context.namespace.id),
       type: "bearer-token",
       secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: context.namespace.id } },
       config: { protocol: "mcp", host: "mcp.slack.com", path: "/mcp", env_var: "SLACK_MCP_TOKEN" },
     };
-    const register = (source: CredentialSource, secrets: CredentialSourceInput["secrets"]) =>
+    const register = (source: LegacyCredentialSource, secrets: CredentialSourceInput["secrets"]) =>
       gateway.driver.registerSource(
         { ...context, source },
         { type: source.type, config: source.config, secrets },

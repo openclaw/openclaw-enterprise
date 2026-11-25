@@ -32,7 +32,7 @@ See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) fo
 artifact verification and rerun behavior.
 
 The job is outside `CI Required`, so its failure does not fail that merge gate.
-A failed main-push CI workflow can still block container and CLI publication,
+A failed main-push CI workflow can still block standalone container and CLI publication,
 which require successful CI for their source.
 
 ## Scenarios

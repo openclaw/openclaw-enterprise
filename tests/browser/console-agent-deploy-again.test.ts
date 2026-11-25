@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import type { BrowserContextOptions, Page } from "playwright";
+import type { BrowserContextOptions, Page, Request } from "playwright";
 import type {
   Agent,
   AgentRevision,
@@ -523,16 +523,38 @@ const failure = (status: 429 | 403 | 503) =>
       : apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.");
 const UNAVAILABLE = failure(503);
 
+async function createVersionFixture(
+  t: TestContext,
+  name: string,
+  { older = false, recordOperations = false } = {},
+) {
+  const { fixture, namespace: namespaceValue }: { fixture: ConsoleFixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, name, { recordOperations });
+  const namespace = resourceId(namespaceValue);
+  const agent = resourceId(
+    await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1")),
+  );
+  const current = resourceId(
+    (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision,
+  );
+  const previous = older ? resourceId(await fixture.deployAgent(namespace.id, agent.id)) : null;
+  const next = numberedRevision(await fixture.deployAgent(namespace.id, agent.id));
+  const { page } = await newPage(t, fixture, { browser });
+  return { fixture, namespace, agent, current, previous, next, page };
+}
+
 async function deployingVersion(
   t: TestContext,
   name: string,
   {
     status = "running",
     older = false,
+    hideCurrent = false,
     beforeLogin,
   }: {
     status?: "queued" | "running" | "succeeded";
     older?: boolean;
+    hideCurrent?: boolean;
     beforeLogin?: (
       page: Page,
       resources: {
@@ -544,18 +566,14 @@ async function deployingVersion(
     ) => ReturnType<Page["route"]>;
   } = {},
 ) {
-  const { fixture, namespace: namespaceValue }: { fixture: ConsoleFixture; namespace: unknown } =
-    await createReadyConsoleNamespace(t, name);
-  const namespace = resourceId(namespaceValue);
-  const agent = resourceId(
-    await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1")),
+  const { fixture, namespace, agent, current, previous, next, page } = await createVersionFixture(
+    t,
+    name,
+    { older },
   );
-  const current = resourceId(
-    (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision,
-  );
-  const previous = older ? resourceId(await fixture.deployAgent(namespace.id, agent.id)) : null;
-  const next = numberedRevision(await fixture.deployAgent(namespace.id, agent.id));
-  const { page } = await newPage(t, fixture, { browser });
+  if (hideCurrent) {
+    denyRevisionRead(fixture, namespace, current);
+  }
   const record: {
     status: "queued" | "running" | "succeeded" | "failed";
     fail: false | 503 | 403 | 429;
@@ -601,15 +619,52 @@ async function deployingVersion(
   const outcome = { queued: "Queued", running: "In progress", succeeded: "Completed" }[status];
   await summary.getByText(`v${next.revision} · ${outcome}`, { exact: true }).waitFor();
   if (status !== "succeeded") {
-    await page
-      .getByText(
-        "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes.",
-        { exact: true },
-      )
-      .waitFor();
+    await page.getByText(/^Deploying version · read-only admitted snapshot/).waitFor();
   }
   return { fixture, namespace, agent, current, previous, next, page, record, summary };
 }
+
+test("The latest snapshot stays read-only without a deployment label until its first successful read", async (t) => {
+  const { fixture, namespace, agent, next, page } = await createVersionFixture(
+    t,
+    "First status read",
+    { recordOperations: true },
+  );
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, next.id);
+  const firstRead = await holdRequests(t, page, recordUrl, {
+    method: "GET",
+    once: true,
+    fulfill: UNAVAILABLE,
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
+  await firstRead.requested;
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const notice = page.locator(".version-selection-notice");
+  async function checkUnresolved(status: string) {
+    await summary.getByText(`v2 · ${status}`, { exact: true }).waitFor();
+    await notice.waitFor();
+    const text = await notice.innerText();
+    assert.match(text, /read-only/i);
+    assert.doesNotMatch(text, /historical|deploying/i);
+  }
+  await checkUnresolved("Loading…");
+
+  // Hold the automatic retry so recovery cannot hide a false label after the 503.
+  const retry = await holdRequests(t, page, recordUrl, { method: "GET", once: true });
+  const failed = page.waitForResponse(recordUrl);
+  firstRead.release();
+  assert.equal((await failed).status(), 503);
+  await retry.requested;
+  await checkUnresolved("Unavailable");
+
+  const recovered = page.waitForResponse(recordUrl);
+  retry.release();
+  assert.equal((await recovered).status(), 200);
+  await summary.getByText("v2 · Queued", { exact: true }).waitFor();
+  await page
+    .getByText("Deploying version · read-only admitted snapshot.", { exact: true })
+    .waitFor();
+});
 
 // Every text the version notice shows, in order, from now on.
 const watchNotice = (page: Page) =>
@@ -629,7 +684,7 @@ const watchNotice = (page: Page) =>
     });
   });
 
-test("A version that is deploying is labelled Deploying, not Historical, until it becomes current", async (t) => {
+test("A completed deployment waits for the Agent read before labelling the version Current", async (t) => {
   const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { fixture, namespace, agent, current, next, page, record, summary } =
     await deployingVersion(t, "Deploying label");
@@ -643,12 +698,24 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   await page.goBack();
   await page.getByText(/^Deploying version · read-only admitted snapshot/).waitFor();
 
-  // Completion makes v2 current, and the notice goes from Deploying to Current with no
-  // Historical in between.
+  // The record completes before the Agent read tells us v2 is current.
+  const selection = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    { method: "GET", once: true },
+  );
   await watchNotice(page);
   await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
   record.status = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await selection.requested;
+  await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+  assert.equal(
+    await page.locator(".version-selection-notice").innerText(),
+    "Read-only admitted snapshot.",
+  );
+  selection.release();
   await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
   await summary.locator("strong").filter({ hasText: /^v2$/ }).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
@@ -839,6 +906,29 @@ test("A rate-limited status read keeps a deploying version polling", async (t) =
   await summary.getByText("v2 · In progress", { exact: true }).waitFor();
 });
 
+test("Configuration updates when a manual refresh completes after returning to the tab", async (t) => {
+  const { fixture, namespace, agent, page, record, summary } = await deployingVersion(
+    t,
+    "Return during refresh",
+  );
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  await showDeploymentTab(page);
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const held = await holdRequests(t, page, agentUrl, { once: true, method: "GET" });
+  record.status = "succeeded";
+  await page.getByRole("button", { name: "Refresh deployment" }).click();
+  await held.requested;
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByText(/^Deploying version ·/).waitFor();
+  const reread = page.waitForResponse(agentUrl);
+  held.release();
+  const response = await reread;
+  assert.equal(response.status(), 200);
+  await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+  assert.equal(await summary.getByText("v1", { exact: true }).count(), 1);
+  assert.match(await page.locator(".version-selection-notice").innerText(), /^Historical version/);
+});
+
 // A completed record is not by itself a failed reread: the newest version whose record reads
 // completed while the Agent still names v1 current (activation not yet seen, or a stopped Agent
 // with no current version) stays Historical, not "Deployed" (internal review of finding 2085).
@@ -853,6 +943,72 @@ test("A completed record with no failed Agent reread leaves the newest version H
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
+
+for (const refresh of ["manual refresh", "automatic poll"]) {
+  test(`Completion during ${refresh} does not mistake a hidden predecessor for a newer version`, async (t) => {
+    const { fixture, namespace, agent, current, next, page, record, summary } =
+      await deployingVersion(t, "Hidden predecessor", { hideCurrent: true });
+    await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+    await summary.getByText("A version you cannot read", { exact: true }).waitFor();
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const complete = async () => {
+      await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+      record.status = "succeeded";
+    };
+    const falseOrder = /newer version|is older/i;
+    if (refresh === "manual refresh") {
+      await showDeploymentTab(page);
+      const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, next.id);
+      const gate = Promise.withResolvers<void>();
+      t.after(() => gate.resolve());
+      await page.route(recordUrl, async (route) => {
+        await gate.promise;
+        await route.fallback();
+      });
+      // If Refresh reads the Agent concurrently, let it see v1 before v2 completes.
+      const reads: Request[] = [];
+      page.on("request", (request) => {
+        if (request.url() === agentUrl) {
+          reads.push(request);
+        }
+      });
+      const pending = page.waitForRequest(recordUrl);
+      await page.getByRole("button", { name: "Refresh deployment" }).click();
+      await pending;
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+      for (const read of reads) {
+        const response = await read.response();
+        assert.ok(response);
+        assert.equal(response.status(), 200);
+        assert.equal((await response.json()).data.activeRevisionId, current.id);
+      }
+      await complete();
+      gate.resolve();
+      // Wait for either displayed outcome so stale selection fails here, not on a timeout.
+      await summary.getByText(/^(v2 · Completed|Newer version hidden)$/).waitFor();
+      assert.doesNotMatch(await summary.innerText(), falseOrder);
+      assert.equal(reads.length, 1);
+    } else {
+      const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+      await complete();
+      const selection = await holdRequests(t, page, agentUrl, { method: "GET", once: true });
+      await page.clock.runFor(DEPLOYMENT_POLL_MS);
+      await selection.requested;
+      // Success alone cannot order v2 against the last known, unreadable selection.
+      assert.doesNotMatch(await summary.innerText(), falseOrder);
+      assert.equal(
+        await page.locator(".version-selection-notice").innerText(),
+        "Read-only admitted snapshot.",
+      );
+      selection.release();
+    }
+    await summary.locator("strong").filter({ hasText: /^v2$/ }).waitFor();
+    assert.match(await page.locator(".version-selection-notice").innerText(), /^Current version/);
+    await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+    assert.doesNotMatch(await summary.innerText(), falseOrder);
+    assert.equal(record.recordReads, 2);
+  });
+}
 
 // v3 is current but this reader cannot read it, so completed v2 is the newest version listed and
 // already known to be older than the current one. A failed Agent reread on Refresh deployment
@@ -959,7 +1115,12 @@ test("A refused status read ends the wait and the Deploying label", async (t) =>
   await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
   assert.equal(await summary.getByText("Update delayed.", { exact: true }).count(), 0);
   assert.equal(await summary.getByText("v2 · In progress", { exact: true }).count(), 0);
-  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  // Refusal ends polling and clears Deploying. It does not establish that the version is older.
+  assert.equal(
+    await page.locator(".version-selection-notice").innerText(),
+    "Read-only admitted snapshot.",
+  );
+  assert.equal(await page.getByText(/^Deploying version ·/).count(), 0);
   const refused = record.recordReads;
   record.fail = false;
   await page.clock.runFor(DEPLOYMENT_POLL_MS * 3);

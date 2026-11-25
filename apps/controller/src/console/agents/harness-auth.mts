@@ -112,19 +112,22 @@ interface HarnessAuthDraft {
   oauthLogin: DeviceLogin | null;
 }
 
-function issuedAccounts(value: unknown): Pick<ServiceAccount, "id" | "name">[] {
+function issuedAccounts(
+  value: unknown,
+): (Pick<ServiceAccount, "id" | "name"> & { sourceId: string })[] {
   if (!Array.isArray(value)) {
     throw new Error("Invalid service account list");
   }
   return value.flatMap((item: unknown) => {
     const { id, name, credential } = responseFields(item);
-    if (responseFields(credential).kind !== "access_token") {
+    const issued = responseFields(credential);
+    if (issued.kind !== "access_token" || typeof issued.sourceId !== "string" || !issued.sourceId) {
       return [];
     }
     if (typeof id !== "string" || typeof name !== "string") {
       throw new Error("Invalid issued service account");
     }
-    return [{ id, name }];
+    return [{ id, name, sourceId: issued.sourceId }];
   });
 }
 
@@ -144,15 +147,11 @@ export function createHarnessAuthFields(
     { id: "harness-auth-method" },
     element("option", { value: "" }, "None"),
     element("option", { value: "api_key" }, "API key"),
-    harnessId === "codex" ? element("option", { value: "codex_pat" }, "Service Accounts") : null,
-    harnessId === "codex" || binding?.method === "credential_source"
-      ? element(
-          "option",
-          { value: "credential_source" },
-          binding?.method === "credential_source"
-            ? "Credential source"
-            : "ChatGPT OAuth (Experimental)",
-        )
+    binding?.method === "credential_source"
+      ? element("option", { value: "credential_source" }, "Credential Source")
+      : null,
+    harnessId === "codex"
+      ? element("option", { value: "device_login" }, "ChatGPT OAuth (Experimental)")
       : null,
     element("option", { value: "runtime" }, "Operator-managed credentials"),
     harnessId === "codex"
@@ -167,6 +166,8 @@ export function createHarnessAuthFields(
   let selectedSecretSource = originalSecretSource;
   let changedSecret: SecretMetadata | null = null;
   let selectedCredentialSource: CredentialSourceReference | null = null;
+  let clearingReplacement = false;
+  const issuedSources = new Map<string, string>();
   const account = element(
     "select",
     { id: "service-account-id", disabled: true },
@@ -216,7 +217,7 @@ export function createHarnessAuthFields(
     },
     createDialogTitle: "Create harness authentication Secret",
     metadataLabel: "View harness authentication Secret metadata",
-    required: ["api_key", "codex_pat"].includes(method.value),
+    required: method.value === "api_key",
   });
   const secretField = secretPicker.field;
   const secretLabel = secretField.querySelector("label")!;
@@ -224,10 +225,24 @@ export function createHarnessAuthFields(
     context,
     agentId: context.agentId,
     initial: draft?.oauthLogin,
-    hint: "Sign in to explicitly replace this Agent's credential. Save authentication source, then deploy a new version. The deployed login stays in use until deployment.",
+    hint: "Sign in to replace this Agent's credential, then save the authentication source. If this Agent has an active revision, complete Stop before deploying the replacement.",
     onChange(source) {
-      if (method.value === "credential_source") {
+      if (method.value === "device_login") {
+        const cleared = selectedCredentialSource !== null && source === null;
         selectedCredentialSource = source;
+        if (cleared && binding?.method === "credential_source") {
+          clearingReplacement = true;
+          method.value = "credential_source";
+          update();
+          method.focus();
+        }
+        options.onChange?.();
+      } else if (clearingReplacement && source) {
+        // A refused discard restores the staged login and its visible replacement choice.
+        clearingReplacement = false;
+        method.value = "device_login";
+        selectedCredentialSource = source;
+        update();
         options.onChange?.();
       }
     },
@@ -297,8 +312,8 @@ export function createHarnessAuthFields(
   );
   function update() {
     runtimeHint.hidden = method.value !== "runtime";
-    const directSecret = ["api_key", "codex_pat"].includes(method.value);
-    const usesOAuth = method.value === "credential_source" && harnessId === "codex";
+    const directSecret = method.value === "api_key";
+    const usesOAuth = method.value === "device_login" && harnessId === "codex";
     feedback.hidden = usesOAuth;
     validationHint.hidden = usesOAuth;
     oauthLogin.setActive(usesOAuth);
@@ -309,8 +324,7 @@ export function createHarnessAuthFields(
     currentOAuth.hidden =
       method.value !== "credential_source" || binding?.method !== "credential_source";
     secretField.hidden = !directSecret;
-    secretLabel.textContent =
-      method.value === "codex_pat" ? "Service account token Secret" : "API key Secret";
+    secretLabel.textContent = "API key Secret";
     accountField.hidden = method.value !== "service_account";
     const methodChanged = method.value !== previousMethod;
     previousMethod = method.value;
@@ -323,6 +337,8 @@ export function createHarnessAuthFields(
     }
     if (usesOAuth) {
       selectedCredentialSource = oauthLogin.source;
+    } else {
+      selectedCredentialSource = null;
     }
     secretPicker.setRequired(directSecret);
     secretPicker.setDisabled(disabled || !directSecret);
@@ -331,7 +347,10 @@ export function createHarnessAuthFields(
     // The read's failure shows only beside this select's own method.
     updateAccount();
   }
-  method.addEventListener("change", update);
+  method.addEventListener("change", () => {
+    clearingReplacement = false;
+    update();
+  });
   update();
   context
     .request(`${namespacePath(context.namespaceId)}/service-accounts`)
@@ -340,6 +359,10 @@ export function createHarnessAuthFields(
         return;
       }
       const issued = issuedAccounts(items);
+      issuedSources.clear();
+      for (const item of issued) {
+        issuedSources.set(item.id, item.sourceId);
+      }
       accountsLoaded = true;
       const selected = account.value;
       account.replaceChildren(
@@ -382,7 +405,7 @@ export function createHarnessAuthFields(
       disabled = value;
       disabledReason = reason;
       setUnavailable(method, value, reason);
-      secretPicker.setDisabled(value || !["api_key", "codex_pat"].includes(method.value));
+      secretPicker.setDisabled(value || method.value !== "api_key");
       updateAccount();
       oauthLogin.setDisabled(value);
     },
@@ -394,32 +417,29 @@ export function createHarnessAuthFields(
         return { method: "runtime" };
       }
       if (method.value === "service_account") {
-        if (!account.value) {
+        const sourceId = issuedSources.get(account.value);
+        if (!sourceId) {
           throw new Error("Select an issued ChatGPT service account.");
         }
-        return {
-          method: "codex_pat",
-          source: { kind: "service_account", namespaceId: context.namespaceId, id: account.value },
-        };
+        return { method: "credential_source", sourceId };
       }
       if (method.value === "credential_source") {
-        const sourceId =
-          selectedCredentialSource?.id ??
-          (binding?.method === "credential_source" ? binding.sourceId : undefined);
+        if (binding?.method !== "credential_source") {
+          throw new Error("Select an authentication source.");
+        }
+        return binding;
+      }
+      if (method.value === "device_login") {
+        const sourceId = selectedCredentialSource?.id;
         if (!sourceId) {
           throw new Error("Complete ChatGPT sign-in before saving.");
         }
         return { method: "credential_source", sourceId };
       }
-      if (
-        (method.value !== "api_key" && method.value !== "codex_pat") ||
-        !selectedSecretSource?.id
-      ) {
+      if (method.value !== "api_key" || !selectedSecretSource?.id) {
         throw new Error("Choose a Secret.");
       }
-      return method.value === "api_key"
-        ? { method: "api_key", source: selectedSecretSource }
-        : { method: "codex_pat", source: selectedSecretSource };
+      return { method: "api_key", source: selectedSecretSource };
     },
     get changedSecret() {
       return changedSecret;

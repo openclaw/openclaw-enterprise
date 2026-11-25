@@ -24,14 +24,13 @@ and [threat model](../reference/security/credential-proxy.md).
 
 ### Follow the metadata GET
 
-For an admitted `github-app-metadata` route to repository `12345`,
+For an admitted `credential-free-repository-metadata` route to repository `12345`,
 `acme/widgets`, at `https://api.github.com`:
 
 1. **Match.** The supervisor binds the bodyless `GET /repos/acme/widgets` reply
    to its exchange. The adapter checks method, URL, headers and body against the route.
-2. **Resolve.** OCC authorizes the Agent and registered grant. The Token Service
-   starts or joins issuance; OCC rechecks authority and token version before returning the header.
-3. **Permit.** OCC rechecks the same-stream binding. Sending must start by the permit deadline.
+2. **Resolve.** OCC authorizes the Agent and registered grant. It records `no_material_required` and selects the admitted operation.
+3. **Permit.** OCC rechecks access and the same-stream binding. The sender starts the GET without a credential header before the permit deadline.
 4. **Release.** The adapter requires complete `200` JSON, at most 64 KiB, matching
    the admitted ID and name (ASCII case may differ). The caller receives `200`,
    `Content-Type: application/json`, `Cache-Control: no-store` and only this body.
@@ -40,15 +39,14 @@ For an admitted `github-app-metadata` route to repository `12345`,
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-ID `67890` under the same name is withheld after GitHub receives the request.
-The credential-free profile applies the same filters, records
-`no_material_required` and sends no credential header.
-[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+The sender withholds ID `67890` even if GitHub returns it under the same name.
+The [metadata adapter](../../apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+defines the request and response checks.
 
 ```mermaid
 graph TD
-  A["<b>Resolve token</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
-  A -->|Header ready| B["<b>Authorize send</b><br/>Recheck grant and version"]
+  A["<b>Resolve operation</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
+  A -->|No material required| B["<b>Authorize send</b><br/>Recheck current access"]
   B -->|Denied| X
   B -->|Permit| C["<b>Send GET</b><br/>Hold GitHub's reply"]
   C --> D{"Valid identity<br/>and live caller?"}
@@ -191,24 +189,11 @@ without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The Secret Driver verifies ownership and reads authoritative UID/resourceVersion.
-Static and prepared GitHub reads share one `{ signal, deadlineAt }` lifetime through
-namespace verification, GET and retries. Child scopes inherit cancellation and the earliest
-deadline. Each HTTP dispatch checks expiry independently of timers. Invalid deadlines
-fail closed; per-attempt timeouts cannot extend the lifetime.
-GitHub acquisition validation, transport and metadata injection share a wire check:
-1–16,384 bytes of nonspace printable ASCII, not authentication.
-
-`apps/controller/src/drivers/repo/github/access/prepared-lifecycle.ts:resolve` checks source registration and token lifetime, reading ciphertext only for the selected issuer, attempt and version. Decryption rechecks deadline and cancellation. Without a timely eligible token, OCC withholds the header. Background cleanup can access retired material.
-
-Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
-queries current material metadata in the active platform transaction, without another
-checkout. Lifecycle issuer/trust identity, shared metadata predicates and exact evidence
-fence stale selections. The port exposes neither ciphertext nor caller-supplied SQL.
-Statement and lock timeouts respect tighter caller limits. Successful SQL restores the
-original settings in the same unit before rechecking cancellation and absolute expiry;
-SQL errors leave rollback to the transaction owner. OCC checks withdrawal, rejection
-and binding in that unit.
+For a credential-bearing static request, the Secret Driver verifies ownership and
+reads the authoritative UID and resource version. Resolution and dispatch share
+one `{ signal, deadlineAt }` lifetime. Child scopes inherit cancellation and the
+earliest deadline. A credential-free metadata read skips the material lookup and
+records an empty injection digest.
 
 Same-stream authorization echoes the original deadline, evidence and injection digest.
 The registry reserves the handle; `packages/occ/src/egress-send-receipts.ts:EgressSendReceipts.begin`
@@ -263,10 +248,8 @@ Only this exchange can claim the response. `EgressSendReceipts.observe` atomical
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
 Failure withholds bytes; success still requires checking cancellation and deadline.
 
-Structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. At
-its next scheduled check, the prepared owner excludes a positively rejected version.
-Concurrent owners coalesce replacement; uncertain issuance blocks it; late feedback
-cannot invalidate its successor. GitHub metadata has no positive rejection classifier.
+Structured OpenAI `invalid_api_key` can establish credential rejection. A bare
+`401` is insufficient. The rejection applies to the exact observed version.
 
 Erase material after response handling or at deadline. Only a refusal before
 permission can settle as undispatched. After possible permission, inspect the

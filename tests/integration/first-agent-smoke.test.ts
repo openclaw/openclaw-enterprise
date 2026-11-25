@@ -5,6 +5,7 @@ import { createServer, type RequestListener } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setImmediate as drainTurn } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -21,6 +22,7 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
+import { waitForChannelProxyReadiness } from "../../scripts/ci/first-agent-smoke/process.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
@@ -136,56 +138,55 @@ test("smoke timing retains failure and omits pending branches and free-form data
   pending.resolve();
 });
 
-test("smoke timing attributes a delayed proxy wait without double-counting the parent", async (t) => {
+test("smoke timing records overlapping proxy readiness on one elapsed timeline", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, "first-agent-smoke-timing-v2.json");
   let clock = 1000;
   const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
-  const envoyStarted = Promise.withResolvers<void>();
   const envoyReady = Promise.withResolvers<void>();
+  const hostReady = Promise.withResolvers<void>();
+  const hostStarted = Promise.withResolvers<void>();
 
   const proxy = smokeStep("controlled-channel-proxy", async () => {
     clock += 3;
     await smokeStep("channel-proxy-helm-wait", () => {
       clock += 2;
     });
-    await smokeStep("channel-proxy-envoy-trust-rollout", () => {
-      envoyStarted.resolve();
-      return envoyReady.promise;
-    });
-    clock += 5;
-    await smokeStep("channel-proxy-api-rollout", () => {
-      clock += 4;
-    });
-    await smokeStep("channel-proxy-host-route-readiness", () => {
-      clock += 6;
-    });
+    const envoyTrust = smokeStep("channel-proxy-envoy-trust-rollout", () => envoyReady.promise);
+    const apiReady = async () => {
+      await smokeStep("channel-proxy-api-rollout", () => {
+        clock += 4;
+      });
+      await smokeStep("channel-proxy-host-route-readiness", () => {
+        hostStarted.resolve();
+        return hostReady.promise;
+      });
+    };
+    await waitForChannelProxyReadiness(envoyTrust, apiReady());
     clock += 8;
     return "proxy proof result";
   });
-  await envoyStarted.promise;
-  clock += 47;
-  const helm = {
-    phase: "channel-proxy-helm-wait",
-    parent: "controlled-channel-proxy",
-    startMs: 3,
-    endMs: 5,
-    status: "ok",
-  };
-  // A partial snapshot contains the completed Helm wait. It cannot establish an
-  // elapsed time or an outcome for the in-flight wait or its parent phase.
+  await hostStarted.promise;
+  clock += 6;
+  hostReady.resolve();
+  await drainTurn();
+  const completed = [
+    { phase: "channel-proxy-helm-wait", startMs: 3, endMs: 5 },
+    { phase: "channel-proxy-api-rollout", startMs: 5, endMs: 9 },
+    { phase: "channel-proxy-host-route-readiness", startMs: 9, endMs: 15 },
+  ].map((row) => ({ ...row, parent: "controlled-channel-proxy", status: "ok" }));
   await writeTimingReport(directory);
-  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, rows: [helm] });
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), { version: 2, rows: completed });
 
+  clock += 37;
   envoyReady.resolve();
   assert.equal(await proxy, "proxy proof result");
   await writeTimingReport(directory);
-  const report: unknown = JSON.parse(await readFile(file, "utf8"));
-  assert.deepStrictEqual(report, {
+  assert.deepEqual(JSON.parse(await readFile(file, "utf8")), {
     version: 2,
     rows: [
-      helm,
+      ...completed,
       {
         phase: "channel-proxy-envoy-trust-rollout",
         parent: "controlled-channel-proxy",
@@ -193,29 +194,45 @@ test("smoke timing attributes a delayed proxy wait without double-counting the p
         endMs: 52,
         status: "ok",
       },
-      {
-        phase: "channel-proxy-api-rollout",
-        parent: "controlled-channel-proxy",
-        startMs: 57,
-        endMs: 61,
-        status: "ok",
-      },
-      {
-        phase: "channel-proxy-host-route-readiness",
-        parent: "controlled-channel-proxy",
-        startMs: 61,
-        endMs: 67,
-        status: "ok",
-      },
-      { phase: "controlled-channel-proxy", parent: null, startMs: 0, endMs: 75, status: "ok" },
+      { phase: "controlled-channel-proxy", parent: null, startMs: 0, endMs: 60, status: "ok" },
     ],
   });
-  const sumMs = (rows: typeof report.rows) =>
-    rows.reduce((total, { startMs, endMs }) => total + endMs - startMs, 0);
-  const topLevel = sumMs(report.rows.filter(({ parent }) => parent === null));
-  const waits = sumMs(report.rows.filter(({ parent }) => parent === "controlled-channel-proxy"));
-  assert.equal(topLevel, 75);
-  assert.equal(waits, 59);
+});
+
+test("channel proxy readiness waits for both branches before handoff or failure", async () => {
+  const envoyError = new Error("Envoy trust rollout failed");
+  const apiError = new Error("API readiness failed");
+  const cases: { first: "envoy" | "api"; envoyFailure?: Error; apiFailure?: Error }[] = [
+    { first: "envoy" },
+    { first: "api" },
+    { first: "envoy", envoyFailure: envoyError },
+    { first: "api", apiFailure: apiError },
+    { first: "api", apiFailure: apiError, envoyFailure: envoyError },
+  ];
+  for (const { first, envoyFailure, apiFailure } of cases) {
+    const envoy = Promise.withResolvers<void>();
+    const api = Promise.withResolvers<void>();
+    const completeEnvoy = () => (envoyFailure ? envoy.reject(envoyFailure) : envoy.resolve());
+    const completeApi = () => (apiFailure ? api.reject(apiFailure) : api.resolve());
+    const handoff = Symbol("readiness handoff");
+    let outcome: unknown;
+    const done = waitForChannelProxyReadiness(envoy.promise, api.promise).then(
+      () => {
+        outcome = handoff;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    const [completeFirst, completeSecond] =
+      first === "envoy" ? [completeEnvoy, completeApi] : [completeApi, completeEnvoy];
+    completeFirst();
+    await drainTurn();
+    assert.equal(outcome, undefined, `${first} settled while its sibling was pending`);
+    completeSecond();
+    await done;
+    assert.equal(outcome, envoyFailure ?? apiFailure ?? handoff);
+  }
 });
 
 test("smoke timing isolates channel proxy deployments from subsequent checks", async (t) => {

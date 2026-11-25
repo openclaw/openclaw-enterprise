@@ -460,6 +460,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return err
 		}
 	}
+	if err := r.setDefaultOpenShellModelCeiling(ctx, state); err != nil {
+		return err
+	}
 	if err := writeInstallation(state, reference, openShellAssets, openShellGatewayAddress, codexSeccompProfile, statusProxySource); err != nil {
 		return err
 	}

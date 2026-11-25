@@ -491,10 +491,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"port":    8080,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
-		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id": openShellCredentialGatewayID,
-			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
-			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
+		config["drivers"].(map[string]any)["token_service"] = map[string]any{
+			"id": "occ", "configuration": map[string]any{},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -505,10 +503,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	return exclusiveWrite(filepath.Join(s.directory, "installation.yaml"), data, 0644)
 }
 
-const (
-	openShellSandboxID           = "sandbox-openshell-development"
-	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-)
+const openShellSandboxID = "sandbox-openshell-development"
 
 // Match the kernel-resolved executable on both architectures of the pinned runtime.
 // The container engine may run remotely, so the launcher's architecture is not authoritative.
@@ -519,11 +514,10 @@ func openShellCodexBinaries() []string {
 	}
 }
 
-// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
-// Credential Gateway Drivers.
+// openShellBackendConfiguration owns the OpenShell management connection.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
-		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
+		drivers := map[string]string{"sandbox": openShellSandboxID}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -548,7 +542,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"insecureTransport": "network-policy",
 			"requestTimeoutMs":  30000,
 		},
-		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"drivers": map[string]string{"sandbox": openShellSandboxID},
 	}
 }
 
