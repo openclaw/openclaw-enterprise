@@ -29,6 +29,8 @@ private process view.
 
 ## Proposal
 
+### Dedicated key
+
 For a dedicated Codex Agent using API key login, set
 `kubernetes.stockLauncher.namespace` to the exact Kubernetes tenant name in
 the Strands Box Sandbox configuration. Use a dedicated installation. This
@@ -59,6 +61,25 @@ and conflicting routes. Keep listener authentication and workspace access separa
 from provider access. Refuse malformed or missing placeholders. End the child on supervisor loss
 and require a fresh revision to resume. Hold deployment when retirement is
 uncertain. Stop the old execution before rotating the static key.
+
+### Managed Source
+
+As a second increment, use the existing staged launch when the operator sets
+`kubernetes.stockLauncher.agentGrants` on a dedicated installation. For
+example, an entry `{ agentId, sourceId, profile: "openai-responses" }`
+names a saved Agent and a static model Source. Each process in that Agent
+may use the route. The installation must allow the endpoint. The deployer
+and Agent still need Source permission. Refuse conflicting subjects and
+unlisted Agents. This preview accepts exactly one grant. Never fall back to
+a dedicated key.
+
+Authenticate the idle Pod before resolving the approved Source. The trusted launcher
+reports its fresh challenge, policy and credential version over the pinned
+diagnostic channel. Worker rechecks the deployer and Agent before Compute
+releases that launch. A replacement cannot reuse the release or request a
+new copy. To rotate, stop the execution and redeploy. The delivery owner
+must account for all remaining copies before reporting success. Preserve
+peer bindings and leave withdrawal pending until retirement is confirmed.
 
 ### Kubernetes admission
 
@@ -95,21 +116,22 @@ No changes.
 
 ### Driver contracts
 
-Add the optional stock launcher configuration above. Pin the mode to the
-saved revision to refuse a Worker using the wrong launcher. Reuse the prepared
-dedicated key and ordinary execution admission. This mode cannot satisfy
-executable-specific grants or staged credential delivery. Reject them.
+Pin the launcher and credential mode to the revision. The dedicated-key
+preview uses ordinary admission. Managed Sources use the paired Sandbox and
+delivery Driver from #7209, with [explicit Agent subjects](https://github.com/openclaw/openclaw-enterprise/pull/7382)
+for network and credential injection. Reject executable grants in both modes.
+Provider traffic stays inside Box’s existing egress path.
 
 ## Simplifications
 
-Keep one opt-in and use Box's existing placeholder and HTTP policy. A model
+Reuse Box's existing placeholder and HTTP policy in either mode. A model
 relay would add a service to every request. The receiver remains available to
 installations that cannot grant a narrow launch exception.
 
 ## Acceptance Criteria
 
 On an isolated ARM64 Helm installation, the operator configures one tenant
-and the user deploys a saved Agent. All three goals require runtime evidence.
+and the user deploys a saved Agent. Each goal requires runtime evidence.
 
 - **AC-1 · Inference.** Complete a user turn through a saved Agent. Confirm the authorized request at
   the provider and verify that the child receives only the placeholder.
@@ -119,13 +141,16 @@ and the user deploys a saved Agent. All three goals require runtime evidence.
 - **AC-3 · Admission and retirement.** Reject unauthorized use of the class and other departures from Restricted.
   Verify that stopping the Agent removes its route and that receiver defaults
   are unchanged.
+- **AC-4 · Managed Source.** Refuse an unapproved Agent, Source or route.
+  Exercise held launch, replacement, rotation and withdrawal. Refuse stale
+  versions and confirm that retirement removes the execution and its copy.
 
 ## Delivery and verification
 
 In [#7373](https://github.com/openclaw/openclaw-enterprise/pull/7373), a saved
-Agent answered through a controlled TLS origin while the Worker was stopped.
+Agent with a dedicated key answered through a controlled TLS origin while the Worker was stopped.
 A replacement could not start Box. The operator must qualify each node image
-and separately verify live provider access.
+and separately verify live provider access. AC-4 remains unverified.
 
 Qualify this preview independently of the broader #6505 proposal. Keep Git
 disabled until OCE can deliver scoped installation tokens, verify credential
