@@ -14,7 +14,7 @@
   ],
   "files": [
     {
-      "path": "tests/integration/ssh-compute-real.test.mjs"
+      "path": "tests/integration/ssh-compute-real.test.ts"
     }
   ]
 }

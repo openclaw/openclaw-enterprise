@@ -8,10 +8,16 @@ import test from "node:test";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { SystemSshCommandExecutor } from "../../apps/controller/src/drivers/compute/ssh/executor.ts";
 import {
+  type Agent,
+  type AgentRevision,
+  type ComputeAgentBinding,
+  type ComputeRevisionContext,
+  type InitialWorkspaceFiles,
+  type Namespace,
   admitLoggingConfiguration,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/index.ts";
-import { sha256Hex } from "../../packages/utils/src/index.ts";
+import { asRecord, sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const requiredNames = [
@@ -23,12 +29,62 @@ const requiredNames = [
   "OCC_TEST_SSH_NODE_PATH",
   "OCC_TEST_SSH_OPENCLAW_PATH",
   "OCC_TEST_SSH_RUNTIME_USER",
-];
+] as const;
 const modelProof = process.env.OCC_TEST_SSH_MODEL === "1";
 const selected = process.env.OCC_TEST_SSH_REAL === "1" || modelProof;
 const skip = selected
   ? false
   : `Set OCC_TEST_SSH_REAL=1 plus ${requiredNames.join(", ")} to run real SSH host proof; OCC_TEST_SSH_ROOT and OCC_TEST_SSH_UNIT_DIRECTORY are optional.`;
+
+function hostSettings() {
+  function required(name: (typeof requiredNames)[number]): string {
+    const value = process.env[name];
+    assert.ok(value && value.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
+    return value;
+  }
+  const host = {
+    address: required("OCC_TEST_SSH_ADDRESS"),
+    port: Number(required("OCC_TEST_SSH_PORT")),
+    user: required("OCC_TEST_SSH_USER"),
+  };
+  const ssh = {
+    identityFile: required("OCC_TEST_SSH_IDENTITY_FILE"),
+    knownHostsFile: required("OCC_TEST_SSH_KNOWN_HOSTS_FILE"),
+    connectTimeoutSeconds: 10,
+  };
+  const runtime = {
+    nodePath: required("OCC_TEST_SSH_NODE_PATH"),
+    openclawPath: required("OCC_TEST_SSH_OPENCLAW_PATH"),
+    user: required("OCC_TEST_SSH_RUNTIME_USER"),
+    root: process.env.OCC_TEST_SSH_ROOT ?? "/var/lib/openclaw-enterprise",
+    systemdUnitDirectory: process.env.OCC_TEST_SSH_UNIT_DIRECTORY ?? "/etc/systemd/system",
+  };
+  return { host, ssh, runtime };
+}
+
+function inspection(stdout: string) {
+  const result = asRecord(JSON.parse(stdout));
+  assert.ok(result, "Expected an SSH inspection object.");
+  return result;
+}
+
+type InspectionRequest =
+  | [
+      operation:
+        "deleted" | "inspect" | "meter" | "stop-meter" | "env-state" | "model" | "workspace-guard",
+    ]
+  | [operation: "isolation", extra: { siblingUnit: string }]
+  | [operation: "marker", extra: { marker: string }]
+  | [operation: "workspace-edit", extra: { content: string }]
+  | [operation: "workspace", extra: { files: InitialWorkspaceFiles; defaultsId: string }]
+  | [operation: "workspace-failure-seed", extra: { executable: string }]
+  | [operation: "workspace-failure-inspect", extra: { files: InitialWorkspaceFiles }]
+  | [operation: "workspace-failure-recover", extra?: { divergentContent: string }];
+
+const runtimeContext = {
+  harnessAuth: { method: "runtime" },
+  secretEnvironment: [],
+} satisfies ComputeRevisionContext;
 
 const INSPECT = String.raw`
 const fs = require("node:fs");
@@ -218,33 +274,14 @@ test(
   "real SSH unit directory supports stop, restart and scoped deletion",
   { skip, timeout: 600_000 },
   async () => {
-    for (const name of requiredNames) {
-      assert.ok(process.env[name]?.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
-    }
-    const host = {
-      address: process.env.OCC_TEST_SSH_ADDRESS,
-      port: Number(process.env.OCC_TEST_SSH_PORT),
-      user: process.env.OCC_TEST_SSH_USER,
-    };
-    const ssh = {
-      identityFile: process.env.OCC_TEST_SSH_IDENTITY_FILE,
-      knownHostsFile: process.env.OCC_TEST_SSH_KNOWN_HOSTS_FILE,
-      connectTimeoutSeconds: 10,
-    };
-    const runtime = {
-      nodePath: process.env.OCC_TEST_SSH_NODE_PATH,
-      openclawPath: process.env.OCC_TEST_SSH_OPENCLAW_PATH,
-      user: process.env.OCC_TEST_SSH_RUNTIME_USER,
-      root: process.env.OCC_TEST_SSH_ROOT ?? "/var/lib/openclaw-enterprise",
-      systemdUnitDirectory: process.env.OCC_TEST_SSH_UNIT_DIRECTORY ?? "/etc/systemd/system",
-    };
+    const { host, ssh, runtime } = hostSettings();
     const driver = new SshComputeDriver({
       ssh,
       hosts: { "ssh-unit-proof": host },
       runtime,
       network: { gatewayPortRange: { start: 18910, end: 18919 } },
     });
-    const namespace = {
+    const namespace: Namespace = {
       id: `ns-${randomUUID()}`,
       name: "ssh-unit-proof",
       status: "ready",
@@ -252,9 +289,10 @@ test(
     };
     const configuration = createHarnessConfiguration("openclaw", defaultAgentModel);
     configuration.gateway.bind = "loopback";
+    assert.ok(configuration.models.providers.openai);
     configuration.models.providers.openai.baseUrl = "http://127.0.0.1:9/v1";
     const executor = new SystemSshCommandExecutor();
-    const remote = async (helper) => {
+    const remote = async (helper: string) => {
       const result = await executor.execute({
         ...host,
         ...ssh,
@@ -264,19 +302,23 @@ test(
         timeoutMs: 30_000,
       });
       assert.equal(result.code, 0, "Real SSH lifecycle inspection must succeed.");
-      return JSON.parse(result.stdout);
+      return inspection(result.stdout);
     };
-    const agents = Array.from({ length: 2 }, () => ({
+    const makeAgent = (): Agent => ({
       id: `agent-${randomUUID()}`,
       namespaceId: namespace.id,
       name: "SSH unit proof",
       configurationId: `cfg-${randomUUID()}`,
       backendId: null,
+      desiredRuntimeState: "running",
+      status: "active",
+      harnessAuth: null,
+      gatewayManagedMode: false,
       executionMode: "embedded",
       servicePrincipalId: `sp-${randomUUID()}`,
       createdAt: namespace.createdAt,
-    }));
-    const revisions = agents.map((agent) => ({
+    });
+    const makeRevision = (agent: Agent): AgentRevision => ({
       id: `revision-${randomUUID()}`,
       namespaceId: namespace.id,
       agentId: agent.id,
@@ -287,13 +329,25 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       configuration: admitLoggingConfiguration(configuration, "info"),
-      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
+      executionAdmission: { version: 2, mode: "unprotected" },
+      gatewayManagedMode: false,
+      harness: {
+        id: "openclaw",
+        version: "2026.9.1",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
       compute: { id: driver.id, implementation: driver.implementation },
       servicePrincipalId: agent.servicePrincipalId,
       createdAt: namespace.createdAt,
-    }));
+    });
+    const first = makeAgent();
+    const sibling = makeAgent();
+    const firstRevision = makeRevision(first);
+    const siblingRevision = makeRevision(sibling);
     const namespaceDir = `${runtime.root}/namespaces/${sha256Hex(namespace.id, 12)}`;
-    const inspect = async (agent) =>
+    const inspect = async (agent: Agent) =>
       remote(`
     const fs = require("node:fs"), cp = require("node:child_process");
     const dir = ${JSON.stringify(namespaceDir + "/agents/")} + ${JSON.stringify(sha256Hex(agent.id, 12))};
@@ -310,26 +364,25 @@ test(
     let failed = false;
     try {
       assert.equal((await driver.ensureNamespace(namespace)).namespaceReady, true);
-      for (let index = 0; index < agents.length; index++) {
-        driver.bindAgent({ namespace, agent: agents[index] });
-        assert.equal(
-          (await driver.prepareRevision(revisions[index], { secretEnvironment: [] })).ready,
-          true,
-        );
-        await driver.activateRevision(revisions[index], { secretEnvironment: [] });
-        assert.equal((await inspect(agents[index])).readyStatus, 200);
+      for (const [agent, revision] of [
+        [first, firstRevision],
+        [sibling, siblingRevision],
+      ] as const) {
+        driver.bindAgent({ namespace, agent });
+        assert.equal((await driver.prepareRevision(revision, runtimeContext)).ready, true);
+        await driver.activateRevision(revision, runtimeContext);
+        assert.equal((await inspect(agent)).readyStatus, 200);
       }
-      const [first, sibling] = agents;
       driver.bindAgent({ namespace, agent: first });
-      await driver.stopRevision(revisions[0]);
-      await driver.stopRevision(revisions[0]);
+      await driver.stopRevision(firstRevision);
+      await driver.stopRevision(firstRevision);
       assert.equal((await inspect(first)).active, false);
       assert.equal((await inspect(sibling)).readyStatus, 200);
-      await driver.activateRevision(revisions[0], { secretEnvironment: [] });
+      await driver.activateRevision(firstRevision, runtimeContext);
       assert.equal((await inspect(first)).readyStatus, 200);
-      await driver.deactivateRevision(revisions[0]);
-      await driver.retireRevision(revisions[0]);
-      await driver.retireRevision(revisions[0]);
+      await driver.deactivateRevision(firstRevision);
+      await driver.retireRevision(firstRevision);
+      await driver.retireRevision(firstRevision);
       await driver.deleteAgentRuntimeCredentials({ namespace, agent: first });
       await driver.deleteAgentRuntimeCredentials({ namespace, agent: first });
       assert.deepEqual(await inspect(first), {
@@ -368,9 +421,7 @@ test(
     : "real SSH host prepares, cuts over, preserves state, retires and deletes an embedded OpenClaw Agent",
   { skip, timeout: 600_000 },
   async () => {
-    for (const name of requiredNames) {
-      assert.ok(process.env[name]?.trim(), `${name} is required when OCC_TEST_SSH_REAL=1.`);
-    }
+    const { host, ssh, runtime } = hostSettings();
     const model = process.env.OCC_TEST_OPENAI_MODEL || defaultAgentModel;
     let providerKey;
     if (modelProof) {
@@ -394,30 +445,13 @@ test(
         "Provider credential/model must work before SSH deployment proof.",
       );
     }
-    const host = {
-      address: process.env.OCC_TEST_SSH_ADDRESS,
-      port: Number(process.env.OCC_TEST_SSH_PORT),
-      user: process.env.OCC_TEST_SSH_USER,
-    };
-    const ssh = {
-      identityFile: process.env.OCC_TEST_SSH_IDENTITY_FILE,
-      knownHostsFile: process.env.OCC_TEST_SSH_KNOWN_HOSTS_FILE,
-      connectTimeoutSeconds: 10,
-    };
-    const runtime = {
-      nodePath: process.env.OCC_TEST_SSH_NODE_PATH,
-      openclawPath: process.env.OCC_TEST_SSH_OPENCLAW_PATH,
-      user: process.env.OCC_TEST_SSH_RUNTIME_USER,
-      root: process.env.OCC_TEST_SSH_ROOT ?? "/var/lib/openclaw-enterprise",
-      systemdUnitDirectory: process.env.OCC_TEST_SSH_UNIT_DIRECTORY ?? "/etc/systemd/system",
-    };
     const driver = new SshComputeDriver({
       ssh,
       hosts: { "ssh-proof": host },
       runtime,
       network: { gatewayPortRange: { start: 18800, end: 18899 } },
     });
-    const namespace = {
+    let namespace: Namespace = {
       id: `ns-${randomUUID()}`,
       name: "ssh-proof",
       status: "provisioning",
@@ -425,24 +459,22 @@ test(
     };
     const agentId = `agent-${randomUUID()}`;
     const siblingAgentId = `agent-${randomUUID()}`;
-    const configuration = admitLoggingConfiguration(
-      {
-        gateway: {
-          mode: "local",
-          bind: "loopback",
-          controlUi: { enabled: false },
-          http: { endpoints: { chatCompletions: { enabled: true } } },
-        },
-        agents: {
-          defaults: {
-            skipBootstrap: true,
-            model: `openai/${model}`,
-            models: { [`openai/${model}`]: { agentRuntime: { id: "openclaw" } } },
-          },
+    const baseConfiguration = {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        controlUi: { enabled: false },
+        http: { endpoints: { chatCompletions: { enabled: true } } },
+      },
+      agents: {
+        defaults: {
+          skipBootstrap: true,
+          model: `openai/${model}`,
+          models: { [`openai/${model}`]: { agentRuntime: { id: "openclaw" } } },
         },
       },
-      "info",
-    );
+    };
+    const configuration = admitLoggingConfiguration(baseConfiguration, "info");
     const first = {
       id: `revision-${randomUUID()}`,
       namespaceId: namespace.id,
@@ -454,11 +486,19 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       configuration,
-      harness: { id: "openclaw", version: "2026.9.1", mode: "embedded" },
+      executionAdmission: { version: 2, mode: "unprotected" },
+      gatewayManagedMode: false,
+      harness: {
+        id: "openclaw",
+        version: "2026.9.1",
+        mode: "embedded",
+        overrides: {},
+        configuration: {},
+      },
       compute: { id: driver.id, implementation: driver.implementation },
       servicePrincipalId: `sp-${randomUUID()}`,
       createdAt: namespace.createdAt,
-    };
+    } satisfies AgentRevision;
     const setup = {
       id: `setup-${randomUUID()}`,
       namespaceId: namespace.id,
@@ -468,13 +508,18 @@ test(
       completed: false,
     };
     const setupContext = {
-      harnessAuth: { method: "runtime" },
-      secretEnvironment: [],
+      ...runtimeContext,
       workspaceSetup: setup,
     };
     const completedContext = {
       ...setupContext,
-      workspaceSetup: { ...setup, files: undefined, completed: true },
+      workspaceSetup: {
+        id: setup.id,
+        namespaceId: namespace.id,
+        agentId,
+        defaultsId: setup.defaultsId,
+        completed: true,
+      },
     };
     const second = {
       ...first,
@@ -484,7 +529,7 @@ test(
       configuration: admitLoggingConfiguration(
         {
           ...configuration,
-          agents: { defaults: { ...configuration.agents.defaults, timeoutSeconds: 90 } },
+          agents: { defaults: { ...baseConfiguration.agents.defaults, timeoutSeconds: 90 } },
         },
         "info",
       ),
@@ -502,7 +547,7 @@ test(
     const unit = `openclaw-enterprise-gateway-${sha256Hex(agentId, 12)}.service`;
     const siblingUnit = `openclaw-enterprise-gateway-${sha256Hex(siblingAgentId, 12)}.service`;
     const executor = new SystemSshCommandExecutor();
-    const remote = async (helper, operation = "", timeoutMs = 30000) => {
+    const remote = async (helper: string, operation = "", timeoutMs = 30000) => {
       const result = await executor.execute({
         ...host,
         ...ssh,
@@ -514,13 +559,13 @@ test(
       assert.equal(result.code, 0, "Remote operator test action must succeed.");
       return result.stdout;
     };
-    const provision = async (value) => {
+    const provision = async (value: string) => {
       // The key travels in SSH stdin, never process argv, logs, or revision metadata.
       await remote(
         `require("node:fs").writeFileSync(${JSON.stringify(agentDir + "/env")}, ${JSON.stringify("OPENAI_API_KEY=" + value + "\n")}, {mode: 0o600});`,
       );
     };
-    const inspect = async (operation, extra = {}) => {
+    const inspect = async (...[operation, extra]: InspectionRequest) => {
       const result = await executor.execute({
         ...host,
         ...ssh,
@@ -546,7 +591,13 @@ test(
               : 30_000,
       });
       assert.equal(result.code, 0, "Real SSH host inspection must succeed.");
-      return JSON.parse(result.stdout);
+      return inspection(result.stdout);
+    };
+    const readMeter = async () => {
+      const { port, count } = await inspect("meter");
+      assert.ok(typeof port === "number" && Number.isSafeInteger(port));
+      assert.ok(typeof count === "number" && Number.isSafeInteger(count) && count >= 0);
+      return { port, count };
     };
     await driver.preflight();
     let meterStarted = false;
@@ -576,7 +627,7 @@ test(
         let meter;
         for (let attempt = 0; attempt < 30; attempt++) {
           try {
-            meter = await inspect("meter");
+            meter = await readMeter();
             break;
           } catch {
             await new Promise((resolve) => setTimeout(resolve, 100));
@@ -599,8 +650,8 @@ test(
         );
       }
       // The worker binds server-owned Agent identity after Namespace readiness on every operation.
-      namespace.status = "ready";
-      const binding = {
+      namespace = { ...namespace, status: "ready" };
+      const binding: ComputeAgentBinding = {
         namespace,
         agent: {
           id: agentId,
@@ -608,6 +659,10 @@ test(
           name: "SSH proof",
           configurationId: first.configurationId,
           backendId: null,
+          desiredRuntimeState: "running",
+          status: "active",
+          harnessAuth: null,
+          gatewayManagedMode: false,
           executionMode: "embedded",
           servicePrincipalId: first.servicePrincipalId,
           createdAt: namespace.createdAt,
@@ -668,6 +723,7 @@ test(
       );
       let operatorEnv;
       if (modelProof) {
+        assert.ok(providerKey, "Expected the verified model credential.");
         await provision(providerKey);
         operatorEnv = await inspect("env-state");
         assert.equal(operatorEnv.mode, 0o600);
@@ -679,14 +735,14 @@ test(
       assert.equal(observedFirst.readyStatus, 200);
       if (modelProof) {
         assert.equal(
-          (await inspect("meter")).count,
+          (await readMeter()).count,
           0,
           "Deployment/readiness must make no model request.",
         );
         const turn = await inspect("model");
         assert.equal(turn.status, 200);
         assert.equal(turn.modelReply, true);
-        assert.ok((await inspect("meter")).count > 0);
+        assert.ok((await readMeter()).count > 0);
         assert.deepEqual(await inspect("env-state"), operatorEnv);
       }
       const editedFiles = {
@@ -714,14 +770,32 @@ test(
           name: "SSH sibling proof",
           configurationId: sibling.configurationId,
           backendId: null,
+          desiredRuntimeState: "running",
+          status: "active",
+          harnessAuth: null,
+          gatewayManagedMode: false,
           executionMode: "embedded",
           servicePrincipalId: sibling.servicePrincipalId,
           createdAt: namespace.createdAt,
         },
       });
-      assert.equal((await driver.prepareRevision(sibling, { secretEnvironment: [] })).ready, true);
+      assert.equal((await driver.prepareRevision(sibling, runtimeContext)).ready, true);
       await driver.activateRevision(sibling);
       const isolation = await inspect("isolation", { siblingUnit });
+      for (const field of [
+        "firstUser",
+        "siblingUser",
+        "firstUid",
+        "siblingUid",
+        "firstGid",
+        "siblingGid",
+      ]) {
+        const value = isolation[field];
+        assert.ok(
+          typeof value === "string" && value.length > 0,
+          `Expected ${field} in isolation proof.`,
+        );
+      }
       assert.notEqual(isolation.firstUser, isolation.siblingUser);
       assert.notEqual(isolation.firstUid, isolation.siblingUid);
       assert.notEqual(isolation.firstGid, isolation.siblingGid);
@@ -755,7 +829,7 @@ test(
           operatorEnv,
           "Redeploy and retirement preserve operator bytes and metadata.",
         );
-        const before = (await inspect("meter")).count;
+        const before = (await readMeter()).count;
         // A different key affects this existing immutable revision after process restart.
         await driver.stopRevision(second);
         assert.deepEqual(
@@ -768,15 +842,15 @@ test(
         await driver.activateRevision(second, completedContext);
         assert.equal((await inspect("inspect")).readyStatus, 200);
         assert.equal(
-          (await inspect("meter")).count,
+          (await readMeter()).count,
           before,
           "Invalid credentials must not trigger a deployment probe.",
         );
         const rejected = await inspect("model");
         assert.equal(rejected.modelReply, false);
-        assert.ok(rejected.status >= 400);
+        assert.ok(typeof rejected.status === "number" && rejected.status >= 400);
         assert.ok(
-          (await inspect("meter")).count > before,
+          (await readMeter()).count > before,
           "The actual model request must reach the provider and be rejected.",
         );
         assert.equal((await inspect("inspect")).readyStatus, 200);

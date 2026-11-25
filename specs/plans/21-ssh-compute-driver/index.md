@@ -83,7 +83,7 @@ See [Contract](contract.md#contract).
 5. Add `tests/integration/ssh-compute-startup.test.mjs` proving production
    composition selects `SshComputeDriver` for `compute-ssh`, skips the
    Kubernetes-only checks, rejects `drivers.sandbox`, and rejects invalid
-   configuration; and the opt-in `tests/integration/ssh-compute-real.test.mjs`
+   configuration; and the opt-in `tests/integration/ssh-compute-real.test.ts`
    selected by `OCC_TEST_SSH_REAL=1` that drives the real driver over real SSH
    through Namespace readiness, two embedded revisions with cutover, state
    persistence across the restart, retirement, and Namespace deletion.
