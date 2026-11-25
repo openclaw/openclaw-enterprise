@@ -934,6 +934,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
 
   for (const event of [
     "late result",
+    "orphan output before turn ends",
     "foreign completion before turn ends",
     "completion without turn ID",
     "start without thread ID",
@@ -979,7 +980,21 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           command: unexpected ? "setup" : nonce,
           status: "inProgress",
         };
-        send({ method: "item/started", params: { threadId, turnId, item } });
+        if (event === "orphan output before turn ends" || event === "late result") {
+          // Only the positive control names a provably different turn.
+          send({
+            method: "item/commandExecution/outputDelta",
+            params: {
+              threadId,
+              turnId: event === "late result" ? "other-turn" : turnId,
+              itemId: "orphan",
+              delta: "partial output",
+            },
+          });
+        }
+        if (event !== "orphan output before turn ends") {
+          send({ method: "item/started", params: { threadId, turnId, item } });
+        }
         const extra = { ...item, id: "extra" };
         const unbound: Partial<
           Record<typeof event, { turnId?: string | undefined; threadId?: string | undefined }>
@@ -1011,6 +1026,9 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           params: { threadId, turn: { ...turn, status: "completed", error: null } },
         });
         stream.uncork();
+        if (event === "orphan output before turn ends") {
+          return;
+        }
         const setupSucceeded = unexpected && !unboundScope;
         const terminal = {
           ...item,
@@ -1083,6 +1101,13 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     });
     if (event === "late result") {
       assert.equal((await probe).run?.exitCode, 23, "retain the command's actual nonzero result");
+    } else if (event === "orphan output before turn ends") {
+      // The transport returned a completed turn. Its retained delta must stop the observer.
+      await assert.rejects(
+        probe,
+        /OpenShell probe outcome is unknown;.*item\/commandExecution\/outputDelta.*turn\/completed/,
+        event,
+      );
     } else {
       await assert.rejects(probe, /Codex command outcome is unknown/, event);
     }

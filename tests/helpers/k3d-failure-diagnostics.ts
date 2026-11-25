@@ -13,6 +13,7 @@ import {
 } from "../../scripts/ci/failure-redaction.ts";
 import { maskPrivateKeyLogLines } from "../../scripts/ci/k3d-node-log.ts";
 import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
+import { isBoundedInteger } from "./egress-observation-values.ts";
 import {
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -76,7 +77,7 @@ type TurnMessage = {
     item?: TurnItem | null;
     willRetry?: unknown;
     error?: { message?: unknown } | null;
-    turn?: { status?: unknown; error?: { message?: unknown } | null } | null;
+    turn?: { id?: unknown; status?: unknown; error?: { message?: unknown } | null } | null;
     [key: string]: unknown;
   } | null;
 };
@@ -948,6 +949,16 @@ function isCompletedCommand(item: TurnItem): item is CompletedCommand {
   );
 }
 
+function differentKnownIds(left: unknown, right: unknown): boolean {
+  return (
+    typeof left === "string" &&
+    left.trim() !== "" &&
+    typeof right === "string" &&
+    right.trim() !== "" &&
+    left !== right
+  );
+}
+
 // Return terminal commands, or undefined if any command's outcome is uncertain.
 // A completion can settle a command even when its start was not in the transcript.
 function completedSandboxCommands(
@@ -964,7 +975,12 @@ function completedSandboxCommands(
       continue;
     }
     const { id, command } = item;
-    if (typeof id !== "string" || !id.trim() || completed.has(id)) {
+    if (
+      typeof id !== "string" ||
+      !id.trim() ||
+      completed.has(id) ||
+      (params?.itemId !== undefined && params.itemId !== id)
+    ) {
       return undefined;
     }
     if (method === "item/started") {
@@ -985,7 +1001,42 @@ function completedSandboxCommands(
       completed.set(id, item);
     }
   }
-  return pending.size === 0 ? [...completed.values()] : undefined;
+  if (pending.size !== 0) {
+    return undefined;
+  }
+
+  // Output and approvals can reach the transcript without a start. They rule out a
+  // retry unless the command settled or the turn's terminal proves the event was foreign.
+  const terminal = messages.find(({ method }) => method === "turn/completed")?.params;
+  for (const { method, params } of messages) {
+    if (
+      method !== "item/commandExecution/outputDelta" &&
+      method !== "item/commandExecution/requestApproval"
+    ) {
+      continue;
+    }
+    if (
+      differentKnownIds(params?.threadId, terminal?.threadId) ||
+      differentKnownIds(params?.turnId, terminal?.turn?.id)
+    ) {
+      continue;
+    }
+    const itemId = params?.item?.id;
+    const id = params?.itemId === undefined ? itemId : params.itemId;
+    const settled = typeof id === "string" ? completed.get(id) : undefined;
+    if (!settled || (itemId !== undefined && itemId !== id)) {
+      return undefined;
+    }
+    if (
+      method === "item/commandExecution/requestApproval" &&
+      [params?.command, params?.item?.command].some(
+        (command) => command !== undefined && command !== settled.command,
+      )
+    ) {
+      return undefined;
+    }
+  }
+  return [...completed.values()];
 }
 
 // The token echo (startTokenEcho in the OpenShell k3d test) answers each Harness curl call with
@@ -1030,6 +1081,7 @@ export function tokenEchoReply(
   if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
     return { unparsed: shownEchoText(output, secrets, echoOutputChars), shown };
   }
+  assert.ok(!Object.hasOwn(reply, "shown"), "shown is reserved for token echo diagnostics");
   return { ...reply, shown };
 }
 
@@ -1045,4 +1097,53 @@ export function tokenEchoDigest(reply: unknown): string | undefined {
     assert.fail(`the token echo call must print JSON: ${value.shown}`);
   }
   return typeof value?.digest === "string" ? value.digest : undefined;
+}
+
+/** Only a recognized refusal or a reply from the expected echo can establish token loss. */
+export function hasCachedRefreshToken(
+  reply: EchoReply,
+  expectedPath: string,
+  reconfiguredAt: number,
+): boolean {
+  assert.ok(reply.unparsed === undefined, "the refresh token echo must print one JSON object");
+  if (reply.error !== undefined) {
+    // Recognize the recorded refusal. A different error or a mix of refusal and echo fields
+    // is inconclusive. Do not include an arbitrary error body in the assertion.
+    assert.ok(
+      reply.error === "credential_unavailable" &&
+        typeof reply.message === "string" &&
+        reply.message.trim() !== "" &&
+        Object.keys(reply).every((key) => ["error", "message", "shown"].includes(key)),
+      "the refresh token call returned an unrecognized refusal",
+    );
+    return false;
+  }
+  assert.ok(
+    reply.path === expectedPath &&
+      typeof reply.digest === "string" &&
+      /^[0-9a-f]{64}$/u.test(reply.digest) &&
+      typeof reply.placeholder === "boolean" &&
+      isBoundedInteger(reply.length, Number.MAX_SAFE_INTEGER),
+    "the refresh token call must return the expected path and echo fields",
+  );
+  if (reply.jwt === undefined) {
+    return false;
+  }
+  const jwt = asRecord(reply.jwt);
+  assert.ok(jwt && typeof jwt.valid === "boolean", "the echo must report whether the JWT is valid");
+  if (!jwt.valid) {
+    return false;
+  }
+  assert.ok(
+    !reply.placeholder &&
+      reply.length > 0 &&
+      typeof jwt.iat === "number" &&
+      Number.isFinite(jwt.iat),
+    "a valid JWT must arrive substituted and have a numeric issue time",
+  );
+  assert.ok(
+    jwt.iat < reconfiguredAt - 2,
+    "a token minted after reconfiguration must not reach a Sandbox admitted under the previous epoch",
+  );
+  return true;
 }

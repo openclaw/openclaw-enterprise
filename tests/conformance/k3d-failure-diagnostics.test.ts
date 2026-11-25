@@ -5,7 +5,9 @@ import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import {
   codexTurnTrace,
+  hasCachedRefreshToken,
   observeSandboxProbe,
+  observedTurn,
   podFailureDiagnostic,
   tokenEchoDigest,
   tokenEchoReply,
@@ -706,7 +708,77 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
   const otherStart = event("started", unrelated.params.item);
   // The shell joins these fragments into fixture-probe.sh; the event text does not contain the nonce.
   const splitStart = event("started", { ...probe, command: "bash fixture-'probe'.sh" });
-  for (const [name, turns, expected] of [
+  const scope = { threadId: "thread", turnId: "turn" };
+  const terminal = { threadId: scope.threadId, turn: { id: scope.turnId, status: "completed" } };
+  const output = {
+    method: "item/commandExecution/outputDelta",
+    params: { ...scope, itemId: probe.id, delta: syntheticSecret },
+  };
+  const approval = {
+    id: 9,
+    method: "item/commandExecution/requestApproval",
+    params: { ...scope, itemId: probe.id, command: probe.command },
+  };
+  const otherCompletion = event("completed", { ...unrelated.params.item, id: probe.id });
+  const embedded = { ...scope, item: { id: probe.id, command: unrelated.params.item.command } };
+  const conflictingApproval = { ...approval, params: { ...approval.params, ...embedded } };
+  for (const [name, turns, expected, turnCompleted = terminal] of [
+    ["orphan output", [[output]], "unknown"],
+    ["approval without completion", [[approval]], "unknown"],
+    ["approval and output settled by completion", [[approval, output, end]], "completed"],
+    [
+      "approval with only an item ID",
+      [[{ ...approval, params: { ...scope, itemId: probe.id } }, end]],
+      "completed",
+    ],
+    ["probe approval followed by a different command", [[approval, otherCompletion]], "unknown"],
+    [
+      "embedded approval for a different command followed by the probe",
+      [[{ ...approval, params: embedded }, end]],
+      "unknown",
+    ],
+    ["only the direct approval command matches", [[conflictingApproval, end]], "unknown"],
+    [
+      "only the embedded approval command matches",
+      [[conflictingApproval, otherCompletion]],
+      "unknown",
+    ],
+    [
+      "unsettled output alongside completed probe",
+      [[end, { ...output, params: { ...output.params, itemId: "other" } }]],
+      "unknown",
+    ],
+    [
+      "approval missing item ID alongside probe",
+      [[{ ...approval, params: scope }, end]],
+      "unknown",
+    ],
+    [
+      "contradictory item IDs",
+      [[{ ...output, params: { ...output.params, item: { id: "other" } } }, end]],
+      "unknown",
+    ],
+    [
+      "output from another turn",
+      [[{ ...output, params: { ...output.params, turnId: "elsewhere" } }], [end]],
+      "completed",
+    ],
+    [
+      "approval from another thread",
+      [[{ ...approval, params: { ...approval.params, threadId: "elsewhere" } }], [end]],
+      "completed",
+    ],
+    [
+      "completion disagrees with its own item ID",
+      [[{ ...end, params: { ...end.params, itemId: "other" } }]],
+      "unknown",
+    ],
+    [
+      "no terminal IDs to prove output foreign",
+      [[output]],
+      "unknown",
+      { turn: { status: "completed" } },
+    ],
     ["split shell spelling, no completion", [[splitStart]], "unknown"],
     ["unsettled command before completed probe", [[otherStart, start, end]], "unknown"],
     ["unsettled command after completed probe", [[start, end, otherStart]], "unknown"],
@@ -738,12 +810,9 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
         async requestTurn() {
           const events = turns[calls++];
           assert.ok(events, "must not send another turn after a possible probe effect");
-          return {
-            items: [
-              ...events,
-              { method: "turn/completed", params: { turn: { status: "completed" } } },
-            ],
-          };
+          return observedTurn({
+            items: [...events, { method: "turn/completed", params: turnCompleted }],
+          });
         },
       });
       if (expected === "unknown") {
@@ -784,9 +853,9 @@ test("a token echo call that prints no JSON fails naming the command and its red
     `placeholder ${syntheticPlaceholder}\n` +
     `{"path":"/tool-a","digest":"${sha256}"}\n` +
     "x".repeat(5_000);
-  const reply: unknown = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
+  const reply = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
   assert.ok(typeof reply === "object" && reply !== null);
-  // The refresh phase's checks read it as a reply with no token; the tool checks fail on it.
+  assert.throws(() => hasCachedRefreshToken(reply, "/tool-a", 100), /must print one JSON object/);
   assert.deepEqual(Object.keys(reply), ["unparsed", "shown"]);
   assert.ok("unparsed" in reply && typeof reply.unparsed === "string");
   const unparsed = reply.unparsed;
@@ -826,7 +895,7 @@ test("a token echo reply gives its digest, and OpenShell's refusal is shown with
       typeof echoed.shown === "string",
   );
   assert.equal(echoed.shown.includes(sha256), false, "digests are compared, never shown");
-  const refused: unknown = tokenEchoReply(
+  const refused = tokenEchoReply(
     [
       echoCommand(
         '{"error":"credential_unavailable","message":"Credential placeholder could not be resolved"}',
@@ -836,6 +905,7 @@ test("a token echo reply gives its digest, and OpenShell's refusal is shown with
     echoSecrets,
   );
   assert.equal(tokenEchoDigest(refused), undefined);
+  assert.equal(hasCachedRefreshToken(refused, "/tool-a", 100), false);
   assert.ok(
     typeof refused === "object" &&
       refused !== null &&
@@ -843,4 +913,63 @@ test("a token echo reply gives its digest, and OpenShell's refusal is shown with
       typeof refused.shown === "string",
   );
   assert.match(refused.shown, /\(exit 0\) printed \{"error":"credential_unavailable"/);
+});
+
+test("the refresh epoch waits only for an old token and requires evidence of its loss", () => {
+  const reconfiguredAt = 100;
+  const observe = (output: string) => {
+    const reply = tokenEchoReply([echoCommand(output)], echoUrl, echoSecrets);
+    return hasCachedRefreshToken(reply, "/tool-a", reconfiguredAt);
+  };
+  const echo = { path: "/tool-a", digest: sha256, placeholder: false, length: 43 };
+  const absent = JSON.stringify(echo);
+  assert.equal(observe(absent), false);
+  assert.equal(observe(JSON.stringify({ ...echo, jwt: { valid: false } })), false);
+
+  // A failed call, a reply for the companion source, or an incomplete echo cannot prove loss.
+  assert.throws(() => observe(`${absent}\n${absent}`), /must print one JSON object/);
+  for (const ambiguous of [
+    {},
+    { status: "unavailable" },
+    { ...echo, path: "/other" },
+    { ...echo, placeholder: undefined },
+    { ...echo, length: "43" },
+    { ...echo, digest: "not a digest" },
+  ]) {
+    assert.throws(() => observe(JSON.stringify(ambiguous)), /expected path and echo fields/);
+  }
+  assert.throws(() => observe(JSON.stringify({ ...echo, jwt: {} })), /whether the JWT is valid/);
+  assert.throws(() => observe('{"error":"credential_unavailable"}'), /unrecognized refusal/);
+  const refusal = { error: "credential_unavailable", message: "No credential is available." };
+  assert.equal(observe(JSON.stringify(refusal)), false);
+  for (const malformed of [
+    { ...refusal, message: " " },
+    { ...refusal, message: 1 },
+    { ...refusal, detail: "unexpected" },
+  ]) {
+    assert.throws(() => observe(JSON.stringify(malformed)), /unrecognized refusal/);
+  }
+  assert.throws(() => observe(JSON.stringify({ ...refusal, shown: "unexpected" })), {
+    message: "shown is reserved for token echo diagnostics",
+  });
+  assert.throws(
+    () => observe(JSON.stringify({ error: "other", message: "untrusted-details" })),
+    (error: unknown) =>
+      error instanceof Error &&
+      /unrecognized refusal/u.test(error.message) &&
+      !error.message.includes("untrusted-details"),
+  );
+  const mixed = {
+    ...echo,
+    error: "credential_unavailable",
+    message: "Credential placeholder could not be resolved",
+  };
+  assert.throws(() => observe(JSON.stringify(mixed)), /unrecognized refusal/);
+
+  const issuedAt = (iat: number | string) =>
+    observe(JSON.stringify({ ...echo, jwt: { valid: true, iat } }));
+  assert.equal(issuedAt(97), true);
+  assert.throws(() => issuedAt("97"), /numeric issue time/);
+  assert.throws(() => issuedAt(98), /must not reach a Sandbox/);
+  assert.throws(() => issuedAt(101), /must not reach a Sandbox/);
 });

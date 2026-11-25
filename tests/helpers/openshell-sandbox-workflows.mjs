@@ -86,6 +86,7 @@ import {
 } from "../helpers/kubernetes-real.ts";
 import {
   assertGatewayPolicyRunSucceeded,
+  hasCachedRefreshToken,
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
@@ -3703,9 +3704,7 @@ async function assertRefreshCredentialSources(topology) {
     const commands = completedTurnItems(result)
       .map(record)
       .filter(({ type }) => type === "commandExecution");
-    // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
-    // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
-    // check below treats it as a missing token.
+    // Keep unparseable output redacted and bounded (finding 1883). It cannot prove token loss.
     const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
@@ -3808,17 +3807,13 @@ async function assertRefreshCredentialSources(topology) {
   // update can stay cached in the Sandbox and remains a valid JWT until it expires; a token
   // issued after the update would mean the new epoch reached the old Sandbox.
   const epochDeadline = Date.now() + 420_000;
+  const refreshPath = new URL(refreshToken.url).pathname;
   let afterReconfigure;
   for (;;) {
     afterReconfigure = await call();
-    const presented = afterReconfigure.rt?.jwt;
-    if (presented?.valid !== true) {
+    if (!hasCachedRefreshToken(afterReconfigure.rt, refreshPath, reconfiguredAt)) {
       break;
     }
-    assert.ok(
-      presented.iat < reconfiguredAt - 2,
-      "a token minted after reconfiguration must not reach a Sandbox admitted under the previous epoch",
-    );
     assert.ok(
       Date.now() < epochDeadline,
       "the running Sandbox must lose the reconfigured source's token by the old token's expiry",
