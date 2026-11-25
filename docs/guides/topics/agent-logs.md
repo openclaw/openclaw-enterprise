@@ -10,33 +10,35 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 
 ## Open the Logs tab
 
-1. Select a deployed version of the Agent; the draft has no runtime. A version
-   without a running Pod shows none and links to another running version's Logs.
-   A newer failed deployment shows on the Agent's page.
-2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists each container's state and recent warning Events. Last termination
-   shows the current exit for a terminated container, otherwise its prior exit.
-   A failed refresh keeps the cards and says when they were last observed.
-3. In **Source**, choose **Gateway**, **Agent (Harness)** for dedicated execution,
-   or **Sandbox (policy decisions)** (see [Sandbox source](#sandbox-source)).
-   If **Gateway** or **Agent (Harness)** lists multiple streams, choose
-   **Pod / container**.
-   A successful init container does not establish that the main process succeeded.
-   While no Harness Pod is ready, the Gateway logs failed connections to it
-   (`ECONNREFUSED`); the console then points you to the **Agent (Harness)**
-   source for the cause (such as a failed model probe), or to Deployment
-   activity when the Harness Pod does not exist yet.
-4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
-   the browser tab is hidden or you scroll up, and stops after a permission denial.
-5. For a restarted **Gateway** or **Agent (Harness)** container, select
-   **Previous instance** for prior output. **Follow** is unavailable.
+1. Select a deployed version. The draft has no runtime. Without a
+   running Pod, the version links to another running version's Logs. The Agent page shows
+   newer failed deployments.
+2. Select **Logs**. The runtime strip refreshes every 10 seconds. Pod cards show
+   container states and recent warning Events. Last termination is the current
+   exit for terminated containers, otherwise the prior exit. Failed refreshes keep
+   the cards and observation time.
+3. Choose **Gateway**, **Agent (Harness)** for dedicated execution, or [**Sandbox
+   (policy decisions)**](#sandbox-source) in **Source**. For multiple container streams, choose
+   **Pod / container**. A successful init container does not prove the main process
+   succeeded. Until a Harness Pod is ready, Gateway logs failed connections
+   (`ECONNREFUSED`). The Console points you to Harness output (for example, a failed
+   model probe) or Deployment activity if no Harness Pod exists.
+4. Select **Follow** to poll every 2 seconds. It pauses while the browser tab is
+   hidden or you scroll up, and stops after a permission denial.
+5. Select **Previous instance** for a restarted Gateway or Harness container's
+   prior output. **Follow** is unavailable.
 
 ### Filter the loaded output
 
-The server returns **info** and above (and lines of unknown level) unless you
-select **Include debug**, which starts a new view. The level chips and the
-case-insensitive **Filter** box (message, kind, subsystem and field values)
-narrow the loaded rows (up to 5000). Gap and withheld rows stay visible.
+The server returns **info** and above, plus unknown levels. **Include debug**
+starts a new view. Level chips and the case-insensitive **Filter** box narrow up
+to 5000 loaded rows by message, kind, subsystem or field value. Gap and withheld
+rows remain visible.
+
+Returning to **Logs** within the same version loads fresh output. For the same
+container instance and query, the Console can restore your filter, levels and
+approximate position. Filters can hide new lines. Select **Follow** again to
+resume polling. Sandbox logs always start fresh on return.
 
 ### Download
 

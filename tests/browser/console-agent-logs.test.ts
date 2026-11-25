@@ -301,6 +301,188 @@ for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
+  test(`same-version tabs return to the same Logs reader at ${viewport.width}x${viewport.height}`, async (t) => {
+    const logs = await logsFixture(t);
+    const { fixture, computeDriver, namespace, agent, revisionId } = logs;
+    computeDriver.state.lines = [
+      ...earlierOutput(100),
+      line(
+        1,
+        JSON.stringify({
+          time: "2026-09-30T12:00:01Z",
+          level: "warn",
+          message: "earlier warning",
+        }),
+      ),
+    ];
+    const { page } = await newPage(t, fixture, { context: { viewport, reducedMotion: "reduce" } });
+    await trackSettledFetches(page);
+    const requests = apiRequests(page, fixture.origin);
+    await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+    await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
+    const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+    const filter = page.getByLabel("Filter", { exact: true });
+    const warning = page.getByRole("button", { name: "warn", exact: true });
+    const follow = page.getByRole("button", { name: "Follow", exact: true });
+    const reads = () => logRequests(requests, revisionId);
+    await pane.getByText("earlier output 1", { exact: true }).waitFor();
+    await pane.getByText("earlier warning", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    await page.clock.runFor(100);
+    const firstPath = reads()[0]!.path;
+    assert.equal(new URL(firstPath, fixture.origin).searchParams.get("tailLines"), "200");
+    const position = () =>
+      pane.evaluate((node) => ({
+        top: node.scrollTop,
+        first: [...node.children].find(
+          (row) =>
+            !row.hasAttribute("hidden") &&
+            row.getBoundingClientRect().bottom > node.getBoundingClientRect().top + 1,
+        )?.textContent,
+      }));
+    const selection = () =>
+      filter.evaluate((node: HTMLInputElement) => [
+        node.value,
+        node.selectionStart,
+        node.selectionEnd,
+        node.selectionDirection,
+      ]);
+
+    await warning.click();
+    await filter.fill("earlier");
+    await filter.press("Home");
+    await filter.press("Shift+ArrowRight");
+    assert.deepEqual(await selection(), ["earlier", 0, 1, "forward"]);
+    await follow.click();
+    await pane.evaluate((node) => (node.scrollTop = 720));
+    const scrolled = await position();
+    assert.ok(scrolled.top > 0 && !(await pane.evaluate(atBottom)));
+
+    for (const [second, mode, shown, total] of [
+      [2, "offset", 101, 103],
+      [4, "bottom", 102, 105],
+    ] as const) {
+      const beforeDetour = reads().length;
+      await deployment.click();
+      if (mode === "bottom") {
+        await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+      }
+      await waitForIdleFetches(page);
+      await page.clock.runFor(2_100);
+      assert.equal(reads().length, beforeDetour, "the hidden reader did not follow");
+      assert.equal(await page.locator(".log-pane").count(), 0);
+      const freshLine = `earlier fresh ${mode}`;
+      const filteredLine = `outside filter ${mode}`;
+      computeDriver.state.lines.push(line(second, freshLine), line(second + 1, filteredLine));
+      // Delay a real authorized tail so the detached reader cannot supply the result.
+      const held = await holdRequests(t, page, (url) => url.pathname === revisionLogsPath(logs), {
+        once: true,
+        method: "GET",
+        afterServer: true,
+      });
+      const beforeReturn = reads().length;
+      await logsTab.click();
+      assert.equal((await held.requested)?.status(), 200);
+      assert.equal(await filter.isVisible(), false);
+      assert.equal(await pane.getByText(freshLine).count(), 0);
+      held.release();
+      await pane.getByText(freshLine).waitFor();
+      await waitForIdleFetches(page);
+      await page.clock.runFor(100);
+
+      assert.deepEqual(await selection(), ["earlier", 0, 1, "forward"]);
+      assert.equal(await warning.getAttribute("aria-pressed"), "false");
+      assert.equal(await pane.getByText("earlier warning").isVisible(), false);
+      assert.equal(await pane.getByText(filteredLine).isVisible(), false);
+      await page.getByText(new RegExp(`^Showing ${shown} of ${total} loaded lines\\.`)).waitFor();
+      assert.equal(await logsTab.evaluate((node) => node.matches(":focus")), true);
+      assert.equal(await follow.getAttribute("aria-pressed"), "false");
+      if (mode === "offset") {
+        assert.deepEqual(await position(), scrolled);
+      } else {
+        assert.equal(await pane.evaluate(atBottom), true);
+      }
+      await page.clock.runFor(2_100);
+      assert.deepEqual(
+        reads()
+          .slice(beforeReturn)
+          .map(({ path }) => path),
+        [firstPath],
+      );
+      await pane.evaluate((node) => (node.scrollTop = node.scrollHeight));
+    }
+
+    if (viewport.width === 1440) {
+      // Once a slow tail lets the reader use Filter, a deliberate edit takes precedence.
+      await deployment.click();
+      await waitForIdleFetches(page);
+      const oldMatch = "earlier fresh slow tail";
+      const newMatch = "new filter fresh slow tail";
+      computeDriver.state.lines.push(line(6, oldMatch), line(7, newMatch));
+      const tail = `${fixture.origin}${firstPath}`;
+      const held = await holdRequests(t, page, tail, {
+        once: true,
+        method: "GET",
+        afterServer: true,
+      });
+      const beforeReturn = reads().length;
+      await logsTab.click();
+      assert.equal((await held.requested)?.status(), 200);
+      await page.clock.runFor(2_000);
+      await filter.fill("new filter");
+      held.release();
+      await waitForIdleFetches(page);
+      assert.equal(await filter.inputValue(), "new filter");
+      assert.equal(await pane.getByText(newMatch, { exact: true }).isVisible(), true);
+      assert.equal(await pane.getByText(oldMatch, { exact: true }).isVisible(), false);
+      assert.equal(reads().length, beforeReturn + 1);
+    }
+
+    // A replacement can keep the Pod's name and request query. Its UID changes independently.
+    await deployment.click();
+    computeDriver.state.podUid = randomUUID();
+    computeDriver.state.lines = [line(6, "replacement output")];
+    const beforeReplacement = reads().length;
+    const response = responseTo(page, "GET", `${fixture.origin}${firstPath}`);
+    await logsTab.click();
+    assert.equal((await response).status(), 200);
+    await pane.getByText("replacement output", { exact: true }).waitFor();
+    assert.equal(await filter.inputValue(), "");
+    assert.equal(await warning.getAttribute("aria-pressed"), "true");
+    assert.deepEqual(
+      reads()
+        .slice(beforeReplacement)
+        .map(({ path }) => path),
+      [firstPath],
+    );
+
+    if (viewport.width === 1440) {
+      await filter.fill("replacement");
+      await deployment.click();
+      computeDriver.state.lines = [line(7, "output without a usable UID")];
+      // Change only the optional identity in a genuine tail. It still opens as usual.
+      await page.route(
+        (url) => url.pathname === revisionLogsPath(logs),
+        async (route) => {
+          const response = await route.fetch();
+          assert.equal(response.status(), 200);
+          const body = (await response.json()) as { data: { stream: { podUid: unknown } } };
+          assert.equal(body.data.stream.podUid, computeDriver.state.podUid);
+          body.data.stream.podUid = 17;
+          await route.fulfill({ response, json: body });
+        },
+        { times: 1 },
+      );
+      await logsTab.click();
+      await pane.getByText("output without a usable UID", { exact: true }).waitFor();
+      assert.equal(await filter.inputValue(), "");
+    }
+  });
+
   test(`the Logs tab opens under the strip it was clicked in at ${viewport.width}x${viewport.height}`, async (t) => {
     const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
     computeDriver.state.lines = [line(1, "tab click output")];
@@ -4256,6 +4438,93 @@ async function openAuthorizedRuntimeLogs(t: TestContext, memberName: string, ini
   await pods.first().waitFor();
   return { logs, role, page, requests, leave, pane, pods };
 }
+
+test("a permission denial ends the Logs reader even if the grant returns before leaving Logs", async (t) => {
+  const { logs, role, page, pane, requests } = await openAuthorizedRuntimeLogs(
+    t,
+    "return-after-denial",
+    "before the permission denial",
+  );
+  const { fixture, namespace, agent, revisionId, computeDriver } = logs;
+  const deployment = page.getByRole("tab", { name: "Deployment", exact: true });
+  const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
+  const filter = page.getByLabel("Filter", { exact: true });
+  const reads = () => logRequests(requests, revisionId);
+  const tail = `${fixture.origin}${reads()[0]!.path}`;
+  await filter.fill("before the permission denial");
+  await waitForIdleFetches(page);
+  await page.clock.runFor(100);
+
+  // Observe both real permission answers on the original mount with Follow off.
+  for (const granted of [false, true]) {
+    changeGrant(role, "read_logs", granted);
+    const response = responseTo(
+      page,
+      "GET",
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    );
+    await refocus(page);
+    const reply = await response;
+    assert.equal(reply.status(), 200);
+    assert.equal((await reply.json()).data.readLogs, granted);
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+  }
+  await deployment.click();
+  computeDriver.state.lines = [line(2, "authorized after the grant returns")];
+  const allowed = responseTo(page, "GET", tail);
+  await logsTab.click();
+  assert.equal((await allowed).status(), 200);
+  await pane.getByText("authorized after the grant returns", { exact: true }).waitFor();
+  assert.equal(await filter.inputValue(), "");
+
+  // Let the actual opening read discover a revoke that happened during the detour.
+  await filter.fill("authorized after the grant returns");
+  await deployment.click();
+  changeGrant(role, "read_logs", false);
+  const refused = responseTo(page, "GET", tail);
+  await logsTab.click();
+  assert.equal((await refused).status(), 403);
+  await page.getByText(LOG_TEXT_DENIED, { exact: false }).waitFor();
+  assert.equal(await filter.inputValue(), "");
+  assert.equal(await pane.locator(":scope > *").count(), 0);
+  const deniedReads = reads().length;
+  await page.clock.runFor(4_000);
+  assert.equal(reads().length, deniedReads);
+});
+
+test("a pending refusal on the old Logs tab cannot carry its filter or change the new reader", async (t) => {
+  const { logs, role, page, pane, requests } = await openAuthorizedRuntimeLogs(
+    t,
+    "return-during-refusal",
+    "original reader output",
+  );
+  const filter = page.getByLabel("Filter", { exact: true });
+  await filter.fill("original reader");
+  const tail = `${logs.fixture.origin}${logRequests(requests, logs.revisionId)[0]!.path}`;
+  const held = await holdRequests(t, page, tail, { once: true, afterServer: true });
+  changeGrant(role, "read_logs", false);
+  await page.getByRole("button", { name: "Refresh logs", exact: true }).click();
+  assert.equal((await held.requested)?.status(), 403);
+
+  await page.getByRole("tab", { name: "Deployment", exact: true }).click();
+  changeGrant(role, "read_logs", true);
+  logs.computeDriver.state.lines = [line(2, "new reader output")];
+  const allowed = responseTo(page, "GET", tail);
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  assert.equal((await allowed).status(), 200);
+  await pane.getByText("new reader output", { exact: true }).waitFor();
+  assert.equal(await filter.inputValue(), "");
+
+  await filter.fill("new reader");
+  const refused = responseTo(page, "GET", tail);
+  held.release();
+  assert.equal((await refused).status(), 403);
+  await waitForIdleFetches(page);
+  assert.equal(await filter.inputValue(), "new reader");
+  assert.equal(await pane.getByText("new reader output", { exact: true }).isVisible(), true);
+  assert.equal(await page.getByText(LOG_TEXT_DENIED, { exact: false }).count(), 0);
+});
 
 // Record if the text or element appears at any point after this call. Checking only the final
 // DOM would miss the Console briefly restoring revoked output from a cached view.

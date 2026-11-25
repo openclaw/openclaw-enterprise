@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-11-22
-last_updated_session: authoring-run/780fdd65-c36c-4e49-96d0-82230c495d93
+updated: 2026-11-24
+last_updated_session: authoring-run/6dfc28c9-6b38-459b-a8ca-820efd40e2b2
 ---
 
 # Agent runtime logs flow
@@ -207,7 +207,16 @@ Console saves a file only for HTTP 200 plain text; other successful formats show
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
 `console/agents/logs.mts` clears output on source, Pod or instance changes;
-only readable replacements start fresh tails. Status denial preserves log access;
+only readable replacements start fresh tails. On a same-version tab switch,
+`detail.mts:renderTab` saves one reader position if no request is pending.
+`logs.mts:readerPosition` captures the local filter (at most 512 UTF-16 units),
+hidden levels and offset. Retirement clears output and cursor. Return starts a
+fresh authorized tail. `restoreReaderPosition` applies the preferences only if the
+query matches and the gap-free result identifies the same source, Pod name and UID,
+container and restart count. Sandbox logs start fresh. Scroll is approximate. Follow
+starts off. A mismatch, refused access, failed or uncertain admission, unconfirmed log grant or new
+input discards the position. `console.mts:resetReads` discards it when the
+page deactivates. Status denial preserves log access;
 cached `403` avoids repeat denials. Unreadable versions and denied status reads
 stop status polling. Polls and every tab's refocus reread only the Agent (3000,
 3005, 3010). Without a running Pod, `detail.mts:runningVersion` links another
@@ -267,6 +276,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-24 18:46: Restore local reading preferences after a same-version Logs tab detour when the fresh container stream matches. (authoring-run/6dfc28c9-6b38-459b-a8ca-820efd40e2b2 - 17b056def389ac3e5f259ea4a2c965b374511402)
 
 - 2026-11-22 16:53: Distinguish runtime paths. (authoring-run/780fdd65-c36c-4e49-96d0-82230c495d93 - 3eedffbaae63cdc1b006e51d49b88504462d2a5c)
 
@@ -356,28 +367,5 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 - 2026-10-10 07:32: Preserve untimed cut progress. (authoring-run/3dcf8b04-24bd-4739-ac19-fb70f6064952 - f9b208a0ac5e1e5118c2f8dcc9050c27ff23061c)
 
 - 2026-10-10 07:17: Retain positional progress. (authoring-run/858ce292-681c-43ab-a4d3-0640d3380971 - a9176a61cf209915e2ccab3f862db9a2bc750754)
-
-- 2026-10-10 05:09: Compact hashes and window tuples; retain legacy decoding. (authoring-run/377d6942-f5b9-4c5f-825c-cdfdfeea7501 - 95c76244bcc6f88989993a30730e63dc45b87f65)
-
-- 2026-10-10 05:02: Unify Sandbox overlap baselines. (authoring-run/c8de19eb-fe81-4a26-b639-a0cb02360f23 - a0fd14ec40c2e5b8c66537e457ddd2d8202adc6e)
-
-- 2026-10-10 04:37: Compose safety evidence with Events. (authoring-run/39d848cc-a298-48fd-9f82-c39b85089b94 - 8e5a06cec7f622185222a8a7dbafe3b0a7228d9f)
-
-- 2026-10-10 04:19: Preserve masking evidence. (authoring-run/d983fb2c-0a98-43db-8690-ddb7f5b43f87 - 9222f0073c951203c5f959bc9382dbb13c605ee9)
-
-- 2026-10-10 04:10: Preserve rounded and empty windows. (authoring-run/b4a36577-a96a-44f4-9600-41b94747c1c9 - d791a48aa0baacfef2dede241c6161ad9c82e89a)
-
-- 2026-10-10 03:27: Keep recovery cursors valid and mark full Sandbox windows. (authoring-run/50fe6eec-f154-4d38-9cb5-8e755a82ded9 - dd55627538daa7b7ae43c431ab9db37ae878cc65)
-
-- 2026-10-10 03:05: Drain Container cuts. (authoring-run/b68ecd62-c0d7-4fbf-82ee-0f440d8ae84c - 4e23a961fff52cb453a4114afc922278205d3fec)
-
-- 2026-10-10 02:53: Fit termination status in response budgets. (authoring-run/2cbbcc37-919d-41ec-bdab-51aa836d92b7 - 880b645f5e5fb5c99c6046c1eac6ca81211be584)
-
-- 2026-10-10 02:47: Keep untimed replacement progress. (authoring-run/fd5e728e-9e9f-42ea-8ab7-d389f82b973d - f4c9a1b36988d659f8f927825fda4cd838ae832a)
-
-- 2026-10-10 02:43: Retain Sandbox cut progress; report changed snapshots. (authoring-run/2edda611-948b-44ae-a3d8-0a011073b719 - 5c7c56b49f16b80c4fcb91fedff0959a5fd733b0)
-
-- 2026-10-10 01:14: Bound Container and Sandbox pages, cursors and API frame. (authoring-run/018d11d8-3699-4e97-945b-c2cfd3088412 - 243b38ba6d951240065e5061e1e4abccdb44410c)
-- 2026-10-10 07:06: Merge main; preserve initial continuation, timestamps, Events, termination and histories. (authoring-run/b0c35eb4-2b87-4f3e-aec3-8c416cdef3bb - b744ee6f217d17942cdaacea80cbbd08126aa87f)
 
 [Agent runtime logs documentation history](agent-runtime-logs/history.md) preserves the earlier dated entries.

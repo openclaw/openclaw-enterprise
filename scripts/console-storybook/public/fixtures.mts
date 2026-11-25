@@ -118,6 +118,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     secretCreateNotPermitted?: boolean;
     bootstrapRuntime?: boolean;
     runtimeLogDownloadNoPod?: boolean;
+    runtimeLogReconnectCount?: number;
     denySecretCreate?: boolean;
     emptySecrets?: boolean;
   };
@@ -1337,6 +1338,15 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
                 "warn",
                 "slack socket reconnect with token=[redacted:key-value]",
                 { subsystem: "channels/slack" },
+              ),
+              ...Array.from({ length: scenario.runtimeLogReconnectCount ?? 0 }, (_, index) =>
+                line(
+                  new Date(Date.UTC(2026, 8, 27, 11, 41, 11 + index)).toISOString(),
+                  "openclaw",
+                  "warn",
+                  `slack socket reconnect attempt ${index + 1}`,
+                  { subsystem: "channels/slack" },
+                ),
               ),
             ],
             withheld: 3,

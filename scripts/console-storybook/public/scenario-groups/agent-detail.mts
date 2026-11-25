@@ -128,6 +128,7 @@ type AgentDetailScenario = {
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
+  runtimeLogReconnectCount?: number;
   unreadableAgentConfiguration?: "plugins";
   unreadableRevisionConfiguration?: "plugins";
   nativeAdmin?: "available";
@@ -3276,21 +3277,30 @@ export function createAgentDetailScenarios({
         gap: "Simulated UI state only; this preview does not prove a live stop, redeploy or deployment failure.",
       },
       runtimeLogsFilteredDownload: {
-        group: "Pages/Agent detail",
+        ...runtimeLogsPage,
         name: "Runtime logs filtered and downloaded",
-        path: `${candidateVersion}&tab=logs`,
-        deployed: true,
-        candidateDeploymentStatus: "succeeded",
+        runtimeLogReconnectCount: 36,
+        rules: [
+          {
+            path: candidateRuntimeLogs,
+            queryParam: "tailLines",
+            skip: 1,
+            once: true,
+            delayMs: 4_000,
+          },
+        ],
         actions: [
           click("Download"),
           { selector: ".log-chip.log-level-info", click: true },
           { selector: "#runtime-log-filter", value: "slack" },
         ],
         description:
-          "Download saves the redacted text tail as a .log file through its own audited read. Hiding info and filtering for slack narrows the loaded window to the redacted reconnect warning; the status line counts the hidden rows.",
+          "Download saves the redacted text tail as a .log file through its own audited read. The preview starts with info hidden and slack in Filter. The second tail read takes four seconds.",
         steps: [
-          "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
-          "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
+          "Check that info is deselected and Filter contains slack. Scroll up within Runtime log output to a numbered reconnect warning well away from the newest lines. Note the first visible warning, then select Follow.",
+          "Keep v7 selected. Open Deployment, then immediately reopen Logs. When Reading output… appears, check that Filter is empty and the pane has no rows.",
+          "After the fresh Gateway response, check that Filter contains slack, info is deselected, and the pane shows the same warning at the same position. The button should say Follow and be unpressed.",
+          "Clear Filter and enable info to see the full loaded tail and the source retention notice. Use Reset story to repeat.",
         ],
       },
       runtimeLogsRateLimited: {
