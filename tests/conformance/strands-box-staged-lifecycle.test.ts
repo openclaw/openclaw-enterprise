@@ -10,23 +10,22 @@ import {
   type KubernetesObject,
   type V1ConfigMap,
 } from "../../apps/controller/node_modules/@kubernetes/client-node/dist/index.js";
-import { StrandsBoxCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/strands-box.ts";
-import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { stagedStockFixture } from "../fixtures/strands-box.ts";
-import { gatewayRouting } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { listen } from "../helpers/listen.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("Box requires a measured, pinned launcher for activation and retains evidence until its Pod disappears", async (t) => {
-  const { staged, stagedOptions, sourceId, configurationId, deployment } =
-    await stagedStockFixture();
-  const driver = new StrandsBoxSandboxDriver(stagedOptions, {
-    id: deployment.proxyDriverId,
-    authentication: { mode: "inCluster" },
-    routing: gatewayRouting,
-    dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-  });
+  const {
+    staged,
+    sandbox: driver,
+    proxy,
+    fixture,
+    prepare,
+    sourceId,
+    configurationId,
+    deployment,
+  } = await stagedStockFixture();
   const { resourceName: name, namespaceName: namespace } = driver.harnessResource(staged);
   const transportToken = "synthetic-transport";
   const version = randomUUID();
@@ -62,13 +61,14 @@ test("Box requires a measured, pinned launcher for activation and retains eviden
     cert: readFileSync(directory + "/peer.pem", "utf8"),
   };
   let receipt: unknown;
+  let state = "starting";
   const port = await listen(
     t,
     createServer(tls, (req, res) => {
       assert.equal(req.headers.authorization, "Bearer " + transportToken);
       assert.equal(req.method, "GET");
       assert.equal(req.url, "/revisions/" + staged.revision.id + "/readiness");
-      res.end(JSON.stringify({ state: "starting", staged: receipt }));
+      res.end(JSON.stringify({ state, staged: receipt }));
     }),
   );
   const resources = new Map<string, KubernetesObject>();
@@ -98,9 +98,13 @@ test("Box requires a measured, pinned launcher for activation and retains eviden
     }),
     delete: (ref: KubernetesObject) => resources.delete(key(ref)),
   });
+  const serviceAddress = Reflect.get(driver, "harnessServiceAddress").bind(driver);
   Object.assign(driver, {
     observer: Promise.resolve(kubernetes),
-    harnessServiceAddress: async () => "localhost:" + port,
+    harnessServiceAddress: async (...args: unknown[]) => {
+      await serviceAddress(...args);
+      return "localhost:" + port;
+    },
     endpointAddresses: async () => [{ cidr: "192.0.2.1/32", port: 443 }],
     gatewayRoute: async () => ({ host: "gateway.oce.svc", port: 18789, egress: {} }),
   });
@@ -142,6 +146,7 @@ test("Box requires a measured, pinned launcher for activation and retains eviden
   const pod = {
     metadata: { name: "launcher", uid: podUid, ownerReferences: [rs] },
     status: {
+      conditions: [{ type: "Ready", status: "True" }],
       initContainerStatuses: [
         { name: "initialize-listener", state: { terminated: { exitCode: 0, message: tls.cert } } },
       ],
@@ -167,7 +172,7 @@ test("Box requires a measured, pinned launcher for activation and retains eviden
   receipt = report;
   await assert.rejects(driver.activateStagedHarness(context), pending);
   receipt = undefined;
-  const proxy = new StrandsBoxCredentialProxyDriver(driver);
+
   let latestVersion: string = version;
   proxy.bindCurrentVersion(async () => latestVersion);
   let resolved = 0;
@@ -257,6 +262,60 @@ test("Box requires a measured, pinned launcher for activation and retains eviden
     policyHash: report.policyHash,
     configHash: report.configHash,
   });
+  await t.test(
+    "Compute maintenance can observe this execution but never provision or release one",
+    async () => {
+      const { revision } = staged;
+      const maintenance = { ...prepare, existingHarnessOnly: true as const };
+      const compute = fixture.driver;
+      const location = { name: namespace, plane: "control" };
+      Object.assign(compute, { sandboxNamespaceContext: async () => context });
+      state = "serving";
+      const readSecret = fixture.clients.core.readNamespacedSecret;
+      Object.assign(fixture.clients.core, {
+        async readNamespacedSecret(request: { name: string; namespace: string }) {
+          const secret = await readSecret(request);
+          if (secret.data?.deviceId) {
+            secret.data.enrolledRevisionId = Buffer.from(revision.id).toString("base64");
+          }
+          return secret;
+        },
+      });
+      await assert.rejects(
+        fixture.prepare(revision, maintenance),
+        /retained Box target is missing/,
+      );
+      await Reflect.get(compute, "credentialDeploymentTarget").call(
+        compute,
+        revision,
+        location,
+        sandboxId,
+      );
+      const writes = fixture.writes.length;
+      assert.equal((await fixture.prepare(revision, maintenance)).ready, true);
+      await fixture.activate(revision, maintenance);
+      const diagnosticKey = "Service/" + name + "-status";
+      const diagnostic = resources.get(diagnosticKey)!;
+      resources.delete(diagnosticKey);
+      await assert.rejects(fixture.prepare(revision, maintenance), /Service is unavailable/);
+      assert.equal(resources.has(diagnosticKey), false);
+      resources.set(diagnosticKey, diagnostic);
+      pod.metadata.uid = randomUUID();
+      await assert.rejects(fixture.prepare(revision, maintenance), /replacement Pod/);
+      pod.metadata.uid = podUid;
+      state = "starting";
+      receipt = report;
+      resources.delete(releaseKey);
+      assert.equal((await fixture.prepare(revision, maintenance)).ready, false);
+      await assert.rejects(
+        fixture.activate(revision, maintenance),
+        /retained Box execution is unavailable/,
+      );
+      assert.equal(resources.has(releaseKey), false);
+      resources.set(releaseKey, release);
+      assert.equal(fixture.writes.length, writes);
+    },
+  );
   receipt = { ...report, challenge: "b".repeat(64) };
   await assert.rejects(driver.activateStagedHarness(context), /release differs/);
   pod.metadata.uid = randomUUID();

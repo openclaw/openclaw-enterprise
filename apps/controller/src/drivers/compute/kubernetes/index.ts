@@ -100,7 +100,11 @@ import {
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { gatewayRoutingHostname } from "./gateway-routing-hostname.ts";
-import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
+import {
+  managedNamespaceName,
+  isKubernetesNamespaceName,
+  isKubernetesResourceName,
+} from "./resource-name.ts";
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
   MODEL_EGRESS_PORT,
@@ -2428,7 +2432,7 @@ function labelsToSelector(labels: Readonly<Record<string, string>>): string {
 
 export function kubernetesNamespaceName(namespaceId: string): string {
   const id = required(namespaceId, "Platform Namespace ID");
-  return `oce-${sha256Hex(id, 15)}`;
+  return managedNamespaceName(id);
 }
 
 const KUBELET_LOG_UNAVAILABLE =
@@ -6750,7 +6754,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revision.sandboxDriverId !== this.sandboxDriver?.id ||
         (revision.repositoryCredentials !== undefined &&
           !isNativeStagedRepositoryRevision(revision)) ||
-        context?.existingHarnessOnly === true ||
+        (context?.existingHarnessOnly && this.sandboxDriver?.implementation !== "strands-box") ||
         context?.configureCredentialDeployment === undefined ||
         revision.sandboxPolicy === undefined
       ) {
@@ -7170,6 +7174,61 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.verifyNamespaceOwnership(observed, tenantOwnership, external);
     if (observed.status?.phase !== "Active") {
       return result;
+    }
+    if (revision.credentialDeployment && context?.existingHarnessOnly) {
+      // The published Box must already be serving. Do not run ordinary
+      // reconciliation, which can recreate inputs, pin a Pod or issue a release.
+      const { StrandsBoxSandboxDriver } = await import("../../sandbox/strands-box.ts");
+      if (!(sandboxDriver instanceof StrandsBoxSandboxDriver)) {
+        throw new DependencyUnavailableError(
+          "This staged Sandbox cannot maintain a retained execution.",
+        );
+      }
+      const sandboxId = await this.credentialDeploymentTarget(revision, sourceNamespace);
+      if (!sandboxId) {
+        throw new DependencyUnavailableError("The retained Box target is missing.");
+      }
+      const expected = {
+        configurationId: revision.configurationId,
+        targetRef: {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+          sandboxId,
+        },
+      };
+      const retained = {
+        ...(await this.sandboxNamespaceContext(
+          this.sandboxNamespaceForRevision(revision, namespace),
+          namespace,
+        )),
+        revision,
+      };
+      const status = await this.credentialDeploymentProxyDriver!.getDeploymentStatus(
+        retained,
+        expected,
+      );
+      if (status.state === "failed") {
+        throw new CredentialDeploymentFailedError(status.code);
+      }
+      if (
+        status.state !== "ready" ||
+        !(await sandboxDriver.maintainStagedHarness(retained, expected))
+      ) {
+        return result;
+      }
+      const owner = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+      const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
+      const gateway = await this.getOwned("Deployment", gatewayName, gatewayNamespace, owner);
+      return {
+        ...result,
+        ready:
+          gateway?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id &&
+          !gateway.metadata.deletionTimestamp &&
+          (await this.gatewayReady(owner, gatewayName, gatewayNamespace, revision.id, gateway)) &&
+          (await this.workspaceNodeEnrolled(revision, namespace)) &&
+          (await this.workspaceNodeReady(revision, namespace)),
+      };
     }
     await this.revokeUnavailablePublicGithubRead(revision, namespace);
     const policyNamespaces =
@@ -7843,15 +7902,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // worker's exposure serves only Compute's status read before its first enrollment,
         // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
         const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
-        if (
-          staged !== undefined &&
-          context?.existingHarnessOnly &&
-          sandboxDriver.implementation !== "strands-box"
-        ) {
-          throw new DependencyUnavailableError(
-            "Staged Sandbox provisioning cannot preserve this existing Harness lifecycle state.",
-          );
-        }
         const harnessContext = {
           ...sandboxContext,
           revision,
@@ -7943,12 +7993,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
               sandboxId = targetRef.sandboxId;
               await this.credentialDeploymentTarget(revision, targetNamespace, sandboxId);
-            } else if (context?.existingHarnessOnly) {
-              // Retained Box executions refresh DNS grants without recreating a missing Pod.
-              const retained = await sandboxDriver.provisionStagedHarness!(harnessContext);
-              if (!isDeepStrictEqual(retained, { ...deployment, sandboxId })) {
-                throw new OwnershipFailure("The retained staged execution changed.");
-              }
             }
             expected = {
               targetRef: { ...deployment, sandboxId },
@@ -8569,6 +8613,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
     }
     this.validateGatewayManagedMode(revision);
+    if (revision.credentialDeployment && context?.existingHarnessOnly) {
+      // Worker reauthorized the published revision. Never activate it again
+      // from a maintenance pass, even if a release receipt has gone missing.
+      if (!(await this.prepareRevisionWorkloads(revision, context)).ready) {
+        throw new DependencyUnavailableError("The retained Box execution is unavailable.");
+      }
+      return;
+    }
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);

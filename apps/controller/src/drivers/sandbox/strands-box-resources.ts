@@ -2,7 +2,7 @@ import type { KubernetesObject } from "@kubernetes/client-node";
 import type { SandboxHarnessContext } from "@openclaw-enterprise/contracts";
 import { sha256Hex } from "@openclaw-enterprise/utils";
 import { posix } from "node:path";
-import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
+import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness/workspace-preparation.ts";
 import {
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
   RUNTIME_WRAPPER_COMMAND,

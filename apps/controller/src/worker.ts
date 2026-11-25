@@ -2574,6 +2574,16 @@ export class ControllerWorker {
     }
     await this.recheckRevokedCredentialSources(claim, revision);
     if (revision.credentialDeployment !== undefined) {
+      // Retained Box maintenance can update DNS grants but never configures
+      // credentials. Authorize even if the execution proves unready.
+      if (
+        context.existingHarnessOnly &&
+        revision.credentialDeployment.driver.implementation === "strands-box"
+      ) {
+        await this.withClaimHeartbeat(claim, (signal) =>
+          this.authorizedCredentialDeployment(claim, revision, signal),
+        );
+      }
       prepared = {
         ...prepared,
         configureCredentialDeployment: (expected, signal) =>

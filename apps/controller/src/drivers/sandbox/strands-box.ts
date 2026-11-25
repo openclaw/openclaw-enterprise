@@ -1,8 +1,8 @@
 import { gatewayRoutingHostname } from "../compute/kubernetes/gateway-routing-hostname.ts";
-import {
-  kubernetesNamespaceName,
-  type KubernetesGatewayRoutingOptions,
-  type KubernetesWorkloadPeer,
+import { managedNamespaceName } from "../compute/kubernetes/resource-name.ts";
+import type {
+  KubernetesGatewayRoutingOptions,
+  KubernetesWorkloadPeer,
 } from "../compute/kubernetes/index.ts";
 import { lookup } from "node:dns/promises";
 import {
@@ -233,6 +233,14 @@ function isPodUid(value: unknown): value is string {
 }
 
 type ExecutionContext = SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> };
+function podReady(pod: unknown): boolean {
+  const status = asRecord(asRecord(pod)?.status);
+  const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
+  return conditions.some(
+    (condition) => asRecord(condition)?.type === "Ready" && asRecord(condition)?.status === "True",
+  );
+}
+
 function awaitingLauncher(): never {
   throw new ActivationPendingError(
     "CREDENTIAL_ACTIVATION_PENDING",
@@ -485,7 +493,10 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
 
   async stagedScope(namespaceId: string) {
     // A changed installation grant does not move previously delivered copies.
-    const namespace = kubernetesNamespaceName(namespaceId);
+    if (!namespaceId?.trim()) {
+      throw new Error("Missing staged Box Namespace ID.");
+    }
+    const namespace = managedNamespaceName(namespaceId);
     return {
       namespace,
       labels: { [MANAGED]: sha256Hex(this.id, 20), [OWNER]: namespaceId },
@@ -530,14 +541,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     if (pods.items.length !== 1) {
       return { state: "starting" };
     }
-    const status = asRecord(asRecord(pods.items[0])?.status);
-    const conditions = Array.isArray(status?.conditions) ? status.conditions : [];
-    return conditions.some(
-      (condition) =>
-        asRecord(condition)?.type === "Ready" && asRecord(condition)?.status === "True",
-    )
-      ? { state: "running" }
-      : { state: "starting" };
+    return podReady(pods.items[0]) ? { state: "running" } : { state: "starting" };
   }
 
   async workspaceNodePeerLabels(
@@ -720,6 +724,12 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     return {
       client: api(context),
       configuration: current,
+      serving: report.state === "serving" && podReady(pod),
+      hash: config.metadata?.annotations?.[HASH],
+      port:
+        typeof data["workload.json"] === "string"
+          ? asRecord(JSON.parse(data["workload.json"]))?.port
+          : undefined,
       name: ref.resourceName,
       namespace: ref.namespaceName,
       labels: this.labels(context),
@@ -750,8 +760,11 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
 
   /** Compute alone writes the release, after its authority check. The pinned
    * diagnostic port can report a challenge but never accepts a release. */
-  private async preparedRelease(context: ExecutionContext) {
-    const target = await this.inspectLauncher(context);
+  private async preparedRelease(
+    context: ExecutionContext,
+    retained?: CredentialDeploymentConfiguration,
+  ) {
+    const target = await this.inspectLauncher(context, retained);
     const expected = target.configuration;
     if (!target.status || !(await observedMaterialVersion(context, expected, target))) {
       awaitingLauncher();
@@ -764,7 +777,27 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     } else if (target.status.released) {
       throw new Error("Strands Box is missing its execution release.");
     }
-    return { resource, existing };
+    return { target, resource, existing };
+  }
+
+  /** Maintenance may refresh DNS on the owned policy. It cannot create resources or release a held launcher. */
+  async maintainStagedHarness(
+    context: ExecutionContext,
+    expected: CredentialDeploymentConfiguration,
+  ): Promise<boolean> {
+    const { target, existing } = await this.preparedRelease(context, expected);
+    if (
+      !existing ||
+      !target.serving ||
+      !target.status?.released ||
+      !target.hash ||
+      typeof target.port !== "number"
+    ) {
+      return false;
+    }
+    await this.harnessServiceAddress(context, false, target.port);
+    await this.refreshEndpointPolicy(context, this.harnessResource(context), target.hash);
+    return true;
   }
 
   async prepareStagedHarness(
@@ -902,7 +935,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
   }
 
   private async refreshEndpointPolicy(
-    context: SandboxHarnessContext,
+    context: ExecutionContext,
     ref: SandboxResourceRef,
     hash: string,
   ): Promise<void> {
@@ -1124,6 +1157,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
   private async harnessServiceAddress(
     context: ExecutionContext & Partial<Pick<SandboxHarnessContext, "requirements">>,
     diagnostic: boolean,
+    retainedPort?: number,
   ): Promise<string> {
     const ref = this.harnessResource(context);
     const serviceName = diagnostic ? `${ref.resourceName}-status` : ref.resourceName;
@@ -1143,7 +1177,7 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
       ? STRANDS_STATUS_PORT
       : expectedPort && "value" in expectedPort
         ? Number(expectedPort.value)
-        : NaN;
+        : (retainedPort ?? NaN);
     const spec = asRecord(asRecord(service)?.spec);
     const ports = Array.isArray(spec?.ports) ? spec.ports : [];
     if (

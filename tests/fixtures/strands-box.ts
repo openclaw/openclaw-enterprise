@@ -129,5 +129,19 @@ export async function stagedStockFixture() {
   fixture.observePods([fixture.pod("ready")]);
   await assert.rejects(fixture.prepare(revision, prepare), (error) => error === captured);
   assert.ok(staged);
-  return { staged, stagedOptions, context, route, allowed, deployment, sourceId, configurationId };
+  sandbox.provisionStagedHarness = StrandsBoxSandboxDriver.prototype.provisionStagedHarness;
+  return {
+    staged,
+    stagedOptions,
+    context,
+    route,
+    allowed,
+    deployment,
+    sourceId,
+    configurationId,
+    sandbox,
+    proxy,
+    fixture,
+    prepare,
+  };
 }
