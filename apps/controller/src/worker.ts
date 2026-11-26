@@ -7098,19 +7098,32 @@ export class ControllerWorker {
     // An abandoned Source-backed candidate may already own a Gateway delivery copy even when
     // Deployment creation never succeeded. Stop it before publishing terminal failure; Compute
     // confirms its Pods are gone before deleting that revision's staged Secret.
-    const abandonedGatewaySource =
+    let abandonedGatewaySource = false;
+    if (
       outcome === "permanent" &&
       heldFailureCode === undefined &&
       (expired || resolved.outcome === "retry") &&
-      isCandidateDeployment(claim) &&
-      (await this.state.read(async (view) => {
-        const revision = await view.revisions.findRevision(
-          claim.namespaceId,
-          claim.agentId!,
-          claim.revisionId!,
-        );
-        return revision !== undefined && gatewaySourceIds(revision).length > 0;
-      }));
+      isCandidateDeployment(claim)
+    ) {
+      try {
+        abandonedGatewaySource = await this.state.read(async (view) => {
+          const revision = await view.revisions.findRevision(
+            claim.namespaceId,
+            claim.agentId!,
+            claim.revisionId!,
+          );
+          return revision !== undefined && gatewaySourceIds(revision).length > 0;
+        });
+      } catch (error) {
+        // An invalid stored revision cannot be handed to Compute yet. Transfer its retirement
+        // to durable cleanup atomically with failure; cleanup retries after the row is repaired.
+        // Transient read failures still prevent publication until the revision can be checked.
+        if (!unrecoverableRead(error)) {
+          throw error;
+        }
+        resolved = { ...resolved, cleanupFailedPreparation: true };
+      }
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -8413,7 +8426,11 @@ export class ControllerWorker {
     result: RevisionDispatchResult,
   ): Promise<void> {
     const installation = this.installation;
-    if (installation === undefined || claim.agentId === undefined) {
+    if (
+      installation === undefined ||
+      claim.agentId === undefined ||
+      claim.revisionId === undefined
+    ) {
       throw new Error("The worker revision authorization is unavailable.");
     }
     await unit.audit.append({
@@ -8424,6 +8441,7 @@ export class ControllerWorker {
       ...workerAuthorizationEvidence(result),
       reasonCode: result.code,
       outcome: "denied",
+      details: { revisionId: claim.revisionId },
     });
   }
 }

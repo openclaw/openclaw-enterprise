@@ -215,6 +215,7 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialDeploymentFailedError,
+  CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
@@ -866,6 +867,13 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
       errorClass: "CredentialDeploymentFailedError",
     };
   }
+  if (cause instanceof CredentialSourceRevisionError) {
+    return {
+      code: cause.code,
+      stage: failure.stage,
+      errorClass: "CredentialSourceRevisionError",
+    };
+  }
   if (cause instanceof OpenShellSandboxConfigurationFailure && cause.diagnosticCode !== undefined) {
     return {
       code: cause.diagnosticCode,
@@ -1430,6 +1438,7 @@ const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
+const MAX_KUBERNETES_SECRET_DATA_BYTES = 1_048_576;
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
@@ -17655,15 +17664,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
     } else {
       const resolved = await delivery.resolve(this.operationSignal());
+      let aggregateBytes = 0;
       if (
         Object.keys(resolved).length !== exported.length ||
         exported.some(([destination, binding]) => {
           const item = resolved[destination];
+          const bytes = typeof item?.value === "string" ? Buffer.byteLength(item.value) : 0;
+          aggregateBytes += bytes;
           return (
             item === undefined ||
             typeof item.value !== "string" ||
-            Buffer.byteLength(item.value) === 0 ||
-            Buffer.byteLength(item.value) > MAX_RUNTIME_CREDENTIAL_BYTES ||
+            bytes === 0 ||
+            bytes > MAX_RUNTIME_CREDENTIAL_BYTES ||
             (binding.source.kind === "credential_source"
               ? !isNonEmptyString(item.sourceVersion)
               : item.sourceVersion !== undefined)
@@ -17672,6 +17684,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ) {
         throw new ConfigurationFailure(
           "Resolved Gateway credentials do not match the admitted bindings.",
+        );
+      }
+      if (aggregateBytes > MAX_KUBERNETES_SECRET_DATA_BYTES) {
+        throw new CredentialSourceRevisionError(
+          "GATEWAY_CREDENTIALS_TOO_LARGE",
+          "The staged Gateway credentials exceed the Kubernetes Secret size limit.",
         );
       }
       const data = Object.fromEntries(

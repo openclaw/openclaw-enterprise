@@ -14,7 +14,10 @@ import {
   ActivationPendingError,
   OpenClawController,
   CredentialDeploymentFailedError,
+  PersistedStateInvalidError,
+  PostgresPlatformState,
   ResourceStateConflictError,
+  type PlatformReadView,
 } from "../../packages/occ/src/index.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
@@ -171,7 +174,7 @@ async function gatewaySourceWorkerFixture(fixture: RevisionFixture, context: Tes
   );
 
   const beforeEnrollment = new Set(core.secrets.keys());
-  const enroll = () =>
+  const enroll = (secret: string = randomUUID()) =>
     controller.createManagedCredentialSource(
       fixture.actor.id,
       namespaceId,
@@ -180,7 +183,7 @@ async function gatewaySourceWorkerFixture(fixture: RevisionFixture, context: Tes
         name: `Gateway startup ${randomUUID()}`,
         lifecycleConfig: { settings: {} },
         providerPreset: "openai",
-        secret: randomUUID(),
+        secret,
       },
       (ref, phase) => ({
         ...auditEvent(
@@ -325,6 +328,24 @@ cases.revisionTest(
     const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
     await fixture.work(work, "failed_permanent");
     assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "AUTHORIZATION_DENIED");
+    const audit = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->'authorization' AS authorization,
+              details - '__occAuditMetadata' AS details
+       FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_id=$2 AND kind='authorization_denial'`,
+      [namespaceId, agent.id],
+    );
+    assert.deepEqual(audit.rows, [
+      {
+        actor_id: fixture.actor.id,
+        authorization: {
+          principalId: agent.servicePrincipalId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: secondSource.id },
+        },
+        details: { revisionId: revision.id },
+      },
+    ]);
     assert.equal(firstSourceReads, 1, "the first Source's alias must not cause another owner read");
     assert.deepEqual(
       stagedWrites,
@@ -338,11 +359,9 @@ cases.revisionTest(
   },
 );
 
-test(
-  "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await cases.setup(context, { maxAttempts: 2 });
+cases.revisionTest(
+  "the Worker permanently refuses Gateway credentials that exceed one Kubernetes Secret",
+  async (fixture, context) => {
     const {
       compute,
       controller,
@@ -356,10 +375,9 @@ test(
       enroll,
       beforeEnrollment,
     } = await gatewaySourceWorkerFixture(fixture, context);
-    const source = await enroll();
-    const custodyKey = [...core.secrets.keys()].find((key) => !beforeEnrollment.has(key));
-    assert.ok(custodyKey);
-    const custody = structuredClone(core.secrets.get(custodyKey));
+    const source = await enroll("x".repeat(65_000));
+    const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+    assert.equal(custodyKeys.length, 1);
     const modelSecret = await controller.createSecret(fixture.actor.id, {
       namespaceId,
       name: `Harness PAT ${randomUUID()}`,
@@ -370,17 +388,21 @@ test(
         transport.save({ kind: "Secret", ...secret });
       }
     }
+    // Each alias is legal; their combined decoded values exceed the one-Secret limit.
+    const secretBindings = Object.fromEntries(
+      Array.from({ length: 17 }, (_, index) => [`GW_LARGE_${index}`, { source: source.ref }]),
+    );
     const configuration = await controller.createConfiguration(fixture.actor.id, {
       namespaceId,
       kind: "agent",
       values: createHarnessConfiguration("codex", "gpt-5"),
-      secretBindings: { GW_HOOK_TOKEN: { source: source.ref } },
+      secretBindings,
     });
     const agent = await controller.createAgent(
       fixture.actor.id,
       {
         namespaceId,
-        name: `Gateway abandonment ${randomUUID()}`,
+        name: `Gateway size refusal ${randomUUID()}`,
         configurationId: configuration.id,
         executionMode: "dedicated",
         harnessAuth: { method: "codex_pat", source: modelSecret.ref },
@@ -393,6 +415,78 @@ test(
       resolveApprovedHarness,
     );
     placeholder.id = revision.id;
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
+    assert.equal(
+      (await fixture.workResult(work)).rows[0]?.reason_code,
+      "GATEWAY_CREDENTIALS_TOO_LARGE",
+    );
+    assert.deepEqual(stagedWrites, [], "oversized values must never be staged");
+    assert.equal(
+      transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+    assert.ok(core.secrets.has(custodyKeys[0]!), "refusal must preserve owner custody");
+  },
+);
+
+async function gatewaySourceCandidate(
+  fixture: RevisionFixture,
+  scenario: Awaited<ReturnType<typeof gatewaySourceWorkerFixture>>,
+) {
+  const { controller, core, namespaceId, namespace, transport } = scenario;
+  const source = await scenario.enroll();
+  const custodyKey = [...core.secrets.keys()].find((key) => !scenario.beforeEnrollment.has(key));
+  assert.ok(custodyKey);
+  const custody = structuredClone(core.secrets.get(custodyKey));
+  const modelSecret = await controller.createSecret(fixture.actor.id, {
+    namespaceId,
+    name: `Harness PAT ${randomUUID()}`,
+    value: randomUUID(),
+  });
+  for (const secret of core.secrets.values()) {
+    if (secret.metadata.namespace === namespace) {
+      transport.save({ kind: "Secret", ...secret });
+    }
+  }
+  const configuration = await controller.createConfiguration(fixture.actor.id, {
+    namespaceId,
+    kind: "agent",
+    values: createHarnessConfiguration("codex", "gpt-5"),
+    secretBindings: { GW_HOOK_TOKEN: { source: source.ref } },
+  });
+  const agent = await controller.createAgent(
+    fixture.actor.id,
+    {
+      namespaceId,
+      name: `Gateway abandonment ${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+    },
+    resolveApprovedHarness,
+  );
+  const revision = await controller.deployAgent(
+    fixture.actor.id,
+    { namespaceId, agentId: agent.id },
+    resolveApprovedHarness,
+  );
+  scenario.placeholder.id = revision.id;
+  return { custodyKey, custody, agent, revision };
+}
+
+test(
+  "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 2 });
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, core, runtime, transport, namespaceId, namespace, stagedWrites } = scenario;
+    const { custodyKey, custody, agent, revision } = await gatewaySourceCandidate(
+      fixture,
+      scenario,
+    );
     const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
     const patchDeployment = clients.apps.patchNamespacedDeployment!;
     const deleteDeployment = clients.apps.deleteNamespacedDeployment!;
@@ -474,6 +568,106 @@ test(
       "staged-secret-deleted",
     ]);
     assert.deepEqual(core.secrets.get(custodyKey), custody, "owner custody survives abandonment");
+  },
+);
+
+test(
+  "the Worker retains failed-preparation cleanup while an abandoned Gateway Source revision cannot be read",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 1 });
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, core, runtime, transport, namespace, stagedWrites } = scenario;
+    const { custodyKey, custody, revision } = await gatewaySourceCandidate(fixture, scenario);
+
+    // Admitted revisions are immutable. Inject the established reader refusal only after
+    // staging and uncertain apply, rather than manufacturing invalid persisted state.
+    let invalid = false;
+    const read = PostgresPlatformState.prototype.read;
+    PostgresPlatformState.prototype.read = function <T>(
+      work: (view: PlatformReadView) => Promise<T>,
+    ): Promise<T> {
+      return (read<T>).call(this, (view) =>
+        work({
+          ...view,
+          revisions: {
+            ...view.revisions,
+            async findRevision(ns, owner, id) {
+              if (invalid && id === revision.id) {
+                throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
+              }
+              return view.revisions.findRevision(ns, owner, id);
+            },
+          },
+        }),
+      );
+    };
+    try {
+      const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+      const patchDeployment = clients.apps.patchNamespacedDeployment!;
+      let gatewayName: string | undefined;
+      clients.apps.patchNamespacedDeployment = async (request) => {
+        if (!request.body.metadata.name.startsWith("gateway-")) {
+          return patchDeployment(request);
+        }
+        gatewayName = request.body.metadata.name;
+        await patchDeployment(request);
+        invalid = true;
+        throw new Error("controlled Gateway Deployment apply failure");
+      };
+      await fixture.start(compute, { transformDrivers: () => runtime });
+      const deployment = {
+        id: revision.id,
+        idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+      };
+      await fixture.work(deployment, "failed_permanent");
+      assert.equal(
+        (await fixture.workResult(deployment)).rows[0]?.reason_code,
+        "DEPENDENCY_UNAVAILABLE",
+      );
+
+      // The terminal deployment and cleanup ownership are committed together. The cleanup
+      // must defer, preserving the staged copy, until the exact immutable revision is readable.
+      const cleanupKey = await waitFor("failed-preparation cleanup deferral", async () => {
+        const result = await fixture.observerPool.query<{ idempotency_key: string; state: string }>(
+          `SELECT idempotency_key, state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key <> $2`,
+          [revision.id, deployment.idempotencyKey],
+        );
+        const cleanup = result.rows[0];
+        if (result.rows.length !== 1 || cleanup?.state !== "queued") {
+          return undefined;
+        }
+        const attempt = await fixture.state.read((view) =>
+          view.operations.findWorkAttempt(cleanup.idempotency_key),
+        );
+        return attempt?.code === "REPOSITORY_CLEANUP_PENDING" ? cleanup.idempotency_key : undefined;
+      });
+      assert.equal(stagedWrites.length, 1);
+      assert.ok(transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)));
+      assert.ok(gatewayName);
+      assert.ok(transport.objects.has(transport.key("Deployment", gatewayName, namespace)));
+
+      invalid = false;
+      // Advance only this deferred cleanup; do not wait on the production backoff clock.
+      await fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = clock_timestamp()
+         WHERE idempotency_key = $1 AND state = 'queued'`,
+        [cleanupKey],
+      );
+      await fixture.work({ id: revision.id, idempotencyKey: cleanupKey }, "succeeded");
+      assert.equal(
+        transport.objects.has(transport.key("Deployment", gatewayName, namespace)),
+        false,
+      );
+      assert.equal(
+        transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+        false,
+      );
+      assert.deepEqual(core.secrets.get(custodyKey), custody, "owner custody survives cleanup");
+    } finally {
+      PostgresPlatformState.prototype.read = read;
+    }
   },
 );
 

@@ -1436,14 +1436,12 @@ export class SandboxGatewayUnauthorizedError extends Error {
 }
 
 /**
- * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
- * would place their placeholders in the same Sandbox environment variable. The revision's
- * source list and each source's config are fixed, so retrying cannot change the outcome; the
- * worker fails the deployment with `code`. The message stays in the controller; status shows a
- * fixed text.
+ * Credential sources cannot be delivered for this exact AgentRevision. The admitted delivery
+ * cannot succeed without changing the bindings or source material, so the worker fails the
+ * deployment with `code`. The message stays in the controller; status shows fixed text.
  */
 export class CredentialSourceRevisionError extends Error {
-  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT";
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT" | "GATEWAY_CREDENTIALS_TOO_LARGE";
 
   constructor(code: CredentialSourceRevisionError["code"], message: string) {
     super(message);
