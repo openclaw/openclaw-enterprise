@@ -6,7 +6,7 @@ import type {
 export const REPOSITORY_CLIENT_BIN = "/opt/oce/repository-credentials/bin";
 
 const REPOSITORY_REST_SKILL = "github-repository-rest";
-const REPOSITORY_REST_SKILL_DIRECTORY = `/etc/codex/skills/${REPOSITORY_REST_SKILL}`;
+const REPOSITORY_REST_SKILL_DIRECTORY = `/usr/local/lib/oce/skills/${REPOSITORY_REST_SKILL}`;
 
 function object(
   value: OpenClawConfigurationValue | undefined,

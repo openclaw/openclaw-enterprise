@@ -3,12 +3,12 @@ import type { codexRpc, list, parseJson, record, text } from "./wire.ts";
 export async function probePackagedCodex(
   {
     historicalCodex,
-    expectBundledRepositoryRestSkill,
+    verifyPackagedRepositoryRestSkill,
     stagingCodexVersion,
     deadlineMs,
   }: {
     historicalCodex: boolean;
-    expectBundledRepositoryRestSkill: boolean;
+    verifyPackagedRepositoryRestSkill: boolean;
     stagingCodexVersion: string;
     deadlineMs: number;
   },
@@ -291,16 +291,17 @@ export async function probePackagedCodex(
       capabilities: { experimentalApi: true },
     });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
-    if (expectBundledRepositoryRestSkill) {
+    if (verifyPackagedRepositoryRestSkill) {
       const name = "github-repository-rest";
-      const path = resolve("/etc/codex/skills", name, "SKILL.md");
+      const path = resolve("/usr/local/lib/oce/skills", name, "SKILL.md");
       assert.ok(typeof process.getuid === "function" && process.getuid() !== 0);
-      const matches = (await listSkills()).filter((skill) => skill.name === name);
-      assert.equal(matches.length, 1, "Codex should discover the bundled skill in a fresh home.");
-      const [skill] = matches;
-      assert.ok(skill?.enabled === true);
-      assert.equal(skill.scope, "admin");
-      assert.equal(realpathSync(asText(skill.path)), realpathSync(path));
+      assert.match(readFileSync(path, "utf8"), /^name: github-repository-rest$/m);
+      // The Gateway supplies this skill. A fresh native catalog must not discover it independently.
+      assert.equal(
+        (await listSkills()).some((skill) => skill.name === name),
+        false,
+        "The packaged Repository REST skill must stay out of Codex native discovery.",
+      );
     }
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.

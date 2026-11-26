@@ -1163,7 +1163,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       if (publicationAllowed) {
         assert.deepEqual(baseConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
         assert.deepEqual(baseConfig.skills.load.extraDirs, [
-          "/etc/codex/skills/github-repository-rest",
+          "/usr/local/lib/oce/skills/github-repository-rest",
         ]);
       } else {
         assert.equal(baseConfig.skills.entries["github-repository-rest"]?.enabled, false);

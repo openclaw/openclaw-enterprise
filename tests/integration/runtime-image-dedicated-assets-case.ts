@@ -130,6 +130,14 @@ export async function verifyDedicatedGatewayAssets(
     const publication = after.find((skill) => skill.name === "github-repository-rest");
     assert.equal(publication?.source, "openclaw-extra");
     assert.equal(publication.modelVisible, true);
+    const gitOnly = await listRepositorySkills(
+      t,
+      repositoryRestSkillConfiguration(configuration, false),
+    );
+    assert.equal(
+      gitOnly.some((skill) => skill.name === "github-repository-rest" && skill.modelVisible),
+      false,
+    );
   }
   const { stdout } = await runDocker([
     "exec",
