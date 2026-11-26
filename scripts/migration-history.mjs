@@ -175,9 +175,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preGatewayStartupCredentials";
   }
   if (count === 99 && completedCount > 99) {
-    return "preInstallationNetworkPolicyCeiling";
+    return "preNativeGitHubPullRequestPublication";
   }
   if (count === 100 && completedCount > 100) {
+    return "preInstallationNetworkPolicyCeiling";
+  }
+  if (count === 101 && completedCount > 101) {
     return "preDynamicInstallationNetworkPolicyCeiling";
   }
   if (count === completedCount) {

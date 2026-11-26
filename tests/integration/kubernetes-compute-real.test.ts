@@ -356,6 +356,8 @@ test(
       authBaseURL,
       nativeAdmin: { enabled: false, domain: "agents.oce.localhost" },
     };
+    // TokenService startup initializes its marker in the installation-private Secret store.
+    await kubectl("create", "namespace", installationSecretNamespace);
     // Complete the actual API startup owner path before testing worker preflight. A worker
     // requires the saved ceiling and never seeds it, including in this real-cluster fixture.
     const initializedApi = await composePostgresDevelopment(developmentConfig, await loadDrivers());
@@ -412,8 +414,6 @@ test(
     } finally {
       await kubectl("delete", "namespace", legacyName, "--wait=true");
     }
-    // The OCC TokenService uses the selected Secret Driver's installation-private store.
-    await kubectl("create", "namespace", installationSecretNamespace);
     const apiDrivers = await loadDrivers();
     const app = await composePostgresDevelopment(developmentConfig, apiDrivers);
     lifecycle.app = app;

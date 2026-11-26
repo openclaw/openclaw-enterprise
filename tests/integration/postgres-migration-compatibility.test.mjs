@@ -1576,8 +1576,9 @@ test(
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
-      [99, "preInstallationNetworkPolicyCeiling"],
-      [100, "preDynamicInstallationNetworkPolicyCeiling"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preInstallationNetworkPolicyCeiling"],
+      [101, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2019,8 +2020,9 @@ test(
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
-      [99, "preInstallationNetworkPolicyCeiling"],
-      [100, "preDynamicInstallationNetworkPolicyCeiling"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preInstallationNetworkPolicyCeiling"],
+      [101, "preDynamicInstallationNetworkPolicyCeiling"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3252,8 +3254,9 @@ test(
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
-      [99, "preInstallationNetworkPolicyCeiling"],
-      [100, "preDynamicInstallationNetworkPolicyCeiling"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preInstallationNetworkPolicyCeiling"],
+      [101, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3395,8 +3398,9 @@ test(
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
-      [99, "preInstallationNetworkPolicyCeiling"],
-      [100, "preDynamicInstallationNetworkPolicyCeiling"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preInstallationNetworkPolicyCeiling"],
+      [101, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3571,8 +3575,9 @@ test(
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
-      [99, "preInstallationNetworkPolicyCeiling"],
-      [100, "preDynamicInstallationNetworkPolicyCeiling"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preInstallationNetworkPolicyCeiling"],
+      [101, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3601,8 +3606,9 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [100, "ALTER TABLE"],
-                [99, "GRANT"],
+                [101, "ALTER TABLE"],
+                [100, "GRANT"],
+                [99, "CREATE FUNCTION"],
                 [98, "CREATE FUNCTION"],
                 [97, "CREATE FUNCTION"],
                 [96, "ALTER TABLE"],

@@ -2886,8 +2886,36 @@ export async function renderAgentDetail(
       latestDeploymentStatus !== null && !deploymentPending(latestDeploymentStatus)
         ? inUseTabStripTop()
         : null;
+    const active = document.activeElement;
+    const shortcut =
+      active instanceof HTMLAnchorElement && deploymentAttention.contains(active) ? active : null;
+    const shortcutBounds = shortcut?.getBoundingClientRect();
+
     updateLatestDeployment();
     restoreTabStripTop(stripTop);
+
+    if (
+      !shortcut ||
+      !deploymentAttention.hidden ||
+      selectedTab === "deployment" ||
+      latestDeploymentUnavailable ||
+      !latestDeploymentRecord ||
+      latestDeploymentRecord.deploymentId !== visibleRevisions[0]?.id
+    ) {
+      return;
+    }
+    // Hiding the warning can blur its shortcut during layout or after this render.
+    const focused = document.activeElement;
+    if (focused !== shortcut && focused !== document.body) {
+      return;
+    }
+    const summaryLink = latestDeploymentValue.querySelector<HTMLAnchorElement>(":scope > a");
+    if (summaryLink?.href === shortcut.href) {
+      summaryLink.focus({ preventScroll: true });
+      if (shortcutBounds && shortcutBounds.bottom > 0 && shortcutBounds.top < window.innerHeight) {
+        summaryLink.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+      }
+    }
   }
 
   function updateLatestDeployment() {

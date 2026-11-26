@@ -31,7 +31,7 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   const gatewayConfiguration = parseRecord(preparedNativeDocument(f));
   // Compute owns the hook callback and Gateway's local logical workspace
   // independently of repository credential custody.
-  // Repository material must leave every other Gateway setting unchanged.
+  // The Gateway can guide this protected session without receiving its repository credentials.
   delete codexAppServer(gatewayConfiguration).nativeHookRelay;
   const expectedGatewayConfiguration = parseRecord(original);
   const defaults = recordField(recordField(expectedGatewayConfiguration, "agents"), "defaults");
@@ -52,10 +52,13 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   ).models;
   assert.ok(isArray(models));
   jsonRecord(models[0]).id = "openai-compatible/gpt-5";
+  expectedGatewayConfiguration.skills = {
+    load: { extraDirs: ["/usr/local/lib/oce/skills/github-repository-rest"] },
+  };
   assert.deepEqual(
     gatewayConfiguration,
     expectedGatewayConfiguration,
-    "repository material does not change the separate Gateway's execution configuration",
+    "the separate Gateway receives public repository guidance without execution settings",
   );
   assert.equal(JSON.stringify(f.revision.configuration), original);
   const assertGatewayIsolated = (deployment: FixtureDeployment) => {
