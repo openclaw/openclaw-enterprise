@@ -20,8 +20,10 @@ export async function persistGuardedDeployment(context: TestContext) {
     { createTestSecretDriver },
     { createReadyComputeDriver, registerAndSelectDrivers },
     { SlackChannelDriver },
+    { OCCTokenServiceDriver },
     { resolveApprovedHarness },
     { grantAgentSecretOperate },
+    { createHarnessConfiguration },
   ] = await Promise.all([
     import("pg"),
     import("../../packages/audit/src/index.ts"),
@@ -32,8 +34,10 @@ export async function persistGuardedDeployment(context: TestContext) {
     import("../helpers/secret-driver.mjs"),
     import("../helpers/development.ts"),
     import("../../apps/controller/src/drivers/channel/slack.ts"),
+    import("../../apps/controller/src/drivers/token-service/occ.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
     import("../helpers/postgres-harness-auth.ts"),
+    import("../helpers/harness-configuration.mjs"),
   ]);
   const pool = new Pool({ connectionString: databaseUrl });
   context.after(() => pool.end());
@@ -57,7 +61,10 @@ export async function persistGuardedDeployment(context: TestContext) {
   const configurationDriver = createTestConfigurationDriver();
   const secretDriver = createTestSecretDriver();
   const compute = createReadyComputeDriver("guarded-test-compute", { validateHarnessAuth() {} });
+  const ownerId = "guarded-source-owner";
+  const storeIdentity = randomUUID();
   let senderCalls = 0;
+  let sourceResolutions = 0;
   const channel = new SlackChannelDriver(async (input, init) => {
     senderCalls++;
     const request = new Request(input, init);
@@ -65,10 +72,13 @@ export async function persistGuardedDeployment(context: TestContext) {
     assert.equal(request.headers.get("authorization"), "Bearer xoxb-synthetic-bot");
     return Response.json({ ok: true, bot_id: "B123", team_id: "T123" });
   });
-  const createController = (store: InstanceType<typeof PostgresPlatformState>) => {
+  const createController = async (store: InstanceType<typeof PostgresPlatformState>) => {
     const controller = new OpenClawController(installation, {
       state: store,
       recordOperations: true,
+      // Controlled admission qualification; this case does not exercise Kubernetes staging.
+      gatewayStartupSourceDelivery: (selectedCompute, owner) =>
+        selectedCompute === compute && owner instanceof OCCTokenServiceDriver,
     });
     registerAndSelectDrivers(controller, [
       new NativeIAMDriver(store),
@@ -77,26 +87,57 @@ export async function persistGuardedDeployment(context: TestContext) {
       secretDriver,
       channel,
     ]);
+    const instanceId = await controller.activateTokenServiceInstance(ownerId, storeIdentity);
+    const owner = new OCCTokenServiceDriver(
+      ownerId,
+      installation.id,
+      secretDriver.privateSecrets,
+      instanceId,
+      store,
+    );
+    const resolve = owner.resolveCredential.bind(owner);
+    owner.resolveCredential = (...args) => {
+      sourceResolutions++;
+      return resolve(...args);
+    };
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
     return controller;
   };
-  const controller = createController(state);
+  const controller = await createController(state);
   const namespace = await controller.createNamespace(principalId, {
     name: `guarded-${randomUUID()}`,
   });
   await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
-  const bot = await controller.createSecret(principalId, {
-    namespaceId: namespace.id,
-    name: "synthetic-slack",
-    value: "xoxb-synthetic-bot",
-  });
+  const auditFactory = new AuditEventFactory();
+  const bot = await controller.createManagedCredentialSource(
+    principalId,
+    namespace.id,
+    {
+      name: "synthetic-slack",
+      type: "static",
+      lifecycleConfig: { settings: {} },
+      secret: "xoxb-synthetic-bot",
+    },
+    (resource, phase) =>
+      auditFactory.create({
+        installationId: installation.id,
+        namespaceId: namespace.id,
+        actorId: principalId,
+        action: "openclaw.credential_sources.create",
+        resource,
+        ...(phase === undefined ? {} : { details: { phase } }),
+      }),
+  );
   const configuration = await controller.createConfiguration(principalId, {
     namespaceId: namespace.id,
     kind: "agent",
     values: {
+      ...createHarnessConfiguration("codex", "gpt-4.1"),
       channels: { slack: { enabled: true, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } },
     },
     secretBindings: {
-      SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: namespace.id, id: bot.id } },
+      SLACK_BOT_TOKEN: { source: bot.ref },
     },
   });
   const secret = await controller.createSecret(principalId, {
@@ -107,6 +148,7 @@ export async function persistGuardedDeployment(context: TestContext) {
   const agent = await controller.createAgent(principalId, {
     namespaceId: namespace.id,
     name: "guarded-agent",
+    executionMode: "dedicated",
     configurationId: configuration.id,
     harnessAuth: {
       method: "api_key",
@@ -114,8 +156,6 @@ export async function persistGuardedDeployment(context: TestContext) {
     },
   });
   await grantAgentSecretOperate(pool, agent, secret.id);
-  await grantAgentSecretOperate(pool, agent, bot.id);
-  const auditFactory = new AuditEventFactory();
   const mutationEvent = ({ revision, authorization }: Readonly<AuthorizedAgentDeployment>) =>
     auditFactory.create({
       installationId: installation.id,
@@ -173,17 +213,15 @@ export async function persistGuardedDeployment(context: TestContext) {
   assert.match(refusal.message, /already has revision history/);
   const receipt = winner.value;
   assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
-  assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+  assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 1);
   assert.ok(senderCalls >= 1 && senderCalls <= 2, "only the two fresh contenders can validate");
-  assert.equal(
-    secretDriver.calls.filter((call) => call.operation === "withValue").length,
-    senderCalls,
-  );
   const preparedSenderCalls = senderCalls;
-  context.diagnostic(JSON.stringify({ senderCalls, resolve: 2, ...(await count()) }));
+  const preparedSourceResolutions = sourceResolutions;
+  assert.ok(preparedSourceResolutions > 0, "fresh admission must resolve the bot Source");
+  context.diagnostic(JSON.stringify({ senderCalls, resolve: 1, ...(await count()) }));
 
   // Reopening the State adapter must recover the durable receipt without calling either Driver.
-  const reopened = createController(new PostgresPlatformState(pool));
+  const reopened = await createController(new PostgresPlatformState(pool));
   secretDriver.calls.length = 0;
   assert.deepEqual(
     await reopened.recoverAgentFirstDeployment(principalId, input, winnerIntent),
@@ -207,6 +245,7 @@ export async function persistGuardedDeployment(context: TestContext) {
     null,
   );
   assert.equal(secretDriver.calls.length, 0);
+  assert.equal(sourceResolutions, preparedSourceResolutions);
   assert.equal(senderCalls, preparedSenderCalls);
   assert.deepEqual(await count(), { revisions: 1, work: 1, audit: 1 });
   const stored = await pool.query<{
@@ -224,11 +263,11 @@ export async function persistGuardedDeployment(context: TestContext) {
   const sibling = await reopened.createAgent(principalId, {
     namespaceId: namespace.id,
     name: "guarded-digest-constraint",
+    executionMode: "dedicated",
     configurationId: configuration.id,
     harnessAuth: agent.harnessAuth,
   });
   await grantAgentSecretOperate(pool, sibling, secret.id);
-  await grantAgentSecretOperate(pool, sibling, bot.id);
   // Revision updates are already forbidden by the immutable-row trigger. These new
   // rows keep the admitted snapshot and Namespace intact, and isolate each CHECK rule:
   // a malformed digest on revision one, then a well-formed digest on revision two.

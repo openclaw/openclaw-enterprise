@@ -95,12 +95,6 @@ test(
   drainApiOnSigterm,
 );
 test(
-  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
-  requiresPostgres,
-  persistGuardedDeployment,
-);
-
-test(
   "PostgreSQL pins managed sources to a durable TokenService instance",
   requiresPostgres,
   async (context) => {
@@ -200,4 +194,11 @@ test(
       replacement,
     );
   },
+);
+
+// This case retains an admitted Source revision, so it must follow the owner-pinning replacement check.
+test(
+  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
+  requiresPostgres,
+  persistGuardedDeployment,
 );
