@@ -1512,7 +1512,7 @@ export function createAgentDetailScenarios({
           "Type a search before the catalog is available, then close the picker. When you reopen it, the results match what you typed.",
         steps: [
           "Select Plugins. While the catalog check is pending, open Configure plugins, type Workspace in Search plugins, and choose Done.",
-          "Let the check and background search finish. Reopen Configure plugins. Search plugins still shows Workspace, and only Google Workspace appears.",
+          "Wait about 10 seconds for the catalog check to finish, then reopen Configure plugins. Search plugins still shows Workspace, and the only result is Google Workspace.",
         ],
         gap: "The Agent, capabilities, and searchable catalog are simulated.",
       },
