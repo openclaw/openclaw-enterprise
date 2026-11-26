@@ -69,6 +69,7 @@ import {
   apiRequests,
   asksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -1033,6 +1034,35 @@ test("Credential Sources lists and creates public metadata; an exact create deni
     await page.getByRole("button", { name: "Create Source", exact: true }).click();
     return page.getByRole("dialog", { name: "Create Credential Source", exact: true });
   };
+  const templatesUrl = `${fixture.origin}/namespaces/${namespace.id}/connection-templates`;
+  const requests = apiRequests(page, fixture.origin);
+  const heldTemplates = await holdRequests(t, page, templatesUrl, {
+    method: "GET",
+    afterServer: true,
+    once: true,
+  });
+  const loadingForm = await open();
+  const cancel = loadingForm.getByRole("button", { name: "Cancel", exact: true });
+  const heading = loadingForm.getByRole("heading", { name: "Create Credential Source" });
+  assert.equal((await heldTemplates.requested)?.status(), 200);
+  assert.equal(await hasFocus(heading), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(cancel), true);
+  const templatesLoaded = page.waitForResponse(
+    (response) => response.url() === templatesUrl && response.request().method() === "GET",
+  );
+  heldTemplates.release();
+  assert.equal((await templatesLoaded).status(), 200);
+  await loadingForm.getByLabel("Source name", { exact: true }).waitFor();
+  assert.equal(
+    await hasFocus(cancel),
+    true,
+    "loading templates must preserve keyboard focus on Cancel",
+  );
+  await page.keyboard.press("Enter");
+  await loadingForm.waitFor({ state: "detached" });
+  assert.equal(pathRequests(requests, "POST", base).length, 0);
+
   const fill = async (name: string, purpose = "model:openai") => {
     const form = await open();
     await form.getByLabel("Source name", { exact: true }).fill(name);
@@ -1041,7 +1071,7 @@ test("Credential Sources lists and creates public metadata; an exact create deni
     return form;
   };
   await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/connection-templates`,
+    templatesUrl,
     (route) =>
       route.fulfill(
         apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Template discovery unavailable."),

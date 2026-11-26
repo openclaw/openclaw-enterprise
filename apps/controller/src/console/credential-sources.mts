@@ -368,7 +368,7 @@ export function renderCredentialSources(context: Context) {
       if (dialog !== current || !current.open || !context.isCurrent()) {
         return;
       }
-      renderForm(current, body, actions, cancel, templates);
+      renderForm(current, heading, body, actions, cancel, templates);
     } catch (cause) {
       if (dialog !== current || !current.open || !context.isCurrent()) {
         return;
@@ -379,7 +379,7 @@ export function renderCredentialSources(context: Context) {
         return;
       }
       if (failure.status !== 403) {
-        renderForm(current, body, actions, cancel, [], true);
+        renderForm(current, heading, body, actions, cancel, [], true);
         return;
       }
       body.replaceChildren(
@@ -397,6 +397,7 @@ export function renderCredentialSources(context: Context) {
 
   function renderForm(
     current: HTMLDialogElement,
+    heading: HTMLHeadingElement,
     body: HTMLElement,
     actions: HTMLElement,
     cancel: HTMLButtonElement,
@@ -475,7 +476,9 @@ export function renderCredentialSources(context: Context) {
       result,
     );
     actions.append(submit);
-    name.focus();
+    if (document.activeElement === heading) {
+      name.focus();
+    }
     let submissionBlocked = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
