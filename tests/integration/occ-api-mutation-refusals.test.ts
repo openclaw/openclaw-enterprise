@@ -30,6 +30,7 @@ import {
   createReadyNamespace,
   injectedRequest,
   readyNamespaceFixture as bootstrapReadyNamespace,
+  requestForFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 import {
@@ -55,9 +56,7 @@ function assertApiError(
 
 async function configuredController() {
   const fixture = await createInjectedControllerFixture({});
-  const request: FixtureRequest = (method, pathname, options) =>
-    injectedRequest(fixture.app, method, pathname, options);
-  return { fixture, request };
+  return { fixture, request: requestForFixture(fixture) };
 }
 
 async function readyNamespaceFixture(name: string) {

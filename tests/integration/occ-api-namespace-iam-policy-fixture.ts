@@ -7,7 +7,7 @@ import {
   bootstrapInstallation,
   createAgent as createInjectedAgent,
   createInjectedControllerFixture,
-  injectedRequest,
+  requestForFixture,
   withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -36,9 +36,7 @@ export function assertApiError(reply: Reply, status: number, code: ErrorCode, la
 export async function configuredController() {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createInjectedControllerFixture({ auditSink }, withoutBackendSummaries);
-  const request: FixtureRequest = (method, path, options) =>
-    injectedRequest(fixture.app, method, path, options);
-  return { fixture, request, auditSink };
+  return { fixture, request: requestForFixture(fixture), auditSink };
 }
 
 export type TestController = Awaited<ReturnType<typeof configuredController>>;

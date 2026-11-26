@@ -416,6 +416,10 @@ type InjectedController = {
   readonly request: FixtureRequest;
 };
 
+export function requestForFixture(fixture: InjectedController["fixture"]): FixtureRequest {
+  return (method, pathname, options) => injectedRequest(fixture.app, method, pathname, options);
+}
+
 const responseSchemas = {
   SafeJsonValue: JsonValue,
   PluginApprovers: PluginApproversSchema,

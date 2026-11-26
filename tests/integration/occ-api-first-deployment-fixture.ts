@@ -19,7 +19,7 @@ import {
   createNamespace,
   enrollStaticSource,
   grantAgentSourceOperate,
-  injectedRequest,
+  requestForFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -52,8 +52,7 @@ export async function prepareFixture({
     gatewayStartupSourceDelivery: (compute, owner) =>
       compute.id === "compute-integration" && owner instanceof OCCTokenServiceDriver,
   });
-  const request: FixtureRequest = (method, pathname, options) =>
-    injectedRequest(fixture.app, method, pathname, options);
+  const request = requestForFixture(fixture);
   const controller = { fixture, request };
   await bootstrapInstallation(controller);
   const namespace = await createNamespace(controller, "first-deployment");

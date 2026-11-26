@@ -28,6 +28,7 @@ import {
   createInjectedControllerFixture,
   createNamespace,
   injectedRequest,
+  requestForFixture,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -83,9 +84,7 @@ async function configuredController({
       },
     },
   );
-  const request: FixtureRequest = (method, pathname, options) =>
-    injectedRequest(fixture.app, method, pathname, options);
-  return { fixture, request };
+  return { fixture, request: requestForFixture(fixture) };
 }
 
 type DeploymentWorkOverrides = Map<string, Readonly<ControllerWork> | undefined>;

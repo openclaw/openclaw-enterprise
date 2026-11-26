@@ -11,7 +11,7 @@ import { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "../../packages/occ/src/index.t
 import {
   checkedInjectedBody,
   createInjectedControllerFixture,
-  injectedRequest,
+  requestForFixture,
   withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -50,9 +50,7 @@ export async function configuredController(options: FixtureOptions = {}) {
     { ...options, auditSink },
     withoutBackendSummaries,
   );
-  const request: FixtureRequest = (method, pathname, requestOptions) =>
-    injectedRequest(fixture.app, method, pathname, requestOptions);
-  return { fixture, request, auditSink };
+  return { fixture, request: requestForFixture(fixture), auditSink };
 }
 
 type TestController = Awaited<ReturnType<typeof configuredController>>;

@@ -20,10 +20,9 @@ import {
   createConfiguration,
   createInjectedControllerFixture,
   createNamespace,
-  injectedRequest,
   readyNamespaceFixture,
+  requestForFixture,
   withoutBackendSummaries,
-  type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
 type ProviderResult = Omit<ChannelDirectoryResult, "candidates"> & {
@@ -47,9 +46,7 @@ async function configuredController(
     },
     withoutBackendSummaries,
   );
-  const request: FixtureRequest = (method, path, options) =>
-    injectedRequest(fixture.app, method, path, options);
-  return { fixture, request };
+  return { fixture, request: requestForFixture(fixture) };
 }
 
 async function createDirectorySource(

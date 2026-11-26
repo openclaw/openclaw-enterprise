@@ -23,6 +23,7 @@ import {
   createServiceAccount,
   identifier,
   injectedRequest,
+  requestForFixture,
   withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -52,8 +53,7 @@ async function setupServiceAccounts({ recordOperations = false } = {}) {
     { auditSink, recordOperations },
     withoutBackendSummaries,
   );
-  const request: FixtureRequest = (method, path, requestOptions) =>
-    injectedRequest(fixture.app, method, path, requestOptions);
+  const request = requestForFixture(fixture);
   const name = "Enterprise development";
   const { data } = checkedBody(
     await request("POST", "/installation/bootstrap", {
