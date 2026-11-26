@@ -120,11 +120,28 @@ export function includeRepositoryRestSkill(
       "Repository credentials require skills.load.extraDirs to be an array of strings.",
     );
   }
+  const agents = object(configuration.agents, "agents");
   return {
     ...configuration,
     skills: {
       ...skills,
       load: { ...load, extraDirs: [...new Set([...extraDirs, REPOSITORY_REST_SKILL_DIRECTORY])] },
+    },
+    agents: {
+      ...agents,
+      ...(agents.defaults === undefined
+        ? {}
+        : { defaults: replaceGitHubSkillSelection(object(agents.defaults, "agents.defaults")) }),
+      ...(agents.entries === undefined
+        ? {}
+        : {
+            entries: Object.fromEntries(
+              Object.entries(object(agents.entries, "agents.entries")).map(([id, agent]) => [
+                id,
+                replaceGitHubSkillSelection(object(agent, "agents.entries entry")),
+              ]),
+            ),
+          }),
     },
   };
 }
@@ -153,28 +170,11 @@ export function repositoryRestSkillConfiguration(
       },
     };
   }
-  const agents = object(configuration.agents, "agents");
   return includeRepositoryRestSkill({
     ...configuration,
     skills: {
       ...skills,
       entries: { ...entries, github },
-    },
-    agents: {
-      ...agents,
-      ...(agents.defaults === undefined
-        ? {}
-        : { defaults: replaceGitHubSkillSelection(object(agents.defaults, "agents.defaults")) }),
-      ...(agents.entries === undefined
-        ? {}
-        : {
-            entries: Object.fromEntries(
-              Object.entries(object(agents.entries, "agents.entries")).map(([id, agent]) => [
-                id,
-                replaceGitHubSkillSelection(object(agent, "agents.entries entry")),
-              ]),
-            ),
-          }),
     },
   });
 }

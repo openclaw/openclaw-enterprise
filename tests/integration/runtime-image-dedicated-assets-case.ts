@@ -143,8 +143,11 @@ export async function verifyDedicatedGatewayAssets(
       gitOnly.some((skill) => skill.name === "github-repository-rest" && skill.modelVisible),
       false,
     );
-    // An existing protected Codex grant uses the same packaged skill through the Gateway.
-    const protectedSkills = await listRepositorySkills(t, includeRepositoryRestSkill({}));
+    // A protected Codex Agent that selected GitHub can still discover the managed skill.
+    const protectedSkills = await listRepositorySkills(
+      t,
+      includeRepositoryRestSkill(configuration),
+    );
     const visiblePublication = protectedSkills.filter(
       (skill) => skill.name === "github-repository-rest" && skill.modelVisible,
     );

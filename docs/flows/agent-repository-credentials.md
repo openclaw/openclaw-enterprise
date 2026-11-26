@@ -257,8 +257,9 @@ admits PR creation, Compute exposes `github-repository-rest` from
 selections. Both Harnesses use that catalog. Codex reads the skill with
 `skills_read`. The skill uses stock `gh api` with the binding's placeholder.
 Compute also includes the skill in the Gateway catalog for Dedicated Codex
-revisions with a legacy Repository grant. These sessions use their designated
-client and existing route limits.
+revisions with a legacy Repository grant and maps their explicit `github`
+selections to it. These sessions use their designated client and existing route
+limits.
 
 Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
 host, path, generation and deadline before returning a bearer.

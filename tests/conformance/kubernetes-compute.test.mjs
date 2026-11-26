@@ -3320,6 +3320,7 @@ test("activation waits for the first repository Git credential install and the n
       return value;
     },
   };
+  const configuration = createHarnessConfiguration("codex", "gpt-5");
   const { state, driver, revision, namespace, gatewayName, prepare, markReady, read } =
     dedicatedFirstDeployFixture({
       clock,
@@ -3327,6 +3328,13 @@ test("activation waits for the first repository Git credential install and the n
       openShellGit,
       revision: {
         sandboxDriverId: sandboxDriver.id,
+        configuration: {
+          ...configuration,
+          agents: {
+            ...configuration.agents,
+            defaults: { ...configuration.agents.defaults, skills: ["github", "slack"] },
+          },
+        },
         repositoryCredentials: {
           driver: { id: "repository", implementation: "github" },
           bindings: [
@@ -3342,7 +3350,7 @@ test("activation waits for the first repository Git credential install and the n
       },
     });
   assert.equal((await prepare()).ready, false);
-  // The protected revision still offers the publication skill through its Gateway.
+  // The protected revision keeps its explicit GitHub skill selection through the Gateway.
   const gatewayPod = read("Deployment", gatewayName).spec.template.spec;
   const configVolume = gatewayPod.volumes.find(({ name }) => name === "openclaw-configuration");
   const gatewayConfig = JSON.parse(
@@ -3351,6 +3359,7 @@ test("activation waits for the first repository Git credential install and the n
   assert.deepEqual(gatewayConfig.skills.load.extraDirs, [
     "/usr/local/lib/oce/skills/github-repository-rest",
   ]);
+  assert.deepEqual(gatewayConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
   markReady(gatewayName);
   assert.equal((await prepare()).ready, false);
   assert.equal(provisions.length, 1);
