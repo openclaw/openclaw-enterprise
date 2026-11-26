@@ -25,7 +25,8 @@ import { installTokenServiceDriver } from "../../apps/controller/src/composition
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { workspaceGatewayClient } from "../integration/sandbox-workspace-gateway-fixture.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
 import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
@@ -2403,13 +2404,15 @@ async function createNativeModelConsoleFixture(
     sandboxNetworkPolicyCeiling: [...grants],
     runtime: { nativeWorkerSupport: "custom-image" },
   };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
   const core = new FakeSecretCoreV1Api();
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-native-compute",
     tokenServiceId: "occ",
     core,
-    gatewayClient: workspaceGatewayClient(),
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
   });
   // Kubernetes API is controlled; the actual selected Drivers and admission route are used.
   assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));

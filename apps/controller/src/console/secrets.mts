@@ -363,7 +363,15 @@ export function renderSecrets(
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
     const body = element("div");
     const notice = element("div");
-    const close = button("Close", closeModal);
+    function dismiss() {
+      closeModal();
+      // Native close restores focus without scrolling. The list can reflow
+      // while the dialog is open, leaving the focused row below the viewport.
+      if (context.isCurrent() && !modal) {
+        list.querySelector(".secret-row:has(:focus-visible)")?.scrollIntoView({ block: "nearest" });
+      }
+    }
+    const close = button("Close", dismiss);
     const actions = element("div", { className: "dialog-actions" }, close);
     const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
@@ -376,7 +384,7 @@ export function renderSecrets(
     dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      closeModal();
+      dismiss();
     });
     dismissOnBackdrop(dialog);
     dialog.addEventListener(

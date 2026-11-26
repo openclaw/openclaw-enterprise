@@ -16,8 +16,8 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 
 | Resource            | Purpose and owner                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connection Template | Defines approved OAuth consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                                       |
-| OAuth2Client        | OCC records the application's issuer, ID, endpoints, and authentication method. TokenService holds any confidential client secret.                                |
+| Connection Template | Defines verified OAuth endpoints and approved consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                |
+| OAuth2Client        | OCC records the application's issuer, ID, and authentication method. TokenService holds any confidential client secret.                                           |
 | GitHubAppClient     | OCC records the App ID. TokenService uses its signing key to mint installation tokens.                                                                            |
 | CredentialSource    | Identifies an enrolled credential in a Namespace. TokenService owns its lifecycle and any Template or client references. OCC exposes metadata and authorizes use. |
 
@@ -125,14 +125,14 @@ Multiple accounts need distinct projections and a Plugin that selects the accoun
 
 An Agent revision using a shared TokenService Source records the approved Repository grant, which remains valid until the OpenClaw Control Plane withdraws it or its explicit deadline passes. Each native Git request still requires a valid credential from the selected Source and must match the saved Repository policy. TokenService renews the separate GitHub installation token, which typically expires after one hour. See [original #7217 submission](https://github.com/openclaw/openclaw-enterprise/blob/1284f025f8f951a4c03a97ba3dd1785ffff96fd5/specs/rfcs/20261124-credential-cutover-pat-and-native-git/index.md#lifetime-of-source-backed-repository-policy).
 
-Repository grants permit Read or Read/write Git. Branch protection is outside Credential Design 1.0. The shared-token path does not authorize GitHub REST or pull request operations. Credential Design 1.0 retires legacy protected repository exchanges, exact-ref modes, and PR/quota features instead of replacing their guarantees. This supersedes the [earlier requirement to retain stronger modes](github-app-template-policy.md). Per-Agent token downscoping remains future work.
+Repository grants permit Read or Read/write Git. GitHub enforces repository and branch rules; OCE does not enforce an Agent branch allowlist. The shared-token path does not authorize GitHub REST or pull request operations. Credential Design 1.0 retires legacy protected repository exchanges, exact-ref modes, and PR/quota features instead of replacing their guarantees. This supersedes the [earlier requirement to retain stronger modes](github-app-template-policy.md). Per-Agent token downscoping remains future work.
 
 ## 1.0 scope and tradeoffs
 
 - OCC TokenService can use OpenShell's embedded Proxy or a compatible standalone Proxy such as iron-proxy, with routing enforced by the Sandbox. OpenShell TokenService uses native OpenShell delivery. Each composition requires qualification.
 - Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers require separate Source authorization.
 - Credential-free metadata uses separately admitted Sandbox network access. For example, an Agent can send `GET https://api.github.com/repos/acme/widgets` and receive the upstream response. No Source, credential injection, OCC callback, or response filtering is required. This retires the [earlier protected metadata offer](tokenservice-cutover-contract.md#proposed-change-to-protected-github-metadata).
-- The protected exchanges and their `LegacyEgressProxyDriver` are removed. The paired native Driver supplies `credential_proxy`. Credential Gateway and Credential Refresh Driver selection is already unsupported; the OpenClaw Gateway continues to serve the Agent.
+- Remove `LegacyEgressProxyDriver` after retiring its protected exchanges. Its implementation remains in current code pending removal. Credential Gateway and Credential Refresh Driver selection is already unsupported; the OpenClaw Gateway continues to serve the Agent.
 
 ## Detailed decisions
 
@@ -140,6 +140,7 @@ Companions preserve earlier decisions, including the Codex held-launcher release
 
 - [TokenService cutover contract](tokenservice-cutover-contract.md) and the [original client registration, custody, and rotation proposal](client-registration-and-custody.md)
 - [OAuth client selection and consent](oauth-client-associations.md)
+- [OAuth endpoint authority](../20261125-oauth-endpoint-authority.md) supersedes the earlier client endpoint binding.
 - [Initial OAuth grant scopes and renewal](../0027-agent-oauth-connections/contracts.md#client-authentication-and-account-custody)
 - [Installation ownership and delivery](installation-credential-ownership.md) and [TokenService identity and updates](token-service-instance-and-updates.md)
 - [Source registration and lifecycle](credential-source-ownership.md)

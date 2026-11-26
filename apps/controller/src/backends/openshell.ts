@@ -24,17 +24,6 @@ const OPENSHELL_MAX_WORKSPACE_NAME_LENGTH = 19;
 /** Provider names OCC creates; the paired Sandbox Driver accepts only this shape. */
 const OCC_PROVIDER_NAME = /^oce-cs-[0-9a-f]{24}$/;
 
-/** OpenShell TokenService requires an authenticated fixed TLS Gateway endpoint. */
-export function isOpenShellGatewayEligible(
-  backend: OpenShellBackendDefinition | undefined,
-): boolean {
-  const configuration = backend?.configuration;
-  return (
-    configuration?.endpoint?.startsWith("https://") === true &&
-    (configuration.auth?.mode === "mtls" || configuration.auth?.mode === "bearerTokenFile")
-  );
-}
-
 export class OpenShellBackendConfigurationFailure extends Error {}
 
 /** The gateway's Service name and the Kubernetes namespace its Pods run in. */

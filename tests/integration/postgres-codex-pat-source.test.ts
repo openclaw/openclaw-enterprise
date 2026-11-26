@@ -14,9 +14,10 @@ import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
+import { credentialGatewayOverProviders } from "./sandbox-driver-credential-fixture.ts";
 import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
@@ -54,10 +55,13 @@ test(
     await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
     const base = `/namespaces/${namespaceId}`;
     // Exercise the selected native Drivers with controlled OpenShell transport.
+    const providerStore = credentialGatewayOverProviders();
     const installation = {
       ...buildSandboxInstallation(),
       runtime: { nativeWorkerSupport: "custom-image" },
     };
+    Reflect.deleteProperty(installation.drivers, "credential_gateway");
+    Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
     const core = new FakeSecretCoreV1Api();
     const placed = core.addNamespace(namespaceId);
     Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
@@ -66,7 +70,7 @@ test(
       computeId: controller.selectedDriver("compute").id,
       tokenServiceId: "occ",
       core,
-      gatewayClient: workspaceGatewayClient(),
+      gatewayClient: completeOpenShellGatewayClient(providerStore.client),
     });
     assert.ok(runtime.credentialDeliveryRegistration);
     assert.equal(Object.hasOwn(runtime.installation.drivers, "credential_gateway"), false);
@@ -124,7 +128,7 @@ test(
       secrets: {},
     });
     assert.equal(oldEnrollment.statusCode, 400, oldEnrollment.body);
-    assert.equal(oldEnrollment.json().error.code, "INVALID_REQUEST");
+    assert.match(oldEnrollment.body, /through TokenService/);
 
     const pat = "at-codex-pat-integration";
     const enrolled = await request("POST", `${base}/credential-sources`, {

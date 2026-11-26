@@ -18,6 +18,7 @@ import {
   NetworkProxyValidationError,
   NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
+  CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRegistrationConfigError,
@@ -83,6 +84,7 @@ export class RequestFailure extends Error {
   readonly status: number;
   readonly code: string;
   readonly details?: readonly ErrorDetail[];
+  registrationRetryAfterSeconds?: number;
   remainingResources?: readonly {
     kind: string;
     count: number;
@@ -185,9 +187,15 @@ export function responseHeaders(reply: FastifyReply, requestId: string): void {
 
 export function canonicalFailure(reply: FastifyReply, error: RequestFailure): void {
   responseHeaders(reply, reply.request.id);
+  if (error.registrationRetryAfterSeconds !== undefined) {
+    reply.header("retry-after", String(error.registrationRetryAfterSeconds));
+  }
   reply.status(error.status).send({
     error: {
       code: error.code,
+      ...(error.registrationRetryAfterSeconds === undefined
+        ? {}
+        : { reason: "credential_registration_pending" }),
       // Some messages come from Drivers or name submitted values; none may break the cap.
       message: capped(error.message),
       ...(error.details === undefined ? {} : { details: error.details }),
@@ -814,6 +822,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       { path: `/${error.field}`, code: "INVALID_VALUE" },
     ]);
   }
+  if (error instanceof CredentialGatewayNotConfiguredError) {
+    return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
+  }
   if (error instanceof CredentialTokenUnsettledError) {
     // Names only the retry time; raised only after delete on the source and its lookup.
     return failure(409, "CREDENTIAL_TOKEN_UNSETTLED", error.message);
@@ -935,8 +946,13 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
   }
   if (error instanceof RetryLaterError) {
-    // A fixed message naming the retry or restart after the caller's grant and lookup.
-    return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+    // A fixed message naming the wait or the restart; raised only after the caller's grant and
+    // lookup (finding 2536).
+    const result = failure(503, "DEPENDENCY_UNAVAILABLE", error.message);
+    if (error.retryAfterSeconds !== undefined) {
+      result.registrationRetryAfterSeconds = error.retryAfterSeconds;
+    }
+    return result;
   }
   if (error instanceof CredentialDeliveryFailedError) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", error.message);

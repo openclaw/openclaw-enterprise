@@ -74,6 +74,12 @@ service OpenShell {
       returns (DeleteProviderProfileResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest)
       returns (GetProviderRefreshStatusResponse);
+  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest)
+      returns (ConfigureProviderRefreshResponse);
+  rpc RotateProviderCredential(RotateProviderCredentialRequest)
+      returns (RotateProviderCredentialResponse);
+  rpc DeleteProviderRefresh(DeleteProviderRefreshRequest)
+      returns (DeleteProviderRefreshResponse);
 }
 
 message HealthRequest {}
@@ -962,6 +968,45 @@ message GetProviderRefreshStatusRequest {
 
 message GetProviderRefreshStatusResponse {
   repeated ProviderCredentialRefreshStatus credentials = 1;
+}
+
+message ConfigureProviderRefreshRequest {
+  google.protobuf.Timestamp expiration_time = 106;
+  WorkspaceSelector workspace_scope = 7;
+  string provider = 1;
+  string credential_key = 2;
+  ProviderCredentialRefreshStrategy strategy = 3;
+  // Write-only material; never logged or returned by this client.
+  map<string, string> material = 4;
+  repeated string secret_material_keys = 5;
+  string request_id = 8;
+}
+
+message ConfigureProviderRefreshResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message RotateProviderCredentialRequest {
+  WorkspaceSelector workspace_scope = 3;
+  string provider = 1;
+  string credential_key = 2;
+  string request_id = 4;
+}
+
+message RotateProviderCredentialResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message DeleteProviderRefreshRequest {
+  WorkspaceSelector workspace_scope = 4;
+  string provider = 1;
+  string credential_key = 2;
+  bool allow_missing = 5;
+  string request_id = 6;
+}
+
+message DeleteProviderRefreshResponse {
+  DeletionOutcome outcome = 2;
 }
 
 message ProviderProfile {

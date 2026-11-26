@@ -1,0 +1,56 @@
+{{- if .Values.openshellGit.enabled }}
+{{- $git := .Values.openshellGit }}
+{{- if .Values.egressAuthority.enabled }}
+{{- fail "openshellGit cannot be combined with egressAuthority" }}
+{{- end }}
+{{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tlsSecretName" "value" (required "openshellGit.tlsSecretName is required" $git.tlsSecretName)) }}
+{{- include "openclaw.validateResourceName" (dict "label" "openshellGit.issuerPublicKeyConfigMapName" "value" (required "openshellGit.issuerPublicKeyConfigMapName is required" $git.issuerPublicKeyConfigMapName)) }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.port" "value" $git.port "port" true) | int }}
+{{- if or (lt $port 1024) (gt $port 65535) (eq $port 8443) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
+{{- fail "openshellGit.port must be an unprivileged TCP port distinct from repository and metrics listeners" }}
+{{- end }}
+{{- if or (not (kindIs "slice" $git.clients)) (not $git.clients) }}
+{{- fail "openshellGit.clients must select trusted supervisor callers" }}
+{{- end }}
+{{- range $index, $client := $git.clients }}
+{{- if or $client.ipBlock (not $client.namespaceSelector) (not $client.namespaceSelector.matchLabels) (not $client.podSelector) (not $client.podSelector.matchLabels) }}
+{{- fail "openshellGit.clients require namespaceSelector.matchLabels and podSelector.matchLabels, without ipBlock" }}
+{{- end }}
+{{- include "openclaw.networkPolicy.peer" (dict "name" (printf "openshellGit.clients[%d]" $index) "value" $client) }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-enterprise-openshell-git
+  labels:
+    {{- include "openclaw.labels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: openclaw-enterprise
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/component: worker
+  ports:
+    - name: openshell-git
+      port: {{ $port }}
+      targetPort: openshell-git
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-openshell-git-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- toYaml $git.clients | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}

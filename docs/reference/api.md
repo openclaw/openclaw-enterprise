@@ -65,12 +65,13 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "CREDENTIAL_TOKEN_UNSETTLED" or "SANDBOX_POLICY_PROTECTED_EXECUTION" or "REPOSITORY_GIT_SENDER_UNQUALIFIED" or "REPOSITORY_GIT_PROFILE_UNSUPPORTED" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP" or "INVALID_RANGE" or "OUTSIDE_CEILING"` | Yes | — |
 | `error.details[].message` | `string` | No | max length: 512 |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
 | `error.message` | `string` | Yes | min length: 1; max length: 256 |
+| `error.reason` | `"credential_registration_pending"` | No | On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes. |
 | `error.remainingResources` | `array<object>` | No | max items: 7; Present for NAMESPACE_NOT_EMPTY. Each remaining resource kind reports its total count and up to 20 IDs, only of resources the caller can read. Pending Agent provisioning has no resource IDs. Remove the listed resources and retry to discover any others. |
 | `error.remainingResources[].count` | `integer` | Yes | minimum: 0 |
 | `error.remainingResources[].ids` | `array<string>` | Yes | max items: 20 |
@@ -1574,6 +1575,8 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1641,6 +1644,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -1776,6 +1784,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1832,6 +1842,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2027,6 +2042,8 @@ Get one connection template
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2083,6 +2100,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2211,6 +2233,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2267,6 +2291,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2342,8 +2371,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {
@@ -2382,9 +2410,7 @@ Register an OAuth or GitHub App credential client
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `kind` | `"oauth2"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 **`kind: "github-app"`**
 
@@ -2405,8 +2431,7 @@ Example request
   "issuer": "https://accounts.example.com",
   "kind": "oauth2",
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-  "tokenEndpointAuthMethod": "client_secret_basic",
-  "tokenUrl": "https://accounts.example.com/token"
+  "tokenEndpointAuthMethod": "client_secret_basic"
 }
 ```
 
@@ -2445,8 +2470,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2570,8 +2594,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2627,6 +2650,8 @@ List connection templates available in this Namespace
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2693,6 +2718,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -2836,9 +2866,7 @@ List OAuth clients eligible for a connection template in this Namespace
 | `data[].issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].kind` | `"oauth2"` | Yes | — |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `data[].tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -2864,8 +2892,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {
@@ -2965,6 +2992,25 @@ Get the singleton Installation
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat" or "chatgptAuthTokens"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
 | `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
@@ -3070,6 +3116,25 @@ Example request
 | `data.capabilities` | `object` | No | — |
 | `data.capabilities.agentProvisioning` | `object` | No | — |
 | `data.capabilities.agentProvisioning.executionModes` | `array<"embedded" or "dedicated">` | Yes | min items: 1; max items: 2 |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat" or "chatgptAuthTokens"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
 | `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
@@ -4129,6 +4194,25 @@ Report the Installation capabilities that Agent creation in this Namespace needs
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.capabilities` | `object` | Yes | The Installation capabilities that apply to Agent creation in this Namespace, as GET /installation reports them. It includes browser-access availability and omits agentProvisioning, which needs Installation administration. |
+| `data.capabilities.credentialSources` | `object` | No | — |
+| `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].deviceAuthorization.harnessId` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat" or "chatgptAuthTokens"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
+| `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
+| `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
+| `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 | `data.capabilities.deviceAuthorization` | `true` | No | — |
 | `data.capabilities.modelCredentialSourcePresets` | `array<"openai" or "codex-pat">` | No | — |
 | `data.capabilities.nativeAdmin` | `true` | No | — |
@@ -4169,10 +4253,30 @@ Example response
 {
   "data": {
     "capabilities": {
-      "modelCredentialSourcePresets": [
-        "openai",
-        "codex-pat"
-      ],
+      "credentialSources": {
+        "types": [
+          {
+            "config": [
+              {
+                "name": "authorized_base_url",
+                "required": false
+              }
+            ],
+            "harnessAuth": {
+              "loginMode": "api_key",
+              "modelProvider": "openai"
+            },
+            "rotation": "external",
+            "secrets": [
+              {
+                "name": "api_key",
+                "required": true
+              }
+            ],
+            "type": "openai"
+          }
+        ]
+      },
       "openclaw": {
         "executionModes": [
           "dedicated"
@@ -6731,11 +6835,11 @@ Revoke one credential source from the selected Agent revision
 | `data.credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.lastAttemptAt` | `string (date-time)` | No | — |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while Compute has not confirmed revocation. |
+| `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation. |
 | `data.requestedAt` | `string (date-time)` | Yes | — |
 | `data.requestedBy` | `string` | Yes | min length: 1; max length: 256; Principal whose `agent:operate` permission the worker re-checks before revoking. |
 | `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal. |
-| `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after Compute confirms that the Agent revision can no longer use the Source. |
+| `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve. |
 | `data.withdrawalInProgress` | `boolean` | Yes | `true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -6803,11 +6907,11 @@ Get the withdrawal state of a credential source for an Agent
 | `data.credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.lastAttemptAt` | `string (date-time)` | No | — |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while Compute has not confirmed revocation. |
+| `data.reason` | `string` | No | pattern: `^[A-Z0-9_]{1,64}$`; Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation. |
 | `data.requestedAt` | `string (date-time)` | Yes | — |
 | `data.requestedBy` | `string` | Yes | min length: 1; max length: 256; Principal whose `agent:operate` permission the worker re-checks before revoking. |
 | `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`; Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal. |
-| `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after Compute confirms that the Agent revision can no longer use the Source. |
+| `data.state` | `"pending" or "revoked"` | Yes | `revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve. |
 | `data.withdrawalInProgress` | `boolean` | Yes | `true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -11144,7 +11248,7 @@ Example response
 | Operation | Summary |
 | --- | --- |
 | [`GET /namespaces/{namespaceId}/credential-sources`](#get-namespacesnamespaceidcredentialsources) | List readable credential sources without revealing credential values |
-| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a TokenService credential source |
+| [`POST /namespaces/{namespaceId}/credential-sources`](#post-namespacesnamespaceidcredentialsources) | Register a credential source |
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one readable credential source and its available status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Update a Source through its recorded owner |
@@ -11187,7 +11291,7 @@ List readable credential sources without revealing credential values
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object or object or object>` | Yes | — |
+| `data` | `array<object or object or object or object or object>` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11268,7 +11372,7 @@ Example response
 
 <span id="post-namespacesnamespaceidcredentialsources"></span>
 
-Register a TokenService credential source
+Register a credential source
 
 **Operation ID:** `createCredentialSource`
 
@@ -11289,6 +11393,15 @@ Register a TokenService credential source
 **Required:** Yes
 
 **Content type:** `application/json`
+
+**Required fields: `name`, `type`**
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `config` | `object<string, string>` | No | max properties: 32; Non-secret source configuration keyed by catalog field name. |
+| `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `secrets` | `object<string, object>` | No | max properties: 16; Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
+| `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type accepted by the Driver registering the credential, for example `openai`. |
 
 **RegisterTokenServiceSourceBody (required fields: `name`, `type`, `secret`)**
 
@@ -11345,7 +11458,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object or object` | Yes | — |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11438,7 +11551,6 @@ Get one readable credential source and its available status
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
-| `409` | The requested operation conflicts with the current resource state. |
 | `500` | The platform request could not be completed. |
 | `503` | A required dependency is unavailable. |
 
@@ -11446,7 +11558,7 @@ Get one readable credential source and its available status
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object or object` | Yes | — |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11553,7 +11665,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object or object` | Yes | — |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -11620,7 +11732,7 @@ Renew an OAuth or GitHub App installation credential source
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object or object or object` | Yes | — |
+| `data` | `object or object or object or object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

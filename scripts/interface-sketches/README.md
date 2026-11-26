@@ -14,6 +14,6 @@ pnpm graph:check
 
 Open the generated PNG at docs-page width and follow the arrows. Commit the source, its JSON scene and both PNG copies (in `examples/` and `docs/assets/credential-proxy/`). After renaming a source, remove its old generated files. `pnpm check` checks the scenes and verifies that both image directories have the same PNG filenames and bytes.
 
-`pnpm graph:check` validates the [diagram catalog](evidence.ts) and checks current source claims with the TypeScript compiler. The catalog currently contains historical diagrams and a proposal, so the command reports `NOT APPLICABLE` for source claims.
+`pnpm graph:check` checks the [catalogued source relationships](evidence.ts) using the TypeScript compiler. The catalog covers **5 of 53 nodes and arrows** across the four implementation diagrams. The pull proposal has no source claims. A match shows that the checked-out code contains the relationship. Runtime enforcement requires separate evidence.
 
 For custom layouts, rendering JSON from other tools, and querying the compiler graph, see the [authoring reference](authoring.md).

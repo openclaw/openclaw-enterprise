@@ -285,13 +285,10 @@ async function authenticatedApplication(t: TestContext, drivers: InstallationRun
         namespaceLifecycleBindings: drivers.namespaceLifecycleBindings,
         recordOperations: false,
       });
-      if (drivers.credentialDeliveryRegistration !== undefined) {
+      if (drivers.protectedDriver !== undefined) {
         // Keep the shared registration owner, as production composition does. Registering
         // its Sandbox view again would discard the owner of its Namespace binding.
-        controller.installDriver(drivers.credentialDeliveryRegistration, [
-          "sandbox",
-          "credential_proxy",
-        ]);
+        controller.installDriver(drivers.protectedDriver, ["sandbox", "credential_proxy"]);
       }
       return controller;
     },
@@ -299,7 +296,7 @@ async function authenticatedApplication(t: TestContext, drivers: InstallationRun
     computeDriver: drivers.computeDriver,
     configurationDriver: drivers.configurationDriver,
     secretDriver: drivers.secretDriver,
-    ...(drivers.credentialDeliveryRegistration === undefined && drivers.sandboxDriver !== undefined
+    ...(drivers.protectedDriver === undefined && drivers.sandboxDriver !== undefined
       ? { sandboxDriver: drivers.sandboxDriver }
       : {}),
     resolveHarness: resolveApprovedProductionHarness,

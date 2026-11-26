@@ -78,7 +78,7 @@ import {
 
 /** Attach the Provider for a credential binding to the paired OpenShell Sandbox. */
 export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
-  readonly capability = "credential_proxy" as const;
+  readonly capability = "credential_proxy_delivery" as const;
   readonly id: string;
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;

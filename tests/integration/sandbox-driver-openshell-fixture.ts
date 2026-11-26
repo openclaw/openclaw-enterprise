@@ -13,7 +13,7 @@ export function backendFor(
 ): OpenShellSandboxDriverSelection["backend"] {
   return {
     id: "openshell",
-    drivers: { sandbox: "openshell-sandbox" },
+    drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
     client: new OpenShellGateway(
       { serviceName: "openshell-gateway" },
       { gatewayClient: completeOpenShellGatewayClient(gatewayClient) },

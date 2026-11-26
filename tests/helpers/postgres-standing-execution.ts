@@ -1,57 +1,79 @@
+import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 
-export async function standingExecutionFixture(t: TestContext, testUrl: string) {
-  // The fixture owns its database and prepared repository custody.
-  const f = await createWorkerRevisionFixtures(testUrl).setup(t);
-  const registry = {
-    version: 1,
-    backendId: "execution-proof",
-    providerInstanceId: "local-provider",
-    appId: "123",
-    githubInstallationId: "456",
-    maximumDurationSeconds: 120,
-    allowStandingApprovals: true,
-    repositories: [
-      {
-        repositoryRef: "source",
-        repositoryId: "789",
-        repository: "example/source",
-        namespaces: [
-          {
-            namespaceId: f.namespace.id,
-            profiles: ["git-write"],
-            allowStandingApproval: true,
-            transport: "git-only",
-            pushRefAllowlist: ["refs/heads/review"],
-          },
-        ],
-      },
-    ],
-  } as const satisfies GitHubRepositoryRegistry;
+export async function standingExecutionFixture(
+  t: TestContext,
+  testUrl: string,
+  setupRepository?: (
+    pool: Pool,
+    namespaceId: string,
+  ) => Promise<{
+    registry: GitHubRepositoryRegistry;
+    controlSocket?: string;
+    backendId: string;
+    protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
+    requestedBinding?: {
+      repositoryRef: string;
+      profile: "github-installation";
+    };
+  }>,
+  driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  firstAdmissionDurationMs = 120_000,
+) {
+  const f = await standingExecutionPlatform(t, testUrl, driverSelections);
+  const external = await setupRepository?.(f.observerPool, f.namespace.id);
+  const registry =
+    external?.registry ??
+    ({
+      version: 1,
+      backendId: "execution-proof",
+      providerInstanceId: "local-provider",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 120,
+      allowStandingApprovals: true,
+      repositories: [
+        {
+          repositoryRef: "source",
+          repositoryId: "789",
+          repository: "example/source",
+          namespaces: [
+            {
+              namespaceId: f.namespace.id,
+              profiles: ["git-write"],
+              allowStandingApproval: true,
+              transport: "git-only",
+              pushRefAllowlist: ["refs/heads/review"],
+            },
+          ],
+        },
+      ],
+    } as const);
   const driver = new GitHubRepositoryPolicy(
     {
-      driverId: "execution-proof",
-      backendId: "execution-proof",
+      driverId: external?.backendId ?? "execution-proof",
+      backendId: external?.backendId ?? "execution-proof",
     },
     registry,
     { sessionDurationSeconds: 120 },
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: "secret",
+    auth: external?.protectedDriver ? "runtime" : "secret",
   });
   const bindings = [
-    {
+    external?.requestedBinding ?? {
       repositoryRef: "source",
       profile: "git-write",
     },
-  ] as const;
+  ];
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
     bindings,
@@ -86,7 +108,7 @@ export async function standingExecutionFixture(t: TestContext, testUrl: string) 
   const credentials = {
     driver: { id: driver.id, implementation: driver.implementation },
     bindings: [binding],
-    deadlineWallMs: Date.now() + 120_000,
+    deadlineWallMs: Date.now() + firstAdmissionDurationMs,
     standingApprovalId: approval.id,
     standingApprovalGeneration: approval.generation,
     standingApprovalScopeFingerprint: fingerprint,
@@ -95,15 +117,25 @@ export async function standingExecutionFixture(t: TestContext, testUrl: string) 
     actorId: f.actor.id,
     repositoryCredentials: credentials,
   };
-  const revision = (await f.revision(owner, 1, revisionOptions)) as AgentRevision;
+  if (external?.protectedDriver) {
+    f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
+  }
+  const revision = (await f.revision(owner, 1, {
+    ...revisionOptions,
+    ...(external?.protectedDriver && {
+      protectedRepositoryDriver: external.protectedDriver,
+    }),
+  })) as AgentRevision;
   const key = {
     namespaceId: f.namespace.id,
     agentId: owner.id,
     revisionId: revision.id,
   };
-  await f.state.transact((u) =>
-    u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
-  );
+  if (!external) {
+    await f.state.transact((u) =>
+      u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
+    );
+  }
   return {
     f,
     key,
@@ -116,4 +148,15 @@ export async function standingExecutionFixture(t: TestContext, testUrl: string) 
     credentials,
     driver,
   };
+}
+
+export async function standingExecutionPlatform(
+  t: TestContext,
+  testUrl: string,
+  driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
+) {
+  // Each fixture owns its database: another case's issuer may use the same Driver
+  // identity but a different custody key, so it cannot inherit encrypted retirements.
+  return createWorkerRevisionFixtures(testUrl).setup(t, { driverSelections, backends });
 }

@@ -1,6 +1,7 @@
 import {
   assertChatGPTStartupMetadata,
   checkNativeRepositoryStartup,
+  checkProtectedRepositoryWorker,
   checkRepositoryResolution,
   prepareRepositoryFiles,
   createChatGPTInstallation,
@@ -11,6 +12,10 @@ import {
   registerStartupProcessResolutionCases,
   startupDiagnostic,
 } from "./configuration-startup-resolution-cases.ts";
+import {
+  checkCredentialProxySelection,
+  registerStartupCredentialProxyCases,
+} from "./configuration-startup-credential-proxy-cases.ts";
 import {
   registerStartupDiagnosticsCases,
   registerStartupPresetCases,
@@ -53,7 +58,9 @@ import {
   admitLoggingConfiguration,
   ConfigurationValidationError,
 } from "../../packages/contracts/src/index.ts";
+import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
+import { reservedPortArgs, reservePort } from "../helpers/available-port.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -122,29 +129,18 @@ test("TokenService registration selection does not require a Sandbox or Credenti
   });
   assert.equal(loaded.installation.drivers.token_service.id, "occ");
   assert.equal(loaded.installation.drivers.sandbox, undefined);
-  assert.equal(loaded.credentialDeliveryRegistration, undefined);
+  assert.equal(loaded.installation.drivers.credential_proxy, undefined);
 });
 
-test("startup pairs the native Credential Proxy and refuses legacy proxy configuration", async (t) => {
+test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
   const configuration = credentialProxyInstallation();
-  const load = async (input) =>
+  const path = await fixture(t, configuration);
+  const load = () =>
     loadInstallationConfiguration({
       mode: "development",
-      environment: { OCC_CONFIG_PATH: await fixture(t, input) },
+      environment: { OCC_CONFIG_PATH: path },
     });
-  const runtime = await load(configuration);
-  const owner = runtime.credentialDeliveryRegistration;
-  assert.equal(owner.require("sandbox"), runtime.sandboxDriver);
-  assert.equal(owner.require("credential_proxy").capability, "credential_proxy");
-  assert.equal(owner.require("credential_proxy").id, runtime.sandboxDriver.id);
-  await assert.rejects(
-    load({ ...configuration, drivers: { ...configuration.drivers, credential_proxy: null } }),
-    /legacy drivers\.credential_proxy startup setting is retired/,
-  );
-  await assert.rejects(
-    load({ ...configuration, repository: { openShell: {} } }),
-    /repository\.openShell is retired/,
-  );
+  await checkCredentialProxySelection(t, configuration, path, load, validateSelectedBackendDrivers);
 });
 
 test("Installation startup validates the optional external observability URL", async (t) => {
@@ -194,6 +190,18 @@ async function repositoryInstallation(t) {
   };
   return { configuration, registry, registrySource, tls, writableCaPath };
 }
+
+test("Installation rejects the retired protected GitHub metadata signer setting", async (t) => {
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+    custodyKeyPath: "/nonexistent/fixture-custody.key",
+  };
+  const path = await fixture(t, configuration);
+  await assert.rejects(
+    loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+    /preparedGitHub/,
+  );
+});
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
   const { configuration, registry, registrySource } = await repositoryInstallation(t);
@@ -299,6 +307,20 @@ test("the worker refuses a repository App key that cannot sign before it reports
       );
       assert.ok(!worker.stderr.includes("-----BEGIN") && !worker.stderr.includes(directory));
     }),
+  );
+});
+
+test("the worker binds bundled OpenShell Git with the prepared owner's protected authority", async (t) => {
+  const {
+    configuration: repository,
+    registry,
+    registrySource,
+    tls,
+  } = await repositoryInstallation(t);
+  await checkProtectedRepositoryWorker(
+    t,
+    { repository, registry, registrySource, certFile: tls.certFile, keyFile: tls.keyFile },
+    { boot, fixture, reservePort, reservedPortArgs, credentialProxyInstallation },
   );
 });
 
@@ -768,6 +790,8 @@ registerStartupPresetCases({
   productionServer,
   settled,
 });
+
+registerStartupCredentialProxyCases({ boot, fixture, productionServer, settled });
 
 registerStartupDriverResolutionCases(
   { boot, fixture, productionServer },

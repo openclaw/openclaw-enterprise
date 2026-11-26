@@ -5,6 +5,8 @@ import {
   SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type AuditEvent,
   type CredentialSource,
+  type EgressRef,
+  type TokenService,
   type StaticCredentialSource,
   type CredentialSourceMetadata,
   type CredentialSourceReference,
@@ -20,6 +22,10 @@ import {
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
+import {
+  PROTECTED_SOURCE_TIMEOUT_MS,
+  type CredentialSourceDrivers,
+} from "./credential-source-drivers.ts";
 import {
   credentialSourceMetadata,
   githubAppCredentialSourceMetadata,
@@ -38,7 +44,11 @@ import {
   RetryLaterError,
   ScopeViolationError,
 } from "./errors.ts";
-import { removedAccessBinding, type RemovedAccessBinding } from "./iam-policy-cleanup.ts";
+import {
+  accessBindingsTargeting,
+  removedAccessBinding,
+  type RemovedAccessBinding,
+} from "./iam-policy-cleanup.ts";
 import { selectedPluginBindings } from "./plugin-credential-bindings.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { TokenServiceInstance } from "./ports/token-service.ts";
@@ -103,6 +113,8 @@ interface ManagedCredentialSourceDependencies {
     "authorize" | "authorizationDecision" | "holdAuthority"
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "bindCreator">;
+  readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
+  readonly preparedIssuer: (ref: EgressRef) => NonNullable<ReturnType<TokenService["issuer"]>>;
   readonly clock: () => Date;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
   readonly secretDriver: (driverId: string) => SecretDriver;
@@ -743,7 +755,33 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         );
       }
       if (!isManagedTokenServiceSource(source)) {
-        throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+        if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
+          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+        }
+        dependencies.sourceDrivers.credentialSourceOwner(source);
+        const blocking = await state.credentialSources.findBlockingReference(
+          namespaceId,
+          source.id,
+        );
+        if (blocking === "reference") {
+          throw new ResourceStateConflictError(
+            "An Agent, active revision, pending deployment, or provisioning request still references the credential source. Wait for provisioning to finish, or delete those Agents or deploy them without it, first.",
+          );
+        }
+        if (blocking === "withdrawal_work") {
+          throw new CredentialWithdrawalInProgressError();
+        }
+        const deleting =
+          source.state === "deleting"
+            ? source
+            : await state.credentialSources.markCredentialSourceDeleting(namespaceId, source.id);
+        if (!deleting || isManagedTokenServiceSource(deleting)) {
+          throw new ResourceStateConflictError("The credential source changed during deletion.");
+        }
+        return {
+          namespace,
+          source: deleting,
+        };
       }
       if (!audit) {
         throw new ResourceStateConflictError("Source retirement requires audit evidence.");
@@ -782,6 +820,29 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       await state.audit.append(audit([], "retirement_started"));
       return { namespace, source: deleting };
     });
+    if (!isManagedTokenServiceSource(source)) {
+      if (source.egress?.adoption === "prepared") {
+        await dependencies
+          .preparedIssuer(source.egress.key.provider)
+          .withdraw(source.egress, AbortSignal.timeout(PROTECTED_SOURCE_TIMEOUT_MS));
+      }
+      await dependencies.transactions.transact(async (state) => {
+        await lockNamespace(state, namespace.id);
+        const removed = await accessBindingsTargeting(
+          state,
+          namespace.id,
+          "credential_source",
+          source.id,
+        );
+        if (!(await state.credentialSources.deleteCredentialSource(namespace.id, source.id))) {
+          throw new ResourceStateConflictError("The credential source changed during deletion.");
+        }
+        if (audit) {
+          await state.audit.append(audit(removed));
+        }
+      });
+      return;
+    }
     if (source.type === "oauth2-refresh-token") {
       const result = await finishOAuthRevocation(namespaceId, source.id);
       if (result?.deleted) {

@@ -1,8 +1,10 @@
 # Protected static inference
 
-The legacy credential-egress Driver and its protected static inference profile
-are retired. Use a [managed model Source](managed-static.md) for model access.
-This page records the request and response policy of earlier releases.
+The bundled OpenShell protected static inference profile is retired for new
+Sources, adoption, and deployments. Use a
+[managed model Source](managed-static.md) for new model access. The legacy credential-egress Driver is deprecated and pending removal. This reference
+records the request and response policy for existing protected revisions and
+separately qualified installed senders.
 
 The local launcher rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence
 of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before preparing workloads.

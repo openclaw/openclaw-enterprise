@@ -91,8 +91,20 @@
 {{- define "openclaw.channelEgress.slotName" -}}
 {{- printf "channel-egress-%s-%d" (.gatewayName | sha256sum | trunc 12) (int .port) -}}
 {{- end -}}
+{{- /* Shared repository inputs. Only an explicit delivery selection, broker or OpenShell listener activates them. */ -}}
 {{- define "openclaw.repositoryCredentials.gitEnabled" -}}
-{{- if .Values.repositoryCredentials.enabled -}}
+{{- $credentials := .Values.repositoryCredentials -}}
+{{- if eq $credentials.delivery "credential-proxy" -}}
+{{- if $credentials.enabled -}}
+{{- fail "repositoryCredentials.delivery credential-proxy requires the repository broker disabled; drain existing broker sessions before switching" -}}
+{{- end -}}
+{{- if ne $credentials.authority "prepared-git" -}}
+{{- fail "repositoryCredentials.delivery credential-proxy requires authority prepared-git" -}}
+{{- end -}}
+true
+{{- else if $credentials.delivery -}}
+{{- fail "repositoryCredentials.delivery must be empty or credential-proxy" -}}
+{{- else if or $credentials.enabled .Values.openshellGit.enabled -}}
 true
 {{- end -}}
 {{- end -}}
@@ -104,8 +116,6 @@ true
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
 {{- end -}}
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
-{{- if or (hasKey .Values "egressAuthority") (hasKey .Values "openshellGit") -}}{{- fail "egressAuthority and openshellGit are retired; select native TokenService delivery in Installation configuration" -}}{{- end -}}
-{{- if .Values.repositoryCredentials.delivery -}}{{- fail "repositoryCredentials.delivery is retired; select the independent broker with repositoryCredentials.enabled" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
 {{- include "openclaw.validateImageReference" (dict "label" (printf "images.%s" $name) "image" $image) -}}
@@ -178,8 +188,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
 {{- end -}}
-{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
-{{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, disposable password operator and no external login or native admin" -}}
+{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
+{{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, egress or OpenShell Git authority, disposable password operator and no external login or native admin" -}}
 {{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
@@ -435,6 +445,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.backend.openshell.clientSecretName -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell" -}}
 {{- end -}}
+{{- if .Values.egressAuthority.enabled -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/egress/tls" "/etc/openclaw/egress/issuer") -}}
+{{- end -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell-git" -}}
+{{- end -}}
 {{- if .Values.gatewayRouting.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-api-key" -}}
 {{- if or (not .Values.gatewayRouting.issuerRef.name) .Values.gatewayRouting.caSecretName -}}
@@ -531,6 +547,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" .Values.repositoryCredentials.registryKey) -}}
 {{- end -}}
 {{- if $repositoryGit -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- if ne .Values.openshellGit.mode "protected" -}}
+{{- fail "openshellGit.mode must be protected; drain the earlier broker trial on its original owner before switching" -}}
+{{- end -}}
+{{- if $repositoryBroker -}}
+{{- fail "protected Git requires the repository broker disabled (repositoryCredentials.enabled: false); drain existing broker sessions before switching" -}}
+{{- end -}}
+{{- if ne .Values.repositoryCredentials.authority "prepared-git" -}}
+{{- fail "openshellGit requires repositoryCredentials.authority prepared-git" -}}
+{{- end -}}
+{{- end -}}
 {{- $credentials := .Values.repositoryCredentials -}}
 {{- if ne $credentials.authority "prepared-git" -}}
 {{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker Token Service custody; do not transfer keys or replay uncertain work" -}}
@@ -677,6 +704,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
 {{- $roles = append $roles (list "backend.openshell.clientSecretName" .Values.backend.openshell.clientSecretName) -}}
+{{- if .Values.egressAuthority.enabled -}}
+{{- $roles = concat $roles (list (list "egressAuthority.tlsSecretName" .Values.egressAuthority.tlsSecretName) (list "egressAuthority.issuerSecretName" .Values.egressAuthority.issuerSecretName)) -}}
+{{- end -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- $roles = append $roles (list "openshellGit.tlsSecretName" .Values.openshellGit.tlsSecretName) -}}
+{{- end -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
 {{- if .Release.IsInstall -}}{{- $roles = append $roles (list "bootstrap.credentials.secretName" .Values.bootstrap.credentials.secretName) -}}{{- end -}}
@@ -851,9 +884,16 @@ capabilities:
 {{- $raw -}}
 {{- end -}}
 
-{{/* The chart-owned private Gateway expectation checks selected Kubernetes
-     routing against the rendered resource identity and hostname. */}}
+{{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
+     startup and the upgrade check refuse an Installation listener on another port, not on
+     all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
+     other than the chart's mounts. The chart-owned private Gateway expectation also checks
+     selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
+{{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
+- name: {{ $listener.name }}
+  value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
+{{- end }}
 {{- if .Values.gatewayRouting.enabled }}
 - name: OCC_CHART_GATEWAY_ROUTING
   value: {{ dict "gatewayName" (include "openclaw.gatewayRouting.gatewayName" .) "gatewayNamespace" .Release.Namespace "envoyNamespace" .Values.gatewayRouting.envoyNamespace "hostname" (include "openclaw.gatewayRouting.hostname" .) "defaultHostname" (include "openclaw.gatewayRouting.defaultHostname" .) | toJson | quote }}

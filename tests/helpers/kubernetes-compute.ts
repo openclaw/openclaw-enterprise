@@ -22,6 +22,7 @@ interface TestKubernetesComputeDriverOptions {
     KubernetesComputeDriverOptions["servicePrincipalCredentials"] | undefined;
   readonly sandboxDriver?: DriverSelection["sandboxDriver"];
   scratchVolumes?: NonNullable<KubernetesComputeDriverOptions["runtime"]>["scratchVolumes"];
+  readonly protectedDriver?: DriverSelection["protectedDriver"];
 }
 
 interface ConformanceKubernetesOptionsInput {
@@ -58,6 +59,7 @@ export function createTestKubernetesComputeDriver(
     servicePrincipalCredentials = { mode: "disabled" },
     sandboxDriver,
     scratchVolumes,
+    protectedDriver,
   }: TestKubernetesComputeDriverOptions = {},
 ): KubernetesComputeDriver {
   const resources = {
@@ -125,6 +127,7 @@ export function createTestKubernetesComputeDriver(
       id,
       channelDrivers: slackChannelDrivers,
       ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+      ...(protectedDriver === undefined ? {} : { protectedDriver }),
       ...(placed ? { nodeEnrollment: unexpectedNodeEnrollment() } : {}),
     },
   );

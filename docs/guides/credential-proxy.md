@@ -83,13 +83,17 @@ Prepared Git uses a separate standing or finite session procedure.
 
 ## Existing legacy protected exchanges
 
-The legacy Driver and its `drivers.credential_proxy` setting are retired.
-Startup rejects the setting. Use TokenService with the bundled OpenShell
-Sandbox for managed credentials.
+`LegacyEgressProxyDriver` and its `drivers.credential_proxy` selection are
+deprecated and pending removal. Credential Design 1.0 retires their special
+protected metadata and repository exchanges instead of migrating them. Do not
+select this Driver for new model, Git, Plugin, or metadata workflows. Use
+TokenService and native Credential Proxy for credentials.
+Sandbox network policy and ordinary Channel egress are separate capabilities.
 
-Settle work accepted by an earlier release with the original owner. See the
-[historical sender setup](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#prepare-enforcement-trust-and-custody)
-and [release-specific prerequisites](../reference/drivers/selection.md#select-a-protected-sender).
+For an existing qualified exchange, retain its matching release, authority,
+trust, and peer configuration. See the [historical protected-sender setup](https://github.com/openclaw/openclaw-enterprise/blob/105ffee9962176cf42fc7cfe013b8b94831435db/docs/guides/credential-proxy.md#prepare-enforcement-trust-and-custody)
+and [qualified sender prerequisites](../reference/drivers/selection.md#select-a-protected-sender).
+New local protected static-inference launches are [retired](deploy/local-openshell-images.md#select-the-protected-profile).
 
 ## Diagnose before retrying
 

@@ -12,6 +12,13 @@
   "prepare": {},
   "files": [
     {
+      "path": "tests/integration/egress-custody-authorized-wire.test.ts",
+      "expectedTests": [
+        "authorized wrong sink presents copied opening first and splices a pending real reply",
+        "two live authorized streams cannot cross their resolved dispatch handles"
+      ]
+    },
+    {
       "path": "tests/integration/egress-response-custody-installed-real.test.mjs",
       "expectedTests": [
         "explicit protected credential-free read, removal of authority and final route withdrawal"

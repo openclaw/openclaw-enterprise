@@ -96,8 +96,7 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   }
   if (Object.hasOwn(drivers, "conduit")) {
     throw new ScopeViolationError(
-      path(id, "drivers.conduit") +
-        " is retired. Configure TokenService with the bundled OpenShell Sandbox for credential delivery.",
+      path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
     );
   }
   if (candidate.type === "openshell") {
@@ -400,12 +399,29 @@ function validateOpenShellBackend(
     );
   }
   for (const key of Object.keys(drivers)) {
-    if (key !== "sandbox" && key !== "token_service") {
+    if (
+      key !== "sandbox" &&
+      key !== "credential_gateway" &&
+      key !== "credential_refresh" &&
+      key !== "credential_proxy" &&
+      key !== "token_service"
+    ) {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
   if (!isNonEmptyString(drivers.sandbox)) {
     throw new ScopeViolationError(path(id, "drivers") + " requires a sandbox member.");
+  }
+  if (drivers.credential_gateway !== undefined && !isNonEmptyString(drivers.credential_gateway)) {
+    throw new ScopeViolationError(path(id, "drivers.credential_gateway") + " must be a Driver ID.");
+  }
+  if (drivers.credential_refresh !== undefined && !isNonEmptyString(drivers.credential_refresh)) {
+    throw new ScopeViolationError(path(id, "drivers.credential_refresh") + " must be a Driver ID.");
+  }
+  if (drivers.credential_refresh !== undefined && drivers.credential_gateway === undefined) {
+    throw new ScopeViolationError(
+      path(id, "drivers.credential_refresh") + " requires a credential_gateway member.",
+    );
   }
   return deepFreeze({
     id,
@@ -425,6 +441,15 @@ function validateOpenShellBackend(
     },
     drivers: {
       sandbox: drivers.sandbox,
+      ...(drivers.credential_gateway === undefined
+        ? {}
+        : { credential_gateway: drivers.credential_gateway as string }),
+      ...(drivers.credential_proxy === undefined
+        ? {}
+        : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
+      ...(drivers.credential_refresh === undefined
+        ? {}
+        : { credential_refresh: drivers.credential_refresh as string }),
       ...(drivers.token_service === undefined
         ? {}
         : { token_service: backendId(drivers.token_service, "TokenService Driver ID") }),
@@ -441,6 +466,15 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
+    ...(backend.drivers.credential_gateway === undefined
+      ? []
+      : [`credential_gateway:${backend.drivers.credential_gateway}`]),
+    ...(backend.drivers.credential_refresh === undefined
+      ? []
+      : [`credential_refresh:${backend.drivers.credential_refresh}`]),
+    ...(backend.drivers.credential_proxy === undefined
+      ? []
+      : [`credential_proxy:${backend.drivers.credential_proxy}`]),
     ...(backend.drivers.token_service === undefined
       ? []
       : [`token_service:${backend.drivers.token_service}`]),
@@ -529,10 +563,43 @@ export function validateSelectedBackendDrivers(
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
     } else {
       requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
+      if (backend.drivers.credential_gateway !== undefined) {
+        requires(
+          "credential_gateway",
+          backend.drivers.credential_gateway,
+          "Credential Gateway Driver",
+        );
+      }
+      if (backend.drivers.credential_refresh !== undefined) {
+        requires(
+          "credential_refresh",
+          backend.drivers.credential_refresh,
+          "Credential Refresh Driver",
+        );
+      }
       if (backend.drivers.token_service !== undefined) {
         requires("token_service", backend.drivers.token_service, "TokenService Driver");
       }
+      if (backend.drivers.credential_proxy !== undefined) {
+        requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");
+      } else if (selected.credential_proxy !== undefined) {
+        throw new DriverSelectionError(
+          "The selected Credential Proxy Driver must belong to the Sandbox's Backend.",
+        );
+      }
     }
+  }
+  // Refresh state lives with the gateway's source record, so the two roles share one Backend.
+  const refresh = selected.credential_refresh;
+  if (
+    refresh !== undefined &&
+    !backends.some((backend) =>
+      backendMembers(backend).includes(`credential_refresh:${refresh.id}`),
+    )
+  ) {
+    throw new DriverSelectionError(
+      "The selected Credential Refresh Driver must belong to the Credential Gateway's Backend.",
+    );
   }
   const proxy = selected.credential_proxy;
   if (
@@ -543,6 +610,17 @@ export function validateSelectedBackendDrivers(
   ) {
     throw new DriverSelectionError(
       "The selected Credential Proxy Driver and Sandbox must come from the same registered Driver.",
+    );
+  }
+  const gateway = selected.credential_gateway;
+  if (
+    gateway !== undefined &&
+    !backends.some((backend) =>
+      backendMembers(backend).includes(`credential_gateway:${gateway.id}`),
+    )
+  ) {
+    throw new DriverSelectionError(
+      "The selected Credential Gateway Driver must belong to a configured Backend.",
     );
   }
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { KeyObject } from "node:crypto";
 import type { TestContext } from "node:test";
-import type { OpenShellOnlineHttpAuthorityOptions } from "../../apps/controller/src/drivers/plugin/openshell-online-authority.ts";
+import type { OpenShellOnlineHttpAuthorityOptions } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
 import { isArray, isRecord } from "./egress-observation-values.ts";
 import { grpc, type Grpc } from "./openshell-grpc-sdk.ts";
 import { openShellOnlineWire, token } from "./openshell-online-wire.mjs";

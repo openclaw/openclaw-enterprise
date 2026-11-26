@@ -1,37 +1,38 @@
 import { fileURLToPath } from "node:url";
 import {
-  tlsListenerConfiguration,
-  type TlsListenerConfiguration,
+  chartListeners,
+  egressAuthorityConfiguration,
+  type EgressAuthorityConfiguration,
 } from "./composition/installation-fields.ts";
-import { bindOpenShellMiddleware } from "./drivers/plugin/openshell-middleware.ts";
-import { createOpenShellOnlineHttpAuthority } from "./drivers/plugin/openshell-online-authority.ts";
+import { createOpenShellOnlineHttpAuthority } from "./drivers/egress-proxy/openshell-online-authority.ts";
 import {
   acceptsPluginRequestScope,
   allowsPluginRequest,
   managedPluginGuardVersion,
 } from "./drivers/plugin/managed-request-policies.ts";
+import { bindOpenShellMiddleware } from "./drivers/egress-proxy/openshell-exchange-binding.ts";
 import {
   managedPluginMiddleware,
   managedPluginMiddlewareAudience,
   managedPluginMiddlewareImplementation,
 } from "./drivers/plugin/managed-catalog.ts";
 
-const mounts = {
-  certificatePath: "/etc/openclaw/egress/tls/tls.crt",
-  privateKeyPath: "/etc/openclaw/egress/tls/tls.key",
-  issuerPublicKeyPath: "/etc/openclaw/egress/issuer/issuer.pub",
-};
+const mounts = chartListeners.egressAuthority.files;
 
 export async function startPluginRequestGuard(
   environment: Readonly<Record<string, string | undefined>>,
   files: Pick<
-    TlsListenerConfiguration,
+    EgressAuthorityConfiguration,
     "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath"
-  > = mounts,
+  > = {
+    certificatePath: mounts.certificatePath[0],
+    privateKeyPath: mounts.privateKeyPath[0],
+    issuerPublicKeyPath: mounts.issuerPublicKeyPath[0],
+  },
 ) {
   const mode = environment.NODE_ENV === "production" ? "production" : "development";
   const port = environment.OCC_PLUGIN_REQUEST_AUTHORITY_PORT;
-  const config = tlsListenerConfiguration(
+  const config = egressAuthorityConfiguration(
     {
       ...files,
       host: mode === "production" ? "0.0.0.0" : "127.0.0.1",

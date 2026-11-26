@@ -2,13 +2,13 @@ import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { analyzeCoupling } from "./coupling.ts";
-import { evidenceCatalog, sourceFiles, verifyEvidence } from "./evidence.ts";
+import { sourceFiles, verifyEvidence } from "./evidence.ts";
 
 const usage = `Usage: node graph.ts [--root PATH] [--check]
        node graph.ts [--root PATH] --file REPO_RELATIVE_FILE [--file REPO_RELATIVE_FILE ...]
 
 Default: print a bounded static coupling graph and diagram claim results as JSON.
---check: verify current diagram claims. Historical and proposed diagrams may have no claims.
+--check: check the selected diagram claims; fail if claims are missing or fail.
 --file: inspect explicit source files without verifying curated diagram claims.
 Inputs are read from the working tree, not from a pinned Git commit.`;
 
@@ -88,20 +88,12 @@ function main(args: readonly string[]): void {
   const config = options(args);
   const custom = config.files.length > 0;
   const files = selectedFiles(config.root, custom ? config.files : sourceFiles);
-  const noCurrentClaims =
-    !custom &&
-    evidenceCatalog.length > 0 &&
-    evidenceCatalog.every(
-      ({ classification, claims }) =>
-        (classification === "historical" || classification === "proposal") && claims.length === 0,
-    );
-  if (files.length === 0 && !noCurrentClaims) {
+  if (files.length === 0) {
     throw new Error(
       "No source files selected; restore the diagram source selection or supply --file.",
     );
   }
-  const graph =
-    files.length === 0 ? { edges: [], unresolved: [] } : analyzeCoupling(config.root, files);
+  const graph = analyzeCoupling(config.root, files);
   const evidence = custom
     ? {
         claims: [],
@@ -111,13 +103,12 @@ function main(args: readonly string[]): void {
       }
     : verifyEvidence(graph.edges);
   const problems = [...evidence.problems];
-  if (!custom && !noCurrentClaims && evidence.claims.length === 0) {
+  if (!custom && evidence.claims.length === 0) {
     problems.push("No diagram claims were supplied; restore the evidence claim inventory.");
   }
   if (config.check) {
-    const status = noCurrentClaims ? "NOT APPLICABLE" : "PASS";
     console.log(
-      `Static diagram claims: ${problems.length === 0 ? status : "FAIL"}; ${evidence.claims.length} claims, ${files.length} files, ${graph.edges.length} observed edges, ${graph.unresolved.length} unresolved sites.`,
+      `Static diagram claims: ${problems.length === 0 ? "PASS" : "FAIL"}; ${evidence.claims.length} claims, ${files.length} files, ${graph.edges.length} observed edges, ${graph.unresolved.length} unresolved sites.`,
     );
     for (const problem of problems) {
       console.error(problem);

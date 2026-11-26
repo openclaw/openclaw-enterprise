@@ -143,11 +143,6 @@ export function createAgentCredentialWithdrawal(dependencies: WithdrawalDependen
         );
       }
       const revision = await activeCredentialSourceRevision(state, agent, input);
-      if (revision.executionAdmission.mode === "protected") {
-        throw new ResourceStateConflictError(
-          "The active revision uses retired Credential Proxy execution. Create a new Agent with TokenService to manage its credentials.",
-        );
-      }
       const withdrawal = await requestRevisionCredentialWithdrawal(
         state,
         principalId,

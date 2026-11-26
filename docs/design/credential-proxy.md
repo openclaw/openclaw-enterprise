@@ -57,7 +57,7 @@ flowchart TB
 For native OpenShell delivery, the supervisor checks both installed policies
 locally and substitutes the credential on a matching request. Native Git makes
 no request-time call to OCC. Git grants repository Read or Read/write access;
-Branch protection and pull request operations are outside this Git-only path.
+GitHub enforces branch rules. Pull requests are outside this Git-only path.
 The upstream service enforces the credential's permissions. See the
 [request architecture](credential-proxy-architecture.md).
 
@@ -72,7 +72,8 @@ and [withdrawal](../reference/credential-sources/withdrawal.md).
 
 Native OpenShell checks the deployed policies locally. Credential 1.0 retires the
 legacy protected metadata and repository exchanges instead of migrating their
-extra checks. The legacy Driver has been removed.
+extra checks. Their deprecated `LegacyEgressProxyDriver` implementation remains
+pending removal.
 
 ## Read one repository's identity
 

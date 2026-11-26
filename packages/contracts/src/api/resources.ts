@@ -18,6 +18,8 @@ import {
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
+  CredentialSourceSecrets,
+  CredentialSourceType,
   GatewayManagedModeSchema,
   AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
@@ -318,6 +320,42 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+const CredentialSourceFieldSchema = Type.Object(
+  {
+    name: Type.String({ minLength: 1 }),
+    required: Type.Boolean(),
+    description: Type.Optional(Type.String()),
+    issuerRotated: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+const CredentialSourceCatalogSchema = Type.Object(
+  {
+    type: CredentialSourceType,
+    config: Type.Array(CredentialSourceFieldSchema),
+    secrets: Type.Array(CredentialSourceFieldSchema),
+    rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
+    deviceAuthorization: Type.Optional(
+      Type.Object({ harnessId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+    ),
+    harnessAuth: Type.Optional(
+      Type.Object(
+        {
+          modelProvider: Type.String({ minLength: 1 }),
+          loginMode: Type.Union([
+            Type.Literal("api_key"),
+            Type.Literal("codex_pat"),
+            Type.Literal("chatgptAuthTokens"),
+          ]),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 const InstallationPluginDiscoverySchema = Type.Object(
   { credential: PluginDiscoveryCredentialSchema },
   { additionalProperties: false },
@@ -329,6 +367,12 @@ const InstallationCapabilitiesSchema = Type.Object(
     deviceAuthorization: Type.Optional(Type.Literal(true)),
     modelCredentialSourcePresets: Type.Optional(
       Type.Array(Type.Union([Type.Literal("openai"), Type.Literal("codex-pat")])),
+    ),
+    credentialSources: Type.Optional(
+      Type.Object(
+        { types: Type.Array(CredentialSourceCatalogSchema) },
+        { additionalProperties: false },
+      ),
     ),
     agentProvisioning: Type.Optional(
       Type.Object(
@@ -675,7 +719,8 @@ export const CredentialSourceStatusSchema = Type.Object(
   },
   {
     additionalProperties: false,
-    description: "Source admission or owner status. This field contains no credential values.",
+    description:
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -820,6 +865,51 @@ export const CredentialSourceSchema = Type.Union([
   Type.Object(GitHubAppInstallationCredentialSourceSchema.properties, {
     additionalProperties: false,
   }),
+]);
+
+const LegacyCredentialSourceSchema = Type.Object(
+  {
+    id: CredentialSourceId,
+    namespaceId: NamespaceId,
+    name: Name,
+    type: CredentialSourceType,
+    ownerCapability: Type.Union([
+      Type.Literal("credential_gateway"),
+      Type.Literal("credential_proxy"),
+    ]),
+    config: CredentialSourceConfig,
+    egress: Type.Optional(
+      Type.Object(
+        {
+          adoption: Type.Union([
+            Type.Literal("live"),
+            Type.Literal("prepared"),
+            Type.Literal("credential_free"),
+          ]),
+          retention: Type.Literal("none"),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+        },
+      ),
+    ),
+    secrets: CredentialSourceSecrets,
+    state: Type.Union([
+      Type.Literal("registering"),
+      Type.Literal("ready"),
+      Type.Literal("deleting"),
+    ]),
+    ref: CredentialSourceReference,
+    status: Type.Optional(CredentialSourceStatusSchema),
+  },
+  { additionalProperties: false },
+);
+
+const CredentialSourceResultSchema = Type.Union([
+  CredentialSourceSchema,
+  LegacyCredentialSourceSchema,
 ]);
 
 export const AgentRuntimeCredentialStatusSchema = Type.Object(
@@ -1279,7 +1369,7 @@ export const SecretDetailResponse = Type.Object(
 );
 
 export const CredentialSourceResponse = Type.Object(
-  { data: CredentialSourceSchema, meta: Meta },
+  { data: CredentialSourceResultSchema, meta: Meta },
   {
     $id: "CredentialSourceResponse",
     additionalProperties: false,
@@ -1298,7 +1388,7 @@ export const CredentialWithdrawalSchema = Type.Object(
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
-        "`revoked` only after Compute confirms that the Agent revision can no longer use the Source.",
+        "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve.",
     }),
     requestedBy: Type.String({
       minLength: 1,
@@ -1312,7 +1402,7 @@ export const CredentialWithdrawalSchema = Type.Object(
       Type.String({
         pattern: "^[A-Z0-9_]{1,64}$",
         description:
-          "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while Compute has not confirmed revocation.",
+          "Reason code of the worker's most recent attempt, for example `CREDENTIAL_WITHDRAWAL_PENDING` while the gateway has not confirmed revocation.",
       }),
     ),
     lastAttemptAt: Type.Optional(Type.String({ format: "date-time" })),
@@ -1330,7 +1420,7 @@ export const CredentialWithdrawalResponse = Type.Object(
 );
 
 export const CredentialSourceListResponse = Type.Object(
-  { data: Type.Array(CredentialSourceSchema), meta: Meta },
+  { data: Type.Array(CredentialSourceResultSchema), meta: Meta },
   { additionalProperties: false },
 );
 

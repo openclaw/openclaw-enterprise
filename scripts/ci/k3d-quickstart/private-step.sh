@@ -4,7 +4,7 @@
 set -euo pipefail
 umask 077
 case "${1:-}" in
-  setup|linear|browser-recall|teardown) phase=$1 ;;
+  setup|git|linear|browser-recall|git-cleanup|teardown) phase=$1 ;;
   *) exit 2 ;;
 esac
 log="$RUNNER_TEMP/oce-credentials/$phase.log"
@@ -29,7 +29,7 @@ else
     if grep -Fqi -- "$diagnostic" "$log"; then printf 'Detected: %s\n' "$diagnostic"; fi
   done
   # Accept only known script names, numeric locations and fixed browser stage names.
-  grep -Ex 'quickstart-location (setup|linear|browser-recall|teardown|operator-session|setup-(before|after)-browser|linear-(catalog|deploy|prompt|send|transcript))\.sh:[0-9]{1,5}' "$log" | tail -5 || true
+  grep -Ex 'quickstart-location (setup|git|linear|browser-recall|git-cleanup|teardown|operator-session|setup-(before|after)-browser|git-guide-step|linear-(catalog|deploy|prompt|send|transcript))\.sh:[0-9]{1,5}' "$log" | tail -5 || true
   grep -Ex 'Control UI verification failed during (initialize|launch trusted Chromium|sign in to Console|resolve the running revision|complete onboarding|verify Workspace identity and preference|verify ready reply|reopen original conversation from chat history|search signed-in session history|open matching session history row|verify original session selected|recall saved preference)\.|OCE REST request failed with HTTP [1-5][0-9]{2}' "$log" | tail -3 || true
   grep -Ex 'quickstart-location browser\.ts:[0-9]{1,5}|Control UI navigation HTTP (0|[1-5][0-9]{2})' "$log" | tail -2 || true
   if [[ $phase == linear ]]; then
@@ -41,11 +41,11 @@ else
     grep -Eh '^quickstart-location (linear-(deploy|catalog|send|transcript)|operator-session)\.sh:[0-9]{1,5}$' \
       "$RUN_DIR"/linear-*.log 2>/dev/null | tail -5 || true
   fi
-  if [[ $phase == setup || $phase == linear ]]; then
+  if [[ $phase == setup || $phase == git || $phase == linear ]]; then
     if [[ -s "$RUN_DIR/session.sh" && -s "$RUN_DIR/requested-revision" ]]; then
       (
         source "$RUN_DIR/session.sh"
-        for milestone in linear-deployment.json failed-deployment.json; do
+        for milestone in git-deploy-started last-write-revision git-intent.json git-write-retired git-read-result linear-deployment.json failed-deployment.json; do
           if [[ -e "$RUN_DIR/$milestone" ]]; then printf 'Reached: %s\n' "$milestone"; fi
         done
         revision=$(cat "$RUN_DIR/requested-revision")
@@ -84,6 +84,10 @@ JS
         # The disposable cluster has one tenant. Inspect the Gateway, Sandbox
         # supervisor and operator, including an earlier supervisor if retained.
         # Print only regional package hostnames, never paths or signed queries.
+        if [[ $phase == git ]]; then
+          kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
+            node --input-type=module-typescript - "$namespace" "$agent" "$revision" < scripts/ci/k3d-quickstart/git-route-status.ts || true
+        fi
         runtime_log="$RUNNER_TEMP/oce-credentials/capability-runtime.log"
         for scope in "$TENANT_NAMESPACE:openshell.ai/boundary-role=supervisor" "$TENANT_NAMESPACE:openclaw.dev/agent=$agent" "$PLATFORM_NS:app.kubernetes.io/instance=openshell-gateway"; do
           kube --request-timeout=10s -n "${scope%%:*}" logs -l "${scope#*:}" --all-containers --tail=4000 --prefix --ignore-errors=true
@@ -95,12 +99,19 @@ JS
           while IFS= read -r code; do
             if git grep -q -F -e "\"$code\"" -- apps/controller/src packages/contracts/src; then printf 'Worker diagnostic: %s\n' "$code"; fi
           done
+        grep -F -- "$revision" "$runtime_log" | grep -F 'worker.openshell-git-' |
+          grep -Eo 'git-recipient|git-provider-generation|git-supervisor-process|git-supervisor-network|git-reconnected-installation|bootstrap_failed|execution_replaced|supervisor_replaced|worker_replaced|write_unknown|write_refused|gateway_unauthorized|provider_overlap|preview_install_unverified|preview_release_unconfirmed|grant_changed|material_mismatch|withdrawn' |
+          sort -u | sed 's/^/Git worker reason: /' || true
         grep -Eo 'PLUGIN_(NOT_IN_CATALOG|DETAIL_MISSING|NOT_READY|AUTH_REQUIRED|INSTALL_FAILED)|MODEL_PROBE_FAILED|http_401_403|http_5xx|http_other|rate_limit_exceeded|insufficient_quota|no space left on device|permission denied|certificate verify failed|unknown authority|x509: certificate' "$runtime_log" | sort -u | sed 's/^/Runtime diagnostic: /' || true
         grep -Ei 'den(y|ied)|block(ed)?|reject|403|download|failed to fetch' "$runtime_log" |
           grep -Eio 'sdmntpr[a-z]{2,25}[0-9]{0,2}\.oaiusercontent\.com' | sort -u |
           sed 's/^/Package host in diagnostic: /'
       ) 2>/dev/null || true
     fi
+  fi
+  if [[ $phase == git && -s "$RUN_DIR/git-read-recovery-guard" ]]; then
+    grep -Ex 'deployment|route|ownership|stop|retirement|custody|sandbox|pods|registry|successor' "$RUN_DIR/git-read-recovery-guard" |
+      sed 's/^/Read recovery check: /' || true
   fi
   # File presence distinguishes cluster bootstrap, model registration and Agent deployment.
   for milestone in k3d-state/state.json values.json model-source agent transport requested-revision failed-deployment.json session.sh; do

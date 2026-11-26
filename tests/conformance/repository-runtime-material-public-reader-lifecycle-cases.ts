@@ -1,6 +1,10 @@
+import type { SandboxDriver } from "../../packages/contracts/src/index.ts";
+import type { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { parseRecord } from "./repository-runtime-material-observations.ts";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import {
   runtimeBinding,
@@ -19,6 +23,7 @@ import {
 import {
   publicReader,
   publicReaderPolicies,
+  computeAfterProxyCutover,
 } from "./repository-runtime-material-public-reader-fixture.ts";
 
 function isMap(value: unknown): value is ReadonlyMap<unknown, unknown> {
@@ -59,7 +64,14 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     } else {
       f.ports.options.network.publicGithubRead = replacement;
     }
-    const { driver } = f;
+    // Selecting Credential Proxy cannot convert the old grant, or block withdrawal of its owned workload.
+    const driver = replacement === undefined ? f.driver : computeAfterProxyCutover(f);
+    if (replacement !== undefined) {
+      await assert.rejects(
+        driver.prepareRevision(successor, context),
+        /exact paired Compute release/,
+      );
+    }
     const deleteDeployment = f.clients.apps.deleteNamespacedDeployment;
     const readDeployment = f.clients.apps.readNamespacedDeployment;
     let deleting = false;
@@ -230,6 +242,66 @@ test("stop and retirement fence an admitted reader when the Sandbox is unavailab
     await assert.rejects(f.driver[operation](f.revision), /SandboxDriver|Sandbox-owned/);
     assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
     assert.equal(publicReaderPolicies(f).length, 0);
+  }
+});
+
+// With an OpenShell repository-access Sandbox the worker transfers repository Git material to
+// the Sandbox, so Compute projects no material Secret and the Installation configures no
+// repository credential endpoint; the chart then grants the worker no Secret list. Stopping,
+// retiring or deleting such a revision must finish without listing Secrets: the refused list
+// once left repository cleanup retrying forever and Agent deletion failing (finding 2201).
+test("a repository-access Sandbox revision stops, retires and is deleted without listing Secrets", async () => {
+  for (const operation of ["stopRevision", "retireRevision"] as const) {
+    const cleanups: string[] = [];
+    const gitObservation: Pick<OpenShellGitRuntime, "route" | "materialInstalledAt"> = {
+      route: () => ({ state: "installed" }),
+      materialInstalledAt: () => undefined,
+    };
+    const sandboxDriver: SandboxDriver = {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      capability: "sandbox",
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+      facets: ["networking", "filesystem", "process"],
+      repositoryAccess: openShellRepositoryAccess(
+        gitObservation as OpenShellGitRuntime,
+        () => undefined,
+      ),
+      async provisionHarness(context) {
+        return {
+          namespaceName: context.namespace.name,
+          resourceName: "openshell-harness",
+          agentId: context.revision.agentId,
+          revisionId: context.revision.id,
+        };
+      },
+      async cleanup(context) {
+        cleanups.push(present(context.revision).id);
+      },
+    };
+    const f = await fixture("dedicated", undefined, { repositoryBroker: false, sandboxDriver });
+    f.revision.sandboxDriverId = sandboxDriver.id;
+    present(present(f.revision.repositoryCredentials).bindings[0]).profile = "git-write";
+    // Preparation projects no material: the Sandbox receives it from the worker.
+    await f.driver.prepareRevision(f.revision, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    await f.driver[operation](f.revision);
+    assert.deepEqual(cleanups, [f.revision.id], operation);
+    // A fresh deploy with no active predecessor prepares without material either.
+    const next = { ...structuredClone(f.revision), id: "revision-repository-material-next" };
+    await f.driver.prepareRevision(next, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    // Agent deletion retires each revision, then removes the Agent's runtime credentials.
+    for (const revision of [f.revision, next]) {
+      await f.driver.retireRevision(revision);
+    }
+    await f.driver.deleteAgentRuntimeCredentials(f.agentBinding);
+    assert.deepEqual(cleanups, [f.revision.id, f.revision.id, next.id], operation);
+    assert.equal(
+      f.apiCalls.includes("core.listNamespacedSecret"),
+      false,
+      `${operation} must not list Secrets`,
+    );
   }
 });
 

@@ -26,15 +26,18 @@ token_service:
 
 Set `drivers.sandbox` to the bundled OpenShell Sandbox and bind it to the
 [OpenShell Backend](../../reference/backends.md#openshell-gateway). The Sandbox
-registration supplies native Credential Proxy delivery automatically.
+registration supplies native Credential Proxy delivery. Leave the separate
+legacy `credential_proxy` selection unset for this workflow.
 
 Use [Deploy your first Agent](../deploy/deploy-first-agent.md) to enroll a model
 Source or [set up GitHub App access](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 for a dedicated Codex Agent.
 
-Startup rejects the retired `drivers.credential_gateway`,
-`drivers.credential_refresh`, and `drivers.credential_proxy` settings.
-See [production upgrade](../deploy/production-upgrade.md) for release preparation.
+Remove the retired `credential_gateway` and `credential_refresh` selectors when
+[upgrading an older installation](../deploy/production-upgrade.md). The separate
+`credential_proxy` selection belongs to `LegacyEgressProxyDriver`, which is
+deprecated and pending removal. Credential Design 1.0 retires its special
+protected metadata and repository exchanges; do not select it for new workflows. See [legacy protected egress](../../reference/drivers/credential-proxy.md#legacy-protected-egress).
 
 ## Available implementations
 

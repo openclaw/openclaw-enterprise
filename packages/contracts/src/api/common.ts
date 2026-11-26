@@ -425,6 +425,12 @@ export const CredentialSourceReference = Type.Object(
   },
 );
 
+const CredentialSourceFieldName = Type.String({
+  minLength: 1,
+  maxLength: 64,
+  pattern: "^[a-z][a-z0-9_]{0,63}$",
+});
+
 export const CredentialSourceType = Type.String({
   minLength: 1,
   maxLength: 64,
@@ -439,6 +445,26 @@ export const CredentialSourceConfig = Type.Record(
   {
     maxProperties: 32,
     description: "Non-secret source configuration keyed by catalog field name.",
+  },
+);
+
+export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, SecretReference, {
+  maxProperties: 16,
+  description:
+    "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
+});
+
+export const CreateCredentialSourceBody = Type.Object(
+  {
+    name: Name,
+    type: CredentialSourceType,
+    config: Type.Optional(CredentialSourceConfig),
+    secrets: Type.Optional(CredentialSourceSecrets),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Register a prepared or credential-free Source offered by the selected Credential Proxy.",
   },
 );
 
@@ -1039,6 +1065,7 @@ export const ERROR_CODES = Object.freeze([
   "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
+  "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
   "CREDENTIAL_TOKEN_UNSETTLED",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
@@ -1119,6 +1146,9 @@ export const ErrorResponse = Type.Object(
           Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
+          Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
+            description: "The operation requires a configured Credential Gateway.",
+          }),
           Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
             description:
               "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
@@ -1177,6 +1207,12 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
+        reason: Type.Optional(
+          Type.Literal("credential_registration_pending", {
+            description:
+              "On credential source DELETE with 503 DEPENDENCY_UNAVAILABLE, registration may still be completing. Retry after the whole seconds in the Retry-After header; the source remains until deletion completes.",
+          }),
+        ),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
         remainingResources: Type.Optional(
           Type.Array(

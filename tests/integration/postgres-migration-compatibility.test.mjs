@@ -33,13 +33,7 @@ import {
   assertInjectedMigrationRollback,
   discardRetiredGatewaySourcesAcrossCutover,
 } from "../helpers/credential-source-owner-upgrade.ts";
-import {
-  adminEmail,
-  adminPassword,
-  request,
-  startController,
-} from "../helpers/postgres-platform-state.ts";
-import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { request, startController } from "../helpers/postgres-platform-state.ts";
 import {
   catalogDigest,
   initialSchemaState,
@@ -1579,7 +1573,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
@@ -2019,7 +2013,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
     ]);
     const subtests = [];
@@ -2470,6 +2464,94 @@ test(
       { code: "55000" },
     );
     assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "OAuth endpoint authority refuses confidential Client custody before dropping its address",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "oauth_endpoint_authority", { prefix: 96 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const confidentialId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'OAuth fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'OAuth fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ','fixture')",
+      [installationId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_url,token_endpoint_auth_method,token_service_instance_id,created_at)
+       VALUES($1,'oauth2','Confidential','https://accounts.google.com','confidential','https://oauth2.googleapis.com/token','client_secret_post',$2,now())`,
+      [confidentialId, instanceId],
+    );
+    const before = await historySnapshot(db);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        const failure = error.cause ?? error;
+        assert.equal(failure.code, "55000");
+        assert.match(failure.message, /complete private-material cleanup/);
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(
+      (await db.app.query("SELECT token_url FROM occ.oauth_clients WHERE id=$1", [confidentialId]))
+        .rows,
+      [{ token_url: "https://oauth2.googleapis.com/token" }],
+    );
+
+    // Simulate the old release completing private-material cleanup before removing the row.
+    await db.app.query("DELETE FROM occ.oauth_clients WHERE id=$1", [confidentialId]);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preOAuthEndpointAuthority",
+    });
+    const starter = (
+      await db.app.query(
+        "SELECT t.id,v.issuer_verification FROM occ.connection_templates t JOIN occ.oauth_connection_template_versions v ON v.template_id=t.id AND v.version=t.current_oauth_version WHERE t.display_name='Google OAuth'",
+      )
+    ).rows[0];
+    assert.equal(starter.issuer_verification, null);
+    const publicId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_endpoint_auth_method,created_at) VALUES($1,'oauth2','Public','https://accounts.google.com','public','none',now())",
+      [publicId],
+    );
+    const matches = async (version) =>
+      (
+        await db.app.query("SELECT occ.oauth_client_matches_template($1,$2,$3,$4) AS matches", [
+          namespaceId,
+          starter.id,
+          version,
+          publicId,
+        ])
+      ).rows[0].matches;
+    assert.equal(await matches(1), false, "the seeded version remains unverified");
+    await db.app.query(
+      `INSERT INTO occ.oauth_connection_template_versions(template_id,version,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,issuer_verification,created_at)
+       SELECT template_id,2,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,'{"tokenEndpointAuthMethods":["none"]}'::jsonb,now()
+       FROM occ.oauth_connection_template_versions WHERE template_id=$1 AND version=1`,
+      [starter.id],
+    );
+    assert.equal(await matches(2), true, "verified methods admit the same-issuer client");
+    assert.deepEqual(
+      (
+        await db.migrator.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_schema='occ' AND table_name='oauth_clients' AND column_name IN ('token_url','revocation_url')",
+        )
+      ).rows,
+      [],
+    );
   },
 );
 
@@ -3161,7 +3243,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
     ])) {
       const subtest = context.test(history, async (child) => {
@@ -3301,7 +3383,7 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
     ]) {
       await context.test(history, async (child) => {
@@ -3408,253 +3490,6 @@ registerPostgresMigrationCredentialLineageRefusalCase({
   assertHistoryRefused,
 });
 
-/** @param {import("node:test").TestContext} context @param {Awaited<ReturnType<typeof historyDatabase>>} db */
-async function assertLegacyProxySourceRetirement(context, db) {
-  const namespace = `ns_${randomUUID()}`;
-  const emptyNamespace = `ns_${randomUUID()}`;
-  const instance = randomUUID();
-  const managedSource = `cs_${randomUUID()}`;
-  const secret = `sec_${randomUUID()}`;
-  const sourceType = "credential-free-repository-metadata";
-  const driverId = "legacy-proxy";
-  await ensureDevelopmentBootstrap(context, {
-    databaseUrl: db.applicationUrl,
-    email: adminEmail,
-    password: adminPassword,
-    authSecret: "postgres-proxy-retirement-fixture-auth-secret",
-    installationName: "Migration fixture",
-    inProcess: true,
-  });
-  const { id: installation } = (await db.app.query("SELECT id FROM occ.installation")).rows[0];
-  const { agent, revision } = await seedCanonicalAgent(db, namespace, {
-    computeAdmission: true,
-    executionAdmission: true,
-    harnessSettings: true,
-  });
-  await db.app.query(
-    "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Empty after retirement','ready',now())",
-    [emptyNamespace],
-  );
-  await db.app.query(
-    `INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity)
-     VALUES($1,$2,'occ-token-service','fixture-store')`,
-    [installation, instance],
-  );
-  const managed = (
-    await db.app.query(
-      `INSERT INTO occ.credential_sources
-         (id,namespace_id,name,type,config,owner_capability,state,created_at,token_service_instance_id)
-       VALUES($1,$2,'Managed Source','static','{}','token_service','ready',now(),$3)
-       RETURNING *`,
-      [managedSource, namespace, instance],
-    )
-  ).rows;
-  const secretMetadata = (
-    await db.app.query(
-      `INSERT INTO occ.secrets
-        (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
-       VALUES($1,$2,'Channel Secret','secrets','fixture','channel-secret','value',$3,now())
-       RETURNING *`,
-      [secret, namespace, randomUUID()],
-    )
-  ).rows;
-  async function insertProtectedSource(owner, isolationId, state) {
-    const id = `cs_${randomUUID()}`;
-    const origin = "https://api.github.com";
-    const source = {
-      installationId: installation,
-      namespaceId: owner,
-      source: { id, generation: 1 },
-      provider: { id: sourceType, generation: 1 },
-      backend: { id: "openshell", generation: 1 },
-    };
-    const egress = {
-      key: source,
-      sender: { id: driverId, generation: 1 },
-      resolver: { id: driverId, generation: 1 },
-      origin,
-      adoption: "credential_free",
-      schemaVersion: 3,
-      retention: "none",
-      grant: {
-        kind: "credential_free_repository_metadata",
-        isolationId,
-        profile: "metadata-read",
-        repositoryId: "1000",
-        repository: "example/repository",
-      },
-    };
-    await db.app.query(
-      `INSERT INTO occ.credential_sources
-         (id,namespace_id,name,type,config,driver_id,owner_capability,egress,state,created_at)
-       VALUES($1,$2,'Protected metadata',$3,$4,$5,'credential_proxy',$6,$7,now())`,
-      [
-        id,
-        owner,
-        sourceType,
-        {
-          origin,
-          authority: "execution",
-          agent_id: isolationId,
-          repository_id: "1000",
-          repository: "example/repository",
-        },
-        driverId,
-        egress,
-        state,
-      ],
-    );
-    return egress;
-  }
-  const source = await insertProtectedSource(namespace, agent, "ready");
-  // Agent deletion can leave this tombstone as the Namespace's last resource.
-  await insertProtectedSource(emptyNamespace, `agt_${randomUUID()}`, "deleting");
-  await db.app.query("UPDATE occ.agents SET credential_sources=$2 WHERE id=$1", [
-    agent,
-    JSON.stringify([{ sourceId: source.key.source.id }]),
-  ]);
-
-  // An active protected revision prevents retirement until the runtime stops.
-  const protectedRevision = `rev_${randomUUID()}`;
-  const execution = {
-    installationId: installation,
-    namespaceId: namespace,
-    agentId: agent,
-    servicePrincipalId: `service-agent-${agent}`,
-    revisionId: protectedRevision,
-    executionId: randomUUID(),
-  };
-  const binding = { id: randomUUID(), generation: 1 };
-  const plan = {
-    id: randomUUID(),
-    generation: 1,
-    execution,
-    sandboxDriverId: "openshell",
-    egressDriverId: driverId,
-    driver: { id: driverId, implementation: "openshell", configurationId: "f".repeat(64) },
-    routes: [
-      {
-        route: { id: `${binding.id}/metadata`, generation: 1 },
-        binding: {
-          binding,
-          execution,
-          source: source.key,
-          grant: source.grant,
-          grantHash: createHash("sha256").update(JSON.stringify(source.grant)).digest("hex"),
-          isolationId: agent,
-        },
-        origin: source.origin,
-        path: `/repos/${source.grant.repository}`,
-        method: "GET",
-        operationPolicy: { id: "github-bodyless-metadata-get", generation: 1 },
-        responsePolicy: { id: "github-complete-repository-identity-only", generation: 1 },
-        deadlineMs: 30_000,
-      },
-    ],
-  };
-  const snapshot = (
-    await db.app.query(
-      `INSERT INTO occ.agent_revisions
-          (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
-       SELECT $1,namespace_id,agent_id,2,admitted_spec || $2::jsonb,backend_id,now()
-       FROM occ.agent_revisions WHERE id=$3
-       RETURNING admitted_spec`,
-      [
-        protectedRevision,
-        {
-          harness_auth: { method: "runtime", protectedExecutionVersion: 3 },
-          sandbox_driver_id: "openshell",
-          execution_admission: { version: 3, mode: "protected" },
-          credential_sources: [
-            { sourceId: source.key.source.id, sourceType, credentialProxyId: driverId },
-          ],
-          egress_plan: plan,
-        },
-        revision,
-      ],
-    )
-  ).rows;
-  await db.app.query(
-    "UPDATE occ.agents SET active_revision_id=$2,desired_runtime_state='running' WHERE id=$1",
-    [agent, protectedRevision],
-  );
-  const previous = await historyReceipts(db.migrator);
-  const proxyRows = () =>
-    db.app.query("SELECT id FROM occ.credential_sources WHERE owner_capability='credential_proxy'");
-  async function assertRetirementBlocked() {
-    assert.deepEqual(
-      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
-        const cause = error.cause ?? error;
-        assert.equal(cause.code, "55000");
-        assert.match(
-          cause.message,
-          /Legacy Proxy Source retirement requires stopping active delivery/,
-        );
-      }),
-      { ok: false, code: "MIGRATION_FAILED" },
-    );
-    assert.deepEqual(await historyReceipts(db.migrator), previous);
-    assert.equal((await proxyRows()).rowCount, 2);
-  }
-  await assertRetirementBlocked();
-  await db.app.query(
-    `INSERT INTO occ.egress_installations
-      (sender_id,sandbox_id,namespace_id,revision_id,agent_id,installation)
-     VALUES($1,'migration-sandbox',$2,$3,$4,$5)`,
-    [
-      driverId,
-      namespace,
-      protectedRevision,
-      agent,
-      { sender: source.sender, plan, sandboxId: "migration-sandbox" },
-    ],
-  );
-  await db.app.query(
-    "UPDATE occ.agents SET active_revision_id=NULL,desired_runtime_state='stopped' WHERE id=$1",
-    [agent],
-  );
-  // Losing the active pointer cannot hide an enrollment that still serves the route.
-  await assertRetirementBlocked();
-  const retiredEnrollment = (
-    await db.app.query(
-      "UPDATE occ.egress_installations SET retired=true WHERE revision_id=$1 RETURNING *",
-      [protectedRevision],
-    )
-  ).rows;
-
-  assert.deepEqual(await runHistoryMigration(db, "production"), {
-    ok: true,
-    history: "preLegacyProxySourceRetirement",
-  });
-  await assertCompletedHistory(db, previous);
-  assert.equal((await proxyRows()).rowCount, 0);
-  assert.deepEqual((await db.app.query("SELECT * FROM occ.credential_sources")).rows, managed);
-  assert.deepEqual((await db.app.query("SELECT * FROM occ.secrets")).rows, secretMetadata);
-  assert.deepEqual(
-    (await db.app.query("SELECT * FROM occ.egress_installations")).rows,
-    retiredEnrollment,
-  );
-  assert.equal(
-    (await db.app.query("SELECT credential_sources FROM occ.agents WHERE id=$1", [agent])).rows[0]
-      .credential_sources,
-    null,
-  );
-  assert.deepEqual(
-    (
-      await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
-        protectedRevision,
-      ])
-    ).rows,
-    snapshot,
-  );
-  await context.test("The cleaned Namespace accepts deletion", async (httpContext) => {
-    const controller = await startController(httpContext, { databaseUrl: db.applicationUrl });
-    const response = await request(controller, "DELETE", `/namespaces/${emptyNamespace}`);
-    assert.equal(response.status, 202, JSON.stringify(response));
-    assert.equal(response.data.status, "deleting");
-  });
-}
-
 test(
   "Canonical migration rollback preserves receipts and retries through the other command",
   concurrentHistoryPostgres,
@@ -3721,15 +3556,11 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
-        if (history === "preLegacyProxySourceRetirement") {
-          await assertLegacyProxySourceRetirement(child, db);
-          return;
-        }
         if (prefix) {
           await seedCanonicalData(db, {
             preset: prefix >= 25,

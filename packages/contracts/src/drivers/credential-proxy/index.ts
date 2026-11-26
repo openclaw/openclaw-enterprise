@@ -2,6 +2,11 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { requestCovered, validateMatches } from "../../deployment-request-match.ts";
 import type {
+  CredentialProxyBinding,
+  CredentialProxyExchange,
+  EgressExchangeOwner,
+} from "../../credential-proxy-exchange.ts";
+import type {
   CredentialDeploymentConfiguration,
   CredentialDeploymentReadiness,
   CredentialDeploymentRef,
@@ -16,6 +21,10 @@ import { repositoryGitDeliveryProfile } from "../repo/index.ts";
 import type { ResolvedCredential } from "../token-service/index.ts";
 
 export { repositoryGitDeliveryProfile } from "../repo/index.ts";
+import type {
+  ProtectedRepositoryGitAuthority,
+  RepositoryGitBinding,
+} from "../../protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
   CredentialFreeMetadataGrant,
@@ -374,6 +383,60 @@ export interface CredentialSourceControl {
   >;
 }
 
+/** An older Driver may silently ignore a new profile argument. Only an explicit confirmation
+ * qualifies it to attempt installation-wide Git (Basic) and GitHub API (Bearer) delivery,
+ * and a v4 sender must enforce the original send cutoff. Online authorization requires a
+ * distinct positive response; discovery is not proof of the installed enforcement. */
+export async function repositoryGitAuthorization(
+  control: CredentialSourceControl,
+  signal: AbortSignal,
+  profile?: RepositoryGitDeliveryProfile,
+  nativeGit?: "v1",
+): Promise<
+  "exact-dispatch" | NonNullable<ProxyPlan["repositoryGitAuthorization"]> | "unavailable"
+> {
+  if (nativeGit !== undefined) {
+    if (nativeGit !== "v1" || profile !== "github_repository") {
+      return "unavailable";
+    }
+    const confirmed = await control.assertAvailable(signal, profile, nativeGit);
+    return confirmed &&
+      typeof confirmed === "object" &&
+      confirmed.profile === profile &&
+      confirmed.authorization === "network-policy"
+      ? "network-policy"
+      : "unavailable";
+  }
+  const confirmed = await control.assertAvailable(signal, profile);
+  if (profile && typeof confirmed === "object" && confirmed !== null) {
+    if (
+      profile === "github_installation" &&
+      confirmed.profile === profile &&
+      confirmed.authorization === "request-hook-observed"
+    ) {
+      return "request-hook-observed";
+    }
+    return confirmed.profile === profile && confirmed.authorization === "online-request"
+      ? "online-request"
+      : "unavailable";
+  }
+  return (confirmed === undefined &&
+    profile !== "github_installation" &&
+    profile !== "github_repository") ||
+    (profile === "github_installation" && confirmed === profile)
+    ? "exact-dispatch"
+    : "unavailable";
+}
+
+/** Compatibility query for a sender that implements the v4 exact-dispatch contract. */
+export async function repositoryGitProfileAvailable(
+  control: CredentialSourceControl,
+  signal: AbortSignal,
+  profile?: RepositoryGitDeliveryProfile,
+): Promise<boolean> {
+  return (await repositoryGitAuthorization(control, signal, profile)) === "exact-dispatch";
+}
+
 export interface ProxyWiring {
   readonly plan: ProxyPlan;
   /** Nonsecret adapter-owned configuration; only the paired Sandbox interprets it. */
@@ -441,6 +504,30 @@ export interface CredentialUpdateNotification {
   readonly version?: string;
 }
 
+// TODO(credential proxy cutover): remove this contract after legacy protected serving is retired.
+export interface LegacyEgressProxyDriver extends Driver {
+  readonly capability: "credential_proxy";
+  readonly sourceControl: CredentialSourceControl;
+  readonly policyReduction?: CredentialPolicyReducer;
+  /** API process: bind the installed transport's exchange owner once, before accepting requests. */
+  bindExchange?(
+    createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
+  ): Promise<CredentialProxyBinding>;
+  /** Worker process: bind this sender to the installation's checked Git delivery authority. */
+  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<RepositoryGitBinding>;
+  configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring>;
+  wiringStatus(
+    context: ProxyRevisionContext,
+    prepared: ProxyWiring,
+  ): Promise<EgressInstallation | undefined>;
+  /** Query the counterpart again; persisted installation records are not readiness leases. */
+  verifyInstallation(
+    context: ProxyRevisionContext,
+    installation: EgressInstallation,
+  ): Promise<boolean>;
+  removeRevision(context: ProxyRevisionContext): Promise<boolean>;
+}
+
 /** Trusted, material-free context for a staged credential deployment. */
 export interface CredentialDeploymentContext {
   readonly namespace: Readonly<Namespace>;
@@ -448,9 +535,9 @@ export interface CredentialDeploymentContext {
   readonly signal: AbortSignal;
 }
 
-/** Credential delivery for staged Agent deployments. */
+/** Credential delivery for staged Agent deployments, independent of legacy protected egress. */
 export interface CredentialProxyDriver extends Driver {
-  readonly capability: "credential_proxy";
+  readonly capability: "credential_proxy_delivery";
   /** Prepare staged proxy resources for this exact Namespace and Agent revision. */
   deployProxy(
     context: CredentialDeploymentContext,

@@ -203,9 +203,12 @@ The API and worker share the Backend connection within each process. Mount
 the configured credentials in those control-plane Pods. Restart them after
 rotating an operator certificate to replace cached TLS connections.
 
-The Sandbox registration provides the `credential_proxy` capability. The
-Backend configuration needs only its Sandbox member and, when selected, its
-OpenShell TokenService member.
+The deprecated `drivers.credential_proxy` member identifies the paired legacy
+credential-egress adapter for qualified protected exchanges. It remains pending
+removal while those exchanges depend on it; it is not the native
+`credential_proxy_delivery` capability used with TokenService. Preserve the
+recorded authenticated Backend and enforcement boundary for existing protected
+work.
 
 For native OpenShell mTLS, a verified client certificate's CN becomes the User
 subject and OU values become roles. Without an OIDC administrator role configured,

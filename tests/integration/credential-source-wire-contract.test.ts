@@ -93,7 +93,7 @@ test("published TokenService source request schemas validate managed static mate
   }
 });
 
-test("namespace Source registration accepts TokenService material and refuses protected Proxy references", async (t) => {
+test("namespace Source registration distinguishes TokenService material from protected Proxy references", async (t) => {
   const { route, validatorCompiler } = await publishedCredentialComponents(t);
   const create = occApiRoutes.find(
     (candidate) => candidate.operationId === "createCredentialSource",
@@ -120,7 +120,7 @@ test("namespace Source registration accepts TokenService material and refuses pr
   };
 
   assert.equal(register(managed), true);
-  assert.equal(register(prepared), false);
+  assert.equal(register(prepared), true);
   assert.equal(
     register({ name: managed.name, type: "static", connectionTemplateId: `ctp_${uuid}` }),
     false,

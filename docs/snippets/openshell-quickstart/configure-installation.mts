@@ -52,6 +52,7 @@ const plugin = records(drivers.plugin).find((entry) => entry.id === "codex-plugi
 assert.ok(plugin, "The generated Installation must define the codex-plugin Driver.");
 
 // The Sandbox qualifies the selected artifact rule at admission. Git uses a repository binding.
+policy.codexArtifactRuleNames = [artifactRuleName];
 policy.networkPolicies = networkPolicies.filter((rule) => rule !== sourceControl);
 record(plugin.configuration).catalogSource = "openai-curated";
 writeFileSync(file, dumpYaml(config), { mode: 0o600 });

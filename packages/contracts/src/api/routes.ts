@@ -82,6 +82,7 @@ import {
   ProvisionAgentBody,
   ValidateAgentCreateBody,
   CreateSecretBody,
+  CreateCredentialSourceBody,
   AgentCredentialSourceParams,
   CredentialSourceParams,
   CreateServiceAccountBody,
@@ -1275,12 +1276,13 @@ export const occApiRoutes = [
     iamAction: "create",
     resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Register a TokenService credential source",
+    summary: "Register a credential source",
     tags: ["Credential sources"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: Type.Union([
+        CreateCredentialSourceBody,
         Type.Ref("RegisterTokenServiceSourceBody"),
         Type.Ref("RegisterGitHubAppTokenServiceSourceBody"),
       ]),
@@ -1316,7 +1318,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      response: { 200: CredentialSourceResponseRef, ...readErrors, 409: ErrorResponseRef },
+      response: { 200: CredentialSourceResponseRef, ...readErrors },
     },
   },
   {
@@ -1365,7 +1367,22 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: CredentialSourceParams,
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: {
+        204: Type.Null(),
+        ...mutationErrors,
+        503: {
+          allOf: [ErrorResponseRef],
+          headers: {
+            "Retry-After": Type.Optional(
+              Type.String({
+                pattern: "^[1-9][0-9]*$",
+                description:
+                  "Whole seconds before retrying DELETE when error.reason is credential_registration_pending. Absent for other dependency failures.",
+              }),
+            ),
+          },
+        },
+      },
     },
   },
   {

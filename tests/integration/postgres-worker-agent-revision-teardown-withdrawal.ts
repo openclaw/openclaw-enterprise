@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  type ComputeDriver,
+} from "../../packages/contracts/src/index.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import {
@@ -37,7 +41,7 @@ const deadlineCases = [
 ] as const satisfies readonly (readonly [string, WithdrawalObservation])[];
 
 export function testDeadlineWithdrawal(setup: RevisionSetup) {
-  testFiniteGitWithdrawal(setup);
+  testPolicyWithdrawal(setup);
   for (const [scenario, initialObservation] of deadlineCases) {
     test(
       `scheduled maintenance at the admitted Git deadline: ${scenario}`,
@@ -252,18 +256,18 @@ export function testDeadlineWithdrawal(setup: RevisionSetup) {
   }
 }
 
-function testFiniteGitWithdrawal(setup: RevisionSetup) {
+function testPolicyWithdrawal(setup: RevisionSetup) {
   for (const { name, recovery } of [
     {
-      name: "finite Git removal survives a restarted Compute refusing new repository admission",
+      name: "finite Git removal survives a restarted Compute refusing the stored repository policy",
       recovery: "removal",
     },
     {
-      name: "the original deployment withdraws finite Git after losing its activation reply",
+      name: "the original deployment withdraws finite Git after losing policy-edit authority",
       recovery: "original-removal",
     },
     {
-      name: "the original deployment handles Stop after losing its activation reply",
+      name: "the original deployment handles Stop after losing policy-edit authority",
       recovery: "stop",
     },
   ] as const) {
@@ -272,13 +276,18 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
       const repository = repositoryBoundary();
       const fixture = await setup(t, { repoDriver: repository.driver });
       const namespaceId = fixture.namespace.id;
-      const owner = await fixture.agent("finite-repository-withdrawal");
+      const owner = await fixture.agent("repository-policy-withdrawal");
       const binding = required(repository.snapshot.bindings[0], "finite repository binding");
-      // Give the Agent the same finite binding the independent Repo broker will
-      // open for the admitted revision.
-      await fixture.state.transact(async (unit) => {
+      const grants = [{ repository: "organization/repository", access: "read" }] as const;
+      // Seed the desired policy and binding in the ordinary, non-Proxy topology.
+      // Protected Proxy deployment currently refuses this policy combination.
+      const desired = await fixture.state.transact(async (unit) => {
         await unit.namespaces.lockNamespace(namespaceId);
         await unit.agents.lockAgent(namespaceId, owner.id);
+        const previous = required(
+          await unit.sandboxPolicies.find(namespaceId, owner.id),
+          "initial Sandbox policy",
+        );
         assert.ok(
           await unit.agents.updateConfiguration(
             namespaceId,
@@ -295,8 +304,28 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
             },
           ),
         );
+        return required(
+          await unit.sandboxPolicies.save(
+            { ...previous, version: previous.version + 1, repositoryNetworkPolicy: grants },
+            previous.version,
+          ),
+          "saved repository network policy",
+        );
       });
+      const sandboxDriverId = "repository-policy-test-sandbox";
       const candidate = await fixture.revision(owner, 1, {
+        sandboxDriverId,
+        sandboxPolicy: {
+          driverId: sandboxDriverId,
+          implementation: "test",
+          version: desired.version,
+          additions: [],
+          defaults: {},
+          repositoryNetworkPolicy: required(
+            admitRepositoryNetworkPolicy(grants, grants),
+            "explicit repository network policy",
+          ),
+        },
         repositoryCredentials: repository.snapshot,
       });
       const removalKey = repositoryRemovalWorkKey(candidate.id);
@@ -328,6 +357,11 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
       }
       const compute: ComputeDriver = {
         ...fixture.compute,
+        validateRepositoryCredentials(harness, sandbox) {
+          assert.equal(harness.mode, "embedded");
+          assert.equal(sandbox, sandboxDriverId);
+        },
+        validateProtectedRepositoryNetworkPolicy() {},
         async prepareRevision(revision, context) {
           prepared.push(revision.id);
           return fixture.compute.prepareRevision(revision, context);
@@ -403,6 +437,14 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
         );
       }
       if (unacknowledged) {
+        // Remove only SandboxPolicy edit authority. Deploy, operate, and
+        // the Harness Secret remain authorized.
+        await fixture.observerPool.query(
+          `INSERT INTO occ.iam_restrictions
+           (id, namespace_id, action, resource_kind, resource_id, effect)
+           VALUES ($1, $2, 'update', 'sandbox_policy', $3, 'deny')`,
+          [`restriction-${randomUUID()}`, namespaceId, desired.id],
+        );
         assert.equal(
           (
             await makeWorkDue(fixture.observerPool, {
@@ -416,14 +458,14 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
         await removeGit();
       }
       events.length = 0;
-      let checkedNewAdmission = false;
-      const restarted: ComputeDriver = {
-        ...compute,
-        validateRepositoryCredentials() {
-          checkedNewAdmission = true;
-          throw new Error("Restarted Compute cannot admit new repository access");
-        },
-      };
+      const restarted = unacknowledged
+        ? compute
+        : ({
+            ...compute,
+            async validateProtectedRepositoryNetworkPolicy() {
+              throw new Error("Restarted Compute cannot admit this repository network policy.");
+            },
+          } satisfies ComputeDriver);
       await fixture.start(restarted, { emit: (event) => events.push(readWorkerEvent(event)) });
       const withdrawalKey = unacknowledged ? candidate.idempotencyKey : removalKey;
       const reason = recovery === "stop" ? "REVISION_STOPPED" : "REPOSITORY_ACCESS_WITHDRAWN";
@@ -439,7 +481,6 @@ function testFiniteGitWithdrawal(setup: RevisionSetup) {
       }
       assert.deepEqual(prepared, [candidate.id], "withdrawal does not prepare a new revision");
       assert.deepEqual(activations, [candidate.id], "withdrawal does not replay activation");
-      assert.equal(checkedNewAdmission, false, "cleanup does not require new repository admission");
       const active = required(await fixture.currentAgent(owner), "retained Agent");
       assert.equal(active.desiredRuntimeState, recovery === "stop" ? "stopped" : "running");
       if (recovery !== "stop") {

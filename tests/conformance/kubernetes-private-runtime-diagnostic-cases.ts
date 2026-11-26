@@ -1144,6 +1144,23 @@ export async function checkPrivateSecretWriteApiAnswers(embedded: boolean) {
       writes: ["create", "replace"] as const,
       run: prepareWorkspace,
     },
+    {
+      // Only a protected execution's preparation reads its release key, outside any named
+      // stage (tests/conformance/kubernetes-provider-harness.test.mjs walks that path), so
+      // this case writes it directly where the Driver does: the control namespace.
+      name: /^compute-release-/u,
+      message: "Compute execution release key is unavailable.",
+      stage: "prepare_revision",
+      writes: ["create"] as const,
+      run: async ({ driver, revision }: WorkspaceFixture) => {
+        const compute: unknown = driver;
+        assert.ok(compute instanceof KubernetesComputeDriver);
+        return compute["executionReleaseKey"](
+          revision,
+          await compute["controlNamespace"](revision.namespaceId),
+        );
+      },
+    },
   ];
   const apiAnswers = [
     {

@@ -123,7 +123,7 @@ test(
       },
     });
     t.after(() => verificationBackend.client.close());
-    const proxy = loaded.credentialDeliveryRegistration?.require("credential_proxy");
+    const proxy = loaded.credentialDeliveryRegistration?.require("credential_proxy_delivery");
     assert.ok(proxy);
     // Resolve fixture-selected placement without allocating a Kubernetes Namespace or workload.
     const drivers = {
@@ -194,7 +194,7 @@ test(
       }
     });
     controller.registerDriver(proxy);
-    controller.selectDriver("credential_proxy", proxy.id);
+    controller.selectDriver("credential_proxy_delivery", proxy.id);
     await installTokenServiceDriver(
       controller,
       { ...drivers, secretDriver: fixtureSecretDriver },

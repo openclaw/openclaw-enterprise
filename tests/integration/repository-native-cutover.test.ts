@@ -213,9 +213,6 @@ async function fixture(t: TestContext) {
   };
 }
 
-const retiredRepoSelection =
-  /drivers\.repo startup admission is retired\. Select repository\.nativeSender with repository\.preparedGitHub/;
-
 test("legacy native selection fails before worker composition in every mode", async () => {
   for (const mode of ["production", "development"] as const) {
     await assert.rejects(
@@ -240,7 +237,7 @@ test("legacy native selection fails before worker composition in every mode", as
           },
         },
       }),
-      retiredRepoSelection,
+      /Drain accepted work ON THE ORIGINAL owner before cutover/,
     );
   }
 });
@@ -509,7 +506,7 @@ test("v1 terminal lookup and close preserve the original session and receipt", a
   );
 });
 
-test("native sender startup requires explicit selection, prepared custody, and no Sandbox", async (t) => {
+test("complete native configuration requires explicit selection and custody without protected fallback", async (t) => {
   const f = await fixture(t);
   const registryPath = join(f.directory, "registry.json");
   const publicCaPath = join(f.directory, "ca.pem");
@@ -558,17 +555,17 @@ test("native sender startup requires explicit selection, prepared custody, and n
   assert.ok((await load())?.nativeRepositorySender);
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
-  // The independent broker requires the bundled Compute without a Sandbox.
+  // Selecting a Sandbox never downgrades protected delivery to the native socket.
   configuration.repository = repository;
   drivers.sandbox = { id: "sandbox", configuration: {} };
-  await assert.rejects(load(), /repository\.nativeSender requires .* without a Sandbox/);
+  await assert.rejects(load(), /protected Git cannot fall back/);
   delete drivers.sandbox;
   delete configuration.repository;
   drivers.repo = {
     id: f.sender.id,
     configuration: { ...repository.configuration, ...repository.nativeSender },
   };
-  await assert.rejects(load(), retiredRepoSelection);
+  await assert.rejects(load(), /Drain accepted work ON THE ORIGINAL owner/);
 });
 
 test("v1 unknown reserved result remains unresolved without a second acquisition", async (t) => {

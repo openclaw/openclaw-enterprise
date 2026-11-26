@@ -13,9 +13,16 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { grantRole } from "../helpers/iam-grants.ts";
 import { startProviderServer } from "../helpers/provider-http-transport.ts";
 import { createFixture, readyLogin } from "./device-authorization-api-fixture.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 
 export async function discoversTokenServiceAccountApps(t: TestContext) {
-  const fixture = await createFixture(t);
+  const issuer = "https://issuer.example.test";
+  const fixture = await createFixture(t, {
+    oauthIssuer: fixtureOAuthIssuer(
+      { issuer, authorizationUrl: `${issuer}/authorize`, tokenUrl: `${issuer}/token` },
+      ["none"],
+    ),
+  });
   const login = await readyLogin(fixture);
   fixture.controller.installPluginDrivers([new CodexPluginDriver()]);
   const source = {
@@ -104,7 +111,6 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
   });
   // An approved Template/client grant is a valid OAuth Source, but it cannot claim
   // the built-in Codex account provenance required by the hosted Apps catalog.
-  const issuer = "https://issuer.example.test";
   const template = fixture.fixtureResponse(
     await fixture.request("POST", "/connection-templates", {
       body: {
@@ -128,7 +134,6 @@ export async function discoversTokenServiceAccountApps(t: TestContext) {
         kind: "oauth2",
         namespaceId: fixture.namespace.id,
         issuer,
-        tokenUrl: `${issuer}/token`,
         displayName: "External application",
         clientId: "public-fixture-client",
         tokenEndpointAuthMethod: "none",

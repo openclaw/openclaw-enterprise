@@ -13,18 +13,32 @@ import type {
 import { openShellPluginPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import type {
   AgentRevision,
+  LegacyCredentialSource,
+  CredentialSourceInput,
   HarnessWorkloadRequirements,
   ProxyPlan,
   RepositoryRevisionState,
   SandboxNetworkGrant,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
+import type { CredentialProviderFixture } from "./sandbox-driver-credential-fixture.ts";
 import { storedSandbox } from "./sandbox-driver-gateway-response-fixture.ts";
 import { verifyManagedMcpProjection } from "./sandbox-driver-managed-mcp-rules-cases.ts";
 import { openShellDriver } from "./sandbox-driver-openshell-fixture.ts";
 import { completeSandboxRevision } from "./sandbox-driver-revision-fixture.ts";
+import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import { runtimeSandboxFixture } from "./sandbox-driver-startup-orchestration.ts";
 import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
+
+export const negotiatedGoogleGuard = () => ({
+  kind: 4,
+  configured_name: "oce-plugin-requests",
+  implementation_name: "oce/managed-plugin-requests",
+  implementation_version: managedGoogleInstall.releaseSha256,
+  protocol_major: 1,
+  supported_capabilities: ["openshell.supervisor-middleware.contract"],
+  required_capabilities: ["openshell.supervisor-middleware.contract"],
+});
 
 type PolicyRevision = Omit<AgentRevision, "plugins" | "sandboxPolicy" | "credentialSources"> & {
   -readonly [Key in "plugins" | "sandboxPolicy" | "credentialSources"]?: NonNullable<
@@ -97,7 +111,323 @@ function admitSlackProvider(
   };
 }
 
-export function registerManagedPluginPolicyCases(): void {
+type CredentialGatewayFactory = (options: {
+  toolBinaries: readonly string[];
+  refresh: boolean;
+}) => Pick<CredentialProviderFixture, "source" | "driver"> & {
+  client: Pick<OpenShellGatewayClient, "getGatewayInfo">;
+};
+
+export function registerManagedPluginPolicyCases(
+  credentialGatewayOverProviders: CredentialGatewayFactory,
+): void {
+  test("a selected Google account keeps its request guard alongside an independently bound Slack MCP server", async () => {
+    const managedSlackInstall = managedMcpInstalls.find(
+      ({ id }) => id === "occ-plugin:slack@1.0.0",
+    );
+    assert.ok(managedSlackInstall);
+    const registration = "oce-plugin-requests";
+    const configuration = buildSandboxInstallation().drivers.sandbox.configuration;
+    const managedPluginMiddleware = "https://authority.test:443";
+    const client = workspaceGatewayClient();
+    const driver = openShellDriver(client, {
+      ...configuration,
+      gateway: { ...configuration.gateway, managedPluginMiddleware },
+    });
+    const {
+      context,
+      revision: fixture,
+      requirements,
+    } = runtimeSandboxFixture(driver, {
+      harnessId: "openclaw",
+    });
+    const revision: PolicyRevision = completeSandboxRevision(fixture);
+    const sourceId = "cs_00000000-0000-4000-8000-000000000005";
+    const slackId = "cs_00000000-0000-4000-8000-000000000006";
+    revision.plugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [managedGoogleInstall.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: managedGoogleInstall.releaseSha256,
+            credentials: { account: sourceId },
+          },
+        },
+        [managedSlackInstall.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: managedSlackInstall.releaseSha256,
+            credentials: { account: slackId },
+            toolNames: ["slack_search_public"],
+          },
+        },
+      },
+    };
+    const gateway = credentialGatewayOverProviders({
+      toolBinaries: [managedGoogleInstall.binaryPath, "/usr/local/bin/node"],
+      refresh: true,
+    });
+    gateway.client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
+    const googleSource: LegacyCredentialSource = {
+      ...gateway.source(sourceId, context.namespace.id),
+      type: "oauth2-refresh-token",
+      config: {
+        host: "gmail.googleapis.com",
+        path: "/gmail/v1/users/me/messages",
+        token_url: "https://oauth2.googleapis.com/token",
+        scope: "https://www.googleapis.com/auth/gmail.readonly",
+        client_id: "test-client",
+        env_var: "GOG_ACCESS_TOKEN",
+        binary: managedGoogleInstall.binaryPath,
+      },
+    };
+    const slackSource: LegacyCredentialSource = {
+      ...gateway.source(slackId, context.namespace.id),
+      type: "bearer-token",
+      secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: context.namespace.id } },
+      config: { protocol: "mcp", host: "mcp.slack.com", path: "/mcp", env_var: "SLACK_MCP_TOKEN" },
+    };
+    const register = (source: LegacyCredentialSource, secrets: CredentialSourceInput["secrets"]) =>
+      gateway.driver.registerSource(
+        { ...context, source },
+        { type: source.type, config: source.config, secrets },
+      );
+    await register(googleSource, {});
+    await register(slackSource, { token: "synthetic-slack-bearer" });
+    const [google, slack] = await gateway.driver.attachForRevision({
+      ...context,
+      revision,
+      sources: [googleSource, slackSource],
+    });
+    assert.ok(google?.requestScope);
+    assert.ok(slack);
+    const { requestScope } = google;
+    requirements.credentialAttachments = [google, slack];
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    let created: ReturnType<typeof storedSandbox> | undefined;
+    const getCreated = () => {
+      assert.ok(created, "Expected the gateway to have recorded CreateSandbox.");
+      return created;
+    };
+    let observedGuard = true;
+    const credentialedHosts = new Set<string>();
+    let endpoint = managedPluginMiddleware;
+    const provider = "_provider_" + openShellProviderName(sourceId).replaceAll("-", "_");
+    const providerEndpoint = {
+      host: "gmail.googleapis.com",
+      port: 443,
+      path: "/gmail/v1/users/me/messages",
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+      provider_credentialed: true,
+    };
+    const providerRule = {
+      name: provider,
+      binaries: [{ path: managedGoogleInstall.binaryPath }],
+      endpoints: [providerEndpoint],
+    };
+    const independentEndpoint = {
+      host: "independent.example",
+      ports: [8443],
+      provider_credentialed: true,
+    };
+    const independentProvider = {
+      name: "_provider_independent",
+      binaries: [{ path: "/usr/bin/curl" }],
+      endpoints: [independentEndpoint],
+    };
+    client.createSandbox = async (request) => {
+      created = storedSandbox(request, { serviceUrls: {} });
+      return created;
+    };
+    client.getSandbox = async () => created;
+    client.getSandboxConfig = async (workspace) => {
+      const { spec } = getCreated();
+      const policy = observedRecord(structuredClone(spec.policy), "policy");
+      const routes = networkPolicies(policy);
+      if (observedProviders(spec).includes(openShellProviderName(sourceId))) {
+        for (const ep of observedEndpoints(routes["oce-google-requests"])) {
+          const { host } = ep;
+          assert.ok(typeof host === "string");
+          if (credentialedHosts.has(host)) {
+            ep.provider_credentialed = true;
+          }
+        }
+        routes[provider] = providerRule;
+      }
+      admitSlackProvider(routes, slack.ref, managedSlackInstall);
+      routes[independentProvider.name] = independentProvider;
+      if (!observedGuard) {
+        policy.network_middlewares = {};
+      }
+      return {
+        workspace,
+        policy_source: 1,
+        configuration_admitted: true,
+        policy_validation_failure_mode: "fail_closed",
+        extension_authentication_enabled: true,
+        supervisor_middleware_services: [
+          {
+            name: registration,
+            grpc_endpoint: endpoint,
+            audience: "urn:openshell:extension:middleware:" + registration,
+          },
+        ],
+        policy,
+      };
+    };
+    await driver.ensureNamespace(context);
+    await assert.rejects(
+      () =>
+        driver.provisionHarness({
+          ...context,
+          revision,
+          requirements: { ...requirements, credentialAttachments: [] },
+        }),
+      /selected OpenShell provider/,
+    );
+    // A lookalike extension cannot authorize creation or provider reconciliation.
+    const service = negotiatedGoogleGuard();
+    client.getGatewayInfo = async () => ({ extensions: [service] });
+    service.implementation_name = "other/response-only";
+    await assert.rejects(provision, /has not negotiated/);
+    assert.equal(created, undefined);
+    assert.equal(client.providers.size, 0);
+    assert.equal(client.profiles.size, 0);
+    Object.assign(service, negotiatedGoogleGuard());
+    revision.sandboxPolicy = driver.admitNetworkPolicy(
+      [
+        {
+          id: "wide",
+          host: "gmail.googleapis.com",
+          ports: [{ from: 443, to: 443 }],
+          binary: "/usr/bin/curl",
+        },
+      ],
+      1,
+      {},
+    );
+    await assert.rejects(provision, /bypass the managed plugin/);
+    delete revision.sandboxPolicy;
+    await provision();
+    const { spec } = getCreated();
+    const providers = observedProviders(spec);
+    assert.ok(providers.includes(openShellProviderName(sourceId)));
+    assert.ok(providers.includes(slack.ref));
+    const policy = observedRecord(spec.policy, "policy");
+    const routes = networkPolicies(policy);
+    const slackNetwork = routes["oce-slack-mcp"];
+    const slackRules = observedRecords(observedSlackEndpoint(slackNetwork).rules, "Slack rules");
+    assert.deepEqual(slackRules.at(-1), {
+      allow: { method: "tools/call", params: { name: { glob: "slack_search_public" } } },
+    });
+    const environment = observedRecord(spec.environment, "environment");
+    assert.equal(environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, "GOG_ACCESS_TOKEN");
+    assert.equal(environment.GOG_ACCESS_TOKEN, undefined);
+    const middlewares = observedRecord(policy.network_middlewares, "network_middlewares");
+    const guard = observedRecord(middlewares[registration], registration);
+    const fields = observedRecord(observedRecord(guard.config, "guard config").fields, "fields");
+    assert.equal(
+      observedRecord(fields.binding_id, "binding_id").stringValue,
+      managedGoogleInstall.releaseSha256,
+    );
+    assert.equal(guard.on_error, "fail_closed");
+    assert.deepEqual(observedRecord(guard.endpoints, "guard endpoints").include, [
+      "gmail.googleapis.com",
+      "www.googleapis.com",
+    ]);
+    const rule = observedRecord(routes["oce-google-requests"], "Google route");
+    assert.deepEqual(rule.binaries, [{ path: managedGoogleInstall.binaryPath }]);
+    const [gmail, discovery] = observedEndpoints(rule);
+    assert.ok(gmail && discovery);
+    assert.deepEqual(observedRecords(gmail.rules, "Gmail rules")[0]?.allow, {
+      method: "GET",
+      path: "/gmail/v1/users/me/messages",
+    });
+    assert.deepEqual(
+      observedRecords(discovery.rules, "discovery rules").map(
+        ({ allow }) => observedRecord(allow, "allow").path,
+      ),
+      ["/discovery/v1/apis", "/discovery/v1/apis/gmail/v1/rest"],
+    );
+    independentEndpoint.host = "gmail.googleapis.com";
+    await assert.rejects(provision, /Another credential provider uses a guarded Google host/);
+    independentEndpoint.host = "independent.example";
+    providerEndpoint.path = "/**";
+    await assert.rejects(provision, /exact Google provider route/);
+    providerEndpoint.path = "/gmail/v1/users/me/messages";
+    endpoint = "https://other.test:443";
+    await assert.rejects(provision, /has not admitted.*request guard/);
+    endpoint = managedPluginMiddleware;
+    observedGuard = false;
+    await assert.rejects(provision, /has not admitted.*request guard/);
+    observedGuard = true;
+
+    // For a host-wide source, stock OpenShell also marks the matching operation
+    // endpoint credentialed in GetSandboxConfig. The saved CreateSandbox spec stays raw.
+    requirements.credentialAttachments = [
+      { ...google, requestScope: { ...requestScope, path: "/**" } },
+      slack,
+    ];
+    providerEndpoint.path = "/**";
+    created = undefined;
+    await assert.rejects(provision, /pinned Google request routes/);
+    credentialedHosts.add(requestScope.host);
+    await provision();
+    assert.ok(
+      observedEndpoints(
+        networkPolicies(observedRecord(getCreated().spec.policy, "policy"))["oce-google-requests"],
+      ).every((ep) => ep.provider_credentialed === undefined),
+    );
+    credentialedHosts.add("www.googleapis.com");
+    await assert.rejects(provision, /pinned Google request routes/);
+    credentialedHosts.delete("www.googleapis.com");
+
+    // The worker dispatches the same admitted revision without the withdrawn tool source.
+    revision.credentialSources = [
+      { sourceId, credentialGatewayId: gateway.driver.id, sourceType: googleSource.type },
+      { sourceId: slackId, credentialGatewayId: gateway.driver.id, sourceType: slackSource.type },
+    ];
+    requirements.credentialAttachments = [
+      ...(await gateway.driver.attachForRevision({
+        ...context,
+        revision,
+        sources: [slackSource],
+      })),
+    ];
+    await assert.rejects(provision, /exact AgentRevision ownership and content/);
+    // OpenShell's detach removes the provider from a standing Sandbox. Its immutable launch
+    // environment and policy still describe the original request. It can be safely adopted.
+    const standing = getCreated();
+    created = {
+      ...standing,
+      spec: {
+        ...standing.spec,
+        providers: observedProviders(standing.spec).filter(
+          (ref) => ref !== openShellProviderName(sourceId),
+        ),
+      },
+    };
+    await provision();
+    created = undefined;
+    await provision();
+    const { spec: detached } = getCreated();
+    const detachedProviders = observedProviders(detached);
+    const detachedPolicy = observedRecord(detached.policy, "policy");
+    const detachedNetworks = networkPolicies(detachedPolicy);
+    assert.ok(detachedProviders.includes(slack.ref));
+    assert.deepEqual(detachedNetworks["oce-slack-mcp"], slackNetwork);
+    assert.ok(!detachedProviders.includes(openShellProviderName(sourceId)));
+    assert.equal(
+      observedRecord(detached.environment, "environment").OPENCLAW_MANAGED_CREDENTIAL_ENV,
+      undefined,
+    );
+    assert.equal(asRecord(detachedPolicy.network_middlewares)?.[registration], undefined);
+    assert.equal(detachedNetworks["oce-google-requests"], undefined);
+  });
+
   // The launch policy takes network_middlewares from the egress policy or the plugin guard,
   // never both: only this refusal keeps the two maps apart.
   test("a managed Google plugin is refused with repository credentials, proxy wiring or an egress plan", () => {
@@ -160,6 +490,7 @@ export function registerManagedPluginPolicyCases(): void {
     };
     const cases: Array<[string, AgentRevision, HarnessWorkloadRequirements]> = [
       ["repository credentials", { ...revision, repositoryCredentials }, admitted],
+      ["proxy wiring", revision, { ...admitted, proxyWiring: { plan, configuration: {} } }],
       ["an egress plan", { ...revision, egressPlan: plan }, admitted],
     ];
     for (const [condition, refused, launch] of cases) {

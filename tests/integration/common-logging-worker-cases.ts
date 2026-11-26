@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
+import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import { occLogLine } from "../helpers/occ-log-line.ts";
 import { captureLogs, logAt } from "./common-logging-output.ts";
 
@@ -163,11 +164,26 @@ export function registerWorkerCases(): void {
     }
   });
 
-  test("worker log preserves structured prepared Git issuance diagnostics and drops unsafe fields", () => {
+  test("worker log keeps fixed codes and route fences, and drops anything shaped otherwise", () => {
     const output = captureLogs("occ-worker");
     const emit = createWorkerLogEmitter(output.logger);
 
+    // The shapes the OpenShell Git runtime and the worker emit (finding 2244). The runtime's own
+    // events go through its fixture logger in openshell-git-runtime.test.mjs.
     const kept = [
+      {
+        event: "worker.openshell-git-expiry",
+        outcome: "pending",
+        check: "reduced-generation-moved-across-provider-check",
+        failure: "admission_limit",
+      },
+      {
+        event: "worker.openshell-git-denied",
+        reason: "ref_not_allowed",
+        reasonCode: "route_blocked",
+      },
+      { event: "worker.openshell-git-route", status: "adopted", fence: 7 },
+      { event: "worker.completed", code: "REPOSITORY_EXECUTION_UNVERIFIED", harnessState: "lost" },
       {
         event: "worker.error",
         code: "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
@@ -196,8 +212,25 @@ export function registerWorkerCases(): void {
       }
     }
 
-    // Free text, credential shapes, and invalid types never pass as diagnostic fields.
+    // Every expiry step the runtime can report passes as a code.
+    for (const check of OPENSHELL_GIT_EXPIRY_CHECKS) {
+      emit({ event: "worker.openshell-git-expiry", outcome: "pending", check });
+      assert.equal(logAt(output.lines, -1).check, check);
+    }
+
+    // Free text, a credential shape, an overlong value or a non-string never passes as a code;
+    // a fence is a non-negative safe integer.
     const rejected: ReadonlyArray<readonly [field: string, value: unknown]> = [
+      ["check", "the detach is still pending"],
+      ["failure", "connect ECONNREFUSED 10.0.0.1:443"],
+      ["reasonCode", "sk-proj-abcdefghijklmnopqrstuvwx"],
+      ["reasonCode", `r${"x".repeat(64)}`],
+      ["harnessState", { state: "lost" }],
+      ["failure", 14],
+      ["fence", -1],
+      ["fence", 1.5],
+      ["fence", "3"],
+      ["fence", Number.MAX_SAFE_INTEGER + 1],
       ["httpStatus", "401"],
       ["httpStatus", 99],
       ["httpStatus", 600],
@@ -206,11 +239,9 @@ export function registerWorkerCases(): void {
       ["requestEndCalled", 1],
       ["firstFailureStage", "sentinel private message"],
       ["validationCode", "sentinel private message"],
-      ["validationCode", "sk-proj-abcdefghijklmnopqrstuvwx"],
-      ["validationCode", `r${"x".repeat(64)}`],
     ];
     for (const [key, value] of rejected) {
-      emit({ event: "worker.error", code: "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC", [key]: value });
+      emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });
       assert.equal(Object.hasOwn(logAt(output.lines, -1), key), false, `${key}: ${String(value)}`);
     }
   });

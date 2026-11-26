@@ -163,7 +163,10 @@ function operatorGateway(): Gateway {
     getProviderCredential: unexpectedGatewayOperation,
     detachSandboxProvider: unexpectedGatewayOperation,
     getSandboxProviderStatus: unexpectedGatewayOperation,
+    configureProviderRefresh: unexpectedGatewayOperation,
+    rotateProviderCredential: unexpectedGatewayOperation,
     getProviderRefreshStatus: unexpectedGatewayOperation,
+    deleteProviderRefresh: unexpectedGatewayOperation,
     getSandboxLogs: unexpectedGatewayOperation,
   };
 }

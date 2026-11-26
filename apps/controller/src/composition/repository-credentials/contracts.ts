@@ -1,3 +1,8 @@
+import type {
+  CredentialProxyBinding,
+  ProtectedRepositoryGitAuthority,
+} from "@openclaw-enterprise/contracts";
+import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { RepositoryServiceFactory } from "../../drivers/repo/access/backend-contracts.ts";
 import type { ServiceConfig } from "../../drivers/repo/access/service-contracts.ts";
 import type { TlsMaterial } from "../../drivers/repo/access/internal-contracts.ts";
@@ -14,4 +19,16 @@ export interface LoadedConfiguration {
   /** Present for the token authority only; derived from the token prefix, never secret. */
   readonly tokenClass?: GitHubTokenClass;
   close(): void;
+}
+
+export type RepositoryTransportEmit = (event: Readonly<Record<string, unknown>>) => void;
+
+export interface RepositoryTransportBinding {
+  /** Supply existing API storage for read-only assessment; never start the sender. */
+  connectRestartObservation?(pool: PostgresPool): void;
+  bind(
+    authority: ProtectedRepositoryGitAuthority,
+    pool: PostgresPool,
+    emit?: RepositoryTransportEmit,
+  ): Promise<CredentialProxyBinding>;
 }

@@ -118,13 +118,14 @@ for (const rejectRead of [false, true]) {
   });
 }
 
-// Finding 2989: when the prepared Git owner failed to close,
+// Finding 2989: when the repository Git transport or the prepared Git owner failed to close,
 // worker shutdown skipped the receipt server. Its listener kept the worker process alive after
 // SIGTERM until the kubelet's SIGKILL. Every later step must still close, and the first failure
 // is the one worker.mjs reports as SHUTDOWN_FAILED. A failed worker loop stop (finding 2997)
 // still removes readiness and closes every part.
 for (const failing of [
-  { first: "loop", also: ["prepared"] },
+  { first: "loop", also: ["transport"] },
+  { first: "transport", also: ["prepared"] },
   { first: "prepared", also: [] },
 ]) {
   test(`worker shutdown closes the receipt server after a ${failing.first} close failure`, async (t) => {
@@ -160,6 +161,7 @@ for (const failing of [
     await assert.rejects(
       closeWorkerComposition({
         readinessPath,
+        repositoryGitTransport: { close: step("transport") },
         preparedRepositoryGit: { close: step("prepared") },
         receiptServer: {
           async close() {
@@ -174,7 +176,7 @@ for (const failing of [
     );
 
     // The loop stops first and the worker's database pool closes last, with no step skipped.
-    assert.deepEqual(events, ["loop", "prepared", "receipt", "metrics", "worker"]);
+    assert.deepEqual(events, ["loop", "transport", "prepared", "receipt", "metrics", "worker"]);
     await assert.rejects(lstat(readinessPath), { code: "ENOENT" });
     // The listener is gone and its socket removed: nothing keeps the process alive.
     assert.equal(await reach(receiptPath), "ENOENT");

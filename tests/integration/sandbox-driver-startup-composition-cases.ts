@@ -5,7 +5,13 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import type { AgentRevision, SandboxNamespaceContext } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  CredentialSourceControl,
+  RepositoryGitDeliveryProfile,
+  RevisionHarnessDescriptor,
+  SandboxNamespaceContext,
+} from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
@@ -162,4 +168,31 @@ export async function verifyManagedNamespaceRejectsMutation({
   );
   assert.deepEqual(events, []);
   assert.deepEqual(gatewayClient.calls, []);
+}
+
+export async function verifyProtectedGatewayAdmission({
+  signal,
+  setGatewayVersion,
+  sourceControl,
+  validateRepositoryCredentials,
+}: {
+  signal: AbortSignal;
+  setGatewayVersion: (version: string) => void;
+  sourceControl: Pick<CredentialSourceControl, "assertAvailable">;
+  validateRepositoryCredentials: (harness: Pick<RevisionHarnessDescriptor, "id" | "mode">) => void;
+}) {
+  setGatewayVersion("unknown");
+  const profiles: readonly RepositoryGitDeliveryProfile[] = ["repository_git", "github_repository"];
+  for (const profile of profiles) {
+    assert.deepEqual(await sourceControl.assertAvailable(signal, profile), {
+      profile,
+      authorization: "online-request",
+    });
+  }
+
+  setGatewayVersion("0.1.5");
+  validateRepositoryCredentials({ id: "codex", mode: "dedicated" });
+  assert.throws(() => validateRepositoryCredentials({ id: "openclaw", mode: "embedded" }), {
+    message: /[Rr]epository credentials require/,
+  });
 }

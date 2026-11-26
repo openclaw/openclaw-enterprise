@@ -33,7 +33,7 @@ class CurrentChannelDriver extends SlackChannelDriver {
 const installed = await loadInstallationConfiguration({ mode: "production" });
 assert.ok(installed);
 assert.ok(
-  !installed.sandboxDriver && !installed.credentialDeliveryRegistration,
+  !installed.sandboxDriver && !installed.protectedDriver && !installed.repositoryTransport,
   "this fixture covers ordinary dedicated Compute, not a provider-owned Harness or repository transport",
 );
 const selection = installed.installation.drivers.compute;

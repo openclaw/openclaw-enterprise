@@ -5,6 +5,7 @@ import {
   create,
   createModelSecret,
   createSlackBotSecret,
+  modelCredentialSourceTypes,
   form,
   presetSecretsPath,
   managedStaticForm,
@@ -22,6 +23,7 @@ import type {
   AgentDeploymentStatusWire,
   OpenClawConfigurationDocument,
   CredentialSourceResponse,
+  CredentialSourceType,
   InstallationCapabilities,
   NamespaceStatus,
   PresetVariable,
@@ -41,6 +43,7 @@ type CreateAgentScenario = {
   gap?: string;
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
+  credentialSourceTypes?: readonly CredentialSourceType[];
   initialCredentialSources?: readonly CredentialSourceResponse["data"][];
   deviceAuthorization?: true;
   modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
@@ -1048,6 +1051,7 @@ const gitClientPreview = {
   group: "Pages/Create Agent",
   path: create,
   modelCredentialSourcePresets: ["openai"],
+  credentialSourceTypes: modelCredentialSourceTypes,
   repositoryOptions: [
     {
       repositoryRef: "application",
@@ -1805,6 +1809,7 @@ export const createAgentProvisioningScenarios = {
     path: create,
     modelCredentialSourcePresets: ["openai"],
     oauthCatalog: "ready",
+    credentialSourceTypes: modelCredentialSourceTypes,
     repositoryDescriptionsPending: false,
     repositoryOptions: ["application", "tooling"].map((name) => ({
       repositoryRef: name,
@@ -1936,7 +1941,7 @@ export const createAgentProvisioningScenarios = {
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
     repositoryOptions: repositorySearchOptions,
     description:
-      "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+      "Exact names appear first, followed by prefixes and substrings. The search field names the repository Enter will select. After each selection, the query stays in place and the next name appears.",
   },
   createRepositoriesNoMatches: {
     group: "Pages/Create Agent",
@@ -2674,6 +2679,7 @@ export const createAgentProvisioningScenarios = {
     name: "Member Agent created, opens its draft",
     path: create,
     observabilityDenied: true,
+    credentialSourceTypes: modelCredentialSourceTypes,
     actions: provisionableForm,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
@@ -2798,6 +2804,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT OAuth before sign-in (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     pluginDiscovery,
     pluginCapabilities,
@@ -2809,6 +2816,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "Reuse a saved ChatGPT OAuth Source",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     initialCredentialSources: savedOAuthSources,
     actions: [
@@ -2830,6 +2838,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login pending (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     oauthPending: true,
     actions: startOAuthLogin,
@@ -2840,6 +2849,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in interrupted by navigation (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
     actions: oauthForm,
@@ -2850,6 +2860,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login ready for plugin discovery (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     pluginDiscovery,
     pluginCapabilities,
@@ -2865,6 +2876,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login permission denied (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", status: 403 }],
     actions: startOAuthLogin,
@@ -2875,6 +2887,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login unavailable (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     rules: [
       {
@@ -2893,6 +2906,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login not offered by TokenService (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     actions: oauthForm,
     description:
       "The selected TokenService does not offer device login. Sign in with OAuth is unavailable before any request: Tab reaches it, it is described by the reason, and Enter sends nothing.",
@@ -2901,6 +2915,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT sign-in start unconfirmed (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
     actions: oauthForm,
@@ -2911,6 +2926,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     rules: [{ suffix: "/poll", method: "POST", status: 503 }],
     actions: startOAuthLogin,
@@ -2921,6 +2937,7 @@ export const createAgentProvisioningScenarios = {
     group: "Pages/Create Agent",
     name: "ChatGPT device login expired (Experimental)",
     path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
     deviceAuthorization: true,
     oauthExpired: true,
     actions: startOAuthLogin,

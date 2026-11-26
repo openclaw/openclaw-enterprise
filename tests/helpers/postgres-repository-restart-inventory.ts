@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { InstalledDriver, PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
@@ -10,20 +13,40 @@ import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
-import type { standingExecutionFixture } from "./postgres-standing-execution.ts";
+import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.ts";
 
-/** Only Kubernetes discovery is controlled. The inventory disposition travels through
- * authenticated Fastify, OCC and the selected Compute Driver. */
+/** API composition has its own Git owner and database pool. Only Kubernetes discovery is
+ * controlled; the disposition travels through authenticated Fastify, OCC, Compute and Sandbox. */
 export async function repositoryRestartInventory(
   t: TestContext,
   revision: AgentRevision,
+  input: Parameters<typeof createOpenShellCapabilities>[0] | undefined,
   fixture: Pick<
-    Awaited<ReturnType<typeof standingExecutionFixture>>["f"],
+    Awaited<ReturnType<typeof standingExecutionPlatform>>,
     "database" | "observerPool" | "state" | "installation" | "actor" | "controller"
   >,
 ) {
-  const compute = createTestKubernetesComputeDriver(revision.compute.id);
+  const capabilities = input === undefined ? undefined : createOpenShellCapabilities(input);
+  t.after(() => capabilities?.close());
+  const owner =
+    input !== undefined && capabilities !== undefined
+      ? new InstalledDriver(
+          { ...input.sandbox, configuration: input.proxy!.configuration },
+          {
+            capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
+            namespaceLifecycleHooks: {
+              // Inventory reads a provisioned Namespace; setup would be an unintended mutation.
+              async ensureNamespace() {
+                assert.fail("Restart inventory must not initialize Namespace infrastructure.");
+              },
+            },
+          },
+        )
+      : undefined;
+  const compute = createTestKubernetesComputeDriver(revision.compute.id, {
+    ...(owner === undefined ? {} : { repositoryCredentials: true, protectedDriver: owner }),
+  });
   const metadata = {
     name: kubernetesNamespaceName(revision.namespaceId),
     ...compute["ownershipMetadata"]({ namespaceId: revision.namespaceId }),
@@ -54,6 +77,24 @@ export async function repositoryRestartInventory(
   });
   assert.ok(configured);
 
+  const installation =
+    input === undefined
+      ? configured.installation
+      : {
+          ...configured.installation,
+          drivers: {
+            ...configured.installation.drivers,
+            sandbox: {
+              ...input.sandbox,
+              configuration: input.proxy!.configuration,
+              definition: {
+                configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+                validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
+                configurationContributions: OpenShellSandboxDriver.configurationContributions,
+              },
+            },
+          },
+        };
   // The worker fixture owns a per-test database and an IAM-only actor. Provision
   // an actual password account there before exercising the authenticated API.
   const authSecret = "standing-execution-local-test-secret-32";
@@ -106,7 +147,8 @@ export async function repositoryRestartInventory(
     });
   }
 
-  // Register the selected Compute in the read-only API instance.
+  // Register the same selected owner in Compute and API composition. No exchange or
+  // repository sender is configured on this read-only API instance.
   assert.ok(fixture.database.url, "Restart inventory requires its owned PostgreSQL database");
   const app = await composePostgresDevelopment(
     {
@@ -119,7 +161,14 @@ export async function repositoryRestartInventory(
     },
     {
       ...drivers,
-      installation: configured.installation,
+      installation,
+      ...(owner === undefined || capabilities === undefined
+        ? {}
+        : {
+            protectedDriver: owner,
+            sandboxDriver: capabilities.sandbox,
+            repositoryTransport: capabilities.repositoryTransport,
+          }),
     },
   );
   t.after(() => app.close());

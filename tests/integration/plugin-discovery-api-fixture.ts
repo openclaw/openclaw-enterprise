@@ -6,6 +6,7 @@ import type { TestContext } from "node:test";
 import { createOccLogger, type OccLogger } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
+  CredentialGatewayDriver,
   Identity,
   PluginCatalogEntry,
   PluginDriver,
@@ -51,6 +52,7 @@ type ConsoleOptions = {
   secretDriver?: TestSecretDriver;
   logger?: OccLogger;
   onSend?: (request: { raw: IncomingMessage }) => Promise<void>;
+  credentialGatewayDriver?: CredentialGatewayDriver;
   sandboxDriver?: SandboxDriver;
 };
 

@@ -98,6 +98,7 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
 // Tests own readiness transitions and assertions; prepare/activate remain real Driver calls.
 /**
  * @param {{
+ *   credentialGatewayDriver?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver,
  *   harnessEndpoint?: (context: import("../../packages/contracts/src/index.ts").SandboxHarnessContext) => Promise<import("../../packages/contracts/src/index.ts").SandboxHarnessEndpoint | undefined>,
  *   providerNetwork?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["network"]["providerHarness"],
  *   revisionOverrides?: Partial<import("../../packages/contracts/src/index.ts").AgentRevision>,
@@ -107,6 +108,7 @@ export function tlsPinnedWorkspaceSetupCode(url, expiresAtMs) {
  * }} [options]
  */
 export function providerEndpointFixture({
+  credentialGatewayDriver,
   harnessEndpoint = async () => ({
     url: "ws://tenant--sandbox.openshell.localhost:8080/",
     workspaceRoot: "/sandbox/enterprise",
@@ -124,6 +126,7 @@ export function providerEndpointFixture({
   const peerLookups = [];
   const provisioningPolicies = [];
   const fixture = providerReadinessFixture({
+    credentialGatewayDriver,
     providerNetwork,
     revisionOverrides,
     servicePrincipalCredentials,

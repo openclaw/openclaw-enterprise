@@ -286,7 +286,12 @@ sequenceDiagram
 Before calling Compute, the worker checks its selected identity and current
 credential references.
 Activation must be safe to repeat. A failed activation after selection resumes
-at finalization.
+at finalization. In [protected Git startup](../repository-credentials/protected-openshell-git.md),
+both version 5 `online-request` and version 6 `request-hook-observed` support
+selection before readiness. When Compute reports `heldForRepositoryGitMaterial`
+and `REPOSITORY_GIT_ROUTE_PENDING` without a runtime failure, the worker can
+record the selection. The original work stays queued until that revision is ready;
+only then does the worker activate it, retire its predecessor, and complete the work.
 
 Exclusive replacement crosses the [shared stop boundary](../agents/planned-replacement.md)
 before closing credentials and stopping predecessors. Failed stop blocks preparation.

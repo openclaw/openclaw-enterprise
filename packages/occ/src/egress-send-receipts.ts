@@ -49,6 +49,17 @@ export interface StoredSendReceipt extends SendAttempt {
   readonly feedback: "fenced" | null;
 }
 
+interface TransactionOwner {
+  transact<T>(
+    work: (unit: {
+      readonly egressSendReceipts: EgressSendReceiptRepository;
+      readonly credentialSources: {
+        rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
+      };
+    }) => Promise<T>,
+  ): Promise<T>;
+}
+
 export interface EgressSendReceiptRepository {
   find(input: SendAttempt): Promise<StoredSendReceipt | undefined>;
   insert(input: SendAttempt): Promise<boolean>;
@@ -335,4 +346,172 @@ export function authorizedSend(value: unknown): AuthorizedSend {
     authorizedAt: date,
     sendStartBy: date,
   });
+}
+
+/** Trusted sender persistence. Receipts never authorize sending or retries. */
+export class EgressSendReceipts {
+  private readonly state: TransactionOwner;
+
+  constructor(state: TransactionOwner) {
+    this.state = state;
+  }
+
+  async begin(
+    authenticatedSender: EgressRef,
+    value: unknown,
+  ): Promise<{ created: boolean; receipt: StoredSendReceipt }> {
+    const input = attempt(value, authenticatedSender);
+    return this.state.transact(async (unit) => {
+      const created = await unit.egressSendReceipts.insert(input);
+      return { created, receipt: receipt(await unit.egressSendReceipts.find(input), input) };
+    });
+  }
+
+  /** A separate, non-replayable transition. Unknown COMMIT must propagate unchanged. */
+  async authorize(
+    authenticatedSender: EgressRef,
+    value: unknown,
+    authorization: AuthorizedSend,
+  ): Promise<StoredSendReceipt> {
+    return this.state.transact(({ egressSendReceipts }) =>
+      EgressSendReceipts.authorizeIn(egressSendReceipts, authenticatedSender, value, authorization),
+    );
+  }
+
+  /** Persist possible use in the caller's transaction, while its current-material locks are held. */
+  static async authorizeIn(
+    receipts: EgressSendReceiptRepository,
+    authenticatedSender: EgressRef,
+    value: unknown,
+    authorization: AuthorizedSend,
+  ): Promise<StoredSendReceipt> {
+    const input = attempt(value, authenticatedSender);
+    const selected = authorizedSend(authorization);
+    const previous = receipt(await receipts.find(input), input);
+    if (
+      previous.authorization !== null ||
+      previous.settled ||
+      previous.observation !== null ||
+      !(await receipts.authorize(input, selected))
+    ) {
+      return invalid();
+    }
+    return receipt(await receipts.find(input), input);
+  }
+
+  async recover(
+    authenticatedSender: EgressRef,
+    value: unknown,
+  ): Promise<StoredSendReceipt | undefined> {
+    const input = attempt(value, authenticatedSender);
+    return this.state.transact(async (unit) => {
+      const found = await unit.egressSendReceipts.find(input);
+      return found === undefined ? undefined : receipt(found, input);
+    });
+  }
+
+  /** Commit the observation and exact rejection fence before replying to the sender.
+   * It does not establish that the supplier accepted/applied the policy decision. */
+  async observe(
+    authenticatedSender: EgressRef,
+    value: unknown,
+    result: unknown,
+    rejection?: { readonly classification: "credential_rejected"; readonly evidence: unknown },
+  ): Promise<StoredSendReceipt> {
+    return this.write(authenticatedSender, value, observation(result), false, rejection);
+  }
+
+  /** Final settlement requires independent trusted evidence; unknown COMMIT propagates. */
+  async record(
+    authenticatedSender: EgressRef,
+    value: unknown,
+    result: unknown,
+    rejection?: { readonly classification: "credential_rejected"; readonly evidence: unknown },
+  ): Promise<StoredSendReceipt> {
+    return this.write(authenticatedSender, value, outcome(result), true, rejection);
+  }
+
+  private async write(
+    authenticatedSender: EgressRef,
+    value: unknown,
+    final: SendOutcome,
+    settle: boolean,
+    rejection?: { readonly classification: "credential_rejected"; readonly evidence: unknown },
+  ): Promise<StoredSendReceipt> {
+    const input = attempt(value, authenticatedSender);
+    const feedback =
+      rejection === undefined ? undefined : exact(rejection, ["classification", "evidence"]);
+    const evidence = feedback === undefined ? undefined : material(feedback.evidence);
+    if (
+      feedback !== undefined &&
+      (feedback.classification !== "credential_rejected" ||
+        !isDeepStrictEqual(evidence, input.material) ||
+        final.kind === "refused" ||
+        final.kind === "uncertain")
+    ) {
+      return invalid();
+    }
+    if (final.kind === "provider_rejected" && evidence === undefined) {
+      return invalid();
+    }
+    return this.state.transact(async (unit) => {
+      const previous = receipt(await unit.egressSendReceipts.find(input), input);
+      if (previous.authorization !== null && final.kind === "refused") {
+        return invalid();
+      }
+      if (previous.settled && (!settle || !isDeepStrictEqual(previous.outcome, final))) {
+        return invalid();
+      }
+      if (
+        previous.observation !== null &&
+        (final.kind === "refused" ||
+          (final.kind !== "uncertain" && !isDeepStrictEqual(previous.observation, final)))
+      ) {
+        return invalid();
+      }
+      if (evidence !== undefined && previous.feedback !== "fenced") {
+        await unit.credentialSources.rejectEgressMaterial(evidence);
+      }
+      const saved: StoredSendReceipt = {
+        ...previous,
+        outcome: settle ? final : previous.outcome,
+        observation: settle ? previous.observation : observation(final),
+        settled: settle,
+        feedback: evidence === undefined ? previous.feedback : "fenced",
+      };
+      if (!isDeepStrictEqual(saved, previous)) {
+        await unit.egressSendReceipts.save(saved);
+      }
+      return saved;
+    });
+  }
+
+  /** Independently classified rejection of an observed response, never generic failure. */
+  async reject(
+    authenticatedSender: EgressRef,
+    value: unknown,
+    selectedEvidence: unknown,
+  ): Promise<"fenced"> {
+    const input = attempt(value, authenticatedSender);
+    const evidence = material(selectedEvidence);
+    if (!isDeepStrictEqual(input.material, evidence)) {
+      return invalid();
+    }
+    return this.state.transact(async (unit) => {
+      const previous = receipt(await unit.egressSendReceipts.find(input), input);
+      if (
+        previous.observation === null &&
+        (!previous.settled ||
+          previous.outcome.kind === "refused" ||
+          previous.outcome.kind === "uncertain")
+      ) {
+        return invalid();
+      }
+      if (previous.feedback !== "fenced") {
+        await unit.credentialSources.rejectEgressMaterial(evidence);
+        await unit.egressSendReceipts.save({ ...previous, feedback: "fenced" });
+      }
+      return "fenced" as const;
+    });
+  }
 }

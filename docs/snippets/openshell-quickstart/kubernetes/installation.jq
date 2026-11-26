@@ -423,6 +423,9 @@
             "runAsUser": "10001",
             "runAsGroup": "10001"
           },
+          "codexArtifactRuleNames": [
+            "codex-plugin-artifacts"
+          ],
           "networkPolicies": [
             {
               "name": "codex-plugin-artifacts",

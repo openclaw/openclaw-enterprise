@@ -97,7 +97,7 @@
       "path": "tests/integration/github-installation-access-policy.test.ts",
       "expectedTests": [
         "only explicit Namespace and Agent selections allow GitHub installation scope",
-        "installation access evidence requires a profile-bound signed recipient"
+        "installation access needs positive sender capability and a profile-bound signed recipient"
       ]
     },
     {

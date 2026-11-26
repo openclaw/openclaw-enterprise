@@ -7,7 +7,9 @@ import {
   type AgentRevision,
   type ComputeDriver,
   type ComputeRevisionContext,
+  type StoredCredentialSource as CredentialSource,
   type CredentialSourceSnapshot,
+  type LegacyEgressProxyDriver,
   type ResolvedHarnessAuth,
   type Secret,
   type SecretBindings,
@@ -19,6 +21,7 @@ import {
   type PostgresPlatformState,
 } from "@openclaw-enterprise/occ";
 import { isDeepStrictEqual } from "node:util";
+import { revisionEgressReceipts } from "./revision-egress-receipts.ts";
 
 export const UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT = "REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED";
 
@@ -49,9 +52,6 @@ export function validateExecutionAdmission(
   revision: AgentRevision,
   credentialDeliveryRef?: NonNullable<AgentRevision["credentialDeployment"]>["driver"],
 ): void {
-  if (revision.executionAdmission.mode === "protected" || revision.egressPlan !== undefined) {
-    throw new DependencyUnavailableError("This revision uses retired protected egress.");
-  }
   if (
     revision.executionAdmission.mode === "standalone" &&
     (credentialDeliveryRef === undefined ||
@@ -66,10 +66,10 @@ export function validateExecutionAdmission(
   }
 }
 
-export function validateRepositoryNetworkPolicy(
+export async function validateRepositoryNetworkPolicy(
   compute: ComputeDriver,
   revision: AgentRevision,
-): void {
+): Promise<void> {
   if (revision.sandboxPolicy?.repositoryNetworkPolicy !== undefined) {
     if (revision.executionAdmission.mode === "standalone") {
       if (!isNativeStagedRepositoryRevision(revision) || !compute.validateRepositoryCredentials) {
@@ -80,9 +80,12 @@ export function validateRepositoryNetworkPolicy(
       compute.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
       return;
     }
-    throw new DependencyUnavailableError(
-      "The selected Compute cannot enforce this repository network policy.",
-    );
+    if (compute.validateProtectedRepositoryNetworkPolicy === undefined) {
+      throw new DependencyUnavailableError(
+        "The selected Compute cannot enforce this repository network policy.",
+      );
+    }
+    await compute.validateProtectedRepositoryNetworkPolicy(revision);
   }
 }
 
@@ -128,6 +131,7 @@ interface RevisionCredentialDependencies {
   readonly state: Pick<PostgresPlatformState, "read" | "transactWithQueue">;
   readonly compute: ComputeDriver;
   readonly secretDriverId: string | undefined;
+  readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   readonly credentialDeliveryRef:
     NonNullable<AgentRevision["credentialDeployment"]>["driver"] | undefined;
   readonly currentTokenServiceInstanceId: () => string | undefined;
@@ -204,8 +208,14 @@ export async function resolveRevisionHarnessAuth(
 }
 
 export function createRevisionCredentialResolver(dependencies: RevisionCredentialDependencies) {
-  const { state, compute, secretDriverId, credentialDeliveryRef, currentTokenServiceInstanceId } =
-    dependencies;
+  const {
+    state,
+    compute,
+    secretDriverId,
+    proxyDriver,
+    credentialDeliveryRef,
+    currentTokenServiceInstanceId,
+  } = dependencies;
 
   async function resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
@@ -222,7 +232,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     // Withdrawal can remove existing access even when the placement cannot install the policy.
     if (operation === "reconcile") {
       try {
-        validateRepositoryNetworkPolicy(compute, revision);
+        await validateRepositoryNetworkPolicy(compute, revision);
       } catch {
         return refuseRevisionInputs(
           revision.executionAdmission.mode === "unprotected"
@@ -295,6 +305,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     if ("result" in model) {
       return model;
     }
+    const credentialSources: Readonly<CredentialSource>[] = [];
     for (const snapshot of revision.credentialSources ?? []) {
       // The Harness source is listed too; it resolves above through the Harness binding.
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
@@ -338,7 +349,25 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
         }
         continue;
       }
-      return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
+      if (
+        snapshot.credentialProxyId === undefined ||
+        snapshot.credentialProxyId !== proxyDriver?.id
+      ) {
+        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
+      }
+      const { source, withdrawal } = await resolveRevisionCredentialSource(
+        state,
+        revision,
+        snapshot,
+      );
+      // A withdrawn non-model source stays detached; the revision keeps running without it.
+      if (withdrawal !== undefined) {
+        continue;
+      }
+      if (source === undefined) {
+        return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
+      }
+      credentialSources.push(source);
     }
     const workspaceSetup = await state.read((view) =>
       view.workspaceSetups.find(revision.namespaceId, revision.agentId),
@@ -348,9 +377,13 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     }
     return {
       context: {
+        ...(revision.egressPlan === undefined ? {} : revisionEgressReceipts(state, revision)),
         secretEnvironment: Object.freeze(resolved),
         ...(networkProxyCredential === undefined ? {} : { networkProxyCredential }),
         harnessAuth: model.harnessAuth,
+        ...(credentialSources.length === 0
+          ? {}
+          : { credentialSources: Object.freeze(credentialSources) }),
         ...(workspaceSetup === undefined ? {} : { workspaceSetup }),
       },
     };

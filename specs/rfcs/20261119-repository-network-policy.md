@@ -22,7 +22,7 @@ Native GitHub App delivery supports pull requests (PRs). [REST Write grants](#pl
 
 ## Motivation
 
-A host grant cannot distinguish A, B and C. OpenShell combines matching allows, so adding narrower rules leaves the [installation Provider’s](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts) wildcard routes effective. An endpointless Provider leaves network access to the Sandbox policy.
+A host grant cannot distinguish A, B and C. OpenShell combines matching allows, so adding narrower rules leaves the [installation Provider’s](../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts) wildcard routes effective. An endpointless Provider leaves network access to the Sandbox policy.
 
 <a id="scope"></a>
 

@@ -4,6 +4,7 @@ import type {
   CredentialSourceReference,
   CredentialSourceStatus,
   GitHubAppInstallationCredentialSource,
+  LegacyCredentialSource,
   OAuthCredentialSource,
   StaticCredentialSource,
   StoredCredentialSource,
@@ -26,9 +27,29 @@ export function isManagedTokenServiceSource(
   return source?.ownerCapability === "token_service";
 }
 
-export type CredentialSourceManagementMetadata = Readonly<
-  CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }
+export type LegacyCredentialSourceMetadata = Readonly<
+  LegacyCredentialSource & {
+    readonly ref: CredentialSourceReference;
+    readonly status?: CredentialSourceStatus;
+  }
 >;
+
+export type CredentialSourceManagementMetadata = Readonly<
+  | (CredentialSourceMetadata & { readonly status?: CredentialSourceStatus })
+  | LegacyCredentialSourceMetadata
+>;
+
+/** Internal legacy metadata. The HTTP projection selects wire fields and never spreads this record. */
+export function legacyCredentialSourceMetadata(
+  source: Readonly<LegacyCredentialSource>,
+  status?: CredentialSourceStatus,
+): LegacyCredentialSourceMetadata {
+  return Object.freeze({
+    ...source,
+    ref: Object.freeze(credentialSourceRef(source)),
+    ...(status === undefined ? {} : { status }),
+  });
+}
 
 export function credentialSourceMetadata(
   source: Readonly<StaticCredentialSource>,
@@ -115,13 +136,7 @@ export async function oauthCredentialSourceMetadata(
     source.consent.version,
   );
   const client = await view.credentialClients.find(source.consent.oauthClientId);
-  if (
-    !version ||
-    !client ||
-    client.kind !== "oauth2" ||
-    client.issuer !== version.issuer ||
-    client.tokenUrl !== version.tokenUrl
-  ) {
+  if (!version || !client || client.kind !== "oauth2" || client.issuer !== version.issuer) {
     throw new ResourceStateConflictError("The original OAuth consent registration is unavailable.");
   }
   return Object.freeze({

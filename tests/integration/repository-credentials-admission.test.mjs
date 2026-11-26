@@ -1,6 +1,8 @@
 import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import { fixtureRelease } from "../helpers/inspected-workspace-release.ts";
+import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
+import { createOccApi, exportTenants, importTenants } from "../../scripts/split-layout-tenants.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -19,20 +21,33 @@ import {
   loadInstallationConfiguration,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { harnessEgressEnrollment } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/index.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  admitRepositoryNetworkPolicy,
+  assertExecutionAdmission,
+} from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   InMemoryPlatformState,
   DriverConfigurationRegistry,
+  CredentialProxyRepositoryOnlyError,
+  InstalledDriver,
   OpenClawController,
+  RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -46,9 +61,16 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
+  callerDenied,
+  CREDENTIAL_PROXY_GIT_ALONE,
+  CREDENTIAL_PROXY_INSTALLATION_ACCESS,
+  CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
+  PROXY_REGISTRATION_UNAVAILABLE,
   REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
+import { assertSameAnswer } from "../helpers/refusal-answers.ts";
+import { protectedSourceInputs } from "../helpers/protected-source-refusals.ts";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -100,10 +122,33 @@ function repositorySandbox(registry, id = "repository-admission-openshell", user
         drivers: { sandbox: id },
         client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
       },
+      ...(registry === undefined
+        ? {}
+        : {
+            // Admission reads only the route's host check; nothing starts it.
+            openShellGit: new OpenShellGitRuntime(
+              {},
+              createGitHubRepositoryDeliveryResolver(
+                validateGitHubRepositoryRegistry(registry, backendId),
+              ),
+            ),
+          }),
     },
   );
 }
 
+// Stands in for the Kubernetes Driver composed with drivers.repo.openShell, which admits
+// dedicated Codex repository bindings in the selected OpenShell Sandbox.
+class OpenShellGitComputeDriver extends KubernetesComputeDriver {
+  validateRepositoryCredentials(harness) {
+    assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
+  }
+}
+
+// An Installation with runtime storage that dedicated Agents can use: gateway routing, node
+// enrollment and a Gateway node selector (deployment admission refuses dedicated Agents
+// otherwise, finding 2349).
+/** @param {typeof KubernetesComputeDriver} [Driver] */
 function kubernetesCompute(Driver = KubernetesComputeDriver, selection = {}, inspected = false) {
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
@@ -643,10 +688,7 @@ test("Installation-wide repository access refuses other bindings at save, as dep
   const unprotected = await f.request("POST", `${f.collection}/${sole.id}/deploy`);
   assert.equal(unprotected.status, 409, JSON.stringify(unprotected));
   assert.equal(unprotected.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    unprotected.error.message,
-    "Installation-wide repository access (profile github-installation) is unavailable. Select the approved repositories individually.",
-  );
+  assert.equal(unprotected.error.message, CREDENTIAL_PROXY_INSTALLATION_ACCESS);
   assert.deepEqual((await f.request("GET", `${f.collection}/${sole.id}/revisions`)).data, []);
   const agent = await f.createAgent({
     repositoryAccess: { defaultProfile: "git-write", repositories: selection },
@@ -1224,6 +1266,715 @@ test("the SandboxPolicy read preserves saved grants when the built-in repository
   }
 });
 
+test("OpenShell Git refuses an Agent network grant to the Git hosts at save, binding and deploy", async (t) => {
+  // Finding 2144: with the OpenShell Git route, github.com and its subdomains are reachable only
+  // through its middleware. An approved grant for them would add a direct route beside it, so
+  // the policy save, the binding save (the reverse order), deploy and live application refuse
+  // it with a message naming the grant. The Driver's provisioning backstop is covered in
+  // sandbox-driver-startup.
+  const grant = (id, host, port = 443) => ({
+    id,
+    binary: "/usr/bin/git",
+    host,
+    ports: [{ from: port, to: port }],
+  });
+  const docs = grant("docs", "objects.githubusercontent.com");
+  const direct = grant("git-direct", "github.com", 22);
+  // Finding 2145: an IP address may lead to GitHub, so it is refused the same way.
+  const address = grant("git-address", "140.82.112.3");
+  const f = await fixture(t, {
+    harness: "codex",
+    compute: kubernetesCompute(OpenShellGitComputeDriver),
+    controllerOptions: {
+      sandboxNetworkPolicyCeiling: [docs, direct, address],
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
+  });
+  const sandbox = repositorySandbox(f.registry);
+  Object.assign(sandbox, {
+    namespaceLifecycleHooks: sandboxNamespaceLifecycleBinding(
+      f.controller.selectedDriver("compute"),
+      sandbox,
+    ).hooks,
+  });
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const message =
+    "OpenShell Git reaches github.com and its subdomains only through its middleware route, so an Agent with a repository binding cannot also allow them: remove network grant git-direct (github.com).";
+  const policyPath = (agent) => `${f.collection}/${agent.id}/sandbox-policy/networking`;
+  const enableEditing = async (agent) => {
+    const enabled = await f.request("PATCH", `${policyPath(agent)}/editing`, { enabled: true });
+    assert.equal(enabled.status, 200, JSON.stringify(enabled));
+  };
+  const additions = async (agent) =>
+    (await f.request("GET", policyPath(agent))).data.policy.additions;
+
+  // Policy save on a repository-bound Agent.
+  const bound = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
+  await enableEditing(bound);
+  const refused = await f.request("PUT", policyPath(bound), {
+    expectedVersion: 1,
+    additions: [docs, direct],
+  });
+  assert.equal(refused.status, 409, JSON.stringify(refused));
+  assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+  assert.equal(refused.error.message, message);
+  assert.deepEqual(await additions(bound), []);
+  const refusedAddress = await f.request("PUT", policyPath(bound), {
+    expectedVersion: 1,
+    additions: [docs, address],
+  });
+  assert.equal(refusedAddress.status, 409, JSON.stringify(refusedAddress));
+  assert.equal(refusedAddress.error.code, "RESOURCE_CONFLICT");
+  const addressMessage =
+    "OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove network grant git-address (140.82.112.3).";
+  assert.equal(refusedAddress.error.message, addressMessage);
+  assert.deepEqual(await additions(bound), []);
+  const saved = await f.request("PUT", policyPath(bound), {
+    expectedVersion: 1,
+    additions: [docs],
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved));
+
+  // The reverse order: the grant first, then the binding.
+  const unbound = await f.createAgent({ executionMode: "dedicated" });
+  await enableEditing(unbound);
+  const granted = await f.request("PUT", policyPath(unbound), {
+    expectedVersion: 1,
+    additions: [direct],
+  });
+  assert.equal(granted.status, 200, "without a binding the grant is an ordinary one");
+  const binding = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
+    configurationId: f.configuration.id,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
+  assert.equal(binding.status, 409, JSON.stringify(binding));
+  assert.equal(binding.error.message, message);
+  assert.equal(
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryAccess,
+    undefined,
+  );
+  // Finding 2881: that refusal names a saved grant, so an Agent update without SandboxPolicy
+  // read gets the read refusal first, as deploy does when saved additions exist (finding 2151).
+  // Each Restriction names one exact SandboxPolicy, so the check must target the Agent's own.
+  const plain = await f.createAgent({ executionMode: "dedicated" });
+  const plainPolicyId = (await f.request("GET", policyPath(plain))).data.policy.id;
+  const unreadable = [granted.data.id, plainPolicyId].map((resourceId) =>
+    restrict(f.iamState, "read", "sandbox_policy", { namespaceId: f.namespace.id, resourceId }),
+  );
+  const hidden = await f.request("PATCH", `${f.collection}/${unbound.id}`, {
+    configurationId: f.configuration.id,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
+  assert.equal(hidden.status, 403, JSON.stringify(hidden));
+  assert.equal(
+    hidden.error.message,
+    callerDenied("SandboxPolicy read", `SandboxPolicy ${granted.data.id}`),
+  );
+  assert.doesNotMatch(JSON.stringify(hidden), /git-direct|github\.com/);
+  // An Agent with no saved additions has nothing to name, so its binding saves without read.
+  const plainBinding = await f.request("PATCH", `${f.collection}/${plain.id}`, {
+    configurationId: f.configuration.id,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
+  assert.equal(plainBinding.status, 200, JSON.stringify(plainBinding));
+  for (const restriction of unreadable) {
+    liftRestriction(f.iamState, restriction);
+  }
+  assert.equal(
+    (await f.request("GET", `${f.collection}/${unbound.id}`)).data.repositoryAccess,
+    undefined,
+  );
+  const addressed = await f.createAgent({ executionMode: "dedicated" });
+  await enableEditing(addressed);
+  const addressGranted = await f.request("PUT", policyPath(addressed), {
+    expectedVersion: 1,
+    additions: [address],
+  });
+  assert.equal(addressGranted.status, 200, "without a binding an IP-address grant is ordinary");
+  const addressBinding = await f.request("PATCH", `${f.collection}/${addressed.id}`, {
+    configurationId: f.configuration.id,
+    repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+  });
+  assert.equal(addressBinding.status, 409, JSON.stringify(addressBinding));
+  assert.equal(addressBinding.error.message, addressMessage);
+
+  // Deploy refuses a pair stored before these checks, and creates no revision.
+  await f.prepareDeployment(bound);
+  const stored = async (agent, grants) =>
+    f.state.transact(async (unit) => {
+      const policy = await unit.sandboxPolicies.find(f.namespace.id, agent.id);
+      const { application: _application, ...rest } = policy;
+      assert.ok(
+        await unit.sandboxPolicies.save(
+          { ...rest, version: policy.version + 1, additions: grants },
+          policy.version,
+        ),
+      );
+    });
+  await stored(bound, [direct]);
+  const deployPath = `${f.collection}/${bound.id}/deploy`;
+  const deploy = await f.request("POST", deployPath);
+  assert.equal(deploy.status, 409, JSON.stringify(deploy));
+  assert.equal(deploy.error.message, message);
+  assert.deepEqual((await f.request("GET", `${f.collection}/${bound.id}/revisions`)).data, []);
+
+  // Live application to the active Git-bound revision refuses it too.
+  await stored(bound, [docs]);
+  const deployed = await f.request("POST", deployPath);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed));
+  assert.ok(deployed.data.repositoryCredentials);
+  const revision = await f.state.read((view) =>
+    view.revisions.findRevision(f.namespace.id, bound.id, deployed.data.id),
+  );
+  assert.deepEqual(revision.sandboxPolicy.additions, [docs]);
+  await f.state.transact((unit) =>
+    unit.agents.compareAndSetActiveRevision(f.namespace.id, bound.id, undefined, deployed.data.id),
+  );
+  await stored(bound, [docs, direct]);
+  const version = (await f.request("GET", policyPath(bound))).data.policy.version;
+  const applied = await f.request("POST", `${policyPath(bound)}/apply`, {
+    expectedVersion: version,
+    revisionId: deployed.data.id,
+  });
+  assert.equal(applied.status, 409, JSON.stringify(applied));
+  assert.equal(applied.error.message, message);
+  assert.equal((await f.request("GET", policyPath(bound))).data.policy.application, undefined);
+});
+
+// Composes the bundled OpenShell Credential Proxy in the repository.openShell shape, where the
+// request-phase registration is also its only egress registration. `advertised` adds the
+// execution profile to the stock 0.1.5 registration, as a gateway with a stronger exchange would;
+// `registered: false` leaves the registration out of gateway info; `extension` overrides fields
+// of the registration gateway info reports; `middlewareName` names a separate egress
+// registration;
+// `installationAccess` offers github-installation and composes the Proxy with its Git transport,
+// as repository.openShell does; `preview` opts in to the observed-hook preview, and
+// `gatewayVersion` replaces the version the gateway reports.
+async function protectedOpenShellComposition(
+  t,
+  {
+    bindings = [],
+    advertised = false,
+    registered = true,
+    extension = {},
+    middlewareName,
+    credentialProxy = true,
+    harness = "codex",
+    installationAccess = false,
+    preview = false,
+    gatewayVersion = "0.1.5",
+    installedProfile,
+    sandboxNetworkPolicyCeiling = [],
+    runtimeAuthCompute = false,
+    inspected = false,
+    repositoryNetworkPolicyCeiling,
+    repositoryAdmission = repositoryNetworkPolicyCeiling === undefined ? undefined : "selected",
+    configureRegistry,
+  } = {},
+) {
+  class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
+    // Stands in for Kubernetes Compute with its paired protected release, so only the Credential
+    // Proxy and the contract decide whether the repository execution is admitted.
+    validateExecutionAdmission(revision) {
+      assertExecutionAdmission(revision);
+    }
+  }
+  const namespaceLifecycleBindings = [];
+  const f = await fixture(t, {
+    harness,
+    inspected,
+    compute: kubernetesCompute(ProtectedGitComputeDriver),
+    controllerOptions: {
+      namespaceLifecycleBindings,
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+      sandboxNetworkPolicyCeiling,
+      repositoryNetworkPolicyCeiling,
+    },
+    // Every bound repository other than the fixture's own is approved for the Namespace too.
+    extraRepositories: bindings
+      .map(({ repositoryRef }) => repositoryRef)
+      .filter((repositoryRef) => repositoryRef !== "project" && repositoryRef !== "installation"),
+    installationAccess,
+    repositoryAdmission,
+    configureRegistry,
+  });
+  let sandbox = repositorySandbox(
+    f.registry,
+    "repository-admission-openshell",
+    harness === "openclaw" ? false : undefined,
+  );
+  const registration = "oce-prepared-git";
+  let gatewayReads = 0;
+  // Gateway storage is simulated; registration still uses the bundled Gateway Driver.
+  const providers = new Map();
+  const profiles = new Map();
+  const gateway = {
+    async getProvider(workspace, name) {
+      return providers.get(`${workspace}/${name}`);
+    },
+    async createProvider(input) {
+      providers.set(`${input.workspace}/${input.name}`, structuredClone(input));
+    },
+    async getProviderProfile(workspace, id) {
+      return profiles.get(`${workspace}/${id}`);
+    },
+    async importProviderProfile(workspace, profile) {
+      profiles.set(`${workspace}/${profile.id}`, structuredClone(profile));
+    },
+    async getGatewayInfo() {
+      gatewayReads += 1;
+      // What stock 0.1.5 reports once the request-phase service is registered.
+      return {
+        gateway_version: gatewayVersion,
+        extensions: registered
+          ? [
+              {
+                configured_name: installedProfile === "execution" ? "oce-authority" : registration,
+                kind: 4,
+                protocol_major: 1,
+                ...(advertised && {
+                  required_capabilities: [...openShellExchangeCapabilities],
+                  supported_capabilities: [...openShellExchangeCapabilities],
+                }),
+                ...extension,
+              },
+            ]
+          : [],
+      };
+    },
+  };
+  const options = {
+    middlewareName: middlewareName ?? registration,
+    repositoryMiddlewareName: registration,
+    authorityScope: "execution",
+    ...(preview && { observedHookPreviewWorkspace: "preview-1" }),
+  };
+  const backend = {
+    id: "openshell",
+    drivers: {
+      sandbox: sandbox.id,
+      credential_proxy: sandbox.id,
+    },
+    client: { clientForNamespace: () => gateway, placement: () => undefined, close() {} },
+  };
+  // Production composes the Proxy with the Git runtime's transport whenever repository Git is
+  // protected; admission only checks that it is there.
+  const git =
+    installationAccess &&
+    new OpenShellGitRuntime(
+      {},
+      createGitHubRepositoryDeliveryResolver(
+        validateGitHubRepositoryRegistry(f.registry, backendId),
+      ),
+    );
+  let proxy = new OpenShellLegacyEgressProxyDriver(options, {
+    id: sandbox.id,
+    sandbox,
+    backend,
+    ...(git && {
+      bindRepositoryGit: git.bindRepositoryGit.bind(git),
+      previewEnforcement: git.previewEnforcement.bind(git),
+    }),
+  });
+  let owner = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
+    {
+      capabilities: { sandbox, credential_proxy: proxy },
+    },
+  );
+  if (installedProfile) {
+    const loaded = await loadedProxyInstallation(t, {
+      profile: installedProfile,
+      id: sandbox.id,
+      registry: f.registry,
+      preview,
+      createOpenShellBackend: () => backend,
+    });
+    owner = loaded.protectedDriver;
+    sandbox = loaded.sandboxDriver;
+    proxy = loaded.proxyDriver;
+    t.after(() => owner.close());
+  }
+  if (runtimeAuthCompute) {
+    const compute = kubernetesCompute(KubernetesComputeDriver, {
+      id: "runtime-admission-kubernetes",
+      protectedDriver: owner,
+    });
+    f.controller.registerDriver(compute);
+    f.controller.selectDriver("compute", compute.id);
+  }
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(f.controller.selectedDriver("compute"), sandbox, owner),
+  );
+  f.controller.registerDriver(owner);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  if (credentialProxy) {
+    f.controller.selectDriver("credential_proxy", proxy.id);
+  }
+  return { ...f, providers, protectedDriver: owner, gatewayReads: () => gatewayReads };
+}
+
+// Deploys a dedicated Codex Agent with `bindings` on that composition; the response and the
+// number of gateway reads are returned.
+async function protectedOpenShellDeploy(t, bindings, options = {}) {
+  const f = await protectedOpenShellComposition(t, { ...options, bindings });
+  const agent = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
+  });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const response = await f.request("POST", `${path}/deploy`);
+  const revisions = (await f.request("GET", `${path}/revisions`)).data;
+  return { response, revisions, gatewayReads: f.gatewayReads() };
+}
+
+test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified sender", async (t) => {
+  // Finding 2199: stock OpenShell registers oce-prepared-git, so admission accepted a git-write
+  // binding as protected online authorization. No release is qualified to enforce it, so the
+  // Harness waited at enrollment until the 15-minute convergence deadline. Deploy now refuses it
+  // with a stable code before contacting the gateway, and creates no revision.
+  const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(t, selection);
+  assert.equal(response.status, 409, JSON.stringify(response));
+  assert.equal(response.error.code, "REPOSITORY_GIT_SENDER_UNQUALIFIED");
+  assert.equal(response.error.message, RepositoryGitSenderUnqualifiedError.description);
+  assert.deepEqual(revisions, []);
+  assert.equal(gatewayReads, 0, "the refusal needs no gateway read");
+});
+
+test("Deploy names what installation-wide access needs from the OpenShell Proxy and its gateway", async (t) => {
+  // Opt-in is an Installation setting (409); missing registration is gateway state (503).
+  // Neither refusal creates a revision or changes with the gateway release label.
+  const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  for (const [label, options, status, code, message, reads] of [
+    [
+      "no preview",
+      { gatewayVersion: "0.1.6" },
+      409,
+      "RESOURCE_CONFLICT",
+      CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
+      0,
+    ],
+    [
+      "preview without registration",
+      { preview: true, gatewayVersion: "unknown", registered: false },
+      503,
+      "DEPENDENCY_UNAVAILABLE",
+      PROXY_REGISTRATION_UNAVAILABLE,
+      1,
+    ],
+  ]) {
+    const f = await protectedOpenShellComposition(t, {
+      ...options,
+      bindings: installation,
+      installationAccess: true,
+    });
+    const agent = await f.createAgent({
+      executionMode: "dedicated",
+      repositoryAccess: { defaultProfile: "git-write", repositories: installation },
+    });
+    await f.prepareDeployment(agent);
+    const response = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
+    assert.equal(response.status, status, `${label}: ${JSON.stringify(response)}`);
+    assert.equal(response.error.code, code, label);
+    assert.equal(response.error.message, message, label);
+    assert.deepEqual(
+      (await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data,
+      [],
+      label,
+    );
+    assert.equal(f.gatewayReads(), reads, label);
+    // The refusal comes after the deploy grant: a caller without it gets the same answer for
+    // this Agent and a missing one, each request's ID hidden.
+    const outsider = await f.requestWithoutGrants(f.app);
+    await assertSameAnswer(
+      (id) => outsider("POST", `${f.collection}/${id}/deploy`),
+      [agent.id, `agt_${randomUUID()}`],
+      { label },
+    );
+  }
+});
+
+test("Deploy names the Proxy's limit when a protected source sits beside repository Git", async (t) => {
+  // Finding 2536 (review-3732): the OpenShell Proxy has no policy reduction, so with the
+  // observed-hook preview it delivers installation-wide Git only alone. An Agent that also binds
+  // a Proxy-owned source can never start: deploy answers 409 naming the limit and the fixes,
+  // after the deploy grant and without a revision.
+  const installation = [{ repositoryRef: "installation", profile: "github-installation" }];
+  const f = await protectedOpenShellComposition(t, {
+    bindings: installation,
+    installationAccess: true,
+    preview: true,
+    // The gateway also registers the execution profile, so the Proxy can own a source.
+    advertised: true,
+  });
+  const agent = await f.createAgent({
+    executionMode: "dedicated",
+    repositoryAccess: { defaultProfile: "git-write", repositories: installation },
+  });
+  // Also registers the Agent's own principal.
+  await f.prepareDeployment(agent);
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+  );
+  // Establish a Source admitted by the former Proxy enrollment owner. The deploy refusal is
+  // still a supported Agent operation; public Source POST no longer enrolls this legacy type.
+  const created = await f.controller.createCredentialSource(f.actorId, {
+    namespaceId: f.namespace.id,
+    ...protectedSourceInputs["credential-free-repository-metadata"](agent.id),
+  });
+  const sourceId = created.id;
+  // The Agent's own principal may use the source, so only the Proxy's limit refuses the deploy.
+  const internal = await f.controller.getAgent(f.actorId, f.namespace.id, agent.id);
+  grantRole(f.iamState, internal.servicePrincipalId, {
+    id: `source-${agent.id}`,
+    namespaceId: f.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: sourceId },
+  });
+  const path = `${f.collection}/${agent.id}`;
+  const bound = await f.request("PATCH", path, {
+    configurationId: f.configuration.id,
+    credentialSources: [{ sourceId }],
+  });
+  assert.equal(bound.status, 200, JSON.stringify(bound));
+  const deployed = await f.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 409, JSON.stringify(deployed));
+  assert.equal(deployed.error.code, "RESOURCE_CONFLICT");
+  assert.equal(deployed.error.message, CREDENTIAL_PROXY_GIT_ALONE);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  const outsider = await f.requestWithoutGrants(f.app);
+  await assertSameAnswer(
+    (id) => outsider("POST", `${f.collection}/${id}/deploy`),
+    [agent.id, `agt_${randomUUID()}`],
+  );
+});
+
+test("Deploy refuses a repository profile a Credential Proxy cannot deliver by name", async (t) => {
+  // Finding 2204: git-read and git-full map to no delivery profile, so admission checked the
+  // counterpart as an ordinary egress plan. Stock 0.1.5 answered a generic 503; a gateway that
+  // advertises the execution profile admitted a v4 plan that assertExecutionAdmission rejected
+  // as a 500. Deploy now names the supported profiles before contacting the gateway. Two
+  // bindings map to no profile either, even when one of them is git-write.
+  const several = [
+    { repositoryRef: "project", profile: "git-write" },
+    { repositoryRef: "second-project", profile: "git-read" },
+  ];
+  // A lone unsupported binding and a mixed selection need different fixes. The mixed one must
+  // point to github-repository, which delivers several repositories, not say they are refused.
+  const lone = /cannot deliver this repository's Git access level/u;
+  for (const [name, bindings, message] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }], lone],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }], lone],
+    ["two bindings", several, /To use more than one repository, .*`github-repository`/u],
+  ]) {
+    for (const advertised of [false, true]) {
+      const label = `${name}${advertised ? " with the execution profile" : ""}`;
+      const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(t, bindings, {
+        advertised,
+      });
+      assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
+      assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
+      assert.match(response.error.message, message, label);
+      assert.deepEqual(revisions, [], label);
+      assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
+    }
+  }
+
+  // A resumed migration must report each real refusal and continue to the next Agent.
+  const f = await protectedOpenShellComposition(t);
+  for (const profile of ["git-read", "git-full"]) {
+    const agent = await f.createAgent({
+      executionMode: "dedicated",
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project", profile }],
+      },
+    });
+    await f.prepareDeployment(agent);
+  }
+  const deployedIds = [];
+  const api = createOccApi({
+    baseUrl: "https://console.oce.localhost",
+    async fetchImpl(url, init) {
+      const path = new URL(url).pathname;
+      if (init.method === "POST" && path.endsWith("/deploy")) {
+        deployedIds.push(path.split("/").at(-2));
+      }
+      // Preserve the real Fastify response, including its OCC request ID. No
+      // admission decision or error payload is replaced by this transport adapter.
+      const { status, ...payload } = await f.request(
+        init.method,
+        path,
+        init.body === undefined ? undefined : JSON.parse(init.body),
+      );
+      return new Response(status === 204 ? null : JSON.stringify(payload), { status });
+    },
+  });
+  const bundle = await exportTenants(api);
+  bundle.namespaces = bundle.namespaces.filter(({ id }) => id === f.namespace.id);
+  const tenant = bundle.namespaces[0];
+  assert.ok(tenant);
+  const restored = { ids: { [tenant.id]: tenant.id }, deployed: [] };
+  for (const collection of [
+    tenant.secrets,
+    tenant.credentialSources,
+    tenant.configurations,
+    tenant.presets,
+    tenant.roles,
+    tenant.accessBindings,
+    tenant.serviceAccounts,
+    tenant.agents,
+  ]) {
+    for (const resource of collection) {
+      restored.ids[resource.id] = resource.id;
+    }
+  }
+  for (const agent of tenant.agents) {
+    restored.ids[agent.servicePrincipalId] = agent.servicePrincipalId;
+    // The source bundle asks to restore running intent from the old Installation.
+    // Target Agents are already recreated and stopped; its selected Proxy now
+    // refuses their saved repository profiles before admitting any revision.
+    agent.desiredRuntimeState = "running";
+  }
+  const values = {
+    [tenant.name]: Object.fromEntries(
+      tenant.secrets.map(({ name }) => [name, "synthetic-admission-model-key"]),
+    ),
+  };
+  const before = structuredClone(restored);
+  let saves = 0;
+  const outcome = await importTenants(api, bundle, values, {
+    state: restored,
+    save: () => {
+      saves += 1;
+    },
+  });
+  assert.equal(outcome.complete, true);
+  assert.equal(outcome.failedDeploys.length, 2);
+  assert.deepEqual(
+    deployedIds,
+    tenant.agents.map(({ id }) => id),
+  );
+  for (const [index, agent] of tenant.agents.entries()) {
+    assert.equal(
+      outcome.failedDeploys[index],
+      `${tenant.name}/${agent.name}: POST ${f.collection}/${agent.id}/deploy: ` +
+        "HTTP 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED " +
+        "A Credential Proxy cannot deliver this repository's Git access level. " +
+        "Use `github-repository` or `git-write` for it, or ask an administrator to " +
+        "use native prepared Git without a Sandbox or Proxy, then deploy again.",
+    );
+    assert.deepEqual((await f.request("GET", `${f.collection}/${agent.id}/revisions`)).data, []);
+  }
+  assert.deepEqual(restored, before);
+  assert.equal(saves, 0);
+  assert.equal(f.gatewayReads(), 0);
+});
+
+test("Git-only Proxy does not offer model Sources or device authorization", async (t) => {
+  const f = await protectedOpenShellComposition(t, { installedProfile: "repository" });
+  const visible = await f.request("GET", `/namespaces/${f.namespace.id}/agent-capabilities`);
+  assert.equal(visible.status, 200);
+  const capabilities = visible.data.capabilities;
+  assert.equal(capabilities.deviceAuthorization, undefined);
+  assert.equal(capabilities.modelCredentialSourcePresets, undefined);
+  assert.ok(
+    !(capabilities.credentialSources?.types ?? []).some(({ type }) => type === "bearer-token"),
+  );
+  assert.equal(f.providers.size, 0);
+});
+
+test("runtime-authenticated Dedicated Codex requires a qualified Proxy without sources or repositories", async (t) => {
+  for (const [label, options, status] of [
+    ["qualified Proxy", { advertised: true }, 202],
+    ["missing Proxy registration", { advertised: true, registered: false }, 503],
+    ["Git-only Proxy", {}, 409],
+    ["loaded execution Proxy", { installedProfile: "execution", advertised: true }, 202],
+    [
+      "loaded execution Proxy unavailable",
+      { installedProfile: "execution", registered: false },
+      503,
+    ],
+    ["loaded Git-only Proxy", { installedProfile: "repository" }, 409],
+    [
+      "loaded Git-only Proxy unavailable",
+      { installedProfile: "repository", registered: false },
+      503,
+    ],
+  ]) {
+    await t.test(label, async (t) => {
+      // Use shipped Compute authentication and execution admission, paired with the same
+      // Namespace lifecycle binding. Gateway discovery is simulated; no cluster is started.
+      const f = await protectedOpenShellComposition(t, {
+        ...options,
+        runtimeAuthCompute: true,
+      });
+      const compute = f.controller.selectedDriver("compute");
+      assert.throws(
+        () =>
+          compute.validateExecutionAdmission(
+            {
+              executionAdmission: { version: 2, mode: "unprotected" },
+              harnessAuth: { method: "runtime" },
+              credentialSources: [],
+            },
+            "stored",
+          ),
+        /exact paired Compute release/,
+      );
+      const agent = await f.createAgent({
+        executionMode: "dedicated",
+        harnessAuth: { method: "runtime" },
+        credentialSources: [],
+        repositoryAccess: { defaultProfile: "git-write", repositories: [] },
+      });
+      await f.prepareDeployment(agent);
+      const path = `${f.collection}/${agent.id}`;
+      const deployed = await f.request("POST", `${path}/deploy`);
+      assert.equal(deployed.status, status, JSON.stringify(deployed));
+      const revisions = (await f.request("GET", `${path}/revisions`)).data;
+      assert.equal(f.providers.size, 0, "no model provider is registered");
+      assert.equal(f.gatewayReads(), 1, "empty plans still require Proxy availability");
+      if (status !== 202) {
+        assert.equal(
+          deployed.error.message,
+          status === 503
+            ? PROXY_REGISTRATION_UNAVAILABLE
+            : CredentialProxyRepositoryOnlyError.description,
+        );
+        assert.deepEqual(revisions, [], "refused deployment must not save a revision");
+        return;
+      }
+      // A source-free runtime needs a protected plan but receives no inference or Git authority.
+      assert.equal(revisions.length, 1);
+      assert.equal(deployed.data.id, revisions[0].id);
+      const revision = await f.state.transact((unit) =>
+        unit.revisions.findRevision(f.namespace.id, agent.id, revisions[0].id),
+      );
+      assert.deepEqual(revision.executionAdmission, { version: 3, mode: "protected" });
+      assert.deepEqual(revision.harnessAuth, { method: "runtime" });
+      const plan = revision.egressPlan;
+      assert.ok(plan);
+      assert.deepEqual(plan.driver, f.protectedDriver.ref);
+      assert.deepEqual(plan.routes, []);
+      assert.equal(plan.repositoryGit, undefined);
+      assert.equal(plan.harnessCredentialSource, undefined);
+      assert.equal(revision.repositoryCredentials, undefined);
+      const enrollment = harnessEgressEnrollment(plan);
+      assert.equal(enrollment.routeCount, 0);
+      assert.equal(enrollment.inference, false);
+      compute.validateExecutionAdmission(revision, "stored");
+    });
+  }
+});
+
+// Runs one worker pass for a pending application whose provider write is refused by `apply`.
+// `observe` answers the worker's provider reads, calls counted in `applied` for each write.
 async function policyWorkerPass({
   apply,
   observe,

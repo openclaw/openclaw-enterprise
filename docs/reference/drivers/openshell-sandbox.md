@@ -41,7 +41,7 @@ and per-tool sandboxes are deferred.
 Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway)
 must list the Sandbox ID. Configure the Gateway service connection and WSS CA
 (`rootCertificatePath`) on that Backend. The Sandbox registration supplies
-`credential_proxy` for managed Sources.
+`credential_proxy_delivery` for managed Sources.
 
 ```yaml
 drivers:

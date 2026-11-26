@@ -86,5 +86,77 @@ those jobs do not prepare compatible managed installations.
 
 ## Provider replacement
 
-The installed Provider replacement scenario in this section exercised the
-retired protected Git middleware. Its [earlier procedure](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/docs/testing/openshell-managed.md) applies to the matching release.
+Use a disposable loopback k3d installation with this branch's API and worker,
+a gateway meeting the [managed runtime requirements](../reference/drivers/kubernetes-openshell-compute.md),
+OpenShell-owned persistent Sandbox storage, one worker and rebuilt Codex runtime images.
+Select its kubeconfig and context explicitly. Prepare a ready OCE Namespace, a
+dedicated Codex Configuration and an authorized static model Credential Source.
+The test creates two Agents and two sources that reference the existing model
+Secret. Its service key needs permission to manage those resources, IAM grants and Agent
+network policies. The runtime must include `/usr/bin/curl`. The network probe uses
+`https://example.org/`, which must be reachable when granted and absent from the
+Installation's default allowed routes for that binary.
+
+The API and worker startup configuration must delegate the probe grant:
+
+```yaml
+sandboxNetworkPolicyCeiling:
+  - id: managed-revision-probe
+    binary: /usr/bin/curl
+    host: example.org
+    ports:
+      - from: 443
+        to: 443
+```
+
+Reload the API and worker after changing startup configuration. The ceiling
+authorizes policy edits and the scenario applies the grant. See
+[delegation limits](../reference/sandbox-policies.md).
+
+Set `OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE` to a private JSON file:
+
+```json
+{
+  "disposable": true,
+  "apiUrl": "http://127.0.0.1:4000",
+  "serviceKeyFile": "/tmp/oce-test/service-key.txt",
+  "namespaceId": "ns_REPLACE",
+  "gatewayNamespace": "REPLACE_TENANT_KUBERNETES_NAMESPACE",
+  "configurationId": "cfg_REPLACE",
+  "modelSourceId": "cs_REPLACE",
+  "model": "REPLACE_AUTHORIZED_MODEL",
+  "gatewayClient": {
+    "endpoint": "https://127.0.0.1:8080",
+    "rootCertificatePath": "/tmp/oce-test/ca.crt",
+    "auth": {
+      "mode": "mtls",
+      "certificatePath": "/tmp/oce-test/tls.crt",
+      "privateKeyPath": "/tmp/oce-test/tls.key"
+    }
+  }
+}
+```
+
+Store the raw service key in a private regular file. Select the gateway used by
+OCE and supply the model Credential Source ID.
+
+```sh
+export OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-test/kubeconfig
+export OCC_TEST_KUBERNETES_CONTEXT=k3d-oce-test
+export OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE=/tmp/oce-test/replacement.json
+node --test tests/integration/openshell-provider-replacement-real.test.ts
+```
+
+The test changes model sources and network grants separately, then together,
+and redeploys unchanged. It checks stable Sandbox identity, exact Provider
+membership, loaded policy, model turns and continued peer access. Curl must
+succeed after grant and fail after removal, while the peer stays denied.
+The scenario covers acknowledged changes with a probe host outside model routes.
+
+Cleanup removes test-created Agents, grants and sources, preserving prepared
+resources. Missing input skips the standalone test. A selected QA run requires
+it: use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes
+Codex preset.
+
+For an operator-approved existing cluster, use the
+[historical explicit cluster selection](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/testing/openshell-git-replacement.md#existing-cluster-selection).

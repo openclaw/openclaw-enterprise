@@ -1,9 +1,10 @@
+import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
 import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NamespaceLifecycleEvidence } from "@openclaw-enterprise/occ";
-import { supportsScopedRepositoryHistory } from "@openclaw-enterprise/occ";
+import { reduceCredentialPolicy, supportsScopedRepositoryHistory } from "@openclaw-enterprise/occ";
 import {
   pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
@@ -12,6 +13,7 @@ import {
 import type {
   CredentialDeploymentContext,
   CredentialProxyDriver,
+  LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { closeResources } from "./composition/close-resources.ts";
@@ -25,7 +27,11 @@ import {
 } from "@openclaw-enterprise/occ";
 import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
 import { timerDelayMs } from "./worker/timer-settings.ts";
-import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
+import {
+  isSecretHarnessAuth,
+  isServiceAccountHarnessAuth,
+  protectedRepositoryGitAdmission,
+} from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -156,6 +162,7 @@ import {
   resolveRevisionHarnessAuth,
   revisionHarnessSourceId,
   revisionSecretBindings,
+  UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT,
   validateExecutionAdmission,
   validateRepositoryNetworkPolicy,
 } from "./worker/revision-inputs.ts";
@@ -204,6 +211,7 @@ export interface ControllerWorkerOptions {
   readonly drivers?: InstallationRuntimeDrivers;
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
+  readonly proxyDriver?: LegacyEgressProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -257,6 +265,7 @@ const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
   CREDENTIAL_ACTIVATION_PENDING: "CREDENTIAL_ACTIVATION_PENDING",
+  REPOSITORY_GIT_ROUTE_PENDING: "REPOSITORY_GIT_ROUTE_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
   "REVISION_INCOMPLETE",
@@ -685,6 +694,7 @@ interface RevisionDispatchResult extends DispatchResult {
    */
   readonly refusedCandidate?: string;
   /** A refused active release is terminal only after observing its admitted grant withdrawn. */
+  readonly rejectedExecutionWithdrawal?: "pending" | "withdrawn";
   /** How long the refused candidate's unfinished stop took; it lengthens the recheck. */
   readonly refusedStopMs?: number;
   /** That stop yielded to other Work; later rechecks do not count it as a failure. */
@@ -1366,9 +1376,11 @@ export class ControllerWorker {
   private connectionRevocationScanAfter = 0;
   private authenticationStateCleanup: Promise<void> | undefined;
   private nextClientCleanup = 0;
+  private readonly proxyDriver: LegacyEgressProxyDriver | undefined;
+  private readonly protectedDriver: InstalledDriver | undefined;
   private readonly credentialDeliveryRegistration: InstalledDriver | undefined;
   private get credentialDeploymentProxy(): CredentialProxyDriver | undefined {
-    return this.credentialDeliveryRegistration?.require("credential_proxy");
+    return this.credentialDeliveryRegistration?.require("credential_proxy_delivery");
   }
   private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
@@ -1520,10 +1532,12 @@ export class ControllerWorker {
     if (this.configuration !== undefined && !validLifecycleHooks(this.configuration)) {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
+    this.protectedDriver = drivers?.protectedDriver;
     this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
     this.preparedTokens = drivers?.tokenService;
     this.tokenServiceDrivers = drivers;
     this.sandbox =
+      this.protectedDriver?.require("sandbox") ??
       this.credentialDeliveryRegistration?.require("sandbox") ??
       drivers?.sandboxDriver ??
       options.sandboxDriver;
@@ -1533,6 +1547,10 @@ export class ControllerWorker {
     ) {
       throw new Error("Staged credential delivery requires the selected Sandbox owner.");
     }
+    this.proxyDriver =
+      this.protectedDriver?.require("credential_proxy") ??
+      drivers?.proxyDriver ??
+      options.proxyDriver;
     if (
       (drivers?.installation.drivers.sandbox === undefined) !==
       (drivers?.sandboxDriver === undefined)
@@ -1630,12 +1648,24 @@ export class ControllerWorker {
       },
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
-    this.resolveRevisionSecretContext = createRevisionCredentialResolver({
+    const resolveRevisionSecretContext = createRevisionCredentialResolver({
       state: this.state,
       compute: this.compute,
       ...this.revisionHarnessCredentialDependencies,
       credentialDeliveryRef: this.credentialDeliveryRegistration?.ref,
     });
+    this.resolveRevisionSecretContext = async (revision, operation) => {
+      // A refused native deployment must not resolve material. Withdrawal still has to work
+      // when the selected Sandbox can no longer enforce the revision's policy.
+      if (operation === "reconcile") {
+        try {
+          this.validateNativeRepositorySandbox(revision);
+        } catch {
+          return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
+        }
+      }
+      return resolveRevisionSecretContext(revision, operation);
+    };
   }
 
   async start(): Promise<void> {
@@ -1651,6 +1681,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
+      oauthIssuer: oauthIssuerOperations,
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
       preparedTokens: this.preparedTokens,
@@ -1674,9 +1705,10 @@ export class ControllerWorker {
             provisioningOptions,
             this.repositoryAdmission,
           );
-    const sandboxOwner = this.credentialDeliveryRegistration;
+    const sandboxOwner = this.protectedDriver ?? this.credentialDeliveryRegistration;
     const selectedSandboxDrivers = {
       sandboxDriver: this.sandbox,
+      protectedDriver: this.protectedDriver,
       credentialDeliveryRegistration: this.credentialDeliveryRegistration,
     };
     if (sandboxOwner !== undefined) {
@@ -1690,6 +1722,7 @@ export class ControllerWorker {
       installSelectedSandboxDrivers(provisioning, selectedSandboxDrivers);
     }
     for (const driver of [
+      ...(sandboxOwner ? [] : [this.proxyDriver]),
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,
@@ -1750,8 +1783,8 @@ export class ControllerWorker {
     }
     this.closing = true;
     await this.stopLoop();
-    // A failed credential delivery close must not leave the database pool open.
-    await closeResources(this.credentialDeliveryRegistration, this.state);
+    // A failed protected Driver close must not leave the database pool open.
+    await closeResources(this.protectedDriver, this.state);
     this.emit({ event: "worker.stopped" });
   }
 
@@ -2026,6 +2059,7 @@ export class ControllerWorker {
   private get revisionHarnessCredentialDependencies() {
     return {
       secretDriverId: this.secretDriverId,
+      proxyDriver: this.proxyDriver,
       currentTokenServiceInstanceId: () =>
         this.provisioningController?.currentTokenServiceInstanceId(),
     };
@@ -2046,7 +2080,7 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    const lifecycle = this.credentialDeliveryRegistration?.lifecycleDriver ?? this.sandbox;
+    const lifecycle = this.protectedDriver ? this.protectedDriver.lifecycleDriver : this.sandbox;
     if (lifecycle?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(lifecycle);
     }
@@ -2184,7 +2218,8 @@ export class ControllerWorker {
         throw new Error("PLUGIN_DRIVER_MISMATCH");
       }
       validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
-      validateRepositoryNetworkPolicy(this.compute, revision);
+      await validateRepositoryNetworkPolicy(this.compute, revision);
+      this.validateNativeRepositorySandbox(revision);
     }
     signal.throwIfAborted();
     const applyStage = async () => {
@@ -2329,7 +2364,8 @@ export class ControllerWorker {
       throw new Error("PLUGIN_DRIVER_MISMATCH");
     }
     validateExecutionAdmission(this.compute, revision, this.credentialDeliveryRegistration?.ref);
-    validateRepositoryNetworkPolicy(this.compute, revision);
+    await validateRepositoryNetworkPolicy(this.compute, revision);
+    this.validateNativeRepositorySandbox(revision);
     const timing = this.deployTimings.beginPreparation(claim.idempotencyKey);
     try {
       const prepared = await this.prepareRevisionPass(claim, revision, context);
@@ -2863,9 +2899,6 @@ export class ControllerWorker {
       if (expiry === undefined || expiry === "retiring") {
         return { withdrawal: "pending" };
       }
-      if (revision.executionAdmission.mode === "protected" || revision.egressPlan !== undefined) {
-        return { withdrawal: "retire-runtime" };
-      }
       if (revision.executionAdmission.mode === "standalone") {
         if (!isNativeStagedRepositoryRevision(revision)) {
           return { withdrawal: "retire-runtime" };
@@ -2932,7 +2965,8 @@ export class ControllerWorker {
             authorization.value.code,
           )) ||
         (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
-        compute.retireExpiredRepositoryAccess === undefined
+        (revision.egressPlan?.policyReductionVersion !== 2 &&
+          compute.retireExpiredRepositoryAccess === undefined)
       ) {
         // The caller matched Compute to this revision. Missing withdrawal capability is
         // definitive too, even when an independent dependency cannot report its state.
@@ -2973,7 +3007,15 @@ export class ControllerWorker {
       // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
       try {
-        const result = await compute.retireExpiredRepositoryAccess(revision, signal);
+        const result =
+          revision.egressPlan?.policyReductionVersion === 2
+            ? await reduceCredentialPolicy(
+                this.state,
+                this.protectedDriver,
+                { namespace, revision, plan: revision.egressPlan, signal },
+                undefined,
+              )
+            : await compute.retireExpiredRepositoryAccess!(revision, signal);
         return {
           withdrawal: result === "withdrawn" || result === "retire-runtime" ? result : "pending",
         };
@@ -4232,7 +4274,10 @@ export class ControllerWorker {
           const attempt = { credentialSourceId: source.id, requestedBy: withdrawal.requestedBy };
           try {
             const status = await this.withClaimHeartbeat(claim, (signal) =>
-              withdraw(revision, source, signal),
+              withdraw(revision, source, signal, {
+                reducePolicy: (context) =>
+                  reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
+              }),
             );
             const revoked = status.state === "revoked" || status.state === "absent";
             attempts.push({
@@ -4483,7 +4528,7 @@ export class ControllerWorker {
       this.repositoryGitMaterial !== undefined &&
       revision.repositoryCredentials !== undefined &&
       !isNativeStagedRepositoryRevision(revision) &&
-      revision.executionAdmission.mode === "unprotected" &&
+      !protectedRepositoryGitAdmission(revision.executionAdmission) &&
       isCandidateDeployment(claim)
     );
   }
@@ -4712,6 +4757,8 @@ export class ControllerWorker {
       await this.withClaimHeartbeat(claim, (signal) =>
         withdraw(revision, source, signal, {
           recheck: true,
+          reducePolicy: (context) =>
+            reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
         }),
       );
     }
@@ -4719,11 +4766,16 @@ export class ControllerWorker {
 
   private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
     const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
-    const ownerMatches =
-      source.ownerCapability === "token_service" &&
-      source.tokenServiceInstanceId !== undefined &&
-      source.tokenServiceInstanceId ===
-        this.provisioningController?.currentTokenServiceInstanceId();
+    let ownerMatches: boolean;
+    if (source.ownerCapability === "token_service") {
+      ownerMatches =
+        source.tokenServiceInstanceId !== undefined &&
+        source.tokenServiceInstanceId ===
+          this.provisioningController?.currentTokenServiceInstanceId();
+    } else {
+      ownerMatches =
+        source.ownerCapability === "credential_proxy" && source.driverId === this.proxyDriver?.id;
+    }
     if (!ownerMatches || !credentialSourceMatchesSnapshot(source, snapshot)) {
       throw new CredentialWithdrawalRefusedError(
         "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
@@ -5141,6 +5193,14 @@ export class ControllerWorker {
         : { result: { outcome: "permanent", code: INCOMPATIBLE_REPOSITORY_HISTORY } as const };
       if ("result" in secretContext) {
         if (active) {
+          if (
+            (secretContext.result.code === "EXECUTION_ADMISSION_UNAVAILABLE" ||
+              secretContext.result.code === INCOMPATIBLE_REPOSITORY_HISTORY ||
+              secretContext.result.code === UNSUPPORTED_REPOSITORY_POLICY_PLACEMENT) &&
+            (await this.withdrawRejectedActiveExecution(claim, revision))
+          ) {
+            return;
+          }
           await this.finalizeActiveRevision(claim, revision, secretContext.result.code);
         } else {
           await refuseAdmission(secretContext.result);
@@ -5953,10 +6013,26 @@ export class ControllerWorker {
       const resultData = pluginWarningsResultData(
         computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
       );
+      // v6 needs its current active pointer to select credential material. Commit that pointer
+      // only for the observed, still-held launcher; the ordinary active pass must later see
+      // the real Harness serving before it completes activation. Mandatory online Git uses
+      // the same held challenge before releasing credentials.
+      const held =
+        ((revision.executionAdmission.version === 6 &&
+          revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed") ||
+          (revision.executionAdmission.version === 5 &&
+            revision.egressPlan?.repositoryGitAuthorization === "online-request") ||
+          (revision.executionAdmission.version === 9 &&
+            revision.egressPlan?.repositoryGitAuthorization === "network-policy")) &&
+        this.compute.activationOrder !== "beforeCommit" &&
+        !observation.ready &&
+        observation.heldForRepositoryGitMaterial === true &&
+        observation.pendingReason === "REPOSITORY_GIT_ROUTE_PENDING" &&
+        observation.runtimeFailure === undefined;
       // Staged preparation verifies policy and Provider readiness. The active pass starts
       // the Harness after OCC publishes this revision.
       const credentialPrepared = credentialActivationPrepared(observation, revision, this.compute);
-      if (!observation.ready && !credentialPrepared) {
+      if (!observation.ready && !held && !credentialPrepared) {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
@@ -5988,9 +6064,15 @@ export class ControllerWorker {
       ) {
         await this.stagedRevision(claim, "deactivateRevision", revision, signal);
       }
+      let code = "REVISION_ACTIVATED";
+      if (held) {
+        code = "REPOSITORY_GIT_ROUTE_PENDING";
+      } else if (credentialPrepared) {
+        code = "CREDENTIAL_ACTIVATION_PENDING";
+      }
       return {
         outcome: "success",
-        code: credentialPrepared ? "CREDENTIAL_ACTIVATION_PENDING" : "REVISION_ACTIVATED",
+        code,
         revision,
         ...(resultData === undefined ? {} : { resultData }),
         context,
@@ -5998,6 +6080,84 @@ export class ControllerWorker {
         ...(expectedActiveRevisionId === undefined ? {} : { expectedActiveRevisionId }),
       };
     });
+  }
+
+  private async withdrawRejectedActiveExecution(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    // processRevision checked the exact revision, selected Compute, IAM and backend, and
+    // refused release. Only its own reconcile or maintenance claim can withdraw that grant.
+    const prefix = `agent_revision:${revision.id}:`;
+    const action = claim.idempotencyKey.slice(prefix.length);
+    if (
+      !claim.idempotencyKey.startsWith(prefix) ||
+      !/^(reconcile|maintenance:(0|[1-9][0-9]*))$/.test(action)
+    ) {
+      return false;
+    }
+    const withdraw = this.compute.rejectedExecutionWithdrawal?.(revision);
+    if (withdraw === undefined) {
+      return false;
+    }
+    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    const withdrawal = await this.withClaimHeartbeat(claim, async () => {
+      const agent = await this.state.read((view) =>
+        view.agents.findAgent(revision.namespaceId, revision.agentId),
+      );
+      if (
+        agent?.activeRevisionId !== revision.id ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        agent.desiredRuntimeState !== "running"
+      ) {
+        return undefined;
+      }
+      try {
+        await withdraw();
+        return "withdrawn";
+      } catch (error) {
+        if (error instanceof WorkClaimLostError) {
+          throw error;
+        }
+        failureLogFields = revisionFailureLogFields(error);
+        return "pending";
+      }
+    });
+    if (withdrawal === undefined) {
+      return false;
+    }
+    await this.finalizeRevision(
+      claim,
+      {
+        outcome: withdrawal === "withdrawn" ? "permanent" : "pending",
+        code:
+          withdrawal === "withdrawn"
+            ? "EXECUTION_ADMISSION_WITHDRAWN"
+            : "EXECUTION_ADMISSION_WITHDRAWAL_PENDING",
+        rejectedExecutionWithdrawal: withdrawal,
+      },
+      failureLogFields,
+    );
+    return true;
+  }
+
+  private validateNativeRepositorySandbox(revision: Readonly<AgentRevision>): void {
+    if (
+      revision.executionAdmission.version !== 9 ||
+      revision.sandboxPolicy?.repositoryNetworkPolicy === undefined
+    ) {
+      return;
+    }
+    const sandbox = this.sandbox;
+    if (
+      sandbox?.validateProtectedRepositoryNetworkPolicy === undefined ||
+      sandbox.id !== revision.sandboxDriverId
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected Sandbox cannot enforce this repository network policy.",
+      );
+    }
+    sandbox.validateProtectedRepositoryNetworkPolicy(revision);
   }
 
   private revisionPluginDriverAvailable(revision: Readonly<AgentRevision>): boolean {
@@ -6476,6 +6636,7 @@ export class ControllerWorker {
     const expired =
       result.outcome === "pending" &&
       result.refusedCandidate === undefined &&
+      result.rejectedExecutionWithdrawal !== "pending" &&
       !isStopYieldedCode(result.code) &&
       this.workAgeMs(claim) >= this.convergenceTimeoutMs &&
       // Permanent failure transfers repository retirement. An overdue original
@@ -6587,7 +6748,8 @@ export class ControllerWorker {
       !expired &&
       resolved.cleanupFailedPreparation !== true &&
       resolved.candidateNotStarted !== true &&
-      resolved.refusedCandidateStopped !== true
+      resolved.refusedCandidateStopped !== true &&
+      resolved.rejectedExecutionWithdrawal !== "withdrawn"
     ) {
       await this.stopRefusedCandidate(claim, resolved.code);
     }
@@ -6657,6 +6819,19 @@ export class ControllerWorker {
           await this.stopYieldingDrain(claim, activated);
           await this.retireEarlierRevisions(claim, activated);
           await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
+          return;
+        }
+        if (
+          resolved.code === "REPOSITORY_GIT_ROUTE_PENDING" &&
+          (activated.executionAdmission.version === 6 ||
+            (activated.executionAdmission.version === 5 &&
+              activated.egressPlan?.repositoryGitAuthorization === "online-request") ||
+            (activated.executionAdmission.version === 9 &&
+              activated.egressPlan?.repositoryGitAuthorization === "network-policy"))
+        ) {
+          // Re-enter normal preparation after custody can install material. Do not mark this
+          // deployment ready, retire a predecessor, or release traffic at the held boundary.
+          await this.finalizeRevision(claim, { outcome: "pending", code: resolved.code });
           return;
         }
         if (this.shouldActivateAfterCommit(compute)) {
@@ -6843,7 +7018,8 @@ export class ControllerWorker {
           isStopYieldedCode(resolved.code)
             ? { delayMs: this.stopYieldRecheckMs(claim) }
             : resolved.dependencyFailure !== undefined ||
-                REVISION_READINESS_CODES.has(resolved.code)
+                REVISION_READINESS_CODES.has(resolved.code) ||
+                resolved.rejectedExecutionWithdrawal === "pending"
               ? { delayMs: revisionReadinessRecheckMs(ageMs) }
               : {},
         );

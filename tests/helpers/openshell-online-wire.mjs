@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/plugin/openshell-online-authority.ts";
+import { createOpenShellOnlineHttpAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts";
 import { harnessTlsFixture } from "./harness-tls.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -89,7 +89,7 @@ export function openShellMiddlewareClient(t, port, caBundle) {
     process.env.OCC_TEST_OPENSHELL_MIDDLEWARE_PROTO ??
     fileURLToPath(
       new URL(
-        "../../apps/controller/src/drivers/plugin/proto/supervisor_middleware.proto",
+        "../../apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto",
         import.meta.url,
       ),
     );

@@ -13,6 +13,7 @@ import {
 import {
   gatewayRoutingValues,
   gatewaySandboxValues,
+  protectedRepositoryValues,
   render,
   repositoryCredentialValues,
   stringNameMessage,
@@ -692,6 +693,65 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
   for (const [values, expected] of acceptedPeers) {
     assert.deepEqual(await policyPeers(values), expected);
   }
+
+  const git = {
+    ...protectedRepositoryValues,
+    "openshellGit.enabled": "true",
+    "openshellGit.tlsSecretName": "openshell-git-tls",
+    "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+    "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+  };
+  const gitRefusals: PeerRefusal[] = [
+    [
+      { "openshellGit.clients[0].podSelector.matchLabels.app": "-bad-" },
+      "openshellGit.clients[0].podSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+    [
+      {
+        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+          "openshell system",
+      },
+      "openshellGit.clients[0].namespaceSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+  ];
+  for (const [values, message] of gitRefusals) {
+    await assert.rejects(
+      render({ ...git, ...values }),
+      (error) => isHelmError(error) && error.stderr.includes(message),
+      message,
+    );
+  }
+  await render(git);
+
+  // egressAuthority.clients go through the same peer check: --set reads tier=1 as a number.
+  const authority = {
+    "egressAuthority.enabled": "true",
+    "egressAuthority.tlsSecretName": "authority-server-tls",
+    "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+    "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+  };
+  const authorityRefusals: PeerRefusal[] = [
+    [
+      { "egressAuthority.clients[0].podSelector.matchLabels.tier": "1" },
+      "egressAuthority.clients[0].podSelector.matchLabels label values must be strings",
+    ],
+    [
+      { "egressAuthority.clients[0].namespaceSelector.matchLabels.openshell": "true" },
+      "egressAuthority.clients[0].namespaceSelector.matchLabels label values must be strings",
+    ],
+  ];
+  for (const [values, message] of authorityRefusals) {
+    await assert.rejects(
+      render({ ...protectedRepositoryValues, ...authority, ...values }),
+      (error) => isHelmError(error) && error.stderr.includes(message),
+      message,
+    );
+  }
+  await render({ ...protectedRepositoryValues, ...authority });
 });
 
 test("production peer matchLabels keep the native Kubernetes map contract", tooling, async (t) => {

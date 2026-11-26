@@ -75,6 +75,34 @@ spec:
               - {key: tls.crt, path: tls.crt}
               - {key: tls.key, path: tls.key}
         {{- end }}
+        {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
+        - name: egress-authority-tls
+          secret:
+            secretName: {{ $.Values.egressAuthority.tlsSecretName | quote }}
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        - name: egress-authority-issuer
+          secret:
+            secretName: {{ $.Values.egressAuthority.issuerSecretName | quote }}
+            items:
+              - {key: public.pem, path: issuer.pub}
+        {{- end }}
+        {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+        - name: openshell-git
+          projected:
+            defaultMode: 288 # 0440: readable by the normal Pod filesystem group.
+            sources:
+              - secret:
+                  name: {{ $.Values.openshellGit.tlsSecretName | quote }}
+                  items:
+                    - {key: tls.crt, path: tls.crt}
+                    - {key: tls.key, path: tls.key}
+              - configMap:
+                  name: {{ $.Values.openshellGit.issuerPublicKeyConfigMapName | quote }}
+                  items:
+                    - {key: gateway-public.pem, path: gateway-public.pem}
+        {{- end }}
         {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
         - name: console-theme
           configMap:
@@ -445,6 +473,19 @@ spec:
               mountPath: /etc/openclaw/openshell
               readOnly: true
             {{- end }}
+            {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
+            - name: egress-authority-tls
+              mountPath: /etc/openclaw/egress/tls
+              readOnly: true
+            - name: egress-authority-issuer
+              mountPath: /etc/openclaw/egress/issuer
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+            - name: openshell-git
+              mountPath: /etc/openclaw/openshell-git
+              readOnly: true
+            {{- end }}
             {{- if $oidcCa }}
             - name: api-extra-ca
               mountPath: /etc/openclaw/api-extra-ca
@@ -519,8 +560,12 @@ spec:
             - name: worker-readiness
               mountPath: /run/openclaw-worker
             {{- end }}
-          {{- if or (eq $component "api") $.Values.metrics.enabled }}
+          {{- if or (eq $component "api") $.Values.metrics.enabled (and (eq $component "worker") $.Values.openshellGit.enabled) }}
           ports:
+            {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+            - name: openshell-git
+              containerPort: {{ $.Values.openshellGit.port }}
+            {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ $.Values.metrics.port }}
@@ -528,6 +573,10 @@ spec:
             {{- if eq $component "api" }}
             - name: http
               containerPort: {{ $.Values.api.port }}
+            {{- if $.Values.egressAuthority.enabled }}
+            - name: egress-tls
+              containerPort: {{ $.Values.egressAuthority.port }}
+            {{- end }}
             {{- end }}
           {{- end }}
           {{- if eq $component "api" }}

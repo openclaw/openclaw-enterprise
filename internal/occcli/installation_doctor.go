@@ -401,16 +401,10 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID, 
 	return initializationResult{state: state, message: message, original: original}
 }
 
-// Match the exact chart programs so a retained Job remains readable after an upgrade.
+// Recognize only this release's chart program. The real-chart CLI tests require
+// this digest to move with deploy/helm/openclaw-enterprise/files/check-installation.mjs.
 func supportedInstallationCheck(script string) bool {
-	switch fmt.Sprintf("%x", sha256.Sum256([]byte(script))) {
-	case "05c8a4081001e15f750ac1c098d63253c54e748b0ce5731f8843b0c9d79ff741": // Current Helm chart.
-		return true
-	case "c7af073c69b22fb132011d0167e65725f8b29182588e519ef812f035fe15fdde": // Before legacy egress removal.
-		return true
-	default:
-		return false
-	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(script))) == "c7af073c69b22fb132011d0167e65725f8b29182588e519ef812f035fe15fdde"
 }
 
 func (status initializationJobStatus) state() initializationState {

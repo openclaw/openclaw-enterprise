@@ -85,5 +85,11 @@
   },
   "worker": {
     "replicaCount": 0
+  },
+  "egressAuthority": {
+    "enabled": false
+  },
+  "openshellGit": {
+    "enabled": false
   }
 }

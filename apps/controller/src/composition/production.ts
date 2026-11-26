@@ -1,4 +1,5 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -6,6 +7,7 @@ import {
   postgresAgentAuditState,
 } from "./control-plane-audit.ts";
 import { closeResources } from "./close-resources.ts";
+import { installEgressAuthority } from "./egress-authority.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
@@ -105,6 +107,7 @@ export async function composeProduction(
     configurationDriver,
     secretDriver,
     sandboxDriver,
+    protectedDriver,
     pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
@@ -136,8 +139,9 @@ export async function composeProduction(
     ...(auditEnabled ? controlPlaneAuditDatabaseOptions : {}),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(config.drivers.credentialDeliveryRegistration, database);
+    closeResources(exchange, protectedDriver, database);
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
@@ -206,6 +210,7 @@ export async function composeProduction(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        oauthIssuer: oauthIssuerOperations,
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(
           config.drivers.installation,
@@ -215,6 +220,7 @@ export async function composeProduction(
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
+        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -374,6 +380,8 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
     app.get("/readyz", async () => {

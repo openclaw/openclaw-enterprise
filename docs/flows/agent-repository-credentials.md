@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796"
 ## Overview
 
 Credential 1.0 grants Source-backed Git Read or Read/write per repository.
-OpenShell checks requests locally. Branch protection is outside 1.0. Prepared sessions and historical
+OpenShell checks requests locally; GitHub enforces branch rules. Prepared sessions and deprecated
 exchanges are outside 1.0. See [setup](../guides/repository-credentials.md)
 and [qualification](../testing/repository-credentials.md).
 
@@ -113,17 +113,18 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
-before reading the Repo catalog. Without a Repo selection, it adds
-`meta.notConfigured`. Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`,
+then reads the current Repo catalog if Compute supports it. Installation
+administrators see access limits. A missing selection adds `meta.notConfigured`.
+Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-The catalog accepts 1,000 repositories plus the Installation option. The editor
-allows 16 selections. `repositorySettings` resolves profiles. PostgreSQL checks
-bindings. Empty drafts save during catalog outages.
-`packages/occ/src/repository-policy.ts:validateRepositoryDeliveryProfiles`
-refuses retired `github-installation` at provisioning, Worker admission, and retry.
+The catalog accepts 1,000 repositories plus the Installation option. Overflow
+returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
+`repositorySettings` resolves explicit and inherited selections. PostgreSQL
+checks bindings. Empty drafts save during catalog outages.
 
-After a scope failure, reload choices and reuse the saved Configuration.
+Reuse a saved Configuration after an Agent rejection. Reload choices before
+retrying a scope failure. Read both resources after an uncertain save.
 
 Requests carry Repository references and optional profiles. TokenService Git saves
 a Client and access per Repository. Legacy GitHub defaults to `git-write`.
@@ -285,14 +286,14 @@ checks bearer, fixed repository/profile, capacity and deadlines; token refresh u
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) [binds](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/composition/repository-credentials/transport.ts)
+The [worker](../../apps/controller/src/worker.mjs) [binds](../../apps/controller/src/composition/repository-credentials/transport.ts)
 `ProtectedRepositoryGitAuthority` with matching Drivers. `OpenShellGitRuntime.start`
 reserves one instance before installing worker dependencies. Failed setup permits retry.
 Close is terminal. Serial `reconcile` uses a 25-second timeout and one-second interval.
 Close aborts and joins. Readback cannot restore authority.
 
 [The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts) verifies profile identity before treating omitted endpoint/credential lists as empty.
-[Withdrawal](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
+[Withdrawal](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts) accepts files-only profiles, refusing missing, mismatched or Git-overlapping profiles.
 
 Maintenance uses 30 seconds, the sender interval or shorter Compute interval. Restart invalidates missing sessions without reminting.
 [Prepared custody](../../apps/controller/src/drivers/repo/github/access/prepared-postgres.ts)
@@ -302,10 +303,10 @@ erases standing tokens after verified expiry plus skew; uncertain revocations re
 [Reconciliation](../../apps/controller/src/worker/repository-credentials.ts) retains the bound Installation policy or unbound Repo Driver; conflicts prevent startup.
 Under Namespace/Agent locks, [eligibility](../../packages/occ/src/repository-approval.ts) rejects withdrawal or scope changes with `REPOSITORY_STANDING_POLICY_CHANGED` before release.
 [GitHub](../../apps/controller/src/drivers/repo/github/access/registry.ts) fingerprints exact permissions and repository identity. Issuance/delivery recheck opt-ins and grant; standing delivery requires one binding.
-After hook acknowledgement, the [observer](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+After hook acknowledgement, the [observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 rechecks renewal policy and recipient. It refuses expiry, unacknowledged launches and observed-only previews.
-[Cold verification](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and
-[predecessor observation](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
+[Cold verification](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts) and
+[predecessor observation](../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts)
 confirm expired launch identity through fresh Sandbox and main-process readback.
 [Freshness limits](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)
 govern subtraction and succession. Installation and post-detach completion require ready credentials.
@@ -325,7 +326,7 @@ held/preview execution `original-worker-required`; unsupported legacy routes `un
 when persisted v5 owner, binding and stable fence prove non-adoptable replacement. `ControllerWorker.completeStandingRepositoryWithdrawal` rechecks
 ownership, closes sessions and queues withdrawal atomically.
 Work records `REPOSITORY_EXECUTION_REDEPLOY_REQUIRED`; `getDeploymentStatus` projects
-`repositoryAccess`, preserving history ([regression](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/tests/integration/postgres-openshell-standing-git-transfer.test.ts)).
+`repositoryAccess`, preserving history ([regression](../../tests/integration/postgres-openshell-standing-git-transfer.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or delivery. Terminal Work closes attempts and calls `stopRevision`, preserving replacements. Compute mismatch or stop failure retries. Completion requires disposal and retirement; missing sessions prove neither. Attempts survive deletion.

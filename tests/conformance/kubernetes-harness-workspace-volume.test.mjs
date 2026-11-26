@@ -101,7 +101,7 @@ function scratchCompute(bindings) {
       id: "scratch-openshell",
       backend: {
         id: "openshell",
-        drivers: { sandbox: "scratch-openshell" },
+        drivers: { sandbox: "scratch-openshell", credential_gateway: "openshell-credentials" },
         client: new OpenShellGateway({ serviceName: "openshell-gateway" }, {}),
       },
     },

@@ -58,6 +58,8 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
 type BrokerInput = Parameters<
@@ -349,6 +351,7 @@ for (const outcome of [
   "unsettled draft receipt",
   "draft provider reply lost",
   "unissued draft-capable transport",
+  "stored execution admission incompatible",
   "model Secret unavailable",
 ] as const) {
   test(
@@ -466,8 +469,23 @@ for (const outcome of [
       let preparations = 0;
       let runtimeObservations = 0;
       let runtimeStatus: "running" | "unknown" | "timeout" = "running";
+      let checkIncompatibleAdmission = false;
+      const incompatibleCompute =
+        outcome === "stored execution admission incompatible"
+          ? createTestKubernetesComputeDriver(f.compute.id, {
+              protectedDriver: protectedRepositoryGitRelease(() =>
+                assert.fail("stored admission cannot call repository access"),
+              ).owner,
+            })
+          : undefined;
       const compute: ComputeDriver = {
         ...f.compute,
+        validateExecutionAdmission(revision, source) {
+          if (checkIncompatibleAdmission) {
+            assert.ok(incompatibleCompute);
+            incompatibleCompute.validateExecutionAdmission(revision, source);
+          }
+        },
         validateRepositoryCredentials(harness, sandboxDriverId) {
           assert.equal(harness.mode, "dedicated");
           assert.equal(sandboxDriverId, undefined);
@@ -788,6 +806,23 @@ for (const outcome of [
           );
           assert.equal(unresolved.rowCount, 1);
         }
+      }
+      if (outcome === "stored execution admission incompatible") {
+        // The replacement configuration admits a protected pair. The stock validator
+        // consequently refuses a saved unprotected native repository revision.
+        checkIncompatibleAdmission = true;
+        const retirement = await runCleanupPass();
+        assert.equal(retirement.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor(
+          "terminal work to stop the incompatible revision",
+          async () =>
+            (await f.currentAgent(owner))?.activeRevisionId === undefined ? true : undefined,
+          10_000,
+        );
+        assert.deepEqual(stops, [candidate.id]);
+        assert.equal(runtimeObservations, 0);
+        assert.equal(deliveries.length, 1);
+        return;
       }
       if (outcome === "model Secret unavailable") {
         omitModelSecret = true;

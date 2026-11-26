@@ -404,7 +404,10 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
   await using _startupCleanup = {
     async [Symbol.asyncDispose]() {
       if (app === undefined) {
-        await closeResources(drivers?.credentialDeliveryRegistration).catch(() => undefined);
+        await closeResources(
+          drivers?.protectedDriver,
+          drivers?.credentialDeliveryRegistration,
+        ).catch(() => undefined);
       }
     },
   };

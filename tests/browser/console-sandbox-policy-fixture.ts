@@ -41,7 +41,7 @@ export async function createPolicyConsole(
       implementation: "openshell",
       backend: {
         id: "openshell",
-        drivers: { sandbox: "policy-openshell" },
+        drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
         client: new OpenShellGateway(
           { serviceName: "openshell-gateway" },
           { gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()) },

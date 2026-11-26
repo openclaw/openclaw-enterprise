@@ -98,7 +98,7 @@ async function readinessFixture(
     });
   }
 
-  function shutdown(onPreparedOwnerClose?: () => void): Promise<void> {
+  function shutdown(onTransportClose?: () => void): Promise<void> {
     const worker = Array.from(fixture.database.workers).at(-1);
     assert.ok(worker instanceof ControllerWorker, "expected the fixture's running worker");
     const step = (name: string) => async () => {
@@ -106,12 +106,13 @@ async function readinessFixture(
     };
     const composition: WorkerComposition = {
       readinessPath,
-      preparedRepositoryGit: {
+      repositoryGitTransport: {
         async close() {
-          onPreparedOwnerClose?.();
-          events.push("prepared");
+          onTransportClose?.();
+          events.push("transport");
         },
       },
+      preparedRepositoryGit: { close: step("prepared") },
       receiptServer: { close: step("receipt") },
       closeMetrics: step("metrics"),
       worker,
@@ -120,7 +121,14 @@ async function readinessFixture(
   }
 
   async function assertHealthEndedBeforeClose(): Promise<void> {
-    assert.deepEqual(events, ["worker.health", "prepared", "receipt", "metrics", "worker.stopped"]);
+    assert.deepEqual(events, [
+      "worker.health",
+      "transport",
+      "prepared",
+      "receipt",
+      "metrics",
+      "worker.stopped",
+    ]);
     // The marker written by the held check must be gone after shutdown.
     await assert.rejects(stat(readinessPath), { code: "ENOENT" });
   }
@@ -202,7 +210,7 @@ export async function shutdownDuringClaimHealth(
     tick = claimHealth;
     await within(claimHealth.entered.promise, "the claim health check to reach the marker write");
     readiness.events.length = 0;
-    // If shutdown misses the pending check, the prepared owner closes first and releases the
+    // If shutdown misses the pending check, transport closes first and releases the
     // write after marker removal. Give that failure time to occur after the pass ends.
     closing = readiness.shutdown(() => claimHealth.release.resolve());
     releaseCompute.resolve();

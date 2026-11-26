@@ -27,7 +27,7 @@ human review or RFC acceptance.
 
 A healthy Agent can fetch from Git while its original worker is running, but
 lose repository access after that worker stops. The
-[OpenShell repository owner](https://github.com/openclaw/openclaw-enterprise/blob/67865414220f9d67820f165fe932fe23df025322/apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
+[OpenShell repository owner](../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts)
 requires the original launch witness for supported held and observed-hook
 executions. No current bundled owner supports finite or standing cold transfer.
 A profile name or successful Git request does not establish restart support.

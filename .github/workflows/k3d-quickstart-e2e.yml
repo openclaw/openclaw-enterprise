@@ -103,15 +103,20 @@ jobs:
         id: inputs
         env:
           CODEX_PAT: ${{ secrets.OCE_QUICKSTART_CODEX_PAT }}
+          APP_PRIVATE_KEY: ${{ secrets.OCE_TEST_GITHUB_APP_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           set +x
           umask 077
+          : "${MODEL:?}" "${OCC_TEST_LINEAR_TEAM_ID:?}" "${CODEX_PAT:?}" "${APP_PRIVATE_KEY:?}"
           mkdir "$RUNNER_TEMP/oce-credentials"
           printf '%s' "$CODEX_PAT" > "$RUNNER_TEMP/oce-credentials/codex-pat"
+          printf '%s\n' "$APP_PRIVATE_KEY" > "$RUNNER_TEMP/oce-credentials/app.pem"
+          openssl pkey -in "$RUNNER_TEMP/oce-credentials/app.pem" -check -noout >/dev/null
           {
             echo "RUN_DIR=$RUNNER_TEMP/oce-quickstart"
             echo "CODEX_TOKEN_FILE=$RUNNER_TEMP/oce-credentials/codex-pat"
+            echo "GITHUB_APP_KEY_FILE=$RUNNER_TEMP/oce-credentials/app.pem"
           } >> "$GITHUB_ENV"
       - name: Create the installation and onboard the Agent through the Control UI
         id: setup
@@ -121,6 +126,10 @@ jobs:
         id: linear
         timeout-minutes: 35
         run: bash scripts/ci/k3d-quickstart/private-step.sh linear
+      - name: Push one empty commit to the fixture and restore read-only access
+        id: git
+        timeout-minutes: 45
+        run: bash scripts/ci/k3d-quickstart/private-step.sh git
       - name: Reopen the original Control UI conversation after redeployment
         id: recall
         timeout-minutes: 12
@@ -136,9 +145,14 @@ jobs:
               .imageID | scan("sha256:[0-9a-f]{64}") |
               {namespace:$namespace, container:$container, digest:.}] | unique | select(length > 0)
           ' > "$RUN_DIR/images.json"
+      - name: Retire Git credentials and remove the test branch
+        id: git_cleanup
+        if: always() && steps.git.outcome != 'skipped' && steps.inputs.outcome == 'success'
+        timeout-minutes: 25
+        run: bash scripts/ci/k3d-quickstart/private-step.sh git-cleanup
       - name: Delete the Agent and the local installation
         id: teardown
-        if: always() && steps.inputs.outcome == 'success'
+        if: always() && steps.inputs.outcome == 'success' && (steps.git.outcome == 'skipped' || steps.git_cleanup.outcome == 'success')
         timeout-minutes: 18
         run: bash scripts/ci/k3d-quickstart/private-step.sh teardown
       - name: Remove the run-owned image registry
@@ -154,14 +168,16 @@ jobs:
           fi
       - name: Remove private input files
         if: always()
-        run: rm -f -- "$RUNNER_TEMP/oce-credentials/codex-pat"
+        run: rm -f -- "$RUNNER_TEMP/oce-credentials/app.pem" "$RUNNER_TEMP/oce-credentials/codex-pat"
       - name: Collect sanitized receipts
         if: always()
         env:
           SETUP: ${{ steps.setup.outcome }}
+          GIT: ${{ steps.git.outcome }}
           LINEAR: ${{ steps.linear.outcome }}
           RECALL: ${{ steps.recall.outcome }}
           IMAGES: ${{ steps.images.outcome }}
+          GIT_CLEANUP: ${{ steps.git_cleanup.outcome }}
           TEARDOWN: ${{ steps.teardown.outcome }}
         run: bash scripts/ci/k3d-quickstart/receipts.sh
       - name: Upload verification evidence

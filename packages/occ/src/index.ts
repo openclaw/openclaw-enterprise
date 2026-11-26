@@ -1,4 +1,5 @@
 export { OpenClawController } from "./controller.ts";
+export type { LegacyCredentialSourceMetadata } from "./credential-source-metadata.ts";
 export { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "./namespace-operations.ts";
 export type { CreateNamespaceInput } from "./namespace-operations.ts";
 export type {
@@ -26,6 +27,7 @@ export {
   readOAuthTokenResponse,
   refreshPinnedOAuthGrant,
 } from "./oauth-token-endpoint.ts";
+export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type { CredentialDeliveryKey } from "./state/credential-deliveries.ts";
 export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
@@ -55,6 +57,14 @@ export type {
   RuntimeFailureEvidence,
   FirstDeploymentReceipt,
 } from "@openclaw-enterprise/contracts";
+export {
+  CredentialProxy,
+  resolveCredentialProxyCapacity,
+  STREAM_LEASE_CEILING_MS,
+  STREAM_LEASE_IDLE_MS,
+  STREAM_LEASE_RECHECK_MS,
+} from "./credential-proxy.ts";
+export type { CredentialProxyCapacity } from "./credential-proxy.ts";
 export type {
   BundledPresetVersion,
   CreatePresetInput,
@@ -148,10 +158,15 @@ export {
   NetworkProxyEnforcementUnavailableError,
   ConfigurationSizeError,
   configurationSettingMessage,
+  CredentialGatewayNotConfiguredError,
+  CredentialProxyAdmissionError,
+  CredentialProxyRepositoryOnlyError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRegistrationConfigError,
   CredentialSourceRevisionError,
+  CredentialSourceTypeNotOfferedError,
+  CredentialSourceUnprotectedError,
   CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalNotFoundError,
@@ -414,7 +429,10 @@ export type { RuntimeLogReadGrant, RuntimeLogReadAdmission } from "./agent-runti
 export type { ControllerOptions, ReconciliationOperation } from "./controller-composition.ts";
 export type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 export type { LookupChannelDirectoryInput } from "./setup-discovery.ts";
-export type { RotateCredentialSourceInput } from "./credential-source-operations.ts";
+export type {
+  CreateCredentialSourceInput,
+  RotateCredentialSourceInput,
+} from "./credential-source-operations.ts";
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
 

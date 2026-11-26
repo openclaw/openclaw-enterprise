@@ -5,7 +5,6 @@ import {
   isName,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
-  repositoryAccessSelections,
   validPluginDriverIdentity,
   type Agent,
   type AgentNetworkProxy,
@@ -96,10 +95,8 @@ import {
 import type { NativeWorkerSupportSource } from "./native-worker-support.ts";
 import {
   validateRepositoryBrokerNetworkProxy,
-  validateRepositoryDeliveryProfiles,
   type createRepositoryPolicyOperations,
 } from "./repository-policy.ts";
-import { validRepositoryAccess } from "./repository-credential-validation.ts";
 import { refuseTakenAgentName } from "./agent-drafts.ts";
 import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
@@ -400,7 +397,6 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       }
       await validateContent(configurationInput);
       const repositoryAccess = repository.repositorySettings(namespace.id, input.repositoryAccess);
-      validateRepositoryDeliveryProfiles(repositoryAccessSelections(repositoryAccess));
       // Refuse repository bindings the topology cannot deliver, with Agent create's 409, before
       // queueing work the worker's admission would refuse (finding 1145). Unlike Agent save, a
       // Compute Driver without repository support is refused here too: deployment would be.
@@ -888,11 +884,7 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       }
       // The request checks repository bindings before queueing (provisionAgent); retry and the
       // worker check them again until the Agent exists, when admitRepositoryCredentials does.
-      const repositoryAccess = record.plan.repositoryAccess;
-      if (validRepositoryAccess(repositoryAccess)) {
-        validateRepositoryDeliveryProfiles(repositoryAccessSelections(repositoryAccess));
-      }
-      const repositories = asRecord(repositoryAccess)?.repositories;
+      const repositories = asRecord(record.plan.repositoryAccess)?.repositories;
       if (agent === undefined && Array.isArray(repositories) && repositories.length > 0) {
         validateRepositoryTopology(compute, harness, sandbox?.id);
       }

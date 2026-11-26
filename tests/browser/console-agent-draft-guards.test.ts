@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:https";
 import test, { type TestContext } from "node:test";
 import {
+  InstalledDriver,
   OpenClawController,
   type PlatformStateStore,
   type NamespaceLifecycleBinding,
@@ -17,6 +18,7 @@ import { openShellWorkspaceProtocol } from "../helpers/openshell-workspace-proto
 import { loadedProxyInstallation } from "../helpers/loaded-proxy-installation.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import type { Locator, Page, Response, Route } from "playwright";
 import type { SandboxPolicyViewWire } from "../../packages/contracts/src/api/sandbox-policy.ts";
 import type {
@@ -63,6 +65,7 @@ import {
   MEMBER_WRITE,
   nativeValues,
   newPage,
+  nextFrames,
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
@@ -103,7 +106,8 @@ import {
   MODEL_CREDENTIAL_REJECTED_RECORDED,
   NO_SANDBOX_DRIVER_NETWORK_POLICY,
 } from "../helpers/refusal-text.mjs";
-import { restrict } from "../helpers/iam-grants.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
@@ -980,6 +984,118 @@ test("Agent policy proposals preserve valid Unicode executable paths through rev
   assert.deepEqual(unchanged.additions, [grant]);
 });
 
+test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
+  const {
+    fixture,
+    namespace: rawNamespace,
+    agent: rawAgent,
+    base,
+  }: PolicyConsoleFixture = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const namespace = resource(rawNamespace);
+  const agent = agentFields(rawAgent);
+  // Rules saved before protected execution applied block every protected deploy. This fixture
+  // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
+  // the removal itself goes through real HTTP, IAM and OCC admission.
+  const saved = await fixture.request("PUT", base, {
+    body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const { page } = await newPage(t, fixture);
+  await page.route(`${fixture.origin}${base}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = record(await response.json());
+    record(body.data).protectedExecution = true;
+    await route.fulfill({ response, json: body });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const read = page.waitForResponse(
+    (response) => response.request().method() === "GET" && response.url().endsWith(base),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  const readResponse = await read;
+  t.diagnostic(`Policy GET status: ${readResponse.status()}`);
+  assert.equal(readResponse.status(), 200);
+  await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+  await page
+    .getByText(
+      "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
+      { exact: true },
+    )
+    .waitFor();
+  // Neither adding a rule nor widening a saved rule is available under protected execution.
+  assert.equal(
+    await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByLabel("Actions for network rule 1", { exact: true }).isVisible(),
+    false,
+  );
+  const preview = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
+  await page.getByRole("button", { name: "Remove saved network rules", exact: true }).click();
+  const previewResponse = await preview;
+  t.diagnostic(`Policy preview POST status: ${previewResponse.status()}`);
+  assert.equal(previewResponse.status(), 200);
+  assert.deepEqual(record(await previewResponse.json()).data, {
+    success: true,
+    data: { additions: [] },
+  });
+  await page.getByRole("heading", { name: "Review policy changes", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Rules to remove · 1", exact: true }).waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "POST", `${base}/validate`).map(({ body }) => body),
+    [{ expectedVersion: 2, additions: [] }],
+  );
+  // Removal is only a proposal until explicit Save; preview must preserve the saved grants.
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  const unchanged = await fixture.request("GET", base);
+  assert.equal(unchanged.status, 200);
+  const unchangedPolicy = record(record(unchanged.data).policy);
+  assert.equal(unchangedPolicy.version, 2);
+  assert.deepEqual(unchangedPolicy.additions, [delegatedPolicyGrant]);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Save and apply to current revision", exact: true })
+      .isDisabled(),
+    true,
+  );
+  const removal = page.waitForResponse(
+    (response) => response.request().method() === "PUT" && response.url().endsWith(base),
+  );
+  await page.getByRole("button", { name: "Save for later", exact: true }).click();
+  const removalResponse = await removal;
+  t.diagnostic(`Policy removal PUT status: ${removalResponse.status()}`);
+  assert.equal(removalResponse.status(), 200);
+  await page.getByText(/Policy v3 saved without network rules\./).waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "PUT", base).map(({ body }) => body),
+    [{ expectedVersion: 2, additions: [] }],
+  );
+  const cleared = await fixture.request("GET", base);
+  t.diagnostic(`Policy readback GET status: ${cleared.status}`);
+  assert.equal(cleared.status, 200);
+  const clearedPolicy = record(record(cleared.data).policy);
+  assert.equal(clearedPolicy.version, 3);
+  assert.deepEqual(clearedPolicy.additions, []);
+  assert.equal(clearedPolicy.application, undefined);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Remove saved network rules", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Add rule", exact: true }).isVisible(),
+    false,
+  );
+});
+
 async function repositoryPolicyConsole(
   t: TestContext,
   appId = "123",
@@ -1021,8 +1137,10 @@ async function repositoryPolicyConsole(
   const workspaceProtocol = openShellWorkspaceProtocol();
   const providers = new Map<string, OpenShellProviderResponse>();
   const installation = await loadedProxyInstallation(t, {
+    profile: "repository",
     id: sandboxId,
     registry,
+    tokenService: true,
     createOpenShellBackend: (definition) =>
       createOpenShellBackend(definition, {
         gatewayClient: completeOpenShellGatewayClient({
@@ -1058,10 +1176,10 @@ async function repositoryPolicyConsole(
         }),
       }),
   });
-  const owner = installation.credentialDeliveryRegistration;
+  const owner = installation.protectedDriver;
   const repositoryRegistry = installation.repositoryRegistry;
-  const { repositoryAdmission } = installation;
-  assert.ok(owner && repositoryAdmission);
+  const { credentialDeliveryRegistration, repositoryAdmission } = installation;
+  assert.ok(owner && credentialDeliveryRegistration && repositoryAdmission);
   t.after(() => owner.close());
   const sandbox = owner.require("sandbox");
   // The controller checks repository permissions, computes admission and saves through HTTP.
@@ -1131,7 +1249,7 @@ async function repositoryPolicyConsole(
   assert.ok(state);
   const compute = controller.selectedDriver("compute");
   namespaceLifecycleBindings.push(sandboxNamespaceLifecycleBinding(compute, sandbox, owner));
-  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  controller.installDriver(owner, ["sandbox", "credential_proxy", "credential_proxy_delivery"]);
   controller.registerDriver(repositoryAdmission.policy);
   controller.selectDriver("repo", repositoryAdmission.policy.id);
   const store = controller.selectedDriver("secret").privateSecrets;
@@ -1527,6 +1645,208 @@ test("Create Agent retains per-repository choices and requires a GitHub App Clie
   assert.equal(pathRequests(requests, "POST", agents).length, 0);
   assert.equal(pathRequests(requests, "POST", `${agents}/provision`).length, 0);
   assert.deepEqual((await fixture.request("GET", agents)).data, []);
+});
+
+async function protectedPolicyWithdrawalFixture(t: TestContext) {
+  let state: PlatformStateStore | undefined;
+  const namespaceLifecycleBindings: NamespaceLifecycleBinding[] = [];
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
+  const fixture = await createConsoleAppFixture(t, {
+    driverConfigurations,
+    sandboxNetworkPolicyCeiling: [delegatedPolicyGrant],
+    namespaceLifecycleBindings,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
+  await fixture.bootstrap();
+  const options = { middlewareName: "console-egress", authorityScope: "execution" } as const;
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
+    id: sandboxDriver.id,
+    backend,
+    sandbox: sandboxDriver,
+  });
+  const controller = checkedController(fixture.controller);
+  const owner = new InstalledDriver(
+    { id: sandboxDriver.id, implementation: sandboxDriver.implementation, configuration: options },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+  );
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver, owner),
+  );
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+
+  const namespace = await fixture.createNamespace("Policy withdrawal", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Policy withdrawal",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+  assert.equal(
+    (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: true } })).status,
+    200,
+  );
+
+  // An earlier Installation configuration could save these grants. Use real State for that
+  // starting row and exercise all further reads, authorization and writes through HTTP.
+  const savedGrants = [{ repository: "example/application", access: "read" }] as const;
+  assert.ok(state);
+  assert.ok(
+    await state.transact(async (unit) => {
+      const policy = await unit.sandboxPolicies.find(namespace.id, agent.id);
+      assert.ok(policy);
+      return unit.sandboxPolicies.save(
+        {
+          ...policy,
+          version: 2,
+          additions: [delegatedPolicyGrant],
+          repositoryNetworkPolicy: savedGrants,
+        },
+        1,
+      );
+    }),
+  );
+
+  const initial = await fixture.request("GET", base);
+  assert.equal(initial.status, 200);
+  assert.equal(record(initial.data).protectedExecution, true);
+  assert.equal(record(initial.data).repositoryNetworkPolicySaveSupported, true);
+  assert.deepEqual(record(record(initial.data).policy).repositoryNetworkPolicy, savedGrants);
+  return { fixture, namespace, agent, base, savedGrants, sandboxDriver };
+}
+
+test("protected execution can withdraw saved repository grants using the current policy version", async (t) => {
+  const { fixture, namespace, agent, base, savedGrants, sandboxDriver } =
+    await protectedPolicyWithdrawalFixture(t);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const manage = page.getByRole("button", { name: "Manage rules", exact: true });
+  const withdraw = page.getByRole("button", {
+    name: "Withdraw saved repository grants",
+    exact: true,
+  });
+  const confirm = page.getByRole("button", { name: "Save deny-all policy", exact: true });
+  const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
+  const put = () =>
+    page.waitForResponse(
+      (response) => response.request().method() === "PUT" && response.url().endsWith(base),
+    );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  await manage.click();
+  await page.getByText("example/application", { exact: true }).waitFor();
+  await page.getByText(/^Remove and save the ordinary network rules/).waitFor();
+  assert.equal(await withdraw.count(), 0);
+  await page.getByRole("button", { name: "Remove saved network rules", exact: true }).click();
+  await page.getByRole("heading", { name: "Rules to remove · 1", exact: true }).waitFor();
+  assert.equal(await confirm.count(), 0);
+  const ordinarySave = put();
+  await page.getByRole("button", { name: "Save for later", exact: true }).click();
+  const ordinaryResponse = await ordinarySave;
+  assert.equal(ordinaryResponse.status(), 200, await ordinaryResponse.text());
+  assert.equal(
+    Object.hasOwn(record(record(await ordinaryResponse.json()).data), "repositoryNetworkPolicy"),
+    false,
+  );
+
+  await manage.click();
+  await page.getByText("example/application", { exact: true }).waitFor();
+  await withdraw.click();
+  await page
+    .getByRole("heading", { name: "Withdraw saved repository grants?", exact: true })
+    .waitFor();
+  assert.match(
+    await page.getByRole("dialog").innerText(),
+    /This saves a deny-all repository policy/,
+  );
+  const cancelled = await confirm.elementHandle();
+  await page.getByRole("button", { name: "Back to editing", exact: true }).click();
+  // A confirm from the detached review cannot save after returning to the editor.
+  await cancelled.evaluate((button) => button.dispatchEvent(new MouseEvent("click")));
+  await nextFrames(page);
+  assert.equal(pathRequests(requests, "PUT", base).length, 1, "review and cancel do not save");
+
+  // Revoking read after review must neither clear the grants nor leave a second confirm action.
+  await withdraw.click();
+  const denied = restrict(fixture.policy, "read", "sandbox_policy", { namespaceId: namespace.id });
+  const deniedPut = put();
+  await confirm.click();
+  assert.equal((await deniedPut).status(), 403);
+  await page.getByText(/saving this Agent’s deny-all repository policy/).waitFor();
+  assert.equal(await withdraw.count(), 0);
+  liftRestriction(fixture.policy, denied);
+  await refresh.click();
+  await withdraw.click();
+
+  // A competing additions-only save advances the version and preserves the repository list.
+  const competingSave = await fixture.request("PUT", base, {
+    body: { expectedVersion: 3, additions: [] },
+  });
+  assert.equal(competingSave.status, 200, JSON.stringify(competingSave.body));
+  const stalePut = put();
+  await confirm.click();
+  assert.equal((await stalePut).status(), 409);
+  await page.getByText(/Reload before editing/).waitFor();
+  const stillSaved = await fixture.request("GET", base);
+  assert.deepEqual(record(record(stillSaved.data).policy).repositoryNetworkPolicy, savedGrants);
+  // The replacement capability has no networking editor or live operations.
+  Object.defineProperties(sandboxDriver, {
+    networkPolicy: { value: undefined },
+    admitNetworkPolicy: { value: undefined },
+    observeNetworkPolicy: { value: undefined },
+    applyNetworkPolicy: { value: undefined },
+  });
+  const afterDriverLoss = await fixture.request("GET", base);
+  assert.equal(afterDriverLoss.status, 200, JSON.stringify(afterDriverLoss.body));
+  assert.equal(record(afterDriverLoss.data).configuration, undefined);
+  assert.equal(record(afterDriverLoss.data).capability, null);
+  await refresh.click();
+  await withdraw.click();
+
+  // Capture a real successful save, then omit its empty list at the browser boundary.
+  // The ordinary-save fallback must never turn an incomplete withdrawal response into success.
+  await page.route(fixture.origin + base, async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    const result = await route.fetch();
+    assert.equal(result.status(), 200);
+    const body = record(await result.json());
+    const policy = record(body.data);
+    assert.deepEqual(policy.repositoryNetworkPolicy, []);
+    delete policy.repositoryNetworkPolicy;
+    await route.fulfill({ response: result, json: body });
+  });
+  const withdrawal = put();
+  await confirm.click();
+  assert.equal((await withdrawal).status(), 200);
+  await page.getByText(/could not confirm the deny-all repository policy/).waitFor();
+  assert.equal(await withdraw.count(), 0);
+  await refresh.click();
+  await page
+    .getByRole("region", { name: "Repository network policy" })
+    .getByText("Saved repository policy: Deny all repositories", { exact: true })
+    .waitFor();
+  assert.equal(await withdraw.count(), 0);
+  assert.deepEqual(
+    pathRequests(requests, "PUT", base).map(({ body }) => body),
+    [
+      { expectedVersion: 2, additions: [] },
+      { expectedVersion: 3, additions: [], repositoryNetworkPolicy: [] },
+      { expectedVersion: 3, additions: [], repositoryNetworkPolicy: [] },
+      { expectedVersion: 4, additions: [], repositoryNetworkPolicy: [] },
+    ],
+  );
+  const readback = await fixture.request("GET", base);
+  assert.equal(readback.status, 200);
+  const policy = record(record(readback.data).policy);
+  assert.equal(policy.version, 5);
+  assert.deepEqual(policy.repositoryNetworkPolicy, []);
+  assert.equal(policy.application, undefined);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
 });
 
 test("Agent policy combined save preserves the original policy when the revision stops after review", async (t) => {

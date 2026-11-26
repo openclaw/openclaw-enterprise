@@ -38,7 +38,7 @@ export const settingsScenarios = {
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
       "Turn Debug mode on and off. The sidebar diagnostics follow the switch without adding a URL parameter.",
       "Before expanding any Installation Driver, check that each collapsed summary shows the Driver ID, contribution key and a separate Implementation label. Switch from Fields to JSON and back and confirm the same labels remain visible while the groups stay collapsed.",
-      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Sandbox shows nested fields and hidden resources, while IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
+      "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "Scroll the long page from top to bottom. The account control must stay at the viewport bottom; open it and select Settings without scrolling back. Repeat with Debug mode enabled. At phone width, values fit and the navigation drawer still opens.",
     ],

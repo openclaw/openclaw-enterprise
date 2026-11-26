@@ -2,7 +2,9 @@
 
 Prepared GitHub App issuance belongs to the worker. The standalone
 native process cannot sign or issue tokens. Configure its prepared registry and
-worker socket through the [Kubernetes installation](installation.md).
+worker socket through the [Kubernetes installation](installation.md). A
+[qualified legacy protected sender](../../reference/drivers/selection.md#select-a-protected-sender)
+is a separate path; it does not run this standalone process.
 
 <a id="build-and-validate"></a>
 <a id="open-and-use-a-session"></a>

@@ -42,7 +42,10 @@ export const unconfiguredGateway = {
   attachSandboxProvider: unexpectedRpc("attachSandboxProvider"),
   detachSandboxProvider: unexpectedRpc("detachSandboxProvider"),
   getSandboxProviderStatus: unexpectedRpc("getSandboxProviderStatus"),
+  configureProviderRefresh: unexpectedRpc("configureProviderRefresh"),
+  rotateProviderCredential: unexpectedRpc("rotateProviderCredential"),
   getProviderRefreshStatus: unexpectedRpc("getProviderRefreshStatus"),
+  deleteProviderRefresh: unexpectedRpc("deleteProviderRefresh"),
   close() {},
 } satisfies OpenShellGatewayClient;
 

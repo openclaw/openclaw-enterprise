@@ -1,3 +1,4 @@
+import type { CredentialSourceDrivers } from "./credential-source-drivers.ts";
 import { validatePluginCredentialSources } from "./agent-plugin-validation.ts";
 import {
   describePluginBindings,
@@ -27,8 +28,11 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ControllerAuthority } from "./controller-authority.ts";
+import type { DriverRegistry } from "./driver-registry.ts";
 import {
   AgentCredentialSourceBindingError,
+  CredentialProxyAdmissionError,
+  CredentialSourceTypeNotOfferedError,
   DependencyUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -46,9 +50,12 @@ interface AgentCredentialAccessDependencies {
     "authorize" | "authorizeAgentPrincipal" | "authorizationDecision"
   >;
   readonly iamPolicy: Pick<IAMPolicyOperations, "iamPolicyDriver" | "occBindingDriver">;
+  readonly drivers: Pick<DriverRegistry, "hasSelection">;
   readonly installationId: string;
   readonly timestamp: () => string;
+  readonly sourceDrivers: Pick<CredentialSourceDrivers, "credentialSourceOwner">;
   readonly requireTokenServiceOwner: (instanceId: string) => void;
+  readonly offersProtectedType: (type: string) => boolean;
 }
 
 export function parseAgentCredentialSources(
@@ -124,9 +131,12 @@ function agentOperateSources(
 export function createAgentCredentialAccess({
   authority,
   iamPolicy,
+  drivers,
   installationId,
   timestamp,
+  sourceDrivers,
   requireTokenServiceOwner,
+  offersProtectedType,
 }: AgentCredentialAccessDependencies) {
   function authorizeSourceOperate(principalId: string, namespaceId: string, sourceId: string) {
     return authority.authorize(principalId, "operate", {
@@ -139,7 +149,7 @@ export function createAgentCredentialAccess({
   /**
    * `operate` on each source an Agent already binds, so an update cannot swap out or drop a
    * source the caller may not use. It reads no record, so it answers the same whether or not the
-   * source still exists or is ready.
+   * source still exists, is ready, or belongs to the selected gateway.
    */
   async function authorizeBoundCredentialSources(
     principalId: string,
@@ -171,27 +181,38 @@ export function createAgentCredentialAccess({
           "The credential source is unavailable in the exact Namespace.",
         );
       }
-      if (!isManagedTokenServiceSource(source)) {
-        throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
-      }
-      requireTokenServiceOwner(source.tokenServiceInstanceId);
-      if (source.type === "github-app-installation") {
-        sources.push(source);
-        continue;
-      }
       if (
-        source.connectionTemplateId !== undefined ||
-        (source.type !== "static" &&
-          (source.type !== "oauth2-refresh-token" || source.consent.kind !== "builtin_codex"))
+        source.ownerCapability === "credential_proxy" &&
+        !drivers.hasSelection("credential_proxy")
       ) {
-        throw new ResourceStateConflictError(
-          "Template-associated Source admission is not implemented.",
-        );
+        // The exact-source grant has passed. Report the missing Proxy without naming the source.
+        throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
-      if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
-        throw new ResourceStateConflictError(
-          "This TokenService source must authenticate the selected Agent Harness.",
-        );
+      if (isManagedTokenServiceSource(source)) {
+        requireTokenServiceOwner(source.tokenServiceInstanceId);
+        if (source.type === "github-app-installation") {
+          sources.push(source);
+          continue;
+        }
+        if (
+          source.connectionTemplateId !== undefined ||
+          (source.type !== "static" &&
+            (source.type !== "oauth2-refresh-token" || source.consent.kind !== "builtin_codex"))
+        ) {
+          throw new ResourceStateConflictError(
+            "Template-associated Source admission is not implemented.",
+          );
+        }
+        if (harnessAuth?.method !== "credential_source" || harnessAuth.sourceId !== source.id) {
+          throw new ResourceStateConflictError(
+            "This TokenService source must authenticate the selected Agent Harness.",
+          );
+        }
+      } else {
+        if (source.ownerCapability !== "credential_proxy" || source.egress === undefined) {
+          throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+        }
+        sourceDrivers.credentialSourceOwner(source);
       }
       sources.push(source);
     }
@@ -340,6 +361,11 @@ export function createAgentCredentialAccess({
       if (source === undefined) {
         await authorizeSourceOperate(principalId, namespaceId, sourceId);
         source = await resolveSource(sourceId);
+        // Gateway-backed selections continue to require their existing explicit attachment.
+        // Leave missing or unattached legacy Sources to the Plugin's slot validator.
+        if (!isManagedTokenServiceSource(source)) {
+          continue;
+        }
       }
       if (!isManagedTokenServiceSource(source)) {
         continue;
@@ -410,18 +436,23 @@ export function createAgentCredentialAccess({
         id: sourceId,
       });
       compute.validateHarnessCredentialSources?.(harness, [source]);
-      if (!isManagedTokenServiceSource(source)) {
-        throw new ResourceStateConflictError("Re-enroll this credential with TokenService.");
+      if (isManagedTokenServiceSource(source)) {
+        const current = plugin.templates.get(sourceId);
+        snapshots.push({
+          sourceId,
+          tokenServiceInstanceId: source.tokenServiceInstanceId,
+          sourceType: source.type,
+          ...(current && {
+            connectionTemplate: { id: current.templateId, version: current.version },
+          }),
+        });
+      } else {
+        const proxy = sourceDrivers.credentialSourceOwner(source);
+        if (!offersProtectedType(source.type)) {
+          throw new CredentialSourceTypeNotOfferedError("proxy");
+        }
+        snapshots.push({ sourceId, credentialProxyId: proxy.id, sourceType: source.type });
       }
-      const current = plugin.templates.get(sourceId);
-      snapshots.push({
-        sourceId,
-        tokenServiceInstanceId: source.tokenServiceInstanceId,
-        sourceType: source.type,
-        ...(current && {
-          connectionTemplate: { id: current.templateId, version: current.version },
-        }),
-      });
     }
     return {
       snapshots: immutableCopy(snapshots),

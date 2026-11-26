@@ -14,7 +14,7 @@ import {
   type GoogleRequestScope,
 } from "../plugin/google-workspace/operations.ts";
 import { managedPluginGuardVersion } from "../plugin/managed-request-policies.ts";
-import { wirePolicy } from "./openshell-wire-policy.ts";
+import { wirePolicy } from "../egress-proxy/openshell-wire-policy.ts";
 import {
   managedCredentialBinding,
   managedPluginMiddleware,
@@ -87,6 +87,7 @@ export function openShellPluginPolicy(
     revision.harness.id !== "openclaw" ||
     revision.harness.mode !== "dedicated" ||
     revision.repositoryCredentials ||
+    requirements.proxyWiring ||
     revision.egressPlan ||
     installationProviders.length ||
     !endpoint ||

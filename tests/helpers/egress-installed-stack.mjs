@@ -29,6 +29,7 @@ import {
 // Keep response diagnostics closed: arbitrary codes and messages can contain credentials.
 const responseCodes = new Set([
   "AGENT_DELETING",
+  "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_TOKEN_UNSETTLED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
   "DEPENDENCY_UNAVAILABLE",

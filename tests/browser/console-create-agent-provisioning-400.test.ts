@@ -27,13 +27,17 @@ import {
   type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import {
+  InstalledDriver,
   OpenClawController,
   type NamespaceLifecycleBinding,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
@@ -56,6 +60,7 @@ import {
   openShellNamespaceObjects,
   openShellWorkspaceProtocol,
 } from "../helpers/openshell-workspace-protocol.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
 import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
@@ -64,6 +69,7 @@ import {
   apiRequests,
   asksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -221,6 +227,8 @@ async function modelSourceFixture(
   let runtime: Awaited<ReturnType<typeof loadSelectedOpenShellAgentInstallation>> | undefined;
   if (withDelivery) {
     const installation = buildSandboxInstallation();
+    Reflect.deleteProperty(installation.drivers, "credential_gateway");
+    Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
     runtime = await loadSelectedOpenShellAgentInstallation(t, {
       installation,
       computeId: "console-source-compute",
@@ -294,7 +302,7 @@ async function modelSourceFixture(
         delivery,
       ),
     );
-    controller.installDriver(delivery, ["sandbox", "credential_proxy"]);
+    controller.installDriver(delivery, ["sandbox", "credential_proxy_delivery"]);
   }
   return { fixture, core, namespaceLifecycleBindings };
 }
@@ -906,7 +914,11 @@ async function enrollModelSource(
 }
 
 test("Credential Sources lists and creates public metadata; an exact create denial saves nothing", async (t) => {
-  const { fixture, core } = await modelSourceFixture(t);
+  const { backend, sandboxDriver, driverConfigurations } = openShellSandbox(t);
+  const { fixture, core, namespaceLifecycleBindings } = await modelSourceFixture(t, {
+    withDelivery: false,
+    driverConfigurations,
+  });
   const namespace = await readyNamespace(fixture, "Credential Source inventory");
   const placed = core.addNamespace(namespace.id);
   Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
@@ -914,7 +926,60 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const base = `/namespaces/${namespace.id}/credential-sources`;
   const secretMaterial = "synthetic-inventory-secret-value";
   const secret = await createSecret(fixture, namespace.id, "Inventory Secret", secretMaterial);
-  const existingSource = await enrollModelSource(fixture, namespace.id, "Existing model Source");
+  const controller = controllerOf(fixture);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Proxy scoped Agent",
+    createHarnessConfiguration("codex", "example-model"),
+    { executionMode: "dedicated", harnessAuth: { method: "api_key", source: secret.ref } },
+  );
+  const proxyOptions = { middlewareName: "console-egress", authorityScope: "execution" } as const;
+  // Only the counterpart discovery transport is controlled; Source admission and custody use
+  // the actual selected owner, IAM, platform state, and controller operations.
+  backend.client.clientForNamespace("").getGatewayInfo = async () => ({
+    gateway_version: "0.1.8",
+    extensions: [
+      {
+        configured_name: proxyOptions.middlewareName,
+        kind: 4,
+        protocol_major: 1,
+        required_capabilities: [...openShellExchangeCapabilities],
+        supported_capabilities: [...openShellExchangeCapabilities],
+      },
+    ],
+  });
+  const proxy = new OpenShellLegacyEgressProxyDriver(proxyOptions, {
+    id: sandboxDriver.id,
+    backend,
+    sandbox: sandboxDriver,
+  });
+  const owner = new InstalledDriver(
+    {
+      id: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      configuration: proxyOptions,
+    },
+    { capabilities: { sandbox: sandboxDriver, credential_proxy: proxy } },
+  );
+  namespaceLifecycleBindings.push(
+    sandboxNamespaceLifecycleBinding(controller.selectedDriver("compute"), sandboxDriver, owner),
+  );
+  controller.installDriver(owner, ["sandbox", "credential_proxy"]);
+  // Create an offered credential-free Source through its actual selected Proxy owner. The
+  // browser then reads the real collection route; this does not claim runtime delivery proof.
+  const protectedSource = await controller.createCredentialSource(fixture.principal.id, {
+    namespaceId: namespace.id,
+    name: "Protected Proxy Source",
+    type: "credential-free-repository-metadata",
+    config: {
+      origin: "https://private.example.test",
+      repository_id: "123",
+      repository: "private/application",
+      agent_id: agent.id,
+      authority: "execution",
+    },
+  });
+  const proxyId = protectedSource.id;
   const templateResult = await fixture.request("POST", "/connection-templates", {
     body: {
       namespaceId: namespace.id,
@@ -947,9 +1012,20 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   assert.equal(await sections.getByRole("link", { name: "Sources", exact: true }).count(), 0);
   await page.getByText("Secrets unavailable", { exact: true }).waitFor();
   const sources = page.getByRole("table", { name: "Credential Sources", exact: true });
-  const existingRow = sources.getByRole("row").filter({ hasText: "Existing model Source" });
-  await existingRow.getByText(existingSource, { exact: true }).waitFor();
-  assert.equal((await existingRow.innerText()).includes(secret.id), false);
+  const proxyRow = sources.getByRole("row").filter({ hasText: "Protected Proxy Source" });
+  await proxyRow.getByText(proxyId, { exact: true }).waitFor();
+  const collection = await fixture.request("GET", base);
+  assert.equal(collection.status, 200);
+  const returnedProxy = (collection.data as Record<string, unknown>[]).find(
+    (item) => item.id === proxyId,
+  );
+  assert.equal(returnedProxy?.ownerCapability, "credential_proxy");
+  assert.equal(object(returnedProxy?.config).repository, "private/application");
+  assert.deepEqual(returnedProxy?.secrets, {});
+  const proxyText = await proxyRow.innerText();
+  for (const hidden of ["private/application", "private.example.test", secret.id, secretMaterial]) {
+    assert.equal(proxyText.includes(hidden), false, `Source row must not show ${hidden}`);
+  }
   assert.equal((await page.locator("body").innerText()).includes(secretMaterial), false);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("button", { name: "Create Secret", exact: true }).waitFor();
@@ -958,15 +1034,46 @@ test("Credential Sources lists and creates public metadata; an exact create deni
     await page.getByRole("button", { name: "Create Source", exact: true }).click();
     return page.getByRole("dialog", { name: "Create Credential Source", exact: true });
   };
+  const templatesUrl = `${fixture.origin}/namespaces/${namespace.id}/connection-templates`;
+  const requests = apiRequests(page, fixture.origin);
+  const heldTemplates = await holdRequests(t, page, templatesUrl, {
+    method: "GET",
+    afterServer: true,
+    once: true,
+  });
+  const loadingForm = await open();
+  const cancel = loadingForm.getByRole("button", { name: "Cancel", exact: true });
+  const heading = loadingForm.getByRole("heading", { name: "Create Credential Source" });
+  assert.equal((await heldTemplates.requested)?.status(), 200);
+  assert.equal(await hasFocus(heading), true);
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(cancel), true);
+  const templatesLoaded = page.waitForResponse(
+    (response) => response.url() === templatesUrl && response.request().method() === "GET",
+  );
+  heldTemplates.release();
+  assert.equal((await templatesLoaded).status(), 200);
+  await loadingForm.getByLabel("Source name", { exact: true }).waitFor();
+  assert.equal(
+    await hasFocus(cancel),
+    true,
+    "loading templates must preserve keyboard focus on Cancel",
+  );
+  await page.keyboard.press("Enter");
+  await loadingForm.waitFor({ state: "detached" });
+  assert.equal(pathRequests(requests, "POST", base).length, 0);
+
   const fill = async (name: string, purpose = "model:openai") => {
     const form = await open();
-    await form.getByLabel("Source name", { exact: true }).fill(name);
+    const sourceName = form.getByLabel("Source name", { exact: true });
+    assert.equal(await hasFocus(sourceName), true, "untouched dialog should focus Source name");
+    await sourceName.fill(name);
     await form.getByLabel("Credential purpose", { exact: true }).selectOption(purpose);
     await form.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
     return form;
   };
   await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/connection-templates`,
+    templatesUrl,
     (route) =>
       route.fulfill(
         apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Template discovery unavailable."),
@@ -1064,7 +1171,7 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const inventory = await fixture.request("GET", base);
   assert.deepEqual(
     (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
-    [existingSource, source.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
+    [proxyId, source.id, templateSource.id, unreadableId, inventoryDeniedId].sort(),
   );
   revokeAdministratorGrant(fixture, ["read", "credential_source"]);
   await page.reload();
@@ -1510,13 +1617,15 @@ test("Replacing an OpenAI Source with a fixed Codex Source drops the prior model
     ),
     runtime: { nativeWorkerSupport: "custom-image" as const },
   };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
   const core = new FakeSecretCoreV1Api();
   const runtime = await loadSelectedOpenShellAgentInstallation(t, {
     installation,
     computeId: "console-pat-replacement-compute",
     tokenServiceId: "occ",
     core,
-    gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
   });
   assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
   let state: PlatformStateStore | undefined;
