@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { followContainer } from "./docker-follow.ts";
 import { withTestOwnerLabel } from "./docker-test-owner.ts";
-import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";

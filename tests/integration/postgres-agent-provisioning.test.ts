@@ -1,5 +1,3 @@
-import { registerChannelCurrentnessCases } from "./postgres-agent-provisioning-channel-currentness-cases.ts";
-
 import { registerConfigurationResendCases } from "./postgres-agent-provisioning-configuration-resend-cases.ts";
 import {
   registerProvisioningComputeGatewayCase,
@@ -92,9 +90,3 @@ registerDeploymentHandoffCases();
 registerRepositoryStatusCase();
 registerRetainedPlanCase();
 registerNativeAdminCases();
-registerChannelCurrentnessCases({
-  createFixture,
-  createProvisioningConfigurationDriver,
-  createProvisioningSecrets,
-  provisioningBody,
-});

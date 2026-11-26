@@ -9,7 +9,7 @@ import { googleWorkspaceDestinations } from "../drivers/plugin/google-workspace/
 /** HTTP bootstrap provisions the same initial resources as a migrated PostgreSQL Installation. */
 export async function createBootstrapResources(controller: OpenClawController, actorId: string) {
   await controller.createNamespace(actorId, { name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME });
-  await controller.createConnectionTemplate(
+  await controller.seedBootstrapConnectionTemplate(
     actorId,
     {
       displayName: "Google OAuth",

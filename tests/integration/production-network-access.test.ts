@@ -28,7 +28,7 @@ test(
       "exporterWrongPort",
       ...discoveryWrongPorts,
     ];
-    const all = [...dependencies, "exporter", ...optional, ...unrelated];
+    const all = [...dependencies, "exporter", ...optional, ...unrelated, "providerWrongPort"];
 
     // Pre-install hooks run before the ordinary release policies exist.
     await access.install("bootstrap");
@@ -43,11 +43,16 @@ test(
     // Apply every release policy, including the retained bootstrap hook: grants are additive.
     await access.install("installed");
     for (const scenario of [
-      ...["api", "worker", "initialization"].map((source) => ({
+      ...["api", "worker"].map((source) => ({
         source,
-        allow: dependencies,
-        deny: ["exporter", ...optional, ...unrelated, ...(source === "worker" ? ["api"] : [])],
+        allow: all,
+        deny: source === "worker" ? ["api"] : [],
       })),
+      {
+        source: "initialization",
+        allow: dependencies,
+        deny: ["exporter", ...optional, ...unrelated, "providerWrongPort"],
+      },
       {
         source: "collector",
         allow: ["dns", "cluster", "exporter"],
@@ -62,20 +67,11 @@ test(
       await t.test(`installed access for ${scenario.source}`, () => access.verify(scenario));
     }
 
-    // Model and hosted catalog discovery reach only the configured hosts on API HTTPS;
-    // the private Envoy route also serves the worker.
+    // Optional destinations do not alter unrestricted control-plane egress. Their
+    // own ingress policies still restrict which callers can connect.
     await access.install("optional");
     for (const scenario of [
-      {
-        source: "api",
-        allow: [...dependencies, ...optional],
-        deny: ["exporter", "unexpected", "providerWrongPort", ...discoveryWrongPorts],
-      },
-      {
-        source: "worker",
-        allow: ["envoy"],
-        deny: ["provider", "providerWrongPort", ...discovery, ...discoveryWrongPorts],
-      },
+      ...["api", "worker"].map((source) => ({ source, allow: all })),
       ...["initialization", "collector", "unknown", "missing", "otherRelease"].map((source) => ({
         source,
         deny: optional,

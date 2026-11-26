@@ -1,18 +1,22 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
   postgresAgentAuditState,
 } from "./control-plane-audit.ts";
-import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver } from "./token-service.ts";
+import {
+  installTokenServiceDriver,
+  scheduleTokenServiceMaintenance,
+  gatewayStartupSourceDelivery,
+} from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
@@ -32,6 +36,7 @@ import {
 import { createFastifyApp } from "../index.ts";
 import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
+import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
@@ -89,6 +94,7 @@ export type ProductionStartupPhase =
  */
 export interface CompositionDependencies {
   readonly passwordHasher?: PasswordHasher;
+  readonly githubAppIssuerOptions?: GitHubAppIssuerOptions;
 }
 
 export async function composeProduction(
@@ -105,10 +111,7 @@ export async function composeProduction(
     configurationDriver,
     secretDriver,
     sandboxDriver,
-    credentialGatewayDriver,
-    credentialRefreshDriver,
     protectedDriver,
-    preparedGitHub,
     pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
@@ -142,7 +145,7 @@ export async function composeProduction(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, protectedDriver, preparedGitHub, database);
+    closeResources(exchange, protectedDriver, database);
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
@@ -211,16 +214,18 @@ export async function composeProduction(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        oauthIssuer: oauthIssuerOperations,
         authenticationStateEncryptionSecret: config.authSecret,
-        ...installationControllerOptions(config.drivers.installation),
+        ...installationControllerOptions(
+          config.drivers.installation,
+          config.drivers.repositoryRegistry,
+        ),
         credentialSourceDelivery: credentialSourceDeliveryBinding(config.drivers),
+        gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(config.drivers),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-        ...(config.drivers.pluginSourceReader === undefined
-          ? {}
-          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -239,26 +244,16 @@ export async function composeProduction(
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
     installSelectedSandboxDrivers(controller, config.drivers);
-    await installTokenServiceDriver(controller, config.drivers, state);
-    if (credentialGatewayDriver !== undefined) {
-      controller.registerDriver(credentialGatewayDriver);
-      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
-    }
-    if (credentialRefreshDriver !== undefined) {
-      controller.registerDriver(credentialRefreshDriver);
-      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
-    }
+    const tokenService = await installTokenServiceDriver(
+      controller,
+      config.drivers,
+      state,
+      dependencies.githubAppIssuerOptions === undefined
+        ? undefined
+        : { githubAppIssuerOptions: dependencies.githubAppIssuerOptions },
+    );
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
-    // TODO: Select an OpenShell OAuth issuer in the API and worker when its RPC can
-    // take custody of the grant and own refresh. Other installations use the built-in issuer.
-    config.drivers.tokenService?.registerIssuer(
-      new OAuthAccountTokens(
-        state,
-        secretDriver,
-        controller.resolveConnectionClient.bind(controller),
-      ),
-    );
     config.serviceAccountDriverFactory?.(controller, state);
     controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
@@ -391,7 +386,6 @@ export async function composeProduction(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     config.drivers.repositoryTransport?.connectRestartObservation?.(pool);
-    await preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
@@ -399,7 +393,13 @@ export async function composeProduction(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    app.addHook("onClose", () => close(state));
+    const stopTokenMaintenance = tokenService
+      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+      : undefined;
+    app.addHook("onClose", async () => {
+      await stopTokenMaintenance?.();
+      await close(state);
+    });
     phaseCompleted("routes");
     return app;
   } catch (error) {

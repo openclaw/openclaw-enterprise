@@ -47,6 +47,26 @@ Keep the existing Namespace, Agent and credential grants. For discovery that awa
 
 Admission already records the driver ID, implementation and requested plugin map on the revision. A worker preparing an admitted revision uses that exact identity. Reordering the Installation list or editing the Agent cannot redirect it. If the selected implementation is unavailable or incompatible, fail before replacing a running revision. A new deployment takes the current Agent selection through admission again.
 
+## Amendment: authenticated MCP tool discovery
+
+The selected Plugin Driver owns the tool catalog returned for its managed MCP Plugin. OCC owns access to the selected Credential Source and the authenticated MCP transport. To preserve both boundaries, extend the existing `getCatalogPlugin` input with an optional `discoveredMcpToolNames: readonly string[]` field. No other Driver member changes.
+
+```ts
+getCatalogPlugin?(
+  input: PluginDiscoveryAuthentication & {
+    readonly pluginId: string;
+    readonly discoveredMcpToolNames?: readonly string[];
+  },
+  signal?: AbortSignal,
+): Promise<PluginCatalogEntry>;
+```
+
+OCC first loads the Plugin entry and asks `credentials.mcpToolDiscovery` for the reviewed endpoint qualified against the selected Source and Template. OCC resolves the credential through TokenService and lists tools through the shared transport, applying the authorized HTTP methods and rechecking authority before each request. OCC rejects a credential echo in the raw inventory before it passes any names to the Driver.
+
+OCC then calls the same selected Driver's `getCatalogPlugin` with the Plugin ID and upstream names, without the credential. An MCP-capable Driver must use the supplied inventory to return the complete catalog entry. The Driver owns alias limits, collision handling, and tool descriptors. OCC accepts only a matching Plugin ID and a non-null tools array whose distinct tool IDs occur in the upstream inventory and whose `ownerId` values match the selected Plugin. An empty array is valid. OCC rejects credential echoes in the returned entry and rechecks authority before returning it. Missing or invalid results fail discovery; OCC does not substitute a built-in catalog.
+
+Other catalog discovery calls omit the new field. IAM, Source ownership, consent, persistence, deployment admission, and the public HTTP API remain unchanged. Verify the full Fastify/PostgreSQL path with the default reader and a controlled outbound MCP transport: discovery exposes deployable names, save retains the explicit subset, and deployment authorizes only that subset. For a raw credential echo, verify that OCC refuses discovery without invoking the second Driver call. Verify that an invalid Driver result fails before any catalog is returned.
+
 ## Verification before implementation review
 
 1. Load both drivers in one Installation. Through the supported Agent APIs, discover and save Google on an eligible dedicated OpenClaw Agent and a Codex plugin on a dedicated Codex Agent. Admit both revisions and verify the distinct native plugin preparations in the worker. Test native use separately with an authorized Google operation and a Codex plugin tool result.
@@ -63,4 +83,5 @@ Admission already records the driver ID, implementation and requested plugin map
 
 ## Changelog
 
+- 2026-11-25: Propose selected-Driver ownership of authenticated MCP tool results.
 - 2026-10-30: Propose per-Agent plugin catalog selection.

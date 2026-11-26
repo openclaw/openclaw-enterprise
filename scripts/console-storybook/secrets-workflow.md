@@ -1,12 +1,18 @@
 # Console Secrets walkthrough
 
-Rebuild Storybook from current source. Open **Pages/Secrets → Populated**.
+Rebuild Storybook from current source. Open **Pages/Credentials/Secrets → Populated**.
 These fixtures demonstrate UI behavior; they do not prove backend persistence,
 Kubernetes storage, credential delivery, or runtime consumption.
 
 1. Search by name or ID. Press Tab from **Search Secrets** to **Create Secret**.
    At phone width, Create wraps below search and keeps that tab order. Open
    **No search matches**, then clear the search to recover the list. Switch Namespace and back.
+   In **Populated** at `/?path=/story/pages-secrets--populated`, search for
+   `sec_demo_`. Tab to the last result and press Enter to open it. Narrow the
+   window from desktop to phone width and press Escape. Check that the same
+   Secret row is visible and focused, the filter remains, and Enter reopens
+   that Secret. The five seeded rows may stay in view during resizing. Use a
+   longer filtered list of wrapping names to check the offscreen reflow case.
 2. Create **Walkthrough key** with a synthetic value. Inspect masking, reveal and
    hide it, then submit. Close the success message. Search for **Walkthrough key**
    and select part of the query. Switch to another window and back. Check that

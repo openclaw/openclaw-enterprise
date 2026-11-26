@@ -744,7 +744,7 @@ fi
   PATH="$ORIGINAL_TOOL_PATH" exec jq "$@"
 fi
 case "\${!#}" in
-  */observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
+  */before-workloads.json|*/observed-api-deployment.json|*/observed-worker-deployment.json|*/current-api-deployment.json|*/current-worker-deployment.json|*/quiescence-api-deployment.json|*/quiescence-worker-deployment.json|*/quiescence-pods.json|*/worker-stop-confirmed.json)
     PATH="$ORIGINAL_TOOL_PATH" exec jq "$@" ;;
 esac
 if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
@@ -891,7 +891,11 @@ case "$*" in
       exit
     fi
     [[ "$1" == patch && "$3" == --type && "$4" == json && "$5" == --patch-file && -f "$6" && "$6" != -* ]] || exit 91
-    if [[ "$component" == worker ]]; then
+    preview=0
+    if [[ "$7" == --dry-run=server ]]; then
+      [[ $# == 9 && "$8" == --output && "$9" == 'jsonpath={.spec.replicas}' ]] || exit 91
+      preview=1
+    elif [[ "$component" == worker ]]; then
       [[ $# == 8 && "$7" == --output && "$8" == 'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}' ]] || exit 91
     else
       [[ $# == 6 ]] || exit 91
@@ -904,6 +908,10 @@ case "$*" in
         {op: "test", path: "/spec/replicas", value: $replicas},
         {op: "replace", path: "/spec/replicas", value: 0}
       ]]' "$6" >/dev/null || exit 91
+    if ((preview)); then
+      printf '0'
+      exit
+    fi
     write_writer 0 || exit
     if [[ "$component" == worker ]]; then
       printf 'fixture-worker\\t%s\\t0\\n' "$((generation + 1))"
@@ -931,7 +939,7 @@ case "$*" in
     exec "$(dirname "$0")/preflight-kubectl" "$@" ;;
 
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
-  *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
+  *'get deployments,statefulsets,pods,persistentvolumeclaims '*|*'get pods'*) printf '%s\\n' '{"items":[]}' ;;
   *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
   *' logs pod/'*) printf 'agent-drafts-accepted\\ninstallation-startup-ready\\n' ;;
 esac
@@ -1227,7 +1235,16 @@ esac
   assert.match(completed.stdout, /native rollout output/u);
   assert.match(completed.stdout, /native Helm output/u);
   assert.match(completed.stderr, /Upgrade: Reconciling and deploying Agent revisions\./u);
-  assert.match(completed.stderr, /Upgrade: Checking Agent readiness and OpenClaw Doctor\./u);
+  assert.deepEqual(
+    completed.stderr
+      .split("\n")
+      .filter((line) => /^Upgrade: (Waiting for Agent|Starting OpenClaw Doctor)/u.test(line))
+      .map((line) => line.replace(timestampSuffix, "")),
+    [
+      "Upgrade: Waiting for Agent revisions and Pods to become ready.",
+      "Upgrade: Starting OpenClaw Doctor checks for Agent 1 of 1.",
+    ],
+  );
   assert.deepEqual(lastDispatchEntry(await readFile(readyEvidence + ".dispatch-state")), [
     "accept",
     "ns_test",

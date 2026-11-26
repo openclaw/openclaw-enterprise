@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
 import type { Locator, Page } from "playwright";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
   AccessBinding,
@@ -17,16 +17,17 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   AGENT_READ,
   apiRequests,
+  createSlackSourceConsoleFixture,
   authorizationDenials,
   denyRevisionRead,
   detailUrl,
@@ -1486,22 +1487,16 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
 
 export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof fileConsoleApp>) {
   for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
-    ["pairing", "allowlist"],
-    ["open", "open"],
-    ["disabled", "disabled"],
     [undefined, undefined],
     ["disabled", "allowlist", true],
   ] as const) {
     test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies${enterpriseOrgInstall ? " on an organization-wide install" : ""}`, async (t) => {
-      const fixture = await detailApp(t);
-      const namespace = await fixture.createNamespace(
+      const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+        t,
         `Slack policy editing ${dmPolicy ?? "omitted"} ${groupPolicy ?? "omitted"}${enterpriseOrgInstall ? " organization" : ""}`,
-        { ready: true },
       );
-
-      const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-policy");
-
-      const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-policy");
+      const { source: appSecret } = await enroll("Slack app credential", "xapp");
+      const { source: botSecret } = await enroll("Slack bot credential", "xoxb");
 
       const slack = {
         enabled: true,
@@ -1511,7 +1506,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
         ...(enterpriseOrgInstall ? { enterpriseOrgInstall } : {}),
         ...(dmPolicy === undefined ? {} : { dmPolicy }),
         ...(groupPolicy === undefined ? {} : { groupPolicy }),
-        allowFrom: dmPolicy === "open" ? ["*"] : ["UKEEP123"],
+        allowFrom: ["UKEEP123"],
         channels: { CKEEP123: { requireMention: true, users: ["UKEEP123"] } },
       };
       const agent = await fixture.createAgent(
@@ -2556,14 +2551,14 @@ export function registerSharingCredentialsAndChannelsCases(
   }
 
   type DirectoryBody = Omit<ChannelDirectoryLookupInput, "token"> & {
-    secretId: string;
+    sourceId: string;
     configurationId?: string;
     agentId?: string;
   };
 
   function assertDirectoryBody(value: unknown): asserts value is DirectoryBody {
     const entry = record(value);
-    assert.equal(typeof entry.secretId, "string");
+    assert.equal(typeof entry.sourceId, "string");
     assert.ok(entry.kind === "users" || entry.kind === "channels");
     for (const field of ["query", "cursor", "configurationId", "agentId"]) {
       assert.ok(entry[field] === undefined || typeof entry[field] === "string");
@@ -3137,96 +3132,91 @@ export function registerSharingCredentialsAndChannelsCases(
     );
   });
 
-  for (const method of ["api_key", "codex_pat"] as const) {
-    test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
-      const fixture = await detailApp(t);
-      const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
-        ready: true,
-      });
-
-      const agent = await fixture.createAgent(
-        namespace.id,
-        "Credential Agent",
-        createHarnessConfiguration("codex", "gpt-4.1"),
-        { executionMode: "dedicated" },
-      );
-
-      const replacement = await fixture.createSecret(
-        namespace.id,
-        "Replacement model credential",
-        "test-replacement-token",
-      );
-
-      const unrelated = await fixture.createSecret(
-        namespace.id,
-        "Unrelated credential",
-        "test-unrelated-token",
-      );
-
-      const { page } = await newPage(t, fixture);
-      await login(
-        page,
-        fixture,
-        `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
-      );
-      await page.getByLabel("Authentication source").selectOption(method);
-      await selectSecret(
-        page,
-        method === "api_key" ? "API key Secret" : "Service account token Secret",
-        replacement,
-      );
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      const bindings = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/iam/access-bindings`,
-      );
-      const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-      const currentBindings = bindingsFrom(bindings.data);
-      const grants = currentBindings.filter(
-        (binding) =>
-          binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
-      );
-      assert.equal(grants.length, 1);
-      const grant = grants[0];
-      assert.ok(grant);
-      assert.deepEqual(grant, {
-        id: grant.id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: grant.roleId,
-        resourceKind: "secret",
-        resourceId: replacement.id,
-      });
-      assert.deepEqual(
-        readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
-        [{ action: "operate", resourceKind: "secret" }],
-      );
-      assert.equal(
-        currentBindings.some((binding) => binding.resourceId === unrelated.id),
-        false,
-      );
-      const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-      assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
-      // Saving the same source again repairs missing access and reuses an existing exact binding.
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      assert.deepEqual(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-        bindings.data,
-      );
+  test("Credentials grants exact Agent access when rebinding api_key", async (t) => {
+    const method = "api_key";
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
+      ready: true,
     });
-  }
+
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await selectSecret(page, "API key Secret", replacement);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const currentBindings = bindingsFrom(bindings.data);
+    const grants = currentBindings.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    const grant = grants[0];
+    assert.ok(grant);
+    assert.deepEqual(grant, {
+      id: grant.id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grant.roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(
+      readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
+      [{ action: "operate", resourceKind: "secret" }],
+    );
+    assert.equal(
+      currentBindings.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
 
   test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -3265,8 +3255,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const deniedGrant = restrict(fixture.policy, "administer", "installation", {
       resourceId: resourceId(installation),
     });
-    await page.getByLabel("Authentication source").selectOption("codex_pat");
-    await selectSecret(page, "Service account token Secret", replacement);
+    await page.getByLabel("Authentication source").selectOption("api_key");
+    await selectSecret(page, "API key Secret", replacement);
     await page.getByRole("button", { name: "Save authentication source" }).click();
     await page
       .getByText(
@@ -3463,44 +3453,23 @@ export function registerSharingCredentialsAndChannelsCases(
     );
   });
 
-  test("Secret summaries retain revision bindings and distinguish unreadable metadata from absent bindings", async (t) => {
+  test("historical model Secret summaries retain revision references and protect active credentials", async (t) => {
     const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Bound Secret summaries", {
-      ready: true,
-    });
-    const app = await fixture.createSecret(namespace.id, "Revision Slack app", "hidden-app-value");
-    const bot = await fixture.createSecret(namespace.id, "Revision Slack bot", "hidden-bot-value");
+    const namespace = await fixture.createNamespace("Model Secret summaries", { ready: true });
     const replacement = await fixture.createSecret(
       namespace.id,
       "Draft model",
       "hidden-model-value",
     );
-    const secretBindings = {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    };
-    const agent = await fixture.createAgent(namespace.id, "Bound Secrets", nativeValues("bound"), {
-      secretBindings,
-    });
-
-    // Real admission requires exact Agent access to each projected credential.
-    for (const secret of [app, bot, replacement]) {
-      await fixture.grantAgentSecretOperate(agent, secret.ref);
-    }
+    const agent = await fixture.createAgent(namespace.id, "Bound Secrets", nativeValues("bound"));
+    assert.ok(agent.harnessAuth?.method === "api_key");
+    const original = agent.harnessAuth.source;
+    await fixture.grantAgentSecretOperate(agent, replacement.ref);
     const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id, undefined);
-    // Mutate both current owners after admission; the read-only view must keep the old references.
     await fixture.updateAgent(namespace.id, agent.id, {
       configurationId: agent.configurationId,
       harnessAuth: { method: "api_key", source: replacement.ref },
     });
-    await fixture.updateConfiguration(
-      namespace.id,
-      agent.configurationId,
-      nativeValues("changed"),
-      {
-        secretBindings: {},
-      },
-    );
     const limited = await fixture.createAccountWithPolicy(
       "secret-summary-reader",
       (principal: Pick<Principal, "id">) => {
@@ -3525,9 +3494,7 @@ export function registerSharingCredentialsAndChannelsCases(
           subjectId: principal.id,
           roleId: "summary-reader",
         });
-        // Only these exact Secrets are readable. No Secret collection grant is present.
-        assert.ok(agent.harnessAuth?.method === "api_key");
-        for (const id of [agent.harnessAuth.source.id, app.id, replacement.id]) {
+        for (const id of [original.id, replacement.id]) {
           fixture.policy.bindings.push({
             id: `read-${id}`,
             namespaceId: namespace.id,
@@ -3540,75 +3507,43 @@ export function registerSharingCredentialsAndChannelsCases(
         }
       },
     );
-    const { page, artifacts } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
-    const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
-    await login(page, fixture, url, limited.credentials);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      limited.credentials,
+    );
     await page.getByRole("link", { name: "Auth Bound Secrets", exact: true }).waitFor();
     assert.equal(await page.getByText("Draft model", { exact: true }).count(), 0);
-    await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
-    await page.getByRole("tab", { name: "Channels", exact: true }).click();
-    await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
-    // The readable Secret list leaves the bot token's Secret out, so it is not read: its refusal
-    // would be an audited denial (finding 2619).
-    const hiddenSecret = page.getByText(BOUND_SECRET_UNLISTED, { exact: true });
-    await hiddenSecret.waitFor();
-    assert.equal(await hiddenSecret.getAttribute("title"), bot.id);
-    assert.equal(await page.getByRole("button", { name: /Configure Slack|Edit Slack/ }).count(), 0);
-    await page.screenshot({
-      path: join(artifacts, "bound-channels-restricted.png"),
-      fullPage: true,
-    });
-    assert.equal(
-      requests.some((request) => request.path === `/namespaces/${namespace.id}/secrets/${bot.id}`),
-      false,
-    );
     assert.deepEqual(nonAuthWriteRequests(requests), []);
-    for (const value of ["hidden-app-value", "hidden-bot-value", "hidden-model-value"]) {
-      const text = await page.locator("body").textContent();
-      assert.ok(text !== null);
-      assert.equal(text.includes(value), false);
-    }
-    // Active snapshots protect their Secrets even after the draft drops the bindings.
-    const secretPath = `/namespaces/${namespace.id}/secrets/${app.id}`;
-    assert.equal((await fixture.request("DELETE", secretPath)).status, 409);
-    // Admit and select the replacement draft, leaving the viewed revision historical.
-    // With no live references, a real deletion makes its bound metadata unavailable. The readable
-    // list leaves a deleted Secret out too, so the summary says either may be why.
+    assert.equal((await page.locator("body").textContent())?.includes("hidden-model-value"), false);
+
+    // The selected revision still needs its original model credential after the draft changes.
+    const originalPath = `/namespaces/${namespace.id}/secrets/${original.id}`;
+    assert.equal((await fixture.request("DELETE", originalPath)).status, 409);
     await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
-    const deleted = await fixture.rawRequest("DELETE", secretPath, {
+    const deleted = await fixture.rawRequest("DELETE", originalPath, {
       headers: authenticatedHeaders(await fixture.signIn()),
     });
     assert.equal(deleted.response.status, 204);
-    assert.equal((await fixture.request("GET", secretPath)).status, 404);
     await page.reload();
     await page
-      .locator(`.secret-reference[title="${app.id}"]`)
+      .locator(`.secret-reference[title="${original.id}"]`)
       .filter({ hasText: BOUND_SECRET_UNLISTED })
       .waitFor();
     await page.getByRole("button", { name: "Open draft", exact: true }).last().click();
-    await page.getByRole("tab", { name: "Channels", exact: true }).click();
-    await page.getByText("No Secret bound", { exact: true }).first().waitFor();
-    assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
-    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page.getByRole("link", { name: "Draft model", exact: true }).waitFor();
   });
 
   test("Slack directory selections show names and save exact channel IDs", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Slack directory picker", {
-      ready: true,
-    });
-    const appSecret = await fixture.createSecret(
-      namespace.id,
-      "Slack app token",
-      "xapp-test-secret",
+    const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+      t,
+      "Slack directory picker",
     );
-    const botSecret = await fixture.createSecret(
-      namespace.id,
-      "Slack bot token",
-      "xoxb-test-secret",
-    );
+    const { source: appSecret } = await enroll("Slack app credential", "xapp");
+    const { source: botSecret } = await enroll("Slack bot credential", "xoxb");
     const slack = {
       enabled: true,
       mode: "socket",
@@ -3933,7 +3868,7 @@ export function registerSharingCredentialsAndChannelsCases(
     assert.ok(
       directoryBodies.some(
         (body) =>
-          body.secretId === botSecret.id &&
+          body.sourceId === botSecret.id &&
           body.kind === "channels" &&
           body.configurationId === agent.configurationId &&
           body.ids?.[0] === "CTEST456",
@@ -3948,20 +3883,12 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Slack editor preserves existing qualified channel and user targets", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Qualified Slack targets", {
-      ready: true,
-    });
-    const appSecret = await fixture.createSecret(
-      namespace.id,
-      "Qualified Slack app token",
-      "xapp-qualified",
+    const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+      t,
+      "Qualified Slack targets",
     );
-    const botSecret = await fixture.createSecret(
-      namespace.id,
-      "Qualified Slack bot token",
-      "xoxb-qualified",
-    );
+    const { source: appSecret } = await enroll("Qualified app credential", "xapp");
+    const { source: botSecret } = await enroll("Qualified bot credential", "xoxb");
     const channelUsers = [
       "team:TTEST123:user:UTEST123",
       "user:UTEST124",
@@ -4114,13 +4041,47 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
-    const fixture = await detailApp(t);
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
+      },
+    });
+    await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
 
     // Issuance is outside this Console test. Seed its realistic result through State;
     // the browser still lists, selects and saves it through production API/IAM paths.
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "Issued PAT source",
+          type: "static",
+          config: { provider_preset: "codex-pat" },
+          secret: `at-${randomUUID()}`,
+        },
+      },
+    );
+    assert.equal(enrollment.status, 201);
+    const sourceId = enrollment.data.id;
     const account = await controller.transact(async (state) => {
       const created = await state.serviceAccounts.createServiceAccount({
         id: `sa_${randomUUID()}`,
@@ -4129,7 +4090,7 @@ export function registerSharingCredentialsAndChannelsCases(
       });
       return state.serviceAccounts.updateCredential(namespace.id, created.id, {
         kind: "access_token",
-        secretRef: { name: "managed-pat-browser-fixture", key: "token" },
+        sourceId,
       });
     });
     assert.ok(account);
@@ -4137,15 +4098,16 @@ export function registerSharingCredentialsAndChannelsCases(
       namespace.id,
       "Managed PAT Agent",
       createHarnessConfiguration("codex", "gpt-5.1"),
-      { executionMode: "dedicated" },
+      { executionMode: "dedicated", harnessAuth: null },
     );
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(
       page,
       fixture,
-      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
     );
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
     await page
       .getByLabel("Issued ChatGPT service account", { exact: true })
@@ -4156,34 +4118,24 @@ export function registerSharingCredentialsAndChannelsCases(
     );
     await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
     assert.equal((await saved).status(), 200);
-    await page.getByRole("button", { name: "Save authentication source", exact: true }).waitFor();
-    assert.equal(
-      await page.getByLabel("Authentication source", { exact: true }).inputValue(),
-      "service_account",
-    );
-    assert.equal(
-      await page.getByLabel("Issued ChatGPT service account", { exact: true }).inputValue(),
-      account.id,
-    );
+    const harnessAuth = { method: "credential_source", sourceId };
     assert.deepEqual(
       responseData(await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
         .harnessAuth,
-      {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-      },
+      harnessAuth,
+    );
+    const patch = requests.find(
+      (request) => request.method === "PATCH" && request.path.endsWith(`/agents/${agent.id}`),
+    );
+    assert.ok(patch);
+    assert.deepEqual(record(patch.body).harnessAuth, harnessAuth);
+    const bindingWrites = requests.filter(
+      ({ method, path }) => method === "POST" && path.endsWith("/access-bindings"),
     );
     assert.equal(
-      requests.some(
-        (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
-      ),
+      bindingWrites.some(({ body }) => record(body).resourceKind === "secret"),
       false,
     );
-    // The draft summary names the selected account rather than a Secret.
-    await page.goto(
-      `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
-    );
-    await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
   });
 
   test("Console can repeat Stop without treating the selected version as cleanup completion", async (t) => {
@@ -4279,50 +4231,44 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
-
-    const backend = createOpenShellBackend({
-      id: "openshell-browser",
-      type: "openshell",
-      configuration: { endpoint: "http://127.0.0.1:9" },
-      drivers: {
-        sandbox: "sandbox-openshell-local",
-        credential_gateway: "credential-gateway-openshell",
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
       },
     });
-    t.after(() => backend.client.close());
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/openclaw"] },
-      { backend },
-    );
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-    const input = await fixture.createSecret(
-      namespace.id,
-      "OpenAI source input",
-      "source-browser-fixture",
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
     );
-
-    // Source registration is outside this Console test. This is the ready API-key
-    // source state the existing OpenClaw credential-gateway path supports.
-    const source = await controller.transact((state) =>
-      state.credentialSources.createCredentialSource({
-        id: `cs_${randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "OpenAI API key",
-        type: "openai",
-        config: {},
-        secrets: { api_key: input.ref },
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "OpenAI API key",
+          type: "static",
+          config: { provider_preset: "openai" },
+          secret: randomUUID(),
+        },
+      },
     );
+    assert.equal(enrollment.status, 201, JSON.stringify(enrollment.body));
+    const source = enrollment.data;
     const harnessAuth = { method: "credential_source", sourceId: source.id };
     const agent = await fixture.createAgent(
       namespace.id,

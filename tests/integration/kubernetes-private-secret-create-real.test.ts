@@ -15,6 +15,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import {
   explicitK3dSelection,
@@ -32,15 +33,7 @@ const administrator = {
   email: "private-real-" + randomUUID() + "@example.test",
   password: "private-real-auth-" + randomUUID(),
 };
-const manual = {
-  displayName: "Private real API registration",
-  mode: "manual",
-  issuer: "https://accounts.example.test",
-  authorizationUrl: "https://accounts.example.test/authorize",
-  tokenUrl: "https://accounts.example.test/token",
-  scopes: ["mail.read"],
-  destinations: [{ host: "mail.example.test", path: "/v1/**" }],
-};
+const issuer = "https://accounts.example.test";
 const authOptions = (installationId: string) => ({
   mode: "development" as const,
   installationId,
@@ -414,6 +407,20 @@ test(
     );
     controller.registerDriver(driver);
     controller.selectDriver("secret", driver.id);
+    assert.ok(driver.privateSecrets);
+    const instanceId = await controller.activateTokenServiceInstance(
+      "private-real-token-service",
+      randomUUID(),
+    );
+    const owner = new OCCTokenServiceDriver(
+      "private-real-token-service",
+      installation.id,
+      driver.privateSecrets,
+      instanceId,
+      state,
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
     const auth = await createPostgresControllerAuth({
       ...authOptions(installation.id),
       pool,
@@ -463,12 +470,10 @@ test(
         ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }),
       });
     }
-    async function input() {
-      const draft = await inject("POST", "/connection-templates", manual);
-      assert.equal(draft.statusCode, 201);
+    function input() {
       return {
-        connectionTemplateId: draft.json<{ data: { id: string } }>().data.id,
-        connectionTemplateVersion: 1,
+        kind: "oauth2",
+        issuer,
         displayName: "Private real API client",
         clientId: randomUUID(),
         tokenEndpointAuthMethod: "client_secret_basic" as const,
@@ -481,7 +486,7 @@ test(
     ) {
       assert.equal(response.body.includes(value.clientSecret), false);
       assert.equal(response.body.includes(driver.id), false);
-      const listed = await inject("GET", "/oauth-clients");
+      const listed = await inject("GET", "/credential-clients");
       assert.equal(listed.statusCode, 200);
       assert.equal(listed.body.includes(value.clientSecret), false);
       assert.equal(listed.body.includes(driver.id), false);
@@ -577,7 +582,7 @@ test(
       await t.test(scenario, async (s) => {
         assert.equal(unknown.size, 0, "do not start another effect after an unknown write");
         attempt = { scenario, deletes: 0 };
-        const value = await input();
+        const value = input();
         const before = await inventory();
         const mutationsBefore = driverMutations;
         let headers = administratorHeaders;
@@ -590,7 +595,7 @@ test(
           await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
           headers = await signIn(credentials);
         }
-        const response = await inject("POST", "/oauth-clients", value, headers);
+        const response = await inject("POST", "/credential-clients", value, headers);
         const expectedStatus = {
           "denied-registration": 403,
           "refused-create": 404,
@@ -600,8 +605,8 @@ test(
         assert.equal(response.statusCode, expectedStatus);
         await assertHidden(value, response);
         const reserved = (
-          await pool.query<{ hidden: boolean; driver: string }>(
-            "SELECT cleanup_after IS NOT NULL AS hidden, secret_driver_id AS driver FROM occ.oauth_clients WHERE client_id=$1",
+          await pool.query<{ hidden: boolean; owner: string }>(
+            "SELECT cleanup_after IS NOT NULL AS hidden, token_service_instance_id AS owner FROM occ.oauth_clients WHERE client_id=$1",
             [value.clientId],
           )
         ).rows;
@@ -622,7 +627,7 @@ test(
           return;
         }
         assert.ok(attempt.original);
-        assert.deepEqual(reserved, [{ hidden: true, driver: driver.id }]);
+        assert.deepEqual(reserved, [{ hidden: true, owner: instanceId }]);
         assert.equal(attempt.deletes, 1);
         const expectedCode = scenario === "refused-create" ? "NOT_FOUND" : "DEPENDENCY_UNAVAILABLE";
         assert.equal(response.json<{ error: { code: string } }>().error.code, expectedCode);

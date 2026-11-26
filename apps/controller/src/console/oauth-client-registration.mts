@@ -1,33 +1,19 @@
-import type {
-  ConnectionTemplate,
-  OAuthConnectionTemplateVersion,
-  McpAuthorizationMetadata,
-  Namespace,
-  OAuthClient,
-} from "@openclaw-enterprise/contracts";
+import type { CredentialClient, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
+import type { OAuthTemplate } from "./credential-consent.mjs";
 import { requestFailure } from "./api-client.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
+import { credentialValueProblem } from "./credential-value.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
+type ClientKind = CredentialClient["kind"];
 const option = (value: string, label: string) => element("option", { value }, label);
+const installation = "installation";
 const methods: readonly OAuthClient["tokenEndpointAuthMethod"][] = [
   "client_secret_basic",
   "client_secret_post",
   "none",
 ];
-
-export type OAuthTemplate = ConnectionTemplate & {
-  readonly current: OAuthConnectionTemplateVersion;
-};
-
-export function isOAuthTemplate(template: ConnectionTemplate): template is OAuthTemplate {
-  return template.current.mode === "manual" || template.current.mode === "mcp_discovery";
-}
-
-export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
-  return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
-}
 
 export function availableInNamespace(value: { namespaceId?: string }, namespaceId: string | null) {
   return !value.namespaceId || value.namespaceId === namespaceId;
@@ -38,9 +24,11 @@ export function availabilityLabel(
   namespaces: readonly Namespace[],
 ) {
   return value.namespaceId
-    ? `Namespace · ${namespaces.find((item) => item.id === value.namespaceId)?.name ?? value.namespaceId}`
+    ? "Namespace · " +
+        (namespaces.find((item) => item.id === value.namespaceId)?.name ?? value.namespaceId)
     : "Installation-wide";
 }
+
 export function oauthFailure(cause: unknown, operation: string) {
   const { status, serverMessage } = requestFailure(cause);
   if (status === 403) {
@@ -49,222 +37,288 @@ export function oauthFailure(cause: unknown, operation: string) {
   if (status === 400 || status === 409) {
     return serverMessage || "OCC refused these values. Review the form and try again.";
   }
-  return `Could not confirm ${operation}. Refresh the catalog before trying again.`;
+  return "Could not confirm " + operation + ". Refresh the catalog before trying again.";
 }
 
 export async function oauthClients(context: Context) {
-  return (await context.request("/oauth-clients", {
+  return (await context.request("/credential-clients", {
     installationAdministration: "required",
     includeMeta: true,
-  })) as { data: OAuthClient[]; meta?: { redirectUri?: string } };
+  })) as { data: CredentialClient[]; meta?: { redirectUri?: string } };
 }
 
-/** Both entry points register the provider-issued credentials against the displayed template version. */
-export function openOAuthClientRegistration(
+/** GitHub provides the App signing key as a PEM file. Its contents are never shown in the Console. */
+export function privateKeyFile(id: string) {
+  const control = element("input", { id, type: "file", required: true, accept: ".pem" });
+  control.addEventListener("change", () => control.setCustomValidity(""));
+  return control;
+}
+
+export async function readPrivateKey(control: HTMLInputElement) {
+  const file = control.files?.[0];
+  if (!file) {
+    return undefined;
+  }
+  let problem = file.size > 20_000 ? "Use a key file of at most 20,000 bytes." : "";
+  let value = "";
+  if (!problem) {
+    try {
+      value = await file.text();
+      problem = credentialValueProblem(value) || (!value ? "Choose a nonempty key file." : "");
+    } catch {
+      problem = "Could not read this key file. Choose it again.";
+    }
+  }
+  if (problem) {
+    control.setCustomValidity(problem);
+    validateFields([control]);
+    return undefined;
+  }
+  return value;
+}
+
+/** A Template can prefill the issuer; each client registration owns its own scope. */
+export function openCredentialClientRegistration(
   context: Context,
   options: {
     parent: HTMLElement;
     namespaces: readonly Namespace[];
-    templates: readonly OAuthTemplate[];
+    currentNamespace: string | null;
     selected?: OAuthTemplate;
     redirectUri?: string | undefined;
-    createTemplate?: (onSaved: (template: OAuthTemplate) => void) => void;
-    onClose: (created?: OAuthClient) => void;
+    kind?: ClientKind;
+    onClose: (created?: CredentialClient) => void;
   },
 ) {
   const dialog = element("dialog", {
     className: "dialog dialog--framed connection-template-dialog",
-    "aria-label": "Register OAuth client",
+    "aria-label": "Register credential client",
   });
+  const form = element("form", { id: "credential-client-registration", novalidate: "" });
   const status = element("p", { className: "hint", role: "status" });
-  const byId = new Map(options.templates.map((template) => [template.id, template]));
-  const choice = element("select", {
-    id: "oauth-registration-template",
-    required: true,
-    disabled: !options.createTemplate,
-  });
-  const choiceField = field({ label: "Connection template", control: choice });
-  const empty = element(
-    "p",
-    { className: "hint" },
-    "No connection templates are available for this selection.",
+  const kind = element(
+    "select",
+    { id: "credential-client-kind", required: true },
+    option("oauth2", "OAuth 2.0 client"),
+    option("github-app", "GitHub App"),
   );
-  const createTemplate = options.createTemplate
-    ? button(
-        "Create connection template",
-        () =>
-          options.createTemplate?.((saved) => {
-            if (!dialog.open || !context.isCurrent()) {
-              return;
-            }
-            byId.set(saved.id, saved);
-            showChoices();
-            select(saved);
-            name.focus();
-          }),
-        { size: "sm" },
-      )
-    : undefined;
-  function showChoices() {
-    const hasTemplates = byId.size > 0;
-    choiceField.hidden = !hasTemplates;
-    empty.hidden = hasTemplates;
-    register.hidden = !hasTemplates;
-    choice.replaceChildren(
-      element("option", { value: "", disabled: true }, "Choose a connection template"),
-      ...Array.from(byId.values(), (t) =>
-        option(t.id, `${t.displayName} · ${availabilityLabel(t, options.namespaces)}`),
-      ),
-    );
+  kind.value = options.kind ?? "oauth2";
+  const kindField = field({ label: "Client type", control: kind });
+  kindField.hidden = !!options.kind;
+  kind.disabled = !!options.kind;
+  const name = element("input", {
+    id: "credential-client-name",
+    required: true,
+    maxLength: 200,
+    autocomplete: "off",
+  });
+  const scope = element(
+    "select",
+    { id: "credential-client-scope", required: true },
+    option(installation, "Installation-wide"),
+    ...options.namespaces.map((item) => option(item.id, "Namespace · " + item.name)),
+  );
+  scope.value = options.selected?.namespaceId ?? installation;
+  const issuer = element("input", {
+    id: "credential-client-issuer",
+    type: "url",
+    required: true,
+    value: options.selected?.current.issuer ?? "",
+  });
+  const clientId = element("input", { required: true, autocomplete: "off", maxLength: 256 });
+  const allowedMethods = options.selected?.current.issuerVerification?.tokenEndpointAuthMethods;
+  const availableMethods = methods.filter(
+    (value) => !allowedMethods || allowedMethods.includes(value),
+  );
+  const method = element(
+    "select",
+    { required: true },
+    ...availableMethods.map((item) => option(item, item)),
+  );
+  if (
+    options.selected?.current.issuer === "https://accounts.google.com" &&
+    availableMethods.includes("client_secret_post")
+  ) {
+    method.value = "client_secret_post";
   }
-  const availability = element("input", { readOnly: true });
-  const name = element("input", { required: true });
-  const clientId = element("input", { required: true, autocomplete: "off" });
-  const clientType = element("select", { required: true });
-  const method = element("select", { required: true });
   const secret = element("input", {
     type: "password",
     required: true,
     autocomplete: "new-password",
   });
   const secretField = field({ label: "Client secret", control: secret });
-  const details = element(
+  const redirectUri = element("input", {
+    readOnly: true,
+    value: options.redirectUri ?? "",
+    placeholder: "Public origin not configured",
+  });
+  const copyFeedback = element("p", { className: "hint", role: "status", hidden: true });
+  const copyRedirect = button(
+    "Copy",
+    async () => {
+      let copied = false;
+      try {
+        if (typeof navigator.clipboard?.writeText === "function") {
+          await navigator.clipboard.writeText(redirectUri.value);
+          copied = true;
+        }
+      } catch {
+        // Browsers can refuse clipboard access; leave the value selected for manual copying.
+      }
+      if (!dialog.open) {
+        return;
+      }
+      if (!copied) {
+        redirectUri.focus();
+        redirectUri.select();
+      }
+      copyFeedback.textContent = copied
+        ? "Redirect URI copied."
+        : "Redirect URI selected. Use your copy shortcut to copy it.";
+      copyFeedback.hidden = false;
+    },
+    {
+      tone: "secondary",
+      size: "sm",
+      disabled: !options.redirectUri,
+      "aria-label": "Copy redirect URI",
+    },
+  );
+  const redirectField = field({
+    label: "Redirect URI",
+    control: redirectUri,
+    className: "credential-client-redirect",
+    help: options.redirectUri
+      ? "Register this URI with the provider before using its client."
+      : "Configure the Installation's public origin to obtain the callback URI.",
+  });
+  redirectUri.after(copyRedirect);
+  redirectField.append(copyFeedback);
+  const oauthFields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    field({ label: "Client availability", control: availability }),
-    field({
-      label: "Redirect URI",
-      control: element("input", {
-        readOnly: true,
-        value: options.redirectUri ?? "",
-        placeholder: "Public origin not configured",
-      }),
-      help: options.redirectUri
-        ? "Register this URI with the provider before using its client."
-        : "Configure the Installation’s public origin to obtain the callback URI for this registration.",
-    }),
-    field({ label: "OAuth client name", control: name }),
+    field({ label: "Issuer URL", control: issuer }),
+    redirectField,
     field({ label: "Client ID", control: clientId }),
-    field({ label: "Client type", control: clientType }),
-    field({
-      label: "Token endpoint authentication method",
-      control: method,
-      help: "Use the method registered for this client ID at the provider.",
-    }),
+    field({ label: "Token endpoint authentication method", control: method }),
     secretField,
+  );
+  const appId = element("input", {
+    id: "credential-client-app-id",
+    required: true,
+    inputmode: "numeric",
+    pattern: "[1-9][0-9]*",
+    autocomplete: "off",
+  });
+  const key = privateKeyFile("client-app-private-key");
+  const keyField = field({
+    label: "Private key file",
+    control: key,
+    help: "The selected TokenService verifies and stores this key. It cannot be read back.",
+  });
+  const githubFields = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    field({ label: "GitHub App ID", control: appId }),
+    keyField,
   );
   const fields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    empty,
-    choiceField,
-    createTemplate ?? null,
-    details,
+    kindField,
+    field({ label: "Client name", control: name }),
+    field({ label: "Availability", control: scope }),
+    oauthFields,
+    githubFields,
   );
   const cancel = button("Cancel", () => dialog.close());
-  const register = button("Register OAuth client", () => void submit(), { tone: "primary" });
-  let selected: OAuthTemplate | undefined;
+  const register = button("Register client", () => undefined, {
+    tone: "primary",
+    type: "submit",
+    form: form.id,
+  });
   let pending = false;
   let uncertain = false;
-  let created: OAuthClient | undefined;
-  let confidentialMethods: typeof methods = [];
-  function showMethods(previous = "") {
-    const isPublic = clientType.value === "public";
-    const choices = isPublic ? ["none"] : confidentialMethods;
-    method.replaceChildren(...choices.map((value) => option(value, value)));
-    method.disabled = choices.length <= 1;
-    const preferred =
-      previous ||
-      (selected?.current.issuer === "https://accounts.google.com"
-        ? "client_secret_post"
-        : "client_secret_basic");
-    if (choices.some((value) => value === preferred)) {
-      method.value = preferred;
-    }
-    secretField.hidden = secret.disabled = isPublic || !method.value;
-    if (secret.disabled) {
+  let created: CredentialClient | undefined;
+
+  function showSecret() {
+    const confidential = !!method.value && method.value !== "none";
+    secretField.hidden = secret.disabled = !confidential;
+    if (!confidential) {
       secret.value = "";
     }
   }
-  clientType.addEventListener("change", () => showMethods());
-  function select(template: OAuthTemplate | undefined) {
-    const sameTemplate =
-      selected?.id === template?.id && selected?.current.version === template?.current.version;
-    const previousMethod = sameTemplate ? method.value : "";
-    if (!sameTemplate) {
-      clientId.value = "";
-      secret.value = "";
-    }
-    selected = template;
-    choice.value = template?.id ?? "";
-    details.hidden = details.disabled = !template;
-    availability.value = template ? availabilityLabel(template, options.namespaces) : "";
-    const allowed =
-      template?.current.mode === "mcp_discovery"
-        ? advertisedClientMethods(template.current.observed)
-        : undefined;
-    const availableMethods = methods.filter((value) => !allowed || allowed.includes(value));
-    confidentialMethods = availableMethods.filter((value) => value !== "none");
-    clientType.replaceChildren();
-    if (confidentialMethods.length) {
-      clientType.append(option("confidential", "Confidential"));
-    }
-    if (availableMethods.includes("none")) {
-      clientType.append(option("public", "Public"));
-    }
-    clientType.disabled = clientType.options.length <= 1;
-    if (previousMethod === "none") {
-      clientType.value = "public";
-    }
-    showMethods(previousMethod);
-    register.disabled = !template || !method.value;
-    status.textContent =
-      template && !method.value
-        ? "This template’s authorization server advertises no supported client authentication method."
-        : "";
+  function showKind() {
+    const github = kind.value === "github-app";
+    oauthFields.hidden = oauthFields.disabled = github;
+    githubFields.hidden = githubFields.disabled = !github;
+    secret.value = "";
+    key.value = "";
+    showSecret();
+    register.disabled = !github && !method.value;
+    status.textContent = register.disabled
+      ? "This Template’s authorization server advertises no supported client authentication method."
+      : "";
   }
-  choice.addEventListener("change", () => select(byId.get(choice.value)));
+  method.addEventListener("change", showSecret);
+  kind.addEventListener("change", showKind);
+  showKind();
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submit();
+  });
   async function submit() {
-    const template = selected;
-    if (
-      pending ||
-      uncertain ||
-      !template ||
-      !method.value ||
-      !validateFields([name, clientId, method, secret])
-    ) {
+    const github = kind.value === "github-app";
+    const controls = github
+      ? [name, scope, appId, key]
+      : [name, scope, issuer, clientId, method, secret];
+    if (pending || uncertain || !validateFields(controls)) {
       return;
     }
-    const registration = {
-      connectionTemplateId: template.id,
-      connectionTemplateVersion: template.current.version,
-      displayName: name.value.trim(),
-      clientId: clientId.value.trim(),
-      tokenEndpointAuthMethod: method.value,
-      ...(method.value !== "none" && { clientSecret: secret.value }),
-    };
+    const displayName = name.value.trim();
+    const namespaceId = scope.value === installation ? undefined : scope.value;
     pending = true;
-    fields.disabled = cancel.disabled = register.disabled = true;
-    status.textContent = "Registering OAuth client…";
+    cancel.disabled = register.disabled = true;
     try {
-      const result = (await context.request("/oauth-clients", {
+      const privateKey = github ? await readPrivateKey(key) : undefined;
+      if (github && privateKey === undefined) {
+        return;
+      }
+      const client = { displayName, ...(namespaceId && { namespaceId }) };
+      const registration = github
+        ? { ...client, kind: "github-app", appId: appId.value.trim(), privateKey }
+        : {
+            ...client,
+            kind: "oauth2",
+            issuer: issuer.value.trim(),
+            clientId: clientId.value.trim(),
+            tokenEndpointAuthMethod: method.value,
+            ...(method.value !== "none" && { clientSecret: secret.value }),
+          };
+      fields.disabled = true;
+      status.textContent = "Registering client…";
+      const result = (await context.request("/credential-clients", {
         method: "POST",
         installationAdministration: "required",
         expectedStatus: 201,
         body: registration,
-      })) as OAuthClient;
+      })) as CredentialClient;
       if (!dialog.open || !context.isCurrent()) {
         return;
       }
-      if (
-        !result.id ||
-        result.namespaceId !== template.namespaceId ||
-        result.issuer !== template.current.issuer ||
-        result.tokenUrl !== template.current.tokenUrl ||
-        result.clientId !== registration.clientId ||
-        result.tokenEndpointAuthMethod !== registration.tokenEndpointAuthMethod
-      ) {
-        throw Error("Unconfirmed OAuth client");
+      const confirmed =
+        !!result.id &&
+        result.displayName === displayName &&
+        result.namespaceId === namespaceId &&
+        (github
+          ? result.kind === "github-app" && result.appId === appId.value.trim()
+          : result.kind === "oauth2" &&
+            result.issuer === issuer.value.trim() &&
+            result.clientId === clientId.value.trim() &&
+            result.tokenEndpointAuthMethod === method.value);
+      if (!confirmed) {
+        throw Error("Unconfirmed client registration");
       }
       created = result;
       dialog.close();
@@ -272,22 +326,25 @@ export function openOAuthClientRegistration(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        const reason = oauthFailure(cause, "OAuth client registration");
         status.textContent =
-          code === 409
-            ? reason + " Close this dialog and reopen registration to load the current template."
-            : reason;
+          github && code === 404
+            ? "GitHub App verification failed. Check the App ID and matching private key, and OCC connectivity to GitHub."
+            : oauthFailure(cause, "client registration");
       }
     } finally {
       secret.value = "";
+      key.value = "";
       pending = false;
-      fields.disabled = register.disabled = uncertain;
+      fields.disabled = uncertain;
+      register.disabled = uncertain || (!github && !method.value);
       cancel.disabled = false;
+      showSecret();
     }
   }
+  form.append(fields, status);
   dialog.append(
-    element("header", { className: "dialog-header" }, element("h2", {}, "Register OAuth client")),
-    element("div", { className: "dialog-body" }, fields, status),
+    element("header", { className: "dialog-header" }, element("h2", {}, "Register client")),
+    element("div", { className: "dialog-body" }, form),
     element("div", { className: "dialog-actions" }, cancel, register),
   );
   dialog.addEventListener("cancel", (event) => {
@@ -299,6 +356,7 @@ export function openOAuthClientRegistration(
     "close",
     () => {
       secret.value = "";
+      key.value = "";
       dialog.remove();
       if (context.isCurrent()) {
         options.onClose(created);
@@ -307,13 +365,7 @@ export function openOAuthClientRegistration(
     { once: true },
   );
   options.parent.append(dialog);
-  showChoices();
-  select(options.selected);
   dialog.showModal();
-  if (byId.size) {
-    (options.selected ? name : choice).focus();
-  } else {
-    createTemplate?.focus();
-  }
+  (options.kind ? name : kind).focus();
   return () => dialog.close();
 }

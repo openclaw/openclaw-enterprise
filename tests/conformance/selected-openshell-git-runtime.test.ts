@@ -280,7 +280,7 @@ async function selectedV5(
       repositoryGitAuthorization: admitted.authorization,
       repositoryGit: repositoryCredentials,
     },
-  } as unknown as AgentRevision;
+  } as unknown as typeof f.revision;
   assert.equal(
     revision.repositoryCredentials!.bindings.length,
     selectedRegistry ? repositories.length : 1,
@@ -4064,6 +4064,8 @@ async function verifyScopedRestReadback(
     createdAt: "2026-08-18T00:00:00.000Z",
   };
   const revisionId = `rev_${randomUUID()}`;
+  const repository = admitted.repositoryCredentials;
+  assert.ok(repository && repository.authorization !== "credential_source");
   const plan: ProxyPlan = {
     id: "synthetic-issues",
     generation: 1,
@@ -4079,7 +4081,7 @@ async function verifyScopedRestReadback(
     egressDriverId: proxy.id,
     driver: admitted.egressPlan!.driver!,
     harnessCredentialSource: auth,
-    repositoryGit: admitted.repositoryCredentials!,
+    repositoryGit: repository,
     repositoryGitAuthorization: "network-policy",
     routes: [],
   };

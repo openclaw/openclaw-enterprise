@@ -21,6 +21,7 @@ import {
   readFailureReason,
 } from "./agents/list.mjs";
 import { requestFailure, responseFields } from "./api-client.mjs";
+import { credentialValueControl } from "./credential-value.mjs";
 import {
   button,
   dismissOnBackdrop,
@@ -110,72 +111,6 @@ function clearSecretInputs(dialog: HTMLDialogElement) {
   )) {
     input.value = "";
   }
-}
-
-// The API's Secret value rule (SecretValue in packages/contracts/src/api/common.ts): nonempty
-// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.ts
-// keeps the two equal.
-export const SECRET_VALUE_MAX_BYTES = 65536;
-
-/**
- * Why the API would refuse `value` as a Secret value, or "" when it would accept it. An empty
- * value is the required check's to report. The console sends the value as the browser reports
- * it: a textarea's line endings are normalized to LF.
- */
-export function secretValueProblem(value: string) {
-  if (value.includes("\0") || /\p{Cs}/u.test(value)) {
-    return "Use valid UTF-8 without NUL characters.";
-  }
-  if (new TextEncoder().encode(value).length > SECRET_VALUE_MAX_BYTES) {
-    return "Use at most 65,536 UTF-8 bytes.";
-  }
-  return "";
-}
-
-/**
- * A masked Secret value control and its Show value toggle, shared by the Secrets page and every
- * inline Create Secret dialog (finding 2339). Put `reveal` just before `value` in a
- * `.secret-value-field`. A textarea keeps multiline credential material, with CRLF as LF. Browsers
- * without masking support get a native password field that refuses a line-break paste rather
- * than dropping its line breaks. Each edit checks the value against the API's rule.
- */
-export function secretValueControl(id: string, attributes: Record<string, string> = {}) {
-  const multiline = CSS.supports("-webkit-text-security", "disc");
-  const value = element(multiline ? "textarea" : "input", {
-    id,
-    required: true,
-    autocomplete: "off",
-    spellcheck: "false",
-    className: "secret-value secret-value--masked",
-    "data-secret-value": "",
-    ...attributes,
-    ...(multiline ? { rows: "3" } : { type: "password" }),
-  });
-  value.addEventListener("input", () => value.setCustomValidity(secretValueProblem(value.value)));
-  if (value instanceof HTMLInputElement) {
-    value.addEventListener("paste", (event) => {
-      if (/[\r\n]/.test(event.clipboardData?.getData("text") ?? "")) {
-        event.preventDefault();
-        value.setCustomValidity(
-          "This browser cannot mask multiline values. Use a browser with multiline masking support.",
-        );
-        validateFields([value]);
-      }
-    });
-  }
-  const reveal = button(
-    "Show value",
-    () => {
-      const masked = value.classList.toggle("secret-value--masked");
-      if (value instanceof HTMLInputElement) {
-        value.type = masked ? "password" : "text";
-      }
-      reveal.textContent = masked ? "Show value" : "Hide value";
-      reveal.setAttribute("aria-pressed", String(!masked));
-    },
-    { tone: "ghost", size: "sm", "aria-pressed": "false", "aria-controls": id },
-  );
-  return { value, reveal, multiline };
 }
 
 const REPLACEMENT_NOTICE =
@@ -363,20 +298,28 @@ export function renderSecrets(
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
     const body = element("div");
     const notice = element("div");
-    const close = button("Close", closeModal);
+    function dismiss() {
+      closeModal();
+      // Native close restores focus without scrolling. The list can reflow
+      // while the dialog is open, leaving the focused row below the viewport.
+      if (context.isCurrent() && !modal) {
+        list.querySelector(".secret-row:has(:focus-visible)")?.scrollIntoView({ block: "nearest" });
+      }
+    }
+    const close = button("Close", dismiss);
     const actions = element("div", { className: "dialog-actions" }, close);
     const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
     const header = element(
       "header",
       { className: "dialog-header" },
-      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Secrets`),
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
       heading,
     );
     dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      closeModal();
+      dismiss();
     });
     dismissOnBackdrop(dialog);
     dialog.addEventListener(
@@ -616,9 +559,25 @@ export function renderSecrets(
     });
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
     const valueNoticeId = "secret-value-notice";
-    const { value, reveal, multiline } = secretValueControl("secret-value", {
+    const { value, reveal, multiline } = credentialValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    // Native focus can reveal the caret while clipping the lower part of a multiline field.
+    const scrollValueIntoView = () => value.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (value instanceof HTMLTextAreaElement) {
+      value.addEventListener("keyup", (event) => {
+        if (
+          event.isTrusted &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          document.activeElement === value
+        ) {
+          scrollValueIntoView();
+        }
+      });
+    }
     const valueField = field({
       label: "Value",
       control: value,
@@ -655,6 +614,9 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
+    if (replacing && value instanceof HTMLTextAreaElement) {
+      scrollValueIntoView();
+    }
     let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

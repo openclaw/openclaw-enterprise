@@ -5,7 +5,10 @@ import type { createNavigation } from "./navigation.mjs";
 import type { createShell } from "./shell.mjs";
 
 export type LeaveGuard = Parameters<ReturnType<typeof createShell>["setLeaveGuard"]>[0];
-export type TabNavigation = (url: URL) => boolean | "blocked";
+export type TabNavigation = (
+  url: URL,
+  onBlocked?: (feedback: HTMLElement) => void,
+) => boolean | "blocked";
 /** The Agent a refocus recheck read, and when that read started (`performance.now()`). */
 export interface AgentRecheck {
   agent: unknown;

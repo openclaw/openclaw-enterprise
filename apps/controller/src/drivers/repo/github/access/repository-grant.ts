@@ -1,12 +1,15 @@
+import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
+
+/** Registry policy can select a repository by name before GitHub verifies its ID. */
+export type GitHubAppRepositorySelection = Omit<GitHubAppInstallationScope, "repositories"> & {
+  readonly repositories: readonly Readonly<{ repository: string; repositoryId?: string }>[];
+};
+
 /** Repository set explicitly approved for one Agent revision. */
-export interface GitHubRepositoryGrant {
+export interface GitHubRepositoryGrant extends GitHubAppInstallationScope {
   readonly id: string;
   readonly isolationId: string;
-  readonly appId: string;
-  readonly installationId: string;
   readonly profile: "github-repository";
-  readonly repositories: readonly Readonly<{ repositoryId: string; repository: string }>[];
-  readonly permissions: Readonly<Record<string, string>>;
 }
 
 const repositoryPermissions = new Set([
@@ -64,25 +67,18 @@ export function parseGitHubNumericId(value: unknown): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined;
 }
 
-function hasValidGrantIdentity(grant: GitHubRepositoryGrant): boolean {
+function isValidRepository(
+  repository: GitHubAppInstallationScope["repositories"][number],
+): boolean {
   return (
-    grant.profile === "github-repository" &&
-    !!grant.id &&
-    !!grant.isolationId &&
-    parseGitHubNumericId(grant.appId) !== undefined &&
-    parseGitHubNumericId(grant.installationId) !== undefined
-  );
-}
-
-function isValidRepository(repository: GitHubRepositoryGrant["repositories"][number]): boolean {
-  return (
+    !!repository &&
     parseGitHubNumericId(repository.repositoryId) !== undefined &&
     typeof repository.repository === "string" &&
     repositorySlugPattern.test(repository.repository)
   );
 }
 
-function hasValidRepositories(repositories: GitHubRepositoryGrant["repositories"]): boolean {
+function hasValidRepositories(repositories: GitHubAppInstallationScope["repositories"]): boolean {
   if (!Array.isArray(repositories) || repositories.length < 1 || repositories.length > 16) {
     return false;
   }
@@ -98,13 +94,27 @@ function hasValidRepositories(repositories: GitHubRepositoryGrant["repositories"
   );
 }
 
-export function validateGitHubRepositoryGrant(grant: GitHubRepositoryGrant): void {
-  const repositories = grant.repositories;
+export function validateGitHubFiniteInstallationScope(
+  value: unknown,
+): asserts value is GitHubAppInstallationScope {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("invalid-github-repository-grant");
+  }
+  const scope = value as Partial<GitHubAppInstallationScope>;
   if (
-    !hasValidGrantIdentity(grant) ||
-    !hasValidRepositories(repositories) ||
-    !isGitHubRepositoryPermissions(grant.permissions)
+    parseGitHubNumericId(scope.appId) === undefined ||
+    parseGitHubNumericId(scope.installationId) === undefined ||
+    scope.repositories === undefined ||
+    !hasValidRepositories(scope.repositories) ||
+    !isGitHubRepositoryPermissions(scope.permissions)
   ) {
     throw new Error("invalid-github-repository-grant");
   }
+}
+
+export function validateGitHubRepositoryGrant(grant: GitHubRepositoryGrant): void {
+  if (grant.profile !== "github-repository" || !grant.id || !grant.isolationId) {
+    throw new Error("invalid-github-repository-grant");
+  }
+  validateGitHubFiniteInstallationScope(grant);
 }

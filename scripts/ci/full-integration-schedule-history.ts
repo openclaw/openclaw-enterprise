@@ -50,7 +50,7 @@ type HistoryOperation =
   | "manual-history"
   | "coverage-markers";
 
-type FailureKind = "request-failed" | "invalid-metadata";
+type FailureKind = "request-failed" | "invalid-metadata" | "incomplete-artifact-list";
 
 class HistoryError extends Error {
   readonly kind: FailureKind;
@@ -106,9 +106,19 @@ function rows(response: unknown, key: string): Json[] {
 
 async function markers(read: ReadGithub, name: string): Promise<Marker[]> {
   const query = new URLSearchParams({ name, per_page: String(pageSize) });
-  const items = rows(await read(`/actions/artifacts?${query}`), "artifacts");
+  const page = record(await read(`/actions/artifacts?${query}`));
+  const items = page.artifacts;
+  const count = page.total_count;
+  requireValid(
+    Array.isArray(items) &&
+      items.length <= pageSize &&
+      typeof count === "number" &&
+      Number.isSafeInteger(count) &&
+      count >= items.length,
+  );
   const results = [];
-  for (const item of items) {
+  for (const value of items) {
+    const item = record(value);
     requireValid(item.name === name && typeof item.expired === "boolean");
     if (item.expired) {
       continue;
@@ -129,6 +139,9 @@ async function markers(read: ReadGithub, name: string): Promise<Marker[]> {
     });
   }
   requireValid(new Set(results.map((item) => item.runId)).size === results.length);
+  if (count > items.length) {
+    throw new HistoryError("incomplete-artifact-list");
+  }
   return results.sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
 }
 

@@ -40,11 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
-    sha256: "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
-  },
-  {
-    file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
+    sha256: "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",
@@ -52,11 +48,15 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
+    sha256: "f74c60e4fb562e5528fad7fed32a77d26639dbfed4ab97f5d115bc0a822764b1",
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+    sha256: "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
+  },
+  {
+    file: "openclaw-http-chat-input.patch",
+    sha256: "5a90575bfe5c44b76dab5c68d2ab21f219c2e66dc2b3d3d7660da2f70b1b2087",
   },
 ];
 const runtimePaths = [
@@ -86,6 +86,7 @@ const runtimePaths = [
   "node-compile-cache.mjs",
   "worker-heap-flag.mjs",
   "openclaw.mjs",
+  "release-launcher-forward.mjs",
   "extensions",
   "skills",
   "docs",

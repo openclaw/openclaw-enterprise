@@ -2,7 +2,7 @@
 
 This page details the Agent detail page of the [platform console](../console.md):
 tabs and drafts, deployment details, diagnostics, authentication, versions, and the
-Slack channel editor with its Secret picker.
+Slack channel editor with its Credential Source selectors.
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
@@ -76,8 +76,8 @@ deployment while that grant is missing. A refused or failed grant request offers
 without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
-Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or version. Names require exact same-Namespace Secret `read`; a denied
+Configuration summaries show bound Secret names and IDs for the viewed
+draft or version. Slack credential summaries show bound Source references. Names require exact same-Namespace Secret `read`; a denied
 read says a Secret is bound and its name is hidden, with the ID in the tooltip, and
 missing or failed reads show the ID with **Metadata unavailable**. For a caller
 who is not an Installation administrator, a Secret that the readable Secret list
@@ -120,27 +120,11 @@ Channel edits preserve group policies. Change DM access with
 **Direct-message policy** and **Allowed people in direct messages** in the same drawer; see
 [Slack policies](../configuration/secrets.md#native-channel-configuration).
 
-Model, Harness, and Slack credentials share one searchable Secret picker; the
-[Slack editor](../../guides/console/channels-and-credentials.md#slack-editor) lists
-its controls. On the Agent page and in Create Agent, it lists a readable Secret the caller may
-not `operate` disabled with the reason, because a save that binds it is refused. Escape restores the binding, and **Create new Secret...** stays
-available without matches, with **Name** defaulting to the Agent name and
-purpose. A name conflict keeps both inputs and overwrites no Secret. Namespace
-readiness errors require refresh.
+Slack credential selectors list readable, ready static Credential Sources in the selected Namespace. The simple editor selects app and bot tokens. Create Agent and the Configuration JSON editor derive binding selectors from unsaved native references. The Agent **Credentials** tab can replace bindings for saved references, including signing secrets, user tokens, relay authentication tokens, and named accounts. Saving stores the Source reference with the Configuration values and checks exact Source `operate`. The API can refuse Sources whose owner cannot deliver credentials to the Gateway. Recreate older Slack token Secrets as Credential Sources.
 
-Creation stores the Secret immediately, under existing
-[Secret IAM checks](../drivers/secret.md#iam); cancelling the surrounding editor
-does not delete it, and values are never read back. An uncertain creation blocks
-resubmission: the Secret may exist, so refresh and inspect metadata first.
+Deployment requires exact Source `operate` for the Agent service principal. OCC-managed transactional Native IAM can create a missing Agent grant. With other IAM policies, the Agent must already have access. See [Credential Source grants](../credential-sources.md#bind-a-source-to-an-agent).
 
-Selections stay staged until **Save configuration**; Cancel discards them.
-Saving patches Configuration, then grants Agent access through Namespace IAM;
-both require caller permission. A failed grant leaves Configuration saved and
-requires access recovery. A member's session sends no grant and reports that access
-was not verified until **Reload draft**. Neither creation nor saving deploys a Secret.
-
-Secret metadata links open new tabs, preserving edits. Save channel changes
-before editing credentials on the Credentials tab.
+Directory and approver discovery send the selected bot Source ID to the Channel directory lookup operation. That operation checks exact Source `operate` and permission on the Agent or Configuration target. Model and Harness Secret pickers remain available for their separate supported paths.
 
 The simple editor may reject native channel documents it cannot round-trip,
 including non-Socket Slack settings, non-standard credential references, mixed

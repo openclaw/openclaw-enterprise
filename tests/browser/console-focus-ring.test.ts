@@ -9,13 +9,13 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   consoleViewports,
+  createSlackSourceConsoleFixture,
   detailUrl,
   fileBrowser,
   login,
   nativeValues,
   newPage,
   repositoryCheckbox,
-  selectSecret,
   settledView,
 } from "./console-agents-browser-helpers.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
@@ -115,6 +115,16 @@ const focusedRing = (page: Page, selector: string | null = null) =>
       const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
       const box = owner.getBoundingClientRect();
       const clipped = [];
+      const { clientWidth, clientHeight } = document.documentElement;
+      const viewportCut = Math.max(
+        reach - box.top,
+        reach - box.left,
+        box.bottom + reach - clientHeight,
+        box.right + reach - clientWidth,
+      );
+      if (viewportCut >= 1) {
+        clipped.push(`viewport hides ${viewportCut.toFixed(1)}px`);
+      }
       for (
         let scroller = owner.parentElement;
         scroller && scroller !== document.documentElement;
@@ -334,31 +344,110 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
   await assertVisibleRings(page, "Agent tabs at 390", stops);
   // Back at the far end, arrowing again wraps to the first tab. Every arrowed-to tab sits clear
   // of the faded edges too, once the strip's scroll has settled the fades.
-  const faded = [];
-  for (let step = 0; step < count; step += 1) {
-    await page.keyboard.press("ArrowRight");
-    const tab = await page.evaluate(async () => {
+  const tabAtEdge = (selected = false) =>
+    page.evaluate(async (selected) => {
       await new Promise((resolve) => {
         globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
       });
-      const focused = globalThis.document.activeElement;
-      const strip = focused?.closest('[role="tablist"]');
-      if (!focused || !strip) {
-        throw new Error("ArrowRight moved focus outside the tab strip");
+      const document = globalThis.document;
+      const tab = selected
+        ? document.querySelector('[role="tablist"] [aria-selected="true"]')
+        : document.activeElement;
+      const strip = tab?.closest('[role="tablist"]');
+      if (!tab || !strip) {
+        throw new Error("Expected an Agent tab in the strip");
       }
       const style = globalThis.getComputedStyle(strip);
       const before = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")) || 0;
       const after = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")) || 0;
-      const box = focused.getBoundingClientRect();
+      const box = tab.getBoundingClientRect();
       const edge = strip.getBoundingClientRect();
       const under = Math.max(edge.left + before - box.left, box.right - (edge.right - after));
-      return { name: focused.textContent.trim(), under: Math.round(under) };
-    });
+      return {
+        name: tab.textContent.trim(),
+        under: Math.round(under),
+        partlyClipped: box.left < edge.left && box.right > edge.left,
+      };
+    }, selected);
+  const faded = [];
+  for (let step = 0; step < count; step += 1) {
+    await page.keyboard.press("ArrowRight");
+    const tab = await tabAtEdge();
     if (tab.under > 0) {
       faded.push(tab);
     }
   }
   assert.deepEqual(faded, [], "no arrowed-to tab sits under a faded edge");
+
+  const url = page.url();
+  const selected = page.getByRole("tab", { selected: true });
+  const panel = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  const tabStopsInStrip = page.getByRole("tablist").locator('[role="tab"][tabindex="0"]');
+  const assertConfigurationSelected = async () => {
+    assert.deepEqual(await selected.allTextContents(), ["Configuration"]);
+    assert.deepEqual(await tabStopsInStrip.allTextContents(), ["Configuration"]);
+    assert.ok(await panel.isVisible(), "the Configuration panel stays open");
+    assert.equal(page.url(), url, "leaving and re-entering the strip preserves the URL");
+  };
+
+  // A partly visible tab can stay clipped when Chrome focuses it again. Reproduce that position
+  // with native keys, leaving Configuration selected while focus roves to the right.
+  const clipConfiguration = async () => {
+    await page.keyboard.press("Home");
+    for (let step = 1; step < count; step += 1) {
+      await page.keyboard.press("ArrowRight");
+      if ((await tabAtEdge(true)).partlyClipped) {
+        return;
+      }
+    }
+    assert.fail("Expected Configuration to be partly clipped while roving");
+  };
+
+  await clipConfiguration();
+  await page.keyboard.press("Tab");
+  assert.equal(await panel.locator(":focus").count(), 1, "Tab moves to the selected panel");
+  await assertConfigurationSelected();
+  const onExit = await tabAtEdge(true);
+  await page.keyboard.press("Shift+Tab");
+  const onReturn = await tabAtEdge();
+  await assertConfigurationSelected();
+  const returnedRing = await focusedRing(page);
+  assert.ok(returnedRing);
+  assert.equal(returnedRing.name, "Configuration");
+  assert.deepEqual(
+    [onExit, onReturn].filter(({ under }) => under > 0),
+    [],
+    "the selected tab clears the fades both after Tab and on Shift+Tab return",
+  );
+  await assertVisibleRings(page, "Agent tab re-entry at 390", [returnedRing]);
+
+  // Clicking the gap above the strip leaves it without a Tab keydown.
+  await clipConfiguration();
+  const strip = await page.getByRole("tablist").boundingBox();
+  assert.ok(strip);
+  await page.mouse.click(Math.ceil(strip.x) + 2, Math.floor(strip.y) - 1);
+  assert.ok(
+    await page.evaluate(() => globalThis.document.activeElement === globalThis.document.body),
+  );
+  const entry = (await tabStops(page, ({ tag }) => tag === "tab")).at(-1);
+  assert.ok(entry);
+  assert.equal(entry.name, "Configuration");
+  await assertConfigurationSelected();
+  assert.ok((await tabAtEdge()).under <= 0, "Tab returns clear of the fades after a click outside");
+  await assertVisibleRings(page, "Agent tab after a click outside at 390", [entry]);
+
+  // Draft Deployment has no panel stop. Tab can leave the document, so check the strip
+  // on exit without relying on where the browser sends focus next.
+  await page.getByRole("tab", { name: "Deployment", exact: true }).press("Enter");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  const beforeExit = await tabAtEdge(true);
+  assert.equal(beforeExit.name, "Deployment");
+  assert.ok(beforeExit.under > 0, "Deployment is clipped while roving left");
+  await page.keyboard.press("Tab");
+  const afterExit = await tabAtEdge(true);
+  assert.equal(afterExit.name, "Deployment");
+  assert.ok(afterExit.under <= 0, "Deployment clears the fades when Tab leaves the strip");
 });
 
 test("repository rows and the Slack people search on Create Agent show an unclipped token ring", async (t) => {
@@ -370,31 +459,14 @@ test("repository rows and the Slack people search on Create Agent show an unclip
       namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
     })),
   );
+  const sourceSetup = await createSlackSourceConsoleFixture(t, "People search focus");
   const driver = new CodexPluginDriver();
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  sourceSetup.fixture.controller.registerDriver(driver);
+  sourceSetup.fixture.controller.selectDriver("plugin", driver.id);
+  const bot = (await sourceSetup.enroll("Search bot", "xoxb")).source;
   for (const viewport of consoleViewports) {
     const label = `Create Agent at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    // Only the provider directory is simulated: one person matches any search.
-    await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
-      (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            data: {
-              workspaceId: "TTEST123",
-              workspaceName: "Test workspace",
-              candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
-              complete: true,
-            },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
-          }),
-        }),
-    );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await repositoryCheckbox(page, "example/app").waitFor();
@@ -432,13 +504,41 @@ test("repository rows and the Slack people search on Create Agent show an unclip
         `${label}: an access option is framed by ${frame} (${JSON.stringify(access)})`,
       );
     }
-    await openAdvancedSettings(page);
-    await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+    const { fixture: sourceFixture, namespace: sourceNamespace } = sourceSetup;
+    const { page: sourcePage } = await newPage(t, sourceFixture, {
+      browser,
+      context: { viewport },
+    });
+    // Only the provider directory is simulated for this visual focus test.
+    await sourcePage.route(
+      `${sourceFixture.origin}/namespaces/${sourceNamespace.id}/channel-directory/lookup`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          json: {
+            data: {
+              workspaceId: "TTEST123",
+              workspaceName: "Test workspace",
+              candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
+              complete: true,
+            },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
+          },
+        }),
+    );
+    await login(sourcePage, sourceFixture, `/console/agents/new?namespace=${sourceNamespace.id}`);
+    await sourcePage.getByRole("button", { name: "Start without Preset" }).click();
+    await openAdvancedSettings(sourcePage);
+    await sourcePage.getByLabel("Default plugin approvers mode").selectOption("chosen");
     // The people search input has no outline of its own; its chip field draws the ring.
-    await page.getByLabel("Default plugin approvers mode").focus();
-    const people = await tabStops(page, ({ name }) => name === "Default plugin approvers people");
+    await sourcePage.getByLabel("Default plugin approvers mode").focus();
+    const people = await tabStops(
+      sourcePage,
+      ({ name }) => name === "Default plugin approvers people",
+    );
     assert.equal(people.at(-1)?.name, "Default plugin approvers people");
-    await assertVisibleRings(page, label, [...repositories, ...access, ...people]);
+    await assertVisibleRings(page, label, [...repositories, ...access]);
+    await assertVisibleRings(sourcePage, label, people);
     // The 18 px checkbox alone is easy to miss, so its whole result row draws the inset ring.
     const { inset } = await tokenRings(page);
     const app = repositories.find(({ name }) => name.includes("example/app"));
@@ -450,19 +550,21 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     );
     // The arrowed-to result keeps focus in the search input, so measure the active option itself
     // against its results scroller (finding 1963).
-    await selectSecret(page, "Slack bot token Secret for people search", bot);
-    const search = page.getByRole("combobox", {
+    await sourcePage
+      .getByLabel("Slack bot Credential Source for people search", { exact: true })
+      .selectOption(bot.id);
+    const search = sourcePage.getByRole("combobox", {
       name: "Default plugin approvers people",
       exact: true,
     });
     await search.fill("free");
-    await page.getByRole("option", { name: /Freeman Example/ }).waitFor();
+    await sourcePage.getByRole("option", { name: /Freeman Example/ }).waitFor();
     await search.press("ArrowDown");
-    const result = await focusedRing(page, ".slack-directory-result.active");
+    const result = await focusedRing(sourcePage, ".slack-directory-result.active");
     assert.ok(result, "ArrowDown activates a directory result");
     assert.match(result.name, /Freeman Example/, `${label}: ArrowDown activates a result`);
     assert.equal(result.ring, inset, `${label}: the active result draws the inset ring`);
-    await assertVisibleRings(page, `${label} people results`, [result]);
+    await assertVisibleRings(sourcePage, `${label} people results`, [result]);
   }
 });
 

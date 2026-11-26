@@ -652,6 +652,55 @@
       "when": 1787000000093,
       "tag": "0093_agent_repository_api_limits",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1787000000094,
+      "tag": "0094_token_service_source_backend_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1787000000095,
+      "tag": "0095_credential_cutover",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1787000000096,
+      "tag": "0096_namespace_github_app_clients",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1787000000097,
+      "tag": "0097_oauth_endpoint_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787000000098,
+      "tag": "0098_shared_git_source_repository_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1787000000099,
+      "tag": "0099_gateway_startup_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1787000000100,
+      "tag": "0100_native_github_pull_request_publication",
+      "breakpoints": true
     }
   ]
 }

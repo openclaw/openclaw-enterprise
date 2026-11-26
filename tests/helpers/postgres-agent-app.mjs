@@ -1,3 +1,4 @@
+import { oauthIssuerOperations } from "../../apps/controller/src/connections/oauth-issuer.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { sandboxNamespaceLifecycleBinding } from "../../apps/controller/src/composition/namespace-lifecycle.ts";
 import assert from "node:assert/strict";
@@ -11,7 +12,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { AgentResponse, SecretResponse } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -21,7 +22,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.ts";
 import { databaseUrl } from "./postgres-database.mjs";
-import { createRuntimeLogComputeDriver } from "./runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "./runtime-logs.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 const adminEmail = "postgres-admin@openclaw.local";
@@ -111,6 +112,7 @@ export async function createPostgresAgentApp(
   });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const controller = new OpenClawController(installation, {
+    oauthIssuer: oauthIssuerOperations,
     state,
     ...(appOptions?.agentAuditCursorSecret === undefined
       ? {}

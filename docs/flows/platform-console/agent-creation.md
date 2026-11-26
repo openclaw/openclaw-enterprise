@@ -1,18 +1,18 @@
 ---
 created: 2026-10-20
-updated: 2026-11-22
-last_updated_session: authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967
+updated: 2026-11-26
+last_updated_session: authoring-run/d31dceff-ccfa-45ce-87c9-dd7496e7e787
 ---
 
 # Console Agent creation
 
 ## Overview
 
-Trace the Create Agent form from plugin, model, and repository choices to a
-provisioning request or an ordinary draft, then Secret grants and authentication.
-The [parent flow](../platform-console.md) authorizes the page first; the
-[creation reference](../../reference/console/create-and-deploy.md) owns
-user-visible behavior.
+Trace how the Console saves an Agent draft or queues guided provisioning after
+checking the selected model, Plugins, and repositories. The
+[parent flow](../platform-console.md) authorizes the page. The
+[creation reference](../../reference/console/create-and-deploy.md) owns the
+operator procedure.
 
 ## Entry Points
 
@@ -24,17 +24,35 @@ user-visible behavior.
 
 ## Flow
 
+The Console saves a draft for managed credentials and per-repository Git access.
+
 ```mermaid
-graph TD
-  A["Create Agent form"] --> B["Plugins, model, and repository choices"]
-  B -->|repository access required and missing| H["Explain the requirement before provisioning"]
-  B -->|supported Dedicated with profile access| C["Queue provisioning with inline Configuration"]
-  C --> D["Worker creates resources, grants and first deployment"]
-  B -->|ordinary draft| E["Validate, then POST Configuration and Agent"]
-  B -->|GitHub access per repository| I["Save draft with policy and verify grants"]
-  I --> F
-  E --> F["Grant Agent use of selected Secrets"]
-  F -->|failed| G["Retry credential access"]
+---
+config:
+  htmlLabels: true
+  theme: base
+  themeVariables:
+    fontSize: 15px
+  flowchart:
+    nodeSpacing: 24
+    rankSpacing: 32
+---
+flowchart TB
+  Form["<b>Create Agent</b><br/>Model, Plugins, Git"] --> Gate{"<b>Check selections</b>"}
+  Gate -->|Required Git missing| Refused["<b>Explain missing access</b>"]
+  Gate -->|Enroll a model Source| Source["<b>TokenService</b><br/>Enroll credential"]
+  Gate -->|Source already saved,<br/>scoped Git, or other draft| Draft["<b>Save Agent draft</b><br/>Configuration and bindings"]
+  Gate -->|Eligible guided setup| Queue["<b>Queue provisioning</b><br/>Inline Configuration"]
+  Source --> Draft
+  Queue --> Worker["<b>Worker</b><br/>Create and deploy"]
+  Draft -->|When needed| Grants["<b>Confirm grants</b><br/>Repository and credential"]
+
+  classDef stored fill:#e4eff8,stroke:#547995,color:#17344a
+  classDef action fill:#e2f1ed,stroke:#4c7b6d,color:#143a30
+  classDef gate fill:#fbefdc,stroke:#9d733b,color:#52370e
+  class Form,Draft,Queue stored
+  class Source,Worker,Grants action
+  class Gate,Refused gate
 ```
 
 ## Execution Trace
@@ -52,17 +70,16 @@ While mounted, Available and Configured retain separate selected plugins, querie
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.
 
-`agents/plugin-discovery.mjs:createPluginDiscovery` (`loadCatalog`, `loadTools`) implements
-[PAT discovery](../agent-plugins.md#credential-scoped-discovery): the selected or
-Preset Secret takes precedence over an entered token. OCC reads the
-Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
-Credential, provider, and Harness changes clear results and invalidate pending reads.
+`agents/plugin-discovery.mts:createPluginDiscovery` (`loadCatalog`, `loadTools`) uses
+a ready model CredentialSource reference for [credential-scoped Codex discovery](../agent-plugins.md#credential-scoped-discovery).
+Console does not send a Secret or raw token for discovery. Pagination is upstream;
+filtering is local. Credential, provider, and Harness changes invalidate pending reads.
 
-The model credential, people search and Slack token fields use the shared
+Fields for model Namespace Secrets use the shared
 [Secret picker](agent-editing.md#4-render-draft-revision-or-channels). When a field first opens,
 `renderCreateAgent` reads `GET /namespaces/:namespaceId/permissions/secrets`: the readable
 Secrets the caller may not `operate`, reported only to a caller with Namespace read and Agent
-`create`. Agent create, Configuration create and the people search refuse such a Secret, so each
+`create`. Agent create and Configuration create refuse such a Secret, so each
 field lists it disabled with its reason and never stages it; the Preset's **Use existing Secret**
 list does the same, and **Use Preset** refuses it. A permission reread, a refused create or an
 inline Secret create reads the answer again. A failed read keeps the last answer, or marks
@@ -127,49 +144,44 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-which authorizes Agent create. Create Agent holds this read until the permission answer allows
-Agent create, or the Installation read succeeds without an answer; after a known refusal it
-reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
-failures block submission.
+which authorizes Agent create. The form waits for permission to allow Agent create,
+or a successful Installation read without an answer. A known refusal prevents the read
+and offers no retry. Discovery requests optional descriptions for visible refs.
+[Repository admission](../agent-repository-credentials.md) resolves submitted
+`repositoryAccess`. Failed discovery retains draft selections; retries recheck current
+policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` or `meta.notConfigured` (no
+`repository` settings), with no retained selections, permits creation without bindings.
+Other failures block submission.
 
-The credential catalog includes ordinary Gateway sources even when a Git Proxy
-is selected. Repository access remains optional in the form. An ordinary Gateway
-source without protected sources or repository bindings needs no Proxy admission.
-Source-free deployment follows the [protected admission flow](../credential-source-egress.md#1-admit-source-and-install-the-revision-plan).
+Repository access is optional and independent of model authentication. Native
+Git uses its selected GitHub App Client and repository grants.
+[Source admission and delivery](../credential-source-lifecycle.md)
 
 ### 4. Submit provisioning or an ordinary draft
 
 `apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 [Per-repository access](../../guides/topics/agent-sandbox-policy.md#set-github-access-before-the-first-deployment)
-defaults selected repositories to their delegated limits. With a selection,
-the API saves the draft and grants atomically. Console confirms them before
-granting credentials. Deployment checks the reviewed version under the Namespace lock
-and refuses stale grants with HTTP 409.
+defaults selected repositories to their delegated limits. The API saves the Agent
+draft and grants in one transaction. Console confirms the grants before granting
+credential access. Deployment refuses stale policy versions with HTTP 409.
 
-Otherwise supported Dedicated runtimes submit inline Configuration, optional repository
-access, and Secret references to [provisioning](../agent-provisioning.md), even after
-a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. Before it saves a model Secret or registers a
-Credential Source for the request, the form runs the preflight below with the planned method.
-The worker reauthorizes, creates resources and exact Secret grants, and deploys; Console polls and opens the saved version. Where the form cannot follow a placement
-refusal's advice to select Embedded OpenClaw, it shows only the missing setting.
+With eligible scoped repository choices but none selected, **Create Agent** warns before requesting deployment without a repository policy. Selecting a repository changes the action to **Save Agent draft**.
 
-The Installation capabilities do not show whether the Compute Driver supplies a Preset's
-operator-managed (`runtime`) binding. When the capabilities are read, `checkRuntimeBinding` sends
-that binding to the preflight below; a `harnessAuth.method` refusal disables **Create Agent** and
-names what an administrator changes, because the form can change neither the binding nor the mode.
+Eligible guided provisioning uses inline Configuration and Secret references. The
+**Model credential** picker (`harness-auth.mts:createModelCredentialSourceField`)
+lists readable, ready Namespace Sources compatible with the selected API-key/PAT
+preset or built-in Codex OAuth consent (`builtin_codex`, no Template). Reuse
+skips enrollment and login. Save checks exact Source `operate` and records its ID
+in `harnessAuth.sourceId` and `credentialSources`. **Add new credential…** enrolls
+a key or PAT through TokenService and clears the input; **Sign in with OAuth**
+starts device login. Both bind the resulting Source.
 
-Before any write, `create.mts:renderAgentForm` checks the Agent name with the API's Name rule
-(`namespaces.mts:namespaceNameProblem`) and each initial workspace file with the Workspace tab's
-`agents/workspace.mts:workspaceFileProblem`, which names the file; the check opens Advanced
-settings to it. A new Secret gets no `operate` grant, so where the `operate` answer above denies
-any readable Secret, the Preset's **Create new Secret** choice is disabled and a typed model key
-is refused before any write. It then checks the Agent name, draft values with their staged channel
+Capabilities do not report whether Compute supplies a Preset's fixed `runtime` binding. `checkRuntimeBinding` preflights it; a `harnessAuth.method` refusal disables **Create Agent** and names the required administrator action.
+
+Before writing, `create.mts:renderAgentForm` checks the Agent name (`namespaces.mts:namespaceNameProblem`) and workspace files (`agents/workspace.mts:workspaceFileProblem`); a file error opens Advanced settings. If the permission answer denies any readable Secret, the form disables **Create new Secret** and refuses a typed key because a new Secret has no `operate` grant. It then checks the name, draft values with staged channel
 `secretBindings`, plugins and the planned `harnessAuth`
-(only the method for a Secret it saves next or registers with a Credential Gateway; none for
+(only the planned method for a credential it saves next; none for
 ChatGPT sign-in) with
 `POST /namespaces/:namespaceId/agents/validate`. After Agent create authorization,
 OCC rejects Configuration Secret bindings that name another Namespace, then applies
@@ -180,7 +192,7 @@ binding receives Configuration create's `400`. Preflight writes nothing; Secret 
 and `operate` checks stay with the actual writes. `list.mts:channelBindingRefusal` shows
 the channel refusal, and the same one from
 provisioning, only under the Configuration JSON;
-the Slack drawer requires both token Secrets while Slack is enabled. It then posts
+the Slack drawer requires ready static app and bot Credential Sources while Slack is enabled. For additional native Slack references, `createSlackCredentialBindingFields` derives names from the unsaved Configuration and stages their Source bindings before validation. Console submits values and canonical bindings together. Directory and approver discovery use the selected bot `sourceId`; save and lookup check exact Source `operate`. It then posts
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Console checks the returned Secret name and Namespace, the Configuration values and bindings
@@ -199,11 +211,9 @@ IAM Restrictions. The alert keeps the request ID. Once access changes, a manual
 **Create Agent** retry in this draft reuses the Configuration.
 **Cancel** warns that the saved Configuration remains and a fresh draft can save
 another. An uncertain Agent write stays locked.
-For an uncertain Credential Source registration, **Check credential registration** reads
-the source for this request and confirms its type and Secret references before continuing.
-After a known registration refusal, empty checks retain the refusal and the saved Secret.
-They do not retry writes. A confirmed validation refusal unlocks source correction;
-other known refusals keep the same registration for an explicit **Create Agent** retry.
+If Source creation has an unknown outcome, Console clears the key, stops the save,
+and asks the caller to check Credential Sources before another action. A confirmed
+Source is reused if a later step fails.
 If the Console times out waiting for validation, it stops before the save step,
 keeps the form entries, and lets the caller select **Create Agent** to try again.
 Success opens `revision=draft`.
@@ -227,8 +237,7 @@ if an authorized request names a missing Namespace. The lookup needs no
 Namespace `read` grant.
 
 The form applies these capabilities as it applies the Installation's. The
-Namespace response gives the form the credential source types to register a
-model Secret with a Credential Gateway as in step 4. It omits
+Namespace response omits
 `agentProvisioning`, so the form saves a draft. When browser access is enabled,
 the response includes `nativeAdmin` and the form offers **Enable browser chat**.
 [Agent browser access](../../reference/agent-native-admin.md) owns the later
@@ -264,6 +273,13 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-25 18:02: Trace the Model credential picker. (authoring-run/8e16452d-53c6-4819-8002-1f5cbb5601bc - e80a503b866e06351b5557ef874183d96ab1f6b8)
+- 2026-11-25 17:02: Trace reuse of a saved built-in Codex OAuth Source in the accompanying Console changes. (authoring-run/8b9726b9-2263-4930-b132-f170f536f67e - 3b195612619556d60097c9fbd0fbfbbd3ba9b0e7)
+- 2026-11-25 11:30: Trace reuse and replacement of an existing managed model Source. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
+
+- 2026-11-24 05:45: Reconcile Source enrollment with first-deployment repository warning. (authoring-run/816f6bc5-1b99-4a82-8903-be3d98e6dd07 - d6403c2401e338964f5486f8db2fcb40a3758448)
+- 2026-11-24 04:58: Trace the first-deployment repository warning and draft action. (authoring-run/02daa2dc-277c-444c-bb4d-5589ee0579e9 - 840798ada6c310271e26b3004c25bd7b253d042c)
+- 2026-11-23 07:52: Trace direct static Source creation and draft save in Console. (authoring-run/cc0bf76f-7449-4eac-b151-d064ddc9580e - e4a24549373e8e111a15ec6da6b753eca4449646)
 - 2026-11-22 12:45:07 UTC: Trace matched Agent-save permission refusals, conditional same-draft retry, unknown outcomes, and the saved Configuration warning on Cancel. (authoring-run/0af8b944-e54e-4170-939f-bc90ca8b2967 - e46d3a6401a2b9040ac6001555baad26356c70a3)
 - 2026-11-22 10:40: Trace pending and canceled model Secret choices. (authoring-run/cb3a3926-c616-4777-9f78-5da17d6d53bc - 0706f806d51c60465533b087ae9d0db5c87bc896)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

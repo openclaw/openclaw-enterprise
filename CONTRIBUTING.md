@@ -113,8 +113,9 @@ Before publishing with a personal credential, verify the authenticated GitHub
 account with `gh api user --jq .login` and confirm it matches the requesting
 contributor. For an explicitly delegated GitHub App installation task, verify the
 operator's approved App, installation and repository scope instead. Use the
-[verified App bot identity](docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
-for repository-local Git author settings. The
+approved App bot identity for repository-local Git author settings. The
+[App bot verification procedure](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/guides/repository-credentials/openshell-git-push.md#3-push-the-first-empty-commit-through-openclaw)
+records how to resolve the bot login and numeric ID for Git attribution. The
 [`/user` endpoint](https://docs.github.com/en/rest/users/users#get-the-authenticated-user)
 does not support installation tokens; its refusal does not establish that the
 repository credential is invalid. App delegation permits only the explicitly
