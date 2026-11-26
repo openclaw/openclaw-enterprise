@@ -1780,7 +1780,6 @@ export function createAgentDetailScenarios({
         slack: true,
         actions: [
           click("Edit Configuration"),
-          { selector: ".launch-advanced summary", click: true },
           {
             selector: "#configuration-json",
             value: JSON.stringify(
