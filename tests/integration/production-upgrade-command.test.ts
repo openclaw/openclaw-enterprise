@@ -347,6 +347,7 @@ test("status treats candidate checks as historical and rejects invalid preflight
     historical.stdout,
     /Reconcile the command result and current inventory before any further write/u,
   );
+  assert.doesNotMatch(historical.stdout, /Keep writes paused/u);
 
   for (const [marker, outcome] of [
     ["prepared", /No completion was recorded/u],
@@ -428,6 +429,12 @@ test("status keeps Helm uncertainty with absent or empty dispatch evidence and g
   const f = await fixture(t);
   const dispatch = join(f.evidence, "dispatch");
   await mkdir(f.evidence, { mode: 0o700 });
+  await writeFile(join(f.evidence, "prepared"), "", { mode: 0o600 });
+  const prepared = run("status", f);
+  assert.equal(prepared.status, 0, prepared.stderr);
+  assert.match(prepared.stdout, /can stop the OCC API and Worker before Helm starts/u);
+  assert.match(prepared.stdout, /check the API and Worker replica counts and readiness/u);
+
   await writeFile(join(f.evidence, "helm-started"), "", { mode: 0o600 });
 
   for (const state of ["absent", "empty"]) {
@@ -437,6 +444,11 @@ test("status keeps Helm uncertainty with absent or empty dispatch evidence and g
     const result = run("status", f);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Helm intent was recorded.*outcome remains uncertain/u);
+    assert.match(
+      result.stdout,
+      /verify that the original upgrade and Helm processes have stopped/u,
+    );
+    assert.doesNotMatch(result.stdout, /before Helm starts/u);
     assert.doesNotMatch(result.stdout, /Agent deployments may|No deployment|safe to retry/iu);
   }
 
@@ -445,7 +457,7 @@ test("status keeps Helm uncertainty with absent or empty dispatch evidence and g
   const completed = run("status", f);
   assert.equal(completed.status, 0, completed.stderr);
   assert.match(completed.stdout, /Completion was recorded/u);
-  assert.doesNotMatch(completed.stdout, /Helm intent|Agent deployments may/u);
+  assert.doesNotMatch(completed.stdout, /Helm intent|Agent deployments may|Keep writes paused/u);
 });
 
 test("status keeps Helm uncertainty with linked, nonprivate, or unreadable dispatch evidence", async (t) => {
