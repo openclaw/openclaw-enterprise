@@ -439,7 +439,8 @@ export async function verifyNativeGitAgent(
             );
             return (
               agent.activeRevisionId === undefined &&
-              sandbox?.id === contributor.sandbox.id &&
+              sandbox !== undefined &&
+              sandbox.id === contributor.sandbox.id &&
               (sandbox.phase === "SANDBOX_PHASE_STOPPED" || sandbox.phase === 7) &&
               Array.isArray(sandbox.spec?.providers) &&
               !sandbox.spec.providers.includes(provider)
