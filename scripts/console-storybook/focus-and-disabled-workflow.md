@@ -51,6 +51,15 @@ ring, including its bottom edge, is visible. Repeat at 390 px.
 5. Open **Components / Dialogs / Plugins (wide)**. Tab through the search field,
    Load plugins and the plugin list. The search field and buttons show the
    outer ring; each plugin in the list shows the inset ring.
+
+   In **Pages / Agent detail / Plugins Search While Loading**, select **Plugins**
+   and open **Configure plugins**. Once the list loads, type `Workspace`.
+   **Load plugins** keeps its label while disabled. The status and spinner show
+   that the search is running. The signed-in browser test **A dedicated Agent
+   with empty configuration can browse the default OpenClaw catalog** also
+   simulates a failed search. It parks the pointer just inside the button’s left
+   edge. Clicking there after the error appears should retry the same search once.
+
 6. Open **Pages / Create Agent / Repositories using the Agent default**. Tab to
    a repository row. The row draws an inset ring around its checkbox.
 7. Open **Components / Channels / Slack directory channels**. Tab into the
