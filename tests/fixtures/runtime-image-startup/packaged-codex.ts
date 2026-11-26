@@ -4,10 +4,12 @@ export async function probePackagedCodex(
   {
     historicalCodex,
     stagingCodexVersion,
+    authorizedBinaries,
     deadlineMs,
   }: {
     historicalCodex: boolean;
     stagingCodexVersion: string;
+    authorizedBinaries: readonly string[];
     deadlineMs: number;
   },
   codexExecutableSource: string,
@@ -163,14 +165,18 @@ export async function probePackagedCodex(
     harnessCodex.startsWith("/"),
     "codexExecutable() fell back to " + harnessCodex + " on PATH " + process.env.PATH,
   );
-  assert.equal(realpathSync(harnessCodex), realpathSync(platformBinary));
+  const executable = realpathSync(harnessCodex);
+  assert.equal(executable, realpathSync(platformBinary));
+  if (!historicalCodex) {
+    assert.ok(
+      authorizedBinaries.includes(executable),
+      "OpenShell policy does not authorize the packaged Codex executable " + executable,
+    );
+  }
   const platformBinarySha256 = createHash("sha256")
     .update(readFileSync(platformBinary))
     .digest("hex");
-  const platformInventoryPath = relative(
-    "/app/node_modules/openclaw",
-    realpathSync(platformBinary),
-  );
+  const platformInventoryPath = relative("/app/node_modules/openclaw", executable);
   assert.ok(
     !platformInventoryPath.startsWith(".."),
     "Codex platform binary must live under the inventoried OpenClaw package root.",
