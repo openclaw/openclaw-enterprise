@@ -41,12 +41,14 @@ async function verifyGatewayStartupCredentials(f, agent, stopQaAgent) {
       { action: "read", resourceKind: "agent" },
       { action: "operate", resourceKind: "agent" },
       { action: "deploy", resourceKind: "agent" },
+      { action: "read", resourceKind: "configuration" },
       { action: "operate", resourceKind: "secret" },
       { action: "read", resourceKind: "credential_source" },
     ],
   });
   for (const [resourceKind, resourceId] of [
     ["agent", agent.id],
+    ["configuration", configuration.id],
     ["secret", agent.harnessAuth.source.id],
     ["credential_source", source.id],
   ]) {
