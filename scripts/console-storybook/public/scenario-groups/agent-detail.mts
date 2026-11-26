@@ -94,6 +94,7 @@ type AgentDetailScenario = {
   observabilityDenied?: true;
   candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
   candidateActivates?: true;
+  candidateFailsOnPoll?: true;
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   bootstrapFailure?: true;
   cleanupStatus?: "queued";
@@ -2667,16 +2668,9 @@ export function createAgentDetailScenarios({
         name: "Deployment fails while watching",
         path: `${candidateVersion}&tab=deployment`,
         deployed: true,
-        candidateDeploymentStatus: "failed",
+        candidateDeploymentStatus: "running",
+        candidateFailsOnPoll: true,
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-        // Show the in-progress record on arrival, then let the next poll read the failed record.
-        rules: [
-          {
-            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
-            once: true,
-            data: { status: "running", progress: null, error: null, warnings: [] },
-          },
-        ],
         description:
           "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
         steps: [

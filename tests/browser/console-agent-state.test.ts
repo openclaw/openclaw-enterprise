@@ -276,6 +276,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   const agent = await fixture.createAgent(namespace.id, "Cleanup Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 1440, height: 900 });
   let cleanup: { status: string; nextAttemptAt: string | null } = {
     status: "queued",
     nextAttemptAt: "2026-09-30T12:00:00.000Z",
@@ -301,7 +302,23 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   // The failure's card says nothing of the cleanup, so the details it would fold stay open and
   // show it without the reader opening them, even when the record lands after the page showed.
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const notice = page.getByText("Deployment resource cleanup needs attention.", { exact: true });
+  await notice.waitFor();
+
+  // Opening Deployment hides the cleanup notice above the tabs.
+  const tab = page.getByRole("tab", { name: "Deployment", exact: true });
+  await tab.evaluate((node) => node.scrollIntoView({ block: "center", behavior: "instant" }));
+  assert.ok(await page.evaluate(() => globalThis.window.scrollY > 0));
+  const tabTop = () => tab.evaluate((node) => node.getBoundingClientRect().top);
+  const before = await tabTop();
   const activity = await expectDeploymentOutcome(page, "Failed", { folded: false });
+  await notice.waitFor({ state: "hidden" });
+  assert.equal(await tab.getAttribute("aria-selected"), "true");
+  assert.equal(await hasFocus(tab), true);
+  assert.ok(
+    Math.abs((await tabTop()) - before) <= 1,
+    "Deployment tab stays in place when the cleanup shortcut is hidden",
+  );
 
   // The same retire cleanup also covers repository credential resources, so the
   // status names the version's cleanup rather than bootstrap resources.

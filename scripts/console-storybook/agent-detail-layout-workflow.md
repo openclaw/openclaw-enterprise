@@ -1,7 +1,7 @@
 # Review the Agent detail layout
 
-Use the desktop Console first, then a 390-pixel phone frame. These stories use
-simulated API state; they do not prove persistence or live runtime behavior.
+Start on desktop, then test at 390 px. These stories simulate API responses and
+cannot verify persistence or live runtime behavior.
 
 Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
 then press End and Left to focus the tab before last. Narrow the window to
@@ -110,10 +110,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
 
 Use **Current version's Sandbox lost** to check the warning while returning to the same version.
 
-In **Bootstrap failure with cleanup pending**, stay on the page as the replacement
-fails. The selected version stays the same. **Sandbox running** changes to
-**Sandbox lost** with **Deploy a new version** after one fresh Sandbox check.
-Cleanup updates do not trigger more checks. The story simulates both responses.
+In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
+Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
+Check v7’s failed record, pending cleanup and
+unchanged selection. One check changes **Sandbox running** to **Sandbox lost**,
+offering **Deploy a new version**. Cleanup triggers no further checks.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).

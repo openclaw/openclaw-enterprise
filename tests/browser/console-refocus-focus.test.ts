@@ -347,6 +347,7 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   const list = view.getByRole("table", { name: "Agents", exact: true });
   const link = (name: string) => list.getByRole("link", { name, exact: true });
   const opened = link(target.name);
+  const detailHeading = page.getByRole("heading", { level: 1, name: target.name, exact: true });
   await opened.waitFor();
   const requests = apiRequests(page, fixture.origin);
   const listUrl = page.url();
@@ -358,7 +359,7 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   await page.keyboard.press("ArrowDown");
   assert.equal(await hasFocus(opened), true, "Down Arrow reaches the second match");
   await page.keyboard.press("Enter");
-  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await detailHeading.waitFor();
   await view.waitFor();
   await waitForIdleFetches(page);
 
@@ -386,14 +387,100 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   assert.equal(await search.inputValue(), query);
   assert.equal(await link(unrelated.name).count(), 0, "the saved filter excludes unrelated Agents");
   assert.equal(await hasFocus(opened), true, "Back restores focus to the opened Agent");
-  const box = await opened.boundingBox();
-  assert.ok(
-    box && box.y >= 0 && box.y + box.height <= viewport.height,
-    "the focused Agent link is within the viewport",
-  );
-  // Reopen the focused Agent. On this return the list no longer contains its focus target.
+  const fullyInView = async (control: Locator) => {
+    const box = await control.boundingBox();
+    return Boolean(
+      box &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.x >= 0 &&
+      box.x + box.width <= viewport.width &&
+      box.y >= 0 &&
+      box.y + box.height <= viewport.height,
+    );
+  };
+  assert.equal(await fullyInView(opened), true, "the focused Agent link is within the viewport");
+
+  // A late keyboard choice should stay in view when Back reuses the unchanged list.
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  await tagView(page);
+  await page.mouse.move(viewport.width / 2, viewport.height / 2);
+  await page.mouse.wheel(0, viewport.height);
+  await page.waitForFunction(() => {
+    const selector = document.querySelector("#namespace-selector");
+    return selector && selector.getBoundingClientRect().bottom <= 0;
+  });
   await page.keyboard.press("Enter");
-  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await detailHeading.waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+  const detailScrollY = await page.evaluate(() => window.scrollY);
+  assert.equal(await fullyInView(detailHeading), true, "the Agent heading starts fully in view");
+  const detailHeadingTop = await detailHeading.evaluate((node) => node.getBoundingClientRect().top);
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+
+  const read = await holdRequests(t, page, agentsUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const delivered = responseTo(page, "GET", agentsUrl);
+  try {
+    await page.goBack();
+    assert.equal(
+      (await read.requested)?.status(),
+      200,
+      "the Controller admitted the unchanged list",
+    );
+    await page.locator(heldView).waitFor();
+    // Sample after native history restoration and before the reader moves focus.
+    const heldScrollY = await page.evaluate(
+      () => new Promise<number>((resolve) => requestAnimationFrame(() => resolve(window.scrollY))),
+    );
+    assert.equal(
+      heldScrollY,
+      detailScrollY,
+      "Back keeps the outgoing Agent at its previous scroll position",
+    );
+    assert.equal(
+      await fullyInView(detailHeading),
+      true,
+      "the held Agent heading stays fully in view",
+    );
+    await status.waitFor();
+    assert.equal(await fullyInView(status), true, "the delayed status is fully in view");
+    assert.equal(
+      await detailHeading.evaluate((node) => node.getBoundingClientRect().top),
+      detailHeadingTop,
+      "the delayed status leaves the held Agent heading in place",
+    );
+    await waitForEnabled(selector);
+    assert.equal(await hasFocus(selector), false, "focus starts outside the Namespace selector");
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    assert.equal(await hasFocus(selector), true, "Tab reached the Namespace selector");
+    assert.equal(await fullyInView(selector), true, "the chosen selector is fully in the viewport");
+  } finally {
+    read.release();
+  }
+  assert.equal((await delivered).status(), 200);
+  await page.waitForURL(listUrl);
+  await opened.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await status.count(), 0, "the status leaves with the held Agent");
+  assert.equal(await viewTag(page), "kept", "Back reused the unchanged list");
+  assert.equal(await hasFocus(selector), true, "Back keeps focus on the Namespace selector");
+  assert.equal(
+    await fullyInView(selector),
+    true,
+    "the focused Namespace selector stays fully in view",
+  );
+
+  // Reopen the Agent. On this return the list no longer contains its focus target.
+  await opened.focus();
+  await page.keyboard.press("Enter");
+  await detailHeading.waitFor();
   await view.waitFor();
   await waitForIdleFetches(page);
   await fulfillMethod(page, agentsUrl, "GET", {
@@ -411,13 +498,9 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   assert.equal(await opened.count(), 0, "the stale Agent link is gone");
   const heading = page.getByRole("heading", { level: 1, name: "Agents", exact: true });
   assert.equal(await hasFocus(heading), true, "Back falls back to the Agents heading");
-  const bounds = await heading.boundingBox();
-  assert.ok(
-    bounds &&
-      bounds.x >= 0 &&
-      bounds.x + bounds.width <= viewport.width &&
-      bounds.y >= 0 &&
-      bounds.y + bounds.height <= viewport.height,
+  assert.equal(
+    await fullyInView(heading),
+    true,
     "the focused heading is fully within the viewport",
   );
   assert.deepEqual(nonAuthWriteRequests(requests), [], "opening and returning send no writes");

@@ -424,7 +424,8 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     additions: readonly SandboxNetworkGrant[],
     repository?: {
       readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-      readonly requests: readonly DeploymentRequestMatch[];
+      readonly credentialRequests: readonly DeploymentRequestMatch[];
+      readonly publicNetworkRequests: readonly DeploymentRequestMatch[];
     },
   ): NonNullable<AgentRevision["credentialDeployment"]> {
     const network: DeploymentRequestMatch[] = additions.map(({ binary, host, ports }) => ({
@@ -498,11 +499,16 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         consumer: { kind: "repository" },
         projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
       });
-      injections.push({ bindingRef: "repository", allowedRequests: repository.requests });
+      injections.push({ bindingRef: "repository", allowedRequests: repository.credentialRequests });
+      network.push(
+        ...repository.publicNetworkRequests.filter((request) =>
+          sandboxNetworkGrantsWithinCeiling([request], dependencies.sandboxNetworkPolicyCeiling),
+        ),
+      );
     }
     const policy: DeploymentPolicy = {
       networkAccessPolicy: {
-        allowed: repository ? [...network, ...repository.requests] : network,
+        allowed: repository ? [...network, ...repository.credentialRequests] : network,
       },
       bindings,
       injectionPolicies: injections,
@@ -1344,7 +1350,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       let stagedRepository: Parameters<typeof admitCredentialPolicy>[5];
       if (stagedRepositorySource) {
         if (
-          !admittedRepository?.requests?.length ||
+          !admittedRepository?.stagedAdmission ||
           repositoryCredentials?.authorization !== "credential_source"
         ) {
           throw new ResourceStateConflictError(
@@ -1353,7 +1359,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         }
         stagedRepository = {
           source: stagedRepositorySource,
-          requests: admittedRepository.requests,
+          ...admittedRepository.stagedAdmission,
         };
       }
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
@@ -1586,7 +1592,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
           const current = admitRepository();
           if (
             !isDeepStrictEqual(current?.credentials, admittedRepository?.credentials) ||
-            !isDeepStrictEqual(current?.requests, stagedRepository.requests) ||
+            !isDeepStrictEqual(current?.stagedAdmission, admittedRepository?.stagedAdmission) ||
             ownerUnchanged?.() === false
           ) {
             throw new ResourceStateConflictError(

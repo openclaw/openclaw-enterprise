@@ -42,7 +42,7 @@ type GithubRequest = {
 
 export type GithubReader = (request: GithubRequest) => Promise<unknown>;
 
-type Progress = { stage: string; http?: number };
+type Progress = { stage: string; http?: number; cooldownEligibleAt?: number };
 
 type PreflightInput = {
   env?: NodeJS.ProcessEnv;
@@ -347,6 +347,9 @@ async function evaluatePreflight(
       throw new Error(`Full Integration schedule could not verify admission metadata${detail}.`);
     }
     if (decision.result === "skip") {
+      if (decision.reason === "cooldown") {
+        progress.cooldownEligibleAt = decision.eligibleAt;
+      }
       return { selectedLane: "skip", runAll: false, reason: decision.reason };
     }
   }
@@ -398,6 +401,46 @@ async function evaluatePreflight(
     : { selectedLane: selected, runAll: false };
 }
 
+const scheduleSkipReasons = {
+  "active-full": "Another run is still active and may be using the full suite.",
+  cooldown: "The scheduler is waiting before it can start another full run.",
+  "stale-event": "The scheduled commit is no longer the tip of main.",
+  "unchanged-main": "An earlier run exercised this commit. Check its results before relying on it.",
+} satisfies Record<ScheduleSkipReason, string>;
+
+function appendScheduleSkipSummary(reason: ScheduleSkipReason, cooldownEligibleAt?: number) {
+  const { GITHUB_STEP_SUMMARY: summary, GITHUB_SHA: eventSha } = process.env;
+  if (!summary) {
+    return;
+  }
+  try {
+    const lines = [
+      "### Full Integration skipped",
+      "",
+      "No integration tests ran in this scheduled workflow.",
+      "",
+      scheduleSkipReasons[reason],
+    ];
+    if (eventSha && /^[0-9a-f]{40}$/.test(eventSha)) {
+      lines.push("", `Scheduled commit SHA: \`${eventSha}\``);
+    }
+    if (cooldownEligibleAt !== undefined) {
+      lines.push(
+        "",
+        `The next scheduled full run can start no earlier than ${new Date(cooldownEligibleAt).toISOString()}.`,
+      );
+    }
+    lines.push(
+      "",
+      `Open [Full Integration history](https://github.com/${repository}/actions/workflows/full-integration.yml). Check \`Execute / Full Integration Aggregate\` and the selected lane jobs.`,
+      "",
+    );
+    appendFileSync(summary, lines.join("\n"));
+  } catch {
+    // A missing or unwritable summary must not affect admission.
+  }
+}
+
 async function main() {
   const progress: Progress = { stage: "unknown" };
   const result = await evaluatePreflight({}, progress).catch((error: unknown) => {
@@ -418,6 +461,7 @@ async function main() {
         ? `::notice title=Full Integration schedule::${message}`
         : message,
     );
+    appendScheduleSkipSummary(result.reason, progress.cooldownEligibleAt);
   } else {
     console.log(
       process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
