@@ -15,10 +15,16 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
+import {
+  narrowOpenShellRepositoryRoutes,
+  openShellRepositoryDeploymentPolicy,
+} from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { compileOpenShellCredentialPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
+import type { OpenShellSandboxProviderStatus } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -30,6 +36,7 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
 import {
@@ -247,6 +254,19 @@ test(
     let failNextDelivery = true;
     let holdNextDelivery: (() => Promise<void>) | undefined;
     const observedCredentials: string[] = [];
+    let attachedRecipient:
+      | {
+          sandboxId: string;
+          sandboxName: string;
+          loadedPolicy: Readonly<Record<string, unknown>>;
+          effectivePolicy: Readonly<Record<string, unknown>>;
+          admission: Record<string, string | number>;
+          updateReceiptId?: string;
+          serving: boolean;
+          observationReads: number;
+          policyReads: number;
+        }
+      | undefined = undefined;
     const gateway = workspaceGatewayClient([
       {
         id: "controlled-workspace",
@@ -299,9 +319,97 @@ test(
         gateway.providers.set(request.name, provider);
         return provider;
       },
-      async listSandboxes() {
-        // No stock Sandbox runs in this suite. The real Proxy updates its detached Provider.
-        return [];
+      async listSandboxes(targetWorkspace: string) {
+        return [...gateway.sandboxes.values()].filter(
+          (sandbox) => sandbox.workspace === targetWorkspace,
+        );
+      },
+      async getSandboxConfig(targetWorkspace: string, sandboxName: string) {
+        assert.equal(targetWorkspace, workspace);
+        const target = attachedRecipient;
+        assert.ok(target && target.sandboxName === sandboxName);
+        return {
+          version: target.admission.policy_version,
+          policy_hash: target.admission.policy_hash,
+          configuration_admitted: true,
+          policy: structuredClone(target.effectivePolicy),
+        };
+      },
+      async getSandboxPolicyStatus(targetWorkspace: string, sandboxName: string) {
+        assert.equal(targetWorkspace, workspace);
+        const target = attachedRecipient;
+        assert.ok(target && target.sandboxName === sandboxName);
+        target.policyReads += 1;
+        const version = target.admission.policy_version;
+        return {
+          active_version: version,
+          revision: { status: "POLICY_STATUS_LOADED", version, policy: target.loadedPolicy },
+        };
+      },
+      async getSandboxProviderStatus(
+        targetWorkspace: string,
+        sandboxName: string,
+        name: string,
+        _signal: AbortSignal,
+        receiptId?: string,
+      ): Promise<OpenShellSandboxProviderStatus> {
+        assert.equal(targetWorkspace, workspace);
+        const target = attachedRecipient;
+        assert.ok(target && target.sandboxName === sandboxName);
+        const provider = gateway.providers.get(name);
+        assert.ok(provider?.id && target.updateReceiptId);
+        const sandbox = gateway.sandboxes.get(sandboxName);
+        const attachmentEpoch = sandbox?.spec?.provider_attachment_epoch;
+        assert.ok(typeof attachmentEpoch === "string" && sandbox?.mainProcessInstanceId);
+        if (receiptId === undefined) {
+          target.observationReads += 1;
+        } else {
+          assert.equal(receiptId, target.updateReceiptId);
+        }
+        const observedId = receiptId ?? randomUUID();
+        const revision = {
+          attachmentEpoch,
+          providerEnvRevision: String(target.admission.provider_env_revision),
+          configRevision: String(target.admission.config_revision),
+          policyHash: String(target.admission.policy_hash),
+        };
+        const time = new Date().toISOString();
+        return {
+          state: target.serving
+            ? "PROVIDER_READINESS_STATE_READY"
+            : "PROVIDER_READINESS_STATE_WITHHELD",
+          ...(target.serving
+            ? { completedOperationId: observedId }
+            : { reason: "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD" }),
+          receipt: {
+            receiptId: observedId,
+            kind: receiptId ? "PROVIDER_MUTATION_KIND_UPDATE" : "PROVIDER_MUTATION_KIND_OBSERVE",
+            provider: name,
+            workspace,
+            desired: {
+              ...revision,
+              sandboxId: target.sandboxId,
+              sandbox: sandboxName,
+              providerId: provider.id,
+              providerResourceVersion: provider.resourceVersion,
+            },
+          },
+          ...(target.serving && {
+            observed: {
+              ...revision,
+              sessionId: "attached-peer-supervisor",
+              sequence: "1",
+              credentialsInstalled: true,
+              policyActive: true,
+              launchEnvironmentInstalled: true,
+              processInstanceId: sandbox.mainProcessInstanceId,
+              reason: "",
+            },
+            networkInstanceId: sandbox.mainProcessInstanceId,
+            observedTime: time,
+            evaluatedTime: time,
+          }),
+        };
       },
       async updateProviderCredentialsConditionally(
         request: Parameters<typeof gateway.createProvider>[0],
@@ -327,7 +435,33 @@ test(
           resourceVersion: String(Number(expectedVersion) + 1),
         };
         gateway.providers.set(request.name, updated);
-        return { ...updated, mutationId: randomUUID(), targetReceipts: [] };
+        const mutationId = randomUUID();
+        const target = attachedRecipient;
+        if (!target) {
+          return { ...updated, mutationId, targetReceipts: [] };
+        }
+        const receiptId = randomUUID();
+        target.updateReceiptId = receiptId;
+        target.admission.provider_env_revision = updated.resourceVersion;
+        return {
+          ...updated,
+          mutationId,
+          targetReceipts: [
+            {
+              receipt_id: receiptId,
+              mutation_id: mutationId,
+              kind: "PROVIDER_MUTATION_KIND_UPDATE",
+              workspace,
+              provider: request.name,
+              desired: {
+                sandbox_id: target.sandboxId,
+                sandbox: target.sandboxName,
+                provider_id: provider.id,
+                provider_resource_version: updated.resourceVersion,
+              },
+            },
+          ],
+        };
       },
     };
     // Startup must load the real policy registry without a legacy sender or private key file.
@@ -730,7 +864,7 @@ test(
         path: `/repos/${repository}/pulls`,
       },
     });
-    const agents = [];
+    const agents: string[] = [];
     let gitSourceId: string | undefined;
     for (const access of ["write", "read"] as const) {
       const grants = [
@@ -1396,10 +1530,17 @@ test(
     const workKey = `agent_revision:${agedRevision.id}:reconcile`;
     const maintenancePrefix = `agent_revision:${agedRevision.id}:maintenance:`;
     const cleanupPrefix = `agent_revision:${agedRevision.id}:repository_cleanup:`;
+    const readPeerId = agents[1];
+    assert.ok(readPeerId);
+    const [readPeerRevision] = await state.read((view) =>
+      view.revisions.listRevisions(namespaceId, readPeerId),
+    );
+    assert.ok(readPeerRevision && isNativeStagedRepositoryRevision(readPeerRevision));
+    const readPeerWorkKey = `agent_revision:${readPeerRevision.id}:reconcile`;
     await pool.query(
       `UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour'
-       WHERE namespace_id=$1 AND idempotency_key<>$2 AND state='queued'`,
-      [namespaceId, workKey],
+       WHERE namespace_id=$1 AND idempotency_key NOT IN ($2, $3) AND state='queued'`,
+      [namespaceId, workKey, readPeerWorkKey],
     );
     const work = (key: string) => state.read((view) => view.operations.findWork(key));
     const succeed = (key: string) =>
@@ -1432,6 +1573,12 @@ test(
     try {
       await worker.start();
       await succeed(workKey);
+      await succeed(readPeerWorkKey);
+      assert.equal(
+        (await state.read((view) => view.agents.findAgent(namespaceId, readPeerRevision.agentId)))
+          ?.activeRevisionId,
+        readPeerRevision.id,
+      );
       assert.ok(
         prepare.mock.calls.some(({ arguments: [revision] }) => revision.id === agedRevision.id),
       );
@@ -1588,6 +1735,148 @@ test(
       agedRevision.id,
     );
 
+    // Use the active Read peer, whose admitted binding still permits this shared Source after
+    // the aged revision's withdrawal. Control its Gateway readback, as in the detached case.
+    const recipientNamespace = await state.read((view) =>
+      view.namespaces.findNamespace(namespaceId),
+    );
+    assert.ok(recipientNamespace);
+    const placedRecipient = await compute.resolveSandboxNamespace(recipientNamespace);
+    assert.ok(placedRecipient && placedRecipient.name === workspace);
+    const sandboxName = runtime.sandboxDriver?.harnessResource?.({
+      namespace: placedRecipient,
+      revision: readPeerRevision,
+    })?.resourceName;
+    assert.ok(sandboxName);
+    const recipientDeployment = readPeerRevision.credentialDeployment;
+    const recipientBindings = recipientDeployment?.bindings;
+    assert.equal(
+      recipientBindings?.find(({ consumer }) => consumer.kind === "repository")?.sourceRef.id,
+      gitSource.id,
+    );
+    const modelBinding = recipientBindings?.find(({ consumer }) => consumer.kind === "model");
+    assert.ok(recipientDeployment && modelBinding);
+    const modelDelivery = await prepareOccTokenServiceProviderCopy({
+      client: gatewayClient,
+      workspace,
+      namespaceId,
+      binding: modelBinding,
+      requireCurrentVersion: true,
+      resolveCredential: () =>
+        owner.resolveCredential(
+          { ...installedSource, sourceRef: modelBinding.sourceRef },
+          t.signal,
+        ),
+      signal: t.signal,
+    });
+    const routes = narrowOpenShellRepositoryRoutes(
+      readPeerRevision,
+      compileOpenShellCredentialPolicy(recipientDeployment, undefined, false).credentialRoutes,
+    );
+    const { idle: baseline, combined: loadedPolicy } = openShellRepositoryDeploymentPolicy(
+      readPeerRevision,
+      { version: 1, network_policies: readPeerRevision.sandboxPolicy?.defaults },
+      routes,
+    );
+    const effectivePolicy = structuredClone(loadedPolicy);
+    const endpoints = Object.values(asRecord(effectivePolicy.network_policies) ?? {})
+      .flatMap((rule) => {
+        const endpoints = asRecord(rule)?.endpoints;
+        return Array.isArray(endpoints) ? endpoints : [];
+      })
+      .map(asRecord);
+    for (const endpoint of endpoints) {
+      if (endpoint?.credential_binding) {
+        endpoint.provider_credentialed = true;
+      }
+    }
+    const gitEndpoint = endpoints.find(
+      (endpoint) => asRecord(endpoint?.credential_binding)?.provider === provider.name,
+    );
+    assert.ok(gitEndpoint);
+    const target = {
+      sandboxId: randomUUID(),
+      sandboxName,
+      loadedPolicy,
+      effectivePolicy,
+      admission: {
+        policy_version: 1,
+        policy_hash: "a".repeat(64),
+        config_revision: "1",
+        provider_env_revision: "1",
+        state: 2,
+      },
+      serving: false,
+      observationReads: 0,
+      policyReads: 0,
+    };
+    attachedRecipient = target;
+    gateway.sandboxes.set(sandboxName, {
+      id: target.sandboxId,
+      name: sandboxName,
+      workspace,
+      labels: {},
+      annotations: {
+        "openclaw.dev/agent-id": readPeerRevision.agentId,
+        "openclaw.dev/revision-id": readPeerRevision.id,
+      },
+      spec: {
+        policy: baseline,
+        provider_attachment_epoch: randomUUID(),
+        providers: [modelDelivery.name, provider.name],
+      },
+      serviceUrls: {},
+      phase: "SANDBOX_PHASE_READY",
+      configurationActivated: true,
+      configurationAdmission: target.admission,
+      mainProcessInstanceId: randomUUID(),
+    });
+
+    // One API sweep updates the Provider. Failed readiness leaves the fresh committed token due
+    // for delivery, but subsequent sweeps must leave the Provider generation undisturbed.
+    const mintsBeforeAttached = github.issuesOfTokens.length;
+    const attemptsBeforeAttached = deliveryAttempts;
+    await store.update(
+      sourceStorage,
+      JSON.stringify({
+        ...(await readReceipt()),
+        expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      }),
+    );
+    await waitFor("the attached Provider update receipt", () => attachedRecipient?.updateReceiptId);
+    await waitFor(
+      "the attached Provider's first same-version observation",
+      () => target.observationReads > 0 || undefined,
+    );
+    const persisted = await readReceipt();
+    const persistedProviderVersion = gateway.providers.get(provider.name)?.resourceVersion;
+    assert.equal(persisted.deliveryPending, true);
+    assert.notEqual(persisted.version, pending.version);
+    assert.equal(
+      gateway.providers.get(provider.name)?.config.oce_source_version,
+      persisted.version,
+    );
+    assert.equal(deliveryAttempts, attemptsBeforeAttached + 1);
+
+    // Supervisor readiness still cannot clear pending delivery if Gateway policy omits injection.
+    delete gitEndpoint.provider_credentialed;
+    target.serving = true;
+    await waitFor(
+      "the current observation to recheck Repository policy",
+      () => target.policyReads > 0 || undefined,
+    );
+    assert.equal((await readReceipt()).deliveryPending, true);
+    assert.equal(deliveryAttempts, attemptsBeforeAttached + 1);
+    gitEndpoint.provider_credentialed = true;
+    await waitFor(
+      "the current attached Provider observation to clear delivery",
+      async () => (await readReceipt()).deliveryPending === undefined || undefined,
+    );
+    assert.equal((await readReceipt()).version, persisted.version);
+    assert.equal(gateway.providers.get(provider.name)?.resourceVersion, persistedProviderVersion);
+    assert.equal(deliveryAttempts, attemptsBeforeAttached + 1);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeAttached + 1);
+
     // Pause scheduled delivery after the mint commits, then overlap the real public request.
     async function rotateDuringMaintenance() {
       const expectedDelivery = deliveryAttempts + 1;
@@ -1649,15 +1938,15 @@ test(
     assert.equal(manual.json().data.type, "github-app-installation");
     assert.equal(Object.hasOwn(manual.json().data, "expiresAt"), false);
     const manuallyRenewed = await readReceipt();
-    assert.notEqual(manuallyRenewed.version, pending.version);
+    assert.notEqual(manuallyRenewed.version, persisted.version);
     assert.equal(manuallyRenewed.deliveryPending, undefined);
-    assert.ok(manuallyRenewed.credential !== pending.credential);
-    assert.equal(github.issuesOfTokens.length, mintsBeforeAPI + 2);
+    assert.ok(manuallyRenewed.credential !== persisted.credential);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeAttached + 2);
     assert.deepEqual(
       github.issuesOfTokens.at(-1)?.repositoryIds,
       repositories.map(({ repositoryId }) => Number(repositoryId)),
     );
-    assert.equal(deliveryAttempts, 3);
+    assert.equal(deliveryAttempts, attemptsBeforeAttached + 2);
     assert.ok(observedCredentials.at(-1) === manuallyRenewed.credential);
     assert.ok((await store.withValue(signerStorage, async (value) => value)) === signerBefore);
 
