@@ -13,7 +13,7 @@ author: stevenlee-oai
 
 ## Summary
 
-An Agent with a shared TokenService GitHub App Source can create a pull request in a repository where it has Write access. OpenClaw Control Plane (OCC) admits one GitHub REST operation and requires the Agent to have at least Read access to every repository covered by that Source token. The Credential Proxy injects the token only on the admitted requests.
+An Agent with a shared TokenService GitHub App Source can create a pull request in a repository where it has Write access and the Namespace allows creation. To admit the pull request operation, OpenClaw Control Plane (OCC) requires the Agent to have at least Read access to every repository covered by the Source token. The Credential Proxy injects the token on the admitted request.
 
 ## Motivation
 
@@ -26,7 +26,7 @@ GitHub accepts a head repository in the [create pull request body](https://docs.
 At Agent deployment, compose publication with the existing repository policy. For each target eligible for publication, the Repo Driver compiles one HTTPS rule for the inspected `/usr/local/bin/gh` executable and exact `POST api.github.com:443/repos/{owner}/{repo}/pulls` path. Eligibility requires all of the following:
 
 - The Agent has a Write grant for the target in the admitted revision.
-- The selected GitHub App Source has verified `pull_requests:write` permission, and the Namespace repository ceiling allows creation on the target.
+- The selected GitHub App Source has verified `pull_requests:write` permission. The Namespace repository policy must also allow creation on the target after applying its API limits. When `apiLimits` is absent, that policy uses the registered permission.
 - Every repository in the Source's complete verified token scope has a Read or Write grant in that Agent revision. A missing, unknown, or unverified member withholds publication for every target using that Source.
 
 Use the complete Source scope for this last check. The selected repository bindings can be narrower. For example, with one Source covering A and B, an Agent with A Write and B Read can publish in A. An Agent with only A Write can still read and push to A under its Git policy, while its publication request is denied.
