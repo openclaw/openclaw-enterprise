@@ -13,13 +13,21 @@ author: stevenlee-oai
 
 ## Summary
 
-An Agent with a shared TokenService GitHub App Source can create a pull request in a repository where it has Write access and the Namespace allows creation. To admit the pull request operation, OpenClaw Control Plane (OCC) requires the Agent to have at least Read access to every repository covered by the Source token. The Credential Proxy injects the token on the admitted request.
+Use stock `gh api` to create a pull request through one explicit GitHub REST allowlist entry. OpenClaw Control Plane (OCC) authorizes the target when it admits the Agent revision; OpenShell enforces the saved rule and Credential Proxy injects the existing shared GitHub App installation token. Publication requires Write access to the target, Namespace permission to create a pull request, and at least Read access to every repository covered by the token.
 
 ## Motivation
 
-[The earlier GitHub App delivery path](https://github.com/openclaw/openclaw-enterprise/pull/7135) let a Dedicated Agent publish a pull request with the bundled `gh` executable. The current GitHub Repo policy for shared TokenService Sources admits Git transport. An Agent can push a branch through that path and needs another client to publish the pull request. The existing Credential Proxy policy already supports matches by executable, destination, method, and path.
+[The earlier GitHub App delivery path](https://github.com/openclaw/openclaw-enterprise/pull/7135) let a Dedicated Agent publish a pull request with the bundled `gh` executable. The current GitHub Repo policy for shared TokenService Sources admits Git transport. An Agent can push a branch, but the current policy does not let it publish a pull request with the bundled GitHub CLI. The existing Credential Proxy policy already supports matches by executable, destination, method, and path.
 
 GitHub accepts a head repository in the [create pull request body](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request). An exact target URL cannot prevent a request from naming another private repository that the shared token can read. A Source covering repositories A and B must therefore provide no publication authority to an Agent granted only A, even when the Agent can push to A.
+
+## Approaches considered
+
+We considered three ways to authorize GitHub API requests:
+
+1. **Pull-based credentials with OCC authorization (WIP).** On first use, Credential Proxy requests a credential from OCC. OCC checks the execution, recipient, and grant before releasing it to the Proxy. Even when the Proxy has a cached credential, it requests a fresh OCC decision before forwarding each operation. This could support authorization against request details, if the contract carries them, but puts OCC in the request path and needs a cold-cache authorization and delivery contract. See the [credential pull discussion](0023-egress-proxy-credential-lifecycle/git-credential-pull.md).
+2. **OpenShell GraphQL inspection (WIP for this workflow).** Let the Agent use `gh pr create` and have OpenShell inspect `POST /graphql`. OpenShell's [GraphQL policy](https://docs.nvidia.com/openshell/dev/how-it-works/policies/schema#graphql-rules) can restrict operation types and top-level fields. Allowing a PR mutation is not enough to authorize its repository IDs or input variables, or the other queries made by `gh`. This approach needs Repo policy integration and qualification of those checks before it can protect a shared token.
+3. **Explicit REST allowlist for `gh api` (proposed).** OCC admits `/usr/local/bin/gh` for exactly `POST api.github.com:443/repos/{owner}/{repo}/pulls`. OpenShell enforces that rule without a request-time OCC call. The Agent uses `gh api --method POST repos/OWNER/REPO/pulls --input pr.json`; `gh pr create` and GraphQL are outside this proposal. This reuses the existing Source and Provider, but cannot inspect the REST body, so publication is withheld unless the Agent can read every repository covered by the shared token.
 
 ## Proposal
 
