@@ -318,7 +318,8 @@ export async function runSlackLoopback(t: TestContext) {
   ];
   for (const [enabled, route] of cases) {
     const deployment = await slackFirstDeploymentFixture(enabled);
-    const { controller, namespace, path, intent, secretDriver, work, providerCalls } = deployment;
+    const { controller, namespace, path, intent, secretDriver, sourceReads, work, providerCalls } =
+      deployment;
     const app = controller.fixture.createApp(undefined, createFastifyApp);
     try {
       const url = await app.listen({ host: "127.0.0.1", port: 0 });
@@ -335,11 +336,8 @@ export async function runSlackLoopback(t: TestContext) {
       assert.equal(revisions.length, 1);
       assert.equal(controller.fixture.auditSink.events.length - before, 1);
       assert.equal(providerCalls(), enabled ? 1 : 0);
-      assert.equal(
-        secretDriver.calls.filter((call) => call.operation === "withValue").length,
-        enabled ? 1 : 0,
-      );
-      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+      assert.equal(sourceReads(), enabled ? 1 : 0);
+      assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 1);
       const calls = structuredClone(secretDriver.calls);
       if (route === "deploy-first") {
         const resultData = checkedInjectedBody(result, 202, FirstDeploymentReceiptResponse).data;
@@ -371,6 +369,7 @@ export async function runSlackLoopback(t: TestContext) {
           resultData,
         );
         assert.deepEqual(secretDriver.calls, calls);
+        assert.equal(sourceReads(), enabled ? 1 : 0);
         assert.equal(providerCalls(), enabled ? 1 : 0);
         assert.equal(work().length, 1);
         assert.equal(controller.fixture.auditSink.events.length - before, 1);
@@ -466,7 +465,7 @@ export async function runSlackLoopback(t: TestContext) {
           work: work().length,
           audit: controller.fixture.auditSink.events.length - before,
           sender: providerCalls(),
-          withValue: calls.filter((call) => call.operation === "withValue").length,
+          sourceReads: sourceReads(),
           resolve: calls.filter((call) => call.operation === "resolve").length,
         }),
       );

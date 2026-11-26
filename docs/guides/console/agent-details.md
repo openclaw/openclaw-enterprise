@@ -147,7 +147,7 @@ When Kubernetes Compute requires them, OCC generates missing connection
 credentials during the first deployment.
 If they are missing after a version exists, ask an operator to investigate;
 OCC cannot regenerate them through initial provisioning. A successful request
-opens the new version's Workspace files view. Bound channel Secrets do not
+opens the new version's Workspace files view. Bound channel credentials do not
 prove successful authentication or a working channel.
 
 The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credentials**,
@@ -186,7 +186,7 @@ The Slack card reports saved channel settings, not a live connection. [Configure
 
 ## Credentials tab
 
-**Credentials** holds the harness authentication source and, when Slack is enabled, its channel Secrets. See [the Credentials tab](channels-and-credentials.md#credentials-tab).
+**Credentials** holds the Harness authentication source and, when Slack is enabled, its channel Credential Sources. See [the Credentials tab](channels-and-credentials.md#credentials-tab).
 
 ## Workspace files tab
 

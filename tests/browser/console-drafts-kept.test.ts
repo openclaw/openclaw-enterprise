@@ -11,12 +11,7 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import type { Page } from "playwright";
-import type {
-  Agent,
-  Namespace,
-  SecretMetadata,
-  SecretBinding,
-} from "../../packages/contracts/src/index.ts";
+import type { Agent, Namespace, SecretBinding } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
@@ -24,6 +19,7 @@ import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpe
 import {
   apiRequests,
   asksBeforeUnload,
+  createSlackSourceConsoleFixture,
   detailUrl,
   holdRequests,
   login,
@@ -31,7 +27,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
-  selectSecret,
+  revokeAdministratorGrant,
   settlePageRequests,
   settledView,
   waitForCondition,
@@ -108,18 +104,6 @@ function agentFields(value: unknown): Pick<
   };
 }
 
-function secretFields(value: unknown): SecretMetadata {
-  const data = record(value);
-  const ref = record(data.ref);
-  assert.equal(ref.kind, "secret");
-  return {
-    id: text(data.id),
-    name: text(data.name),
-    namespaceId: text(data.namespaceId),
-    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
-  };
-}
-
 // Unsaved drafts survive a refused Create and a failed Namespace read, and a pending save holds
 // every way off the page (findings 1934, 1935, 1937). The rules that keep untouched forms and
 // saved choices from asking before a reload are pinned too (finding 1938).
@@ -170,22 +154,17 @@ async function startDefaultPreset(page: Page) {
   await page.getByLabel("Agent name", { exact: true }).waitFor();
 }
 
-const envBinding = (secret: SecretMetadata): SecretBinding => ({
-  source: secret.ref,
+const envBinding = (source: { ref: SecretBinding["source"] }): SecretBinding => ({
+  source: source.ref,
   delivery: { type: "env" },
 });
 
-async function createSlackAgent(
-  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
-  namespace: Pick<Namespace, "id">,
-  name: string,
-) {
-  const app = secretFields(
-    await fixture.createSecret(namespace.id, `${name} app token`, "xapp-kept"),
-  );
-  const bot = secretFields(
-    await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-kept"),
-  );
+async function createSlackAgent(t: TestContext, name: string) {
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(t, name, {
+    defaultPresets: [defaultCodexPreset],
+  });
+  const { source: app } = await enroll(`${name} app token`, "xapp");
+  const { source: bot } = await enroll(`${name} bot token`, "xoxb");
   const agent = agentFields(
     await fixture.createAgent(
       namespace.id,
@@ -208,7 +187,7 @@ async function createSlackAgent(
       },
     ),
   );
-  return { agent, app, bot };
+  return { fixture, namespace, enroll, agent, app, bot };
 }
 
 test("a refused Create stays a draft for a reload and a return, and the retry reuses what it saved", async (t) => {
@@ -453,10 +432,7 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
 });
 
 test("a pending save holds the sidebar links and Back on the Agent page", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Pending leave", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Pending leave Agent");
+  const { fixture, namespace, agent } = await createSlackAgent(t, "Pending leave Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
@@ -549,17 +525,18 @@ for (const pending of [
     start: (page: Page) => page.getByRole("button", { name: "Save authentication source" }).click(),
   },
   {
-    kind: "a channel Secrets save",
+    kind: "a channel credential save",
     tab: "credentials",
-    reason: "This page stays open until the channel Secret bindings save finishes.",
+    reason: "This page stays open until the channel credential bindings save finishes.",
     beside: ".channel-secrets",
     hold: ({ namespace, agent }) => [
       `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
       { method: "PATCH" },
     ],
-    start: async (page, { replacement }) => {
-      await selectSecret(page, "Slack app token", replacement);
-      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    start: async (page, { replacementId }) => {
+      assert.ok(replacementId);
+      await page.getByLabel("Slack app token", { exact: true }).selectOption(replacementId);
+      await page.getByRole("button", { name: "Save channel credentials" }).click();
     },
   },
   {
@@ -588,21 +565,19 @@ for (const pending of [
     namespace: Pick<Namespace, "id">;
     agent: Pick<Agent, "id" | "configurationId">;
   }) => [string, Parameters<typeof holdRequests>[3]?];
-  start: (page: Page, resources: { replacement: SecretMetadata }) => Promise<void>;
+  start: (page: Page, resources: { replacementId?: string }) => Promise<void>;
 }[]) {
   test(`${pending.kind} holds the sidebar, Back and ← Agents and says why`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
+    const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Pending reason Agent");
     if (pending.tab === "plugins") {
       const driver = new CodexPluginDriver();
       checkedController(fixture.controller).registerDriver(driver);
       checkedController(fixture.controller).selectDriver("plugin", driver.id);
     }
-    const namespace = resource(await fixture.createNamespace("Pending reason", { ready: true }));
-    const { agent } = await createSlackAgent(fixture, namespace, "Pending reason Agent");
-    const replacement = secretFields(
-      await fixture.createSecret(namespace.id, "Replacement app", "xapp-new"),
-    );
+    const replacementId =
+      pending.kind === "a channel credential save"
+        ? (await enroll("Replacement app", "xapp")).source.id
+        : undefined;
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Pending reason Agent" }).click();
@@ -614,7 +589,7 @@ for (const pending of [
     await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     const [heldUrl, heldOptions] = pending.hold({ namespace, agent });
     const held = await holdRequests(t, page, heldUrl, heldOptions);
-    await pending.start(page, { replacement });
+    await pending.start(page, { ...(replacementId ? { replacementId } : {}) });
     await held.requested;
     const pageUrl = page.url();
     const reason = page.getByText(pending.reason, { exact: true });
@@ -717,13 +692,10 @@ for (const pending of [
 }
 
 test("a pending plugin save blocks navigation to the deletion controls", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const { fixture, namespace, agent } = await createSlackAgent(t, "Plugin Delete Agent");
   const driver = new CodexPluginDriver();
   checkedController(fixture.controller).registerDriver(driver);
   checkedController(fixture.controller).selectDriver("plugin", driver.id);
-  const namespace = resource(await fixture.createNamespace("Plugin save delete", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
@@ -971,10 +943,7 @@ test("an uncertain Configuration save holds ← Agents, but the sidebar may leav
 });
 
 test("untouched forms, unchanged drawers and search text do not ask before a reload", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Nothing to lose", { ready: true }));
-  await createSlackAgent(fixture, namespace, "Nothing to lose Agent");
+  const { fixture, namespace } = await createSlackAgent(t, "Nothing to lose Agent");
   const { page } = await newPage(t, fixture);
   const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
@@ -1036,21 +1005,14 @@ test("a changed Preset variable still asks before a reload after a return", asyn
   assert.equal(await asksBeforeUnload(page), true);
 });
 
-test("Secret choices carried through Reload draft do not ask before a reload", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Carried choices", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Carried choices Agent");
-  const secondBot = secretFields(
-    await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2"),
-  );
-  const otherApp = secretFields(
-    await fixture.createSecret(namespace.id, "Other app token", "xapp-other"),
-  );
+test("Source choices carried through Reload draft do not ask before a reload", async (t) => {
+  const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Carried choices Agent");
+  const { source: secondBot } = await enroll("Second bot token", "xoxb");
+  const { source: otherApp } = await enroll("Other app token", "xapp");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Carried choices Agent" }).waitFor();
-  await selectSecret(page, "Slack bot token", secondBot);
+  await page.getByLabel("Slack bot token", { exact: true }).selectOption(secondBot.id);
   // Another browser rebinds the app token first.
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const current = record((await fixture.request("GET", configurationPath)).data);
@@ -1061,7 +1023,7 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
     },
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page.getByRole("button", { name: "Save channel credentials" }).click();
   await page.getByText(CHANNEL_SECRETS_CONFIGURATION_CHANGED).waitFor();
 
   const reread = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
@@ -1070,21 +1032,166 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
   });
   await page.getByRole("button", { name: "Reload draft" }).click();
   await reread.requested;
-  // The carried choices name saved Secrets: a reload would lose nothing (finding 1938).
+  // The carried choices name stored Sources: a reload would lose nothing (finding 1938).
   assert.equal(await asksBeforeUnload(page), false);
   reread.release();
+  // Check after asynchronous Source discovery confirms the carried selection; that
+  // confirmation must not erase the notice or the other browser's saved app binding.
+  await waitForInputValue(page.getByLabel("Slack bot token", { exact: true }), secondBot.id);
+  await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), otherApp.id);
   await page
     .getByRole("status")
     .filter({
       hasText:
-        "Your Secret choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
+        "Your Credential Source choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
     })
     .waitFor();
 });
 
+test("Reload draft retains an inline Slack Source without discovery access", async (t) => {
+  const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Inline Source reload");
+  const { source: otherApp } = await enroll("Concurrent app token", "xapp");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "channels"));
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  let drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+  let bot = drawer.getByLabel("Slack bot token", { exact: true });
+  await bot.selectOption("new");
+  const field = bot.locator("..");
+  await field.getByLabel("Slack bot token Source name").fill("Inline bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-inline-reload-token");
+  const sourcePath = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+  const created = page.waitForResponse(
+    (response) => response.url() === sourcePath && response.request().method() === "POST",
+  );
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+  const enrollment = await created;
+  assert.equal(enrollment.status(), 201);
+  const source = record(record(await enrollment.json()).data);
+  const sourceId = text(source.id);
+  await waitForInputValue(bot, sourceId);
+
+  // A different editor moves the saved Configuration. The Source remains an unsaved Channel
+  // choice, so Reload must carry it without requiring discovery read on that known exact ID.
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const current = record((await fixture.request("GET", configurationPath)).data);
+  const changed = await fixture.request("PATCH", configurationPath, {
+    body: {
+      values: current.values,
+      secretBindings: { ...record(current.secretBindings), SLACK_APP_TOKEN: envBinding(otherApp) },
+    },
+  });
+  assert.equal(changed.status, 200);
+  await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  await reload.waitFor();
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  try {
+    const discovery = page.waitForResponse(
+      (response) => response.url() === sourcePath && response.request().method() === "GET",
+    );
+    await reload.click();
+    const listed = await discovery;
+    assert.equal(listed.status(), 200);
+    assert.deepEqual(record(await listed.json()).data, []);
+    drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+    bot = drawer.getByLabel("Slack bot token", { exact: true });
+    await waitForInputValue(bot, sourceId);
+    const write = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + configurationPath &&
+        response.request().method() === "PATCH",
+    );
+    await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+    assert.equal((await write).status(), 200);
+    const saved = record((await fixture.request("GET", configurationPath)).data);
+    assert.deepEqual(record(record(saved.secretBindings).SLACK_BOT_TOKEN).source, source.ref);
+  } finally {
+    restoreRead();
+  }
+});
+
+test("Slack Source creation holds Back and keeps recovery after cancel", async (t) => {
+  const { fixture, namespace } = await createSlackSourceConsoleFixture(t, "Pending Slack Source", {
+    defaultPresets: [defaultCodexPreset],
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await startDefaultPreset(page);
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Configure Slack", exact: true });
+  const bot = drawer.getByLabel("Slack bot token", { exact: true });
+  await bot.selectOption("new");
+  const field = bot.locator("..");
+  await field.getByLabel("Slack bot token Source name").fill("Pending bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-pending-fixture-token");
+  const path = `/namespaces/${namespace.id}/credential-sources`;
+  const held = await holdRequests(t, page, fixture.origin + path, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+
+  // The Source is already durable, but only this page can receive and select its exact ID.
+  // Back must leave the page mounted rather than abandon the reply and invite a duplicate.
+  const serverResponse = await held.requested;
+  assert.ok(serverResponse);
+  assert.equal(serverResponse.status(), 201);
+  const sourceId = text(record(record(await serverResponse.json()).data).id);
+  const createUrl = page.url();
+  assert.equal(await asksBeforeUnload(page), true);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.addEventListener("popstate", resolve, { once: true });
+        globalThis.history.back();
+      }),
+  );
+  await page.waitForURL(createUrl);
+  assert.equal(await drawer.isVisible(), true);
+  assert.equal(pathRequests(requests, "POST", path).length, 1);
+  held.release();
+  await waitForInputValue(bot, sourceId);
+
+  // A conflict is not proof that the owner did not store a credential. Keep the nonsecret
+  // recovery marker when the reader leaves this view and returns within the document.
+  await bot.selectOption("new");
+  await field.getByLabel("Slack bot token Source name").fill("Pending bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-retry-fixture-token");
+  const conflict = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "POST",
+  );
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+  assert.equal((await conflict).status(), 409);
+  await field.getByRole("button", { name: "Cancel", exact: true }).click();
+  await drawer.getByRole("button", { name: "Cancel", exact: true }).click();
+  const retainedSource = await fixture.request("GET", `${path}/${sourceId}`);
+  assert.equal(retainedSource.status, 200);
+  assert.equal(
+    record(retainedSource.data).state,
+    "ready",
+    "canceling setup does not delete the Source",
+  );
+  await page.goBack();
+  await heading(page, "Agents").waitFor();
+  await page.goForward();
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
+  const returned = page.getByRole("dialog", { name: "Configure Slack", exact: true });
+  const returnedBot = returned.getByLabel("Slack bot token", { exact: true });
+  assert.equal(await returnedBot.locator('option[value="new"]').isDisabled(), true);
+  await returned
+    .getByText(/credential save for "Pending bot token" could not be confirmed/i)
+    .waitFor();
+  assert.equal(pathRequests(requests, "POST", path).length, 2);
+});
+
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
-// uncertain outcome, an admitted provisioning job, an uncertain Credential Source write, a job that
-// created its Agent and a repository policy refusal keep none (finding 1965).
+// uncertain outcome, an admitted provisioning job, a job that created its Agent and a repository
+// policy refusal keep none (finding 1965).
 // The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
 // reopens it or asks before a reload.
 async function expectNoKeptDraft(page: Page) {
@@ -1177,33 +1284,6 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await fillProvisionedAgent(page, fixture, namespace, "Failed job Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^The initial deployment failed\. Open this Agent/).waitFor();
-  await expectNoKeptDraft(page);
-});
-
-test("an uncertain Credential Source creation keeps no draft", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Source create", { ready: true }));
-  const { page } = await newPage(t, fixture);
-  await page.route(`**/namespaces/${namespace.id}/credential-sources`, async (route, request) => {
-    if (request.method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-    // The response is interrupted before the Console can establish whether custody completed.
-    await route.fulfill(proxyErrorResponse(503));
-  });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Source Agent");
-  await page.getByLabel("API key", { exact: true }).fill("synthetic-guard-model-key");
-  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
-  await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page
-    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
-    .waitFor();
   await expectNoKeptDraft(page);
 });
 

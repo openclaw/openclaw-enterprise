@@ -253,38 +253,84 @@ const unmeasured = (_operation, promise) => promise;
  */
 async function serveConsole(t, tokenAuth, overrides = {}, wait = unmeasured) {
   const prepared = await prepareInstallation(t);
-  const app = await composeProductionSignIn(t, {
-    ...prepared.composition,
-    settings: { ...prepared.settings(tokenAuth), ...overrides.settings },
-    ...(overrides.secrets
-      ? { secrets: { ...prepared.composition.secrets, ...overrides.secrets } }
-      : {}),
+  t.signal.throwIfAborted();
+  let closing = false;
+  /** @type {Awaited<ReturnType<typeof composeProductionSignIn>> | undefined} */
+  let app;
+  /** @type {Awaited<ReturnType<typeof startHttpsIngress>> | undefined} */
+  let ingress;
+  /** @type {number | undefined} */
+  let upstreamPort;
+
+  function checkActive() {
+    t.signal.throwIfAborted();
+    if (closing) {
+      throw new Error("Console fixture is closing");
+    }
+  }
+
+  async function startListeners() {
+    app = await composeProductionSignIn(t, {
+      ...prepared.composition,
+      settings: { ...prepared.settings(tokenAuth), ...overrides.settings },
+      ...(overrides.secrets
+        ? { secrets: { ...prepared.composition.secrets, ...overrides.secrets } }
+        : {}),
+    });
+    const tls = {
+      key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
+      cert: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT),
+    };
+    // Bind the realm's fixed redirect port before the OS picks a port for the app.
+    checkActive();
+    ingress = await startHttpsIngress({ port: consolePort, upstreamPort: () => upstreamPort, tls });
+    checkActive();
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    checkActive();
+    const address = app.server.address();
+    assert.ok(address && typeof address !== "string");
+    upstreamPort = address.port;
+    return tls;
+  }
+
+  const listening = startListeners();
+  t.after(async () => {
+    closing = true;
+    upstreamPort = undefined;
+    // A cancelled test can leave either bind in flight. Setup reports its own failure.
+    await listening.catch(() => {});
+    try {
+      if (ingress) {
+        await wait("close-ingress", ingress.close());
+      }
+    } finally {
+      if (app) {
+        await wait("close-console", app.close());
+      }
+    }
   });
-  t.after(() => wait("close-console", app.close()));
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const tls = {
-    key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
-    cert: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT),
-  };
-  const ingress = await startHttpsIngress({
-    port: consolePort,
-    upstreamPort: app.server.address().port,
-    tls,
-  });
-  t.after(() => wait("close-ingress", ingress.close()));
+  const tls = await listening;
+  checkActive();
   if (browser === undefined) {
-    browser = await chromium.launch({
+    const leaf = await keycloakLeaf();
+    checkActive();
+    const launched = await chromium.launch({
       headless: true,
       // Trusts exactly the two lane leaves: the Console origin and Keycloak.
       args: [
-        chromiumTrustArg([tls.cert, await keycloakLeaf()]),
+        chromiumTrustArg([tls.cert, leaf]),
         `--host-resolver-rules=${keycloakBrowserRoute(new URL(issuer).hostname)}`,
       ],
       ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
         ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
         : {}),
     });
-    cleanup.push(() => browser.close());
+    if (closing || t.signal.aborted) {
+      await launched.close();
+      checkActive();
+    }
+    browser = launched;
+    cleanup.push(() => launched.close());
   }
   return prepared;
 }

@@ -7,7 +7,6 @@ import type { BrowserContextOptions } from "playwright";
 import type {
   HarnessAuthBinding,
   HarnessExecutionMode,
-  OpenClawConfigurationValue,
   Restriction,
   SecretBinding,
   SecretBindings,
@@ -16,14 +15,12 @@ import type {
 
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   accessBindingPostRequests,
   accessibleDescription,
   apiRequests,
-  CHANNEL_SECRETS_SAVED,
-  CHANNEL_SECRETS_SAVED_DEPLOY,
+  createSlackSourceConsoleFixture,
   detailUrl,
   expectNoText,
   expectReachableReason,
@@ -33,16 +30,12 @@ import {
   newPage,
   nonAuthWriteRequests,
   pathRequests,
-  secretOptionLabel,
-  selectSecret,
   waitForEnabled,
-  waitForInputValue,
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   agentPrincipalDenied,
-  CHANNEL_BINDING_CREDENTIALS_REMEDY,
   CONFIGURATION_EDITS_PENDING,
   DEPENDENCY_UNAVAILABLE,
   READ_UNAVAILABLE,
@@ -50,8 +43,6 @@ import {
   secretAccessConfirmed,
   secretGrantDeployReason,
   SLACK_OFF_RETRY_GRANTED,
-  SLACK_RETRY_GRANTED,
-  unreadableSlackTokenRefusal,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 
@@ -140,12 +131,6 @@ const slack = {
   channels: { C123: { requireMention: true } },
 };
 
-function secretWrites(requests: Requests, namespaceId: string) {
-  return requests.filter(
-    ({ method, path }) => method !== "GET" && path.startsWith(`/namespaces/${namespaceId}/secrets`),
-  );
-}
-
 // Secret IDs granted to the Agent's ServicePrincipal with an operate-only Role, in request order.
 async function secretGrants(
   fixture: Fixture,
@@ -167,31 +152,11 @@ async function secretGrants(
   });
 }
 
-// The Socket Mode binding the console saves for a Slack token Secret.
+// A generic environment binding for an existing Namespace Secret consumer.
 const envBinding = (secret: SecretMetadata): SecretBinding => ({
   source: secret.ref,
   delivery: { type: "env" },
 });
-
-// The app and bot token Secrets an Agent was already bound to.
-async function existingSlackSecrets(
-  fixture: Fixture,
-  namespaceId: string,
-): Promise<[SecretMetadata, SecretMetadata]> {
-  return [
-    await createSecret(fixture, namespaceId, "Existing Slack app token", "xapp-old"),
-    await createSecret(fixture, namespaceId, "Existing Slack bot token", "xoxb-old"),
-  ];
-}
-
-async function savedSecretBindings(fixture: Fixture, namespaceId: string, configurationId: string) {
-  const saved = await fixture.request(
-    "GET",
-    `/namespaces/${namespaceId}/configurations/${configurationId}`,
-  );
-  assert.equal(saved.status, 200);
-  return record(saved.data, "Saved Configuration").secretBindings;
-}
 
 test("draft Agent offers deployment without a generated-credential step", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -414,8 +379,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
-  // The draft enables Slack, which deployment admits only with an Installation channel runtime.
-  const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
+  const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await createNamespace(fixture, "Agent redeployment");
   const agent = await createAgent(
@@ -430,10 +394,13 @@ test("active Agent can deploy the current saved draft as a new version", async (
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const firstRevision = record(first.revision, "Seeded revision");
   const firstRevisionId = stringField(firstRevision.id, "Seeded revision ID");
-  await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
+  const currentDraft = record(
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      nativeValues("current-draft", { harnessId: "codex" }),
+    ),
+    "Current draft",
   );
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -455,27 +422,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
 
   // The viewed version stays immutable; create a draft before deploying v2.
   await page.getByRole("button", { name: "Open draft" }).first().click();
-  await page
-    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
-    .waitFor();
   assert.deepEqual(deploymentRequests(), []);
-
-  const secretBindings: Record<string, SecretBinding> = {};
-  for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
-    const secret = await createSecret(fixture, namespace.id, key, `test-${key}`);
-    secretBindings[key] = envBinding(secret);
-    await fixture.grantAgentSecretOperate(agent, secret.ref);
-  }
-  const currentDraft = record(
-    await fixture.updateConfiguration(
-      namespace.id,
-      agent.configurationId,
-      nativeValues("current-draft", { harnessId: "codex", channels: { slack } }),
-      { secretBindings },
-    ),
-    "Current draft",
-  );
-  await page.reload();
   const deployResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
@@ -614,181 +561,85 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   assert.equal(records(revisions.data, "Agent revisions").length, 2);
 });
 
-test("Slack credential gate treats omitted enabled as enabled", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Implicit Slack credential gate");
+// Slack defaults to enabled when the flag is omitted. Missing Source bindings must still hold
+// deployment, including additional referenced fields such as a signing credential.
+test("Slack credential gate checks Source bindings when enabled is omitted", async (t) => {
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Implicit Slack Source gate",
+  );
+  const app = (await enroll("App", "xapp")).source;
+  const bot = (await enroll("Bot")).source;
   const { enabled, ...implicitSlack } = slack;
   const agent = await createAgent(
     fixture,
     namespace.id,
-    "Implicit Slack Credential Agent",
-    nativeValues("implicit-slack", { harnessId: "codex", channels: { slack: implicitSlack } }),
-    { executionMode: "dedicated" },
-  );
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await page.getByLabel("Slack app token").waitFor();
-  await page.getByLabel("Slack bot token").waitFor();
-  await page
-    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
-    .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-});
-
-// OpenClaw and the Slack Channel Driver read a token that is exactly one `${NAME}` as the env
-// SecretRef to NAME (finding 2511). Where Compute skips OCC's binding rule, as this fixture's does,
-// the Credentials tab is the only check before Deploy: it must list those keys, for a named account
-// and for the top-level account beside one, and hold Deploy until they are bound, or OCC refuses
-// the deploy with binding_required (finding 2513).
-test("Slack credential gate reads whole ${NAME} tokens beside named accounts", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Named Slack token gate");
-  const [appSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const { appToken, botToken, ...shared } = slack;
-  const agent = await createAgent(
-    fixture,
-    namespace.id,
-    "Named Slack Token Agent",
-    nativeValues("named-slack-tokens", {
+    "Implicit Slack Agent",
+    nativeValues("implicit-slack", {
       harnessId: "codex",
-      channels: {
-        slack: {
-          ...shared,
-          appToken: "${SLACK_MAIN_APP_TOKEN}",
-          botToken: "${SLACK_MAIN_BOT_TOKEN}",
-          accounts: {
-            work: {
-              appToken: { source: "env", provider: "default", id: "SLACK_WORK_APP_TOKEN" },
-              botToken: "${SLACK_WORK_BOT_TOKEN}",
-            },
-          },
-        },
-      },
-    }),
-    {
-      executionMode: "dedicated",
-      secretBindings: { SLACK_WORK_APP_TOKEN: envBinding(appSecret) },
-    },
-  );
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page
-    .getByText(
-      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_MAIN_APP_TOKEN, SLACK_MAIN_BOT_TOKEN, SLACK_WORK_BOT_TOKEN).",
-    )
-    .waitFor();
-  const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), [
-    "SLACK_MAIN_APP_TOKEN",
-    "SLACK_MAIN_BOT_TOKEN",
-    "SLACK_WORK_APP_TOKEN",
-    "SLACK_WORK_BOT_TOKEN",
-  ]);
-  assert.deepEqual(await rows.locator("dd").allTextContents(), [
-    "Missing",
-    "Missing",
-    "Bound",
-    "Missing",
-  ]);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-});
-
-// Without named accounts the default account reads the keys its tokens name, as save and the
-// Slack Channel Driver do. The tab asked for SLACK_APP_TOKEN and SLACK_BOT_TOKEN instead and held
-// Deploy for a Configuration OCC deploys (finding 2526). Its form binds only that pair, so it
-// lists these keys and points at the Configuration API.
-test("Slack credential gate reads the keys the default account's tokens name", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Default Slack token gate");
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const agent = await createAgent(
-    fixture,
-    namespace.id,
-    "Default Slack Token Agent",
-    nativeValues("default-slack-tokens", {
-      harnessId: "codex",
-      channels: {
-        slack: { ...slack, appToken: "${ACME_SLACK_APP}", botToken: "${ACME_SLACK_BOT}" },
-      },
+      channels: { slack: { ...implicitSlack, signingSecret: "${SLACK_SIGNING_SECRET}" } },
     }),
     {
       executionMode: "dedicated",
       secretBindings: {
-        ACME_SLACK_APP: envBinding(appSecret),
-        ACME_SLACK_BOT: envBinding(botSecret),
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
       },
     },
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Channel credentials" }).waitFor();
   await page
     .getByText(
-      "The token pickers bind only SLACK_APP_TOKEN for the app token and SLACK_BOT_TOKEN for the bot token. The Slack settings read the keys listed above: bind them through the Configuration API.",
+      "Complete these in Credentials before deploying: Slack credential bindings (SLACK_SIGNING_SECRET).",
+      { exact: true },
     )
     .waitFor();
-  const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), [
-    "ACME_SLACK_APP",
-    "ACME_SLACK_BOT",
+  const list = page.locator("section.channel-secrets .credential-status-list");
+  assert.deepEqual(await list.locator("dt").allTextContents(), [
+    "Slack app token",
+    "Slack bot token",
+    "SLACK_SIGNING_SECRET",
   ]);
-  assert.deepEqual(await rows.locator("dd").allTextContents(), ["Bound", "Bound"]);
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  assert.deepEqual(await list.locator("dd").allTextContents(), ["Bound", "Bound", "Missing"]);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Save channel credentials" }).isDisabled(),
+    true,
+  );
 });
 
-// Each picker is labelled with the token it binds. Tokens that read each other's standard key
-// would bind the bot token's Secret under the app token picker's label, so the tab lists the keys
-// instead of offering role-labelled pickers.
-test("swapped standard Slack token keys get the list, not role-labelled pickers", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Swapped Slack token gate");
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
+test("swapped Slack token references use variable-key Source picker labels", async (t) => {
+  const { fixture, namespace } = await createSlackSourceConsoleFixture(
+    t,
+    "Swapped Slack Source labels",
+  );
   const agent = await createAgent(
     fixture,
     namespace.id,
-    "Swapped Slack Token Agent",
-    nativeValues("swapped-slack-tokens", {
+    "Swapped Slack Agent",
+    nativeValues("swapped", {
       harnessId: "codex",
       channels: {
         slack: { ...slack, appToken: "${SLACK_BOT_TOKEN}", botToken: "${SLACK_APP_TOKEN}" },
       },
     }),
-    {
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: envBinding(botSecret),
-        SLACK_BOT_TOKEN: envBinding(appSecret),
-      },
-    },
+    { executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  // The form renders with the section, pickers or not: check them before any copy.
-  await page.locator("section.channel-secrets form.credential-form").waitFor();
-  assert.equal(await page.getByLabel("Slack app token").count(), 0);
-  assert.equal(await page.getByLabel("Slack bot token").count(), 0);
-  const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), [
-    "SLACK_APP_TOKEN",
-    "SLACK_BOT_TOKEN",
-  ]);
-  await page.getByText(/^The token pickers bind only/).waitFor();
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  await page.getByRole("heading", { name: "Channel credentials" }).waitFor();
+  assert.equal(await page.getByLabel("Slack app token", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Slack bot token", { exact: true }).count(), 0);
+  await page.getByLabel("SLACK_APP_TOKEN", { exact: true }).waitFor();
+  await page.getByLabel("SLACK_BOT_TOKEN", { exact: true }).waitFor();
 });
 
-// Deploy checks that the Agent may operate every bound Secret, not only those the pickers bind or
-// the Slack settings read. An Installation administrator's console reads that grant for each: a
-// missing one marks its row, holds Deploy and offers Retry Secret access, which grants exactly that
-// Secret without saving bindings.
+// Generic Namespace Secret bindings remain supported by non-Slack consumers until their own
+// Source replacement ships. Their grant/retry behavior is independent of Slack Source delivery.
 type GrantFixtureOptions = {
   name: string;
-  slackValues: Record<string, OpenClawConfigurationValue | undefined>;
   bindings: readonly string[];
   ungranted: string | null;
   fixtureOptions?: { provisionedPeople?: readonly string[]; channelRuntime?: boolean } | undefined;
@@ -802,7 +653,7 @@ function boundSecret(secrets: ReadonlyMap<string, SecretMetadata>, key: string):
 
 async function agentWithoutGrant(
   t: TestContext,
-  { name, slackValues, bindings, ungranted, fixtureOptions }: GrantFixtureOptions,
+  { name, bindings, ungranted, fixtureOptions }: GrantFixtureOptions,
 ) {
   const fixture = await createConsoleAppFixture(t, fixtureOptions);
   await fixture.bootstrap();
@@ -818,31 +669,43 @@ async function agentWithoutGrant(
     fixture,
     namespace.id,
     `${name} Grant Agent`,
-    nativeValues(`${name.toLowerCase().replaceAll(" ", "-")}-grant`, {
-      harnessId: "codex",
-      channels: { slack: { ...slack, ...slackValues } },
-    }),
+    nativeValues("${PLUGIN_API_KEY}", { harnessId: "codex" }),
     { executionMode: "dedicated", secretBindings },
   );
   if (ungranted === null) {
     return { fixture, namespace, agent, secrets };
   }
+  await removeAgentSecretGrant(
+    fixture,
+    namespace.id,
+    agent.servicePrincipalId,
+    boundSecret(secrets, ungranted).id,
+  );
+  return { fixture, namespace, agent, secrets };
+}
+
+async function removeAgentSecretGrant(
+  fixture: Fixture,
+  namespaceId: string,
+  principalId: string,
+  secretId: string,
+) {
   // Remove that Secret's grant, as an administrator revoking it would.
-  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const policyPath = `/namespaces/${namespaceId}/iam`;
   const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
   assert.equal(listed.status, 200);
   const grant = records(listed.data, "IAM access bindings").find(
     (binding) =>
-      binding.subjectId === agent.servicePrincipalId &&
-      binding.resourceId === boundSecret(secrets, ungranted).id,
+      binding.subjectId === principalId &&
+      binding.resourceKind === "secret" &&
+      binding.resourceId === secretId,
   );
-  assert.ok(grant, `createAgent grants the Secret bound to ${ungranted}`);
+  assert.ok(grant, "createAgent grants its bound Namespace Secret");
   const removed = await fixture.request(
     "DELETE",
     `${policyPath}/access-bindings/${stringField(grant.id, "Access binding ID")}`,
   );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-  return { fixture, namespace, agent, secrets };
 }
 
 // A Retry whose grant answer was lost saved no Configuration, so it names only the grant (finding
@@ -854,13 +717,12 @@ async function ungrantedBoundSecret(
   t: TestContext,
   {
     name,
-    slackValues,
     bindings,
     ungranted,
     rows,
     badges,
     viewport,
-    retried = SLACK_RETRY_GRANTED,
+    retried = SLACK_OFF_RETRY_GRANTED,
   }: Omit<GrantFixtureOptions, "ungranted"> & {
     ungranted: string;
     rows: readonly string[];
@@ -871,7 +733,6 @@ async function ungrantedBoundSecret(
 ) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
     name,
-    slackValues,
     bindings,
     ungranted,
   });
@@ -933,47 +794,14 @@ async function ungrantedBoundSecret(
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 }
 
-test("a listed Slack key without the Agent's grant holds Deploy and offers Retry", (t) =>
+test("a generic plugin Secret binding still requires the Agent grant", (t) =>
   ungrantedBoundSecret(t, {
-    name: "Listed Slack",
-    slackValues: { botToken: "${ACME_SLACK_BOT}" },
-    bindings: ["SLACK_APP_TOKEN", "ACME_SLACK_BOT"],
-    ungranted: "SLACK_APP_TOKEN",
-    rows: ["ACME_SLACK_BOT", "SLACK_APP_TOKEN"],
-    badges: ["Bound", "Bound · Agent access not confirmed"],
-  }));
-
-// HTTP mode reads no app token, so SLACK_APP_TOKEN left bound after a switch from Socket Mode is
-// read by no Slack setting, but Deploy still checks its grant. The tab showed "Ready to deploy."
-// with no Retry, and the deploy failed AUTHORIZATION_DENIED (finding 2558). Its status is the
-// widest the list shows, so this runs at phone width.
-test("a bound key no Slack setting reads still needs the Agent's grant", (t) =>
-  ungrantedBoundSecret(t, {
-    name: "HTTP leftover",
-    slackValues: { mode: "http", appToken: undefined, botToken: "${SLACK_BOT_TOKEN}" },
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
-    rows: ["Slack bot token", "SLACK_APP_TOKEN"],
-    badges: ["Bound", "Bound · not read by the Slack settings · Agent access not confirmed"],
+    name: "Plugin Secret",
+    bindings: ["PLUGIN_API_KEY"],
+    ungranted: "PLUGIN_API_KEY",
+    rows: ["PLUGIN_API_KEY"],
+    badges: ["Bound · not read by the Slack settings · Agent access not confirmed"],
     viewport: { width: 390, height: 844 },
-  }));
-
-// Disable Slack keeps its bindings, and Deploy still checks each bound Secret's grant. With Slack
-// off, an administrator's console read no grant: it showed "Ready to deploy." and the deploy
-// failed AUTHORIZATION_DENIED. A grant still outstanding from before Disable Slack held Deploy on
-// a Retry Secret access that the tab no longer showed (finding 3018).
-test("Secrets left bound after Disable Slack still need the Agent's grant", (t) =>
-  ungrantedBoundSecret(t, {
-    name: "Slack off leftover",
-    slackValues: { enabled: false },
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
-    rows: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    badges: [
-      "Bound · not read by the Slack settings · Agent access not confirmed",
-      "Bound · not read by the Slack settings",
-    ],
-    retried: SLACK_OFF_RETRY_GRANTED,
   }));
 
 // A Retry Secret access that the IAM API leaves unconfirmed (unavailable, or its grant made but the
@@ -983,32 +811,26 @@ test("Secrets left bound after Disable Slack still need the Agent's grant", (t) 
 // no outcome until the rebuilt section's grant read lands. That read finds the grant missing, and
 // Retry grants it; or it finds the lost Retry's grant, says access is confirmed and moves focus to
 // that outcome, with Slack off or on (findings 3021, 3023, 3030).
-for (const { lost, slackOn } of [
-  { lost: false, slackOn: false },
-  { lost: true, slackOn: false },
-  { lost: true, slackOn: true },
-]) {
+for (const lost of [false, true]) {
   for (const viewport of [
     { width: 1440, height: 900 },
     { width: 390, height: 844 },
   ]) {
     const title = lost
-      ? `a lost Retry answer is confirmed after Reload draft with Slack ${slackOn ? "on" : "off"}`
-      : `a Retry with Slack off after another browser's write only reloads the draft`;
-    test(`${title} (${viewport.width} px)`, (t) =>
-      retryConflictReload(t, { lost, slackOn, viewport }));
+      ? "a lost generic Secret Retry answer is confirmed after Reload draft"
+      : "a generic Secret Retry after another browser's write only reloads the draft";
+    test(`${title} (${viewport.width} px)`, (t) => retryConflictReload(t, { lost, viewport }));
   }
 }
 
 async function retryConflictReload(
   t: TestContext,
-  { lost, slackOn, viewport }: { lost: boolean; slackOn: boolean; viewport: Viewport },
+  { lost, viewport }: { lost: boolean; viewport: Viewport },
 ) {
   const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
-    name: `Slack ${slackOn ? "on" : "off"} conflict`,
-    slackValues: { enabled: slackOn },
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
+    name: "Plugin Secret conflict",
+    bindings: ["PLUGIN_API_KEY"],
+    ungranted: "PLUGIN_API_KEY",
   });
   const { page } = await newPage(t, fixture, { context: { viewport } });
   // The focused control's name, a focused status line's text, or the element focus fell to.
@@ -1058,26 +880,36 @@ async function retryConflictReload(
   } else {
     await page.unroute(`**${bindingsPath}`);
   }
-  // Another browser saves the Configuration, Slack unchanged and its bindings kept.
+  // Another browser saves a new plugin setting while keeping the Secret binding.
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const result = await fixture.request("GET", configurationPath);
   assert.equal(result.status, 200);
   const current = record(result.data, "Current Configuration");
   const values = record(current.values, "Current Configuration values");
-  const channels = record(values.channels, "Channels");
-  const currentSlack = record(channels.slack, "Slack configuration");
+  const plugins = record(values.plugins, "Plugins");
+  const entries = record(plugins.entries, "Plugin entries");
+  const knowledge = record(entries.knowledge, "Knowledge plugin");
   await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
     {
       ...values,
-      channels: { slack: { ...currentSlack, allowFrom: ["U456"] } },
+      plugins: {
+        ...plugins,
+        entries: {
+          ...entries,
+          knowledge: {
+            ...knowledge,
+            config: { ...record(knowledge.config, "Knowledge plugin config"), thresholds: [2] },
+          },
+        },
+      },
     },
     { secretBindings: current.secretBindings },
   );
   await retry.click();
   await section
-    .getByText("Configuration changed. Reload this draft before saving channel Secrets.", {
+    .getByText("Configuration changed. Reload this draft before saving channel credentials.", {
       exact: true,
     })
     .waitFor();
@@ -1107,14 +939,14 @@ async function retryConflictReload(
     // The policy read lands with the lost Retry's grant in place. The section says access is
     // confirmed, as a successful Retry says it is granted, and that outcome takes the focus the
     // replaced Retry had, so the reader keeps their place.
-    const confirmed = secretAccessConfirmed(slackOn);
+    const confirmed = secretAccessConfirmed(false);
     await section.getByText(confirmed, { exact: true }).waitFor();
     assert.equal(await focused(), `status: ${confirmed}`);
     assert.equal(await section.getByRole("button", { name: "Retry Secret access" }).count(), 0);
     await expectNoText(page, /could not be confirmed|Agent access not confirmed/);
     // Only the lost Retry sent a grant: the read confirmed it, nothing granted it again.
     assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-      boundSecret(secrets, "SLACK_APP_TOKEN").id,
+      boundSecret(secrets, "PLUGIN_API_KEY").id,
     ]);
     await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
     return;
@@ -1122,7 +954,7 @@ async function retryConflictReload(
   // The policy read lands: the grant is now known missing, and the section is rebuilt.
   await section
     .getByText(
-      "This Agent has no access to a bound Slack Secret, so deploying it would be refused.",
+      "This Agent has no access to a bound Namespace Secret, so deploying it would be refused.",
       {
         exact: false,
       },
@@ -1132,96 +964,11 @@ async function retryConflictReload(
   await page.keyboard.press("Enter");
   await section.getByText(SLACK_OFF_RETRY_GRANTED, { exact: true }).waitFor();
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    boundSecret(secrets, "SLACK_APP_TOKEN").id,
-    boundSecret(secrets, "SLACK_APP_TOKEN").id,
+    boundSecret(secrets, "PLUGIN_API_KEY").id,
+    boundSecret(secrets, "PLUGIN_API_KEY").id,
   ]);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 }
-
-// Tokens on other keys get the list; the standard pair left bound beside them is checked too
-// (finding 2558).
-test("a standard Slack key left bound beside other token keys needs the Agent's grant", (t) =>
-  ungrantedBoundSecret(t, {
-    name: "Other keys leftover",
-    slackValues: { appToken: "${ACME_APP}", botToken: "${ACME_BOT}" },
-    bindings: ["ACME_APP", "ACME_BOT", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
-    rows: ["ACME_APP", "ACME_BOT", "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    badges: [
-      "Bound",
-      "Bound",
-      "Bound · not read by the Slack settings · Agent access not confirmed",
-      "Bound · not read by the Slack settings",
-    ],
-  }));
-
-// HTTP mode reads no app token, so an account whose bot token reads SLACK_BOT_TOKEN binds only that
-// key. The tab keeps the bot token's picker, the only console path that rebinds it: the Channels
-// tab's Slack editor refuses HTTP mode and the Configuration JSON saves no bindings (finding 2540).
-test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "HTTP Slack token gate");
-  const [, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacement = await createSecret(fixture, namespace.id, "Rotated bot", "xoxb-rotated");
-  const signingSecret = await createSecret(fixture, namespace.id, "Signing secret", "signing");
-  const secretBindings = {
-    SLACK_BOT_TOKEN: envBinding(botSecret),
-    SLACK_SIGNING_SECRET: envBinding(signingSecret),
-  };
-  const agent = await createAgent(
-    fixture,
-    namespace.id,
-    "HTTP Slack Token Agent",
-    nativeValues("http-slack-tokens", {
-      harnessId: "codex",
-      channels: {
-        slack: {
-          ...slack,
-          mode: "http",
-          appToken: undefined,
-          botToken: "${SLACK_BOT_TOKEN}",
-          signingSecret: "${SLACK_SIGNING_SECRET}",
-        },
-      },
-    }),
-    { executionMode: "dedicated", secretBindings },
-  );
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  const botToken = page.getByLabel("Slack bot token");
-  await waitForInputValue(botToken, secretOptionLabel(botSecret));
-  assert.equal(await page.getByLabel("Slack app token").count(), 0);
-  // The signing secret has no picker, but save requires its binding, so it is listed too
-  // (finding 2554).
-  const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), [
-    "Slack bot token",
-    "SLACK_SIGNING_SECRET",
-  ]);
-  await page
-    .getByText(
-      "The Slack settings also read the other keys listed above: bind them through the Configuration API.",
-    )
-    .waitFor();
-  await expectNoText(page, /The token pickers bind only/);
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-  // Rotating the bot token saves with only its picker filled.
-  await selectSecret(page, "Slack bot token", replacement);
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/configurations/${agent.configurationId}`) &&
-      response.request().method() === "PATCH",
-  );
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  assert.equal((await saved).status(), 200);
-  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
-  assert.deepEqual(await savedSecretBindings(fixture, namespace.id, agent.configurationId), {
-    ...secretBindings,
-    SLACK_BOT_TOKEN: envBinding(replacement),
-  });
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
 
 // Deploy must not run ahead of the console's grant read: while the Namespace's IAM policy is still
 // being read it may yet show a bound Secret the Agent cannot use, which the worker refuses at
@@ -1230,9 +977,8 @@ test("an HTTP-mode Slack account keeps the bot token picker alone", async (t) =>
 test("Deploy waits for the Agent's Secret grant read and sends no deploy it would refuse", async (t) => {
   const { fixture, namespace, agent } = await agentWithoutGrant(t, {
     name: "Held read",
-    slackValues: {},
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
+    bindings: ["PLUGIN_API_KEY"],
+    ungranted: "PLUGIN_API_KEY",
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -1269,14 +1015,14 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
   );
   reads.release();
   await page
-    .getByText(secretGrantDeployReason(["Slack app token"], { missing: true }), { exact: true })
+    .getByText(secretGrantDeployReason(["PLUGIN_API_KEY"], { missing: true }), { exact: true })
     .waitFor();
   assert.equal(await deploy.isDisabled(), true);
   assert.equal(deployRequests(), 0);
   // Positive control: Retry Secret access grants the Secret, and Deploy becomes available.
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Retry Secret access" }).click();
-  await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
+  await page.getByText(SLACK_OFF_RETRY_GRANTED, { exact: true }).waitFor();
   await waitForEnabled(deploy);
   assert.equal(deployRequests(), 0);
 });
@@ -1289,15 +1035,14 @@ test("Deploy waits for the Agent's Secret grant read and sends no deploy it woul
 test("Deploy's grant reason names the administrator once Configuration update is denied", async (t) => {
   const { fixture, namespace, agent } = await agentWithoutGrant(t, {
     name: "Read only reason",
-    slackValues: {},
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: "SLACK_APP_TOKEN",
+    bindings: ["PLUGIN_API_KEY"],
+    ungranted: "PLUGIN_API_KEY",
   });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   const retry = page.getByRole("button", { name: "Retry Secret access" });
-  const withRetry = secretGrantDeployReason(["Slack app token"], { missing: true });
+  const withRetry = secretGrantDeployReason(["PLUGIN_API_KEY"], { missing: true });
   await page.getByText(withRetry, { exact: true }).waitFor();
   await waitForEnabled(retry);
   assert.equal(await accessibleDescription(deploy), withRetry);
@@ -1306,7 +1051,7 @@ test("Deploy's grant reason names the administrator once Configuration update is
     namespaceId: namespace.id,
     resourceId: agent.configurationId,
   });
-  const askAdministrator = secretGrantDeployReason(["Slack app token"], {
+  const askAdministrator = secretGrantDeployReason(["PLUGIN_API_KEY"], {
     missing: true,
     administrator: true,
   });
@@ -1319,510 +1064,77 @@ test("Deploy's grant reason names the administrator once Configuration update is
   assert.equal(await deploy.isDisabled(), true);
 });
 
-// A channel Secrets save that overtakes the grant read must not drop what that read would show.
-// The app token Secret stays bound without the Agent's grant while the administrator replaces only
-// the bot token, so the save grants only the new bot Secret. The panel reads the grants again
-// after the save: the app row is flagged and Deploy stays held, as the worker would refuse the
-// deploy with AUTHORIZATION_DENIED (finding 2575). `readLandsDuringSave` releases the held read
-// while the save's Configuration write is held instead of after the save ends. With `appGranted`,
-// the same save leaves nothing ungranted: Deploy submits once and stores one version.
-async function saveOvertakesGrantRead(
-  t: TestContext,
-  { readLandsDuringSave, appGranted }: { readLandsDuringSave: boolean; appGranted: boolean },
-) {
-  const { fixture, namespace, agent, secrets } = await agentWithoutGrant(t, {
-    name: `${readLandsDuringSave ? "Read during save" : "Read after save"}${appGranted ? " granted" : ""}`,
-    slackValues: {},
-    bindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-    ungranted: appGranted ? null : "SLACK_APP_TOKEN",
-    // The deploy then checks the grants the console commits through the IAM API, as in
-    // production, not only the fixture's seeded policy; deployment admits Slack only with an
-    // Installation channel runtime.
-    fixtureOptions: appGranted ? { provisionedPeople: [], channelRuntime: true } : undefined,
-  });
-  const replacement = await createSecret(
-    fixture,
-    namespace.id,
-    "Replacement bot token",
-    "xoxb-new",
-  );
-  const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
-  const deployRequests = () =>
-    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`).length;
-  // Hold only the panel's first policy read; the save's own grant reads pass.
-  const read = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
-    { method: "GET", once: true },
-  );
-  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const write = readLandsDuringSave
-    ? await holdRequests(t, page, `${fixture.origin}${configurationPath}`, { method: "PATCH" })
-    : null;
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  const deploy = page.getByRole("button", { name: "Deploy new version" });
-  const deployStatus = page.locator("section.agent-draft-actions p.muted[role=status]");
-  await deployStatus.filter({ hasText: /\S/ }).waitFor();
-  // The grant read asks for the bindings once the roles have answered (finding 2919).
-  await read.requested;
-  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await selectSecret(page, "Slack bot token", replacement);
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  if (write) {
-    await write.requested;
-    read.release();
-    // The page takes the read's answer while the save's Configuration write is still held.
-    await waitForIdleFetches(page, { except: configurationPath });
-    write.release();
-  }
-  // The save ends with a grant read still to come, so it does not point to Deploy yet. With the
-  // app grant present, the save's own unheld recheck may already have settled and named Deploy.
-  const saved = page.getByText(CHANNEL_SECRETS_SAVED, { exact: true });
-  const savedWithDeploy = page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY, { exact: true });
-  const saveStatus = page
-    .locator("section.channel-secrets p.hint[role=status]")
-    .and(saved.or(savedWithDeploy));
-  await saveStatus.waitFor();
-  if (!appGranted) {
-    assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
-  }
-  if (!readLandsDuringSave) {
-    read.release();
-    await waitForIdleFetches(page);
-  }
-  await deployStatus
-    .filter({ hasText: /^This Agent has no access to the Secret bound to |^Ready to deploy\.$/ })
-    .waitFor();
-  if (appGranted) {
-    // Positive control: every bound Secret is granted, so Deploy submits once and the API
-    // stores one new version.
-    const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
-    const beforeRead = await fixture.request("GET", revisionsPath);
-    assert.equal(beforeRead.status, 200);
-    const before = records(beforeRead.data, "Agent revisions before deploy");
-    assert.equal(await deployStatus.textContent(), "Ready to deploy.");
-    // With nothing left to hold Deploy, the save outcome names it as the next step.
-    await saveStatus.and(savedWithDeploy).waitFor();
-    assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED_DEPLOY);
-    const deployResponse = page.waitForResponse(
-      (response) =>
-        response.url() ===
-          `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy` &&
-        response.request().method() === "POST",
+// A Source save must not discard an in-flight grant read for another, still-supported Namespace
+// Secret consumer. Both arrival orders previously dropped a missing grant and enabled Deploy.
+for (const duringSave of [false, true]) {
+  test(`a generic Secret grant read landing ${duringSave ? "during" : "after"} a Slack Source save still holds Deploy`, async (t) => {
+    const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+      t,
+      "Source save and plugin grant",
     );
-    await deploy.click();
-    const response = await deployResponse;
-    assert.equal(response.status(), 202, await response.text());
-    const deployed = responseData(await response.json());
-    const deployedId = stringField(deployed.id, "Deployed revision ID");
-    const afterRead = await fixture.request("GET", revisionsPath);
-    assert.equal(afterRead.status, 200);
-    const after = records(afterRead.data, "Agent revisions after deploy");
-    assert.deepEqual(
-      after.map(({ id }) => id).filter((id) => !before.some((revision) => revision.id === id)),
-      [deployedId],
+    const app = (await enroll("App", "xapp")).source;
+    const bot = (await enroll("Bot")).source;
+    const replacement = (await enroll("New bot")).source;
+    const plugin = await createSecret(
+      fixture,
+      namespace.id,
+      "Plugin API key",
+      "synthetic-plugin-key",
     );
-    assert.equal(deployRequests(), 1);
-    return;
-  }
-  assert.equal(
-    await deployStatus.textContent(),
-    secretGrantDeployReason(["Slack app token"], { missing: true }),
-  );
-  assert.equal(await deploy.isDisabled(), true);
-  const list = page.locator("section.channel-secrets .credential-status-list");
-  assert.equal(await list.getByText(/· Agent access not confirmed$/).count(), 1);
-  // The settled missing-grant state offers Retry and does not direct the user to Deploy.
-  assert.equal(await page.getByRole("button", { name: "Retry Secret access" }).isEnabled(), true);
-  assert.equal(await saveStatus.textContent(), CHANNEL_SECRETS_SAVED);
-  assert.equal(
+    const agent = await createAgent(
+      fixture,
+      namespace.id,
+      "Source and plugin Agent",
+      nativeValues("${PLUGIN_API_KEY}", {
+        harnessId: "codex",
+        channels: { slack },
+      }),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+          PLUGIN_API_KEY: envBinding(plugin),
+        },
+      },
+    );
+    await removeAgentSecretGrant(fixture, namespace.id, agent.servicePrincipalId, plugin.id);
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+    const read = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+      { method: "GET", once: true },
+    );
+    const write = duringSave
+      ? await holdRequests(t, page, `${fixture.origin}${configurationPath}`, { method: "PATCH" })
+      : null;
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+    await read.requested;
+    const picker = page.getByLabel("Slack bot token", { exact: true });
+    await picker.locator(`option[value="${replacement.id}"]`).waitFor({ state: "attached" });
+    await picker.selectOption(replacement.id);
+    await page.getByRole("button", { name: "Save channel credentials" }).click();
+    if (write) {
+      await write.requested;
+      read.release();
+      await waitForIdleFetches(page, { except: configurationPath });
+      write.release();
+    }
+    await page.getByText("Channel credential bindings saved.", { exact: false }).waitFor();
+    if (!duringSave) {
+      read.release();
+    }
     await page
-      .locator("section.channel-secrets")
-      .getByText(/Deploy the new version/)
-      .count(),
-    0,
-  );
-  assert.equal(deployRequests(), 0);
-  // Retry Secret access grants the app Secret, and Deploy becomes available.
-  await page.getByRole("button", { name: "Retry Secret access" }).click();
-  await page.getByText(SLACK_RETRY_GRANTED, { exact: true }).waitFor();
-  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    replacement.id,
-    boundSecret(secrets, "SLACK_APP_TOKEN").id,
-  ]);
-  await waitForEnabled(deploy);
-  assert.equal(deployRequests(), 0);
+      .getByText(secretGrantDeployReason(["PLUGIN_API_KEY"], { missing: true }), { exact: true })
+      .waitFor();
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    await page.getByRole("button", { name: "Retry Secret access" }).click();
+    await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  });
 }
-
-test("a channel Secrets save that ends before the grant read lands reads the grants again", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: false, appGranted: false }));
-
-test("a grant read that lands during a channel Secrets save is read again after it", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: true, appGranted: false }));
-
-test("a channel Secrets save that ends before a granted read lands deploys once", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: false, appGranted: true }));
-
-test("a granted read that lands during a channel Secrets save deploys once", (t) =>
-  saveOvertakesGrantRead(t, { readLandsDuringSave: true, appGranted: true }));
-
-// Save and deployment admission refuse a signing secret, user token or relay token reference
-// without a binding, as they refuse a token's (finding 2554). The tab listed only the tokens, so
-// Deploy was available for a Configuration the deploy refuses.
-test("a Slack signing secret without a binding holds Deploy", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Slack signing secret gate");
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const agent = await createAgent(
-    fixture,
-    namespace.id,
-    "Slack Signing Secret Agent",
-    nativeValues("slack-signing-secret", {
-      harnessId: "codex",
-      channels: { slack: { ...slack, signingSecret: "${SLACK_SIGNING_SECRET}" } },
-    }),
-    {
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: envBinding(appSecret),
-        SLACK_BOT_TOKEN: envBinding(botSecret),
-      },
-    },
-  );
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page
-    .getByText(
-      "Complete these in Credentials before deploying: Slack Secret bindings (SLACK_SIGNING_SECRET).",
-    )
-    .waitFor();
-  const rows = page.locator("section.channel-secrets .credential-status-list");
-  assert.deepEqual(await rows.locator("dt").allTextContents(), [
-    "Slack app token",
-    "Slack bot token",
-    "SLACK_SIGNING_SECRET",
-  ]);
-  assert.deepEqual(await rows.locator("dd").allTextContents(), ["Bound", "Bound", "Missing"]);
-  // The token pickers stay: they still bind the tokens.
-  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-});
-
-// A stored Configuration can hold a channel setting that save now refuses (breaking-changes
-// 2026-10-25). Saving channel Secrets resends the stored values, so the API refuses that save and
-// names the setting. The tab said "Check the selected Secrets and reload this Agent.", which no
-// Secret choice or reload fixes (finding 2529); it now shows the API's sentence and where to fix
-// it: the Configuration JSON for a form save refuses, and where the console binds a name for a
-// reference without a binding, which that editor cannot save (finding 2542).
-async function refusedStoredSlackSave(
-  t: TestContext,
-  { store, refusal }: { store: (slackChannel: Record<string, unknown>) => void; refusal: string },
-) {
-  // The bundled Kubernetes Compute's rule refuses the setting; the storage Driver keeps the row an
-  // earlier build saved, which this test writes through the Driver as that build did.
-  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
-  const fixture = await createConsoleAppFixture(t, {
-    computeImplementation: "kubernetes-local",
-    configurationDriver,
-  });
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Stored Slack form");
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacement = await createSecret(fixture, namespace.id, "Replacement bot", "xoxb-new");
-  const agent = await createAgent(
-    fixture,
-    namespace.id,
-    "Stored Slack Form Agent",
-    nativeValues("stored-slack-form", { harnessId: "codex", channels: { slack } }),
-    {
-      executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: envBinding(appSecret),
-        SLACK_BOT_TOKEN: envBinding(botSecret),
-      },
-    },
-  );
-  const reference = { namespaceId: namespace.id, id: agent.configurationId };
-  const stored = configurationDriver.stored(reference);
-  assert.ok(stored, "Expected the stored Configuration");
-  const values = record(stored.values, "Stored Configuration values");
-  const channels = record(values.channels, "Stored channels");
-  store(record(channels.slack, "Stored Slack configuration"));
-  await configurationDriver.update(stored);
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  await selectSecret(page, "Slack bot token", replacement);
-  const saved = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/configurations/${agent.configurationId}`) &&
-      response.request().method() === "PATCH",
-  );
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  assert.equal((await saved).status(), 400);
-  const alert = page.locator("section.channel-secrets .status[role=alert]");
-  await alert.filter({ hasText: refusal }).waitFor();
-  await expectNoText(page, "Check the selected Secrets and reload this Agent.");
-  // Nothing saved: the stored bindings and the refused setting stay as they were.
-  assert.deepEqual(configurationDriver.stored(reference), stored);
-  return page;
-}
-
-test("a channel Secret save refused for a stored Slack token form names the setting", async (t) => {
-  await refusedStoredSlackSave(t, {
-    store(slackChannel) {
-      slackChannel.botToken = { source: "file", provider: "default", id: "/run/bot" };
-    },
-    refusal: `${unreadableSlackTokenRefusal("channels.slack.botToken", "secretRef")} Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.`,
-  });
-});
-
-test("a channel Secret save refused for a missing binding says where to bind it", async (t) => {
-  const page = await refusedStoredSlackSave(t, {
-    store(slackChannel) {
-      slackChannel.signingSecret = "${SLACK_SIGNING_SECRET}";
-    },
-    refusal: `Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference. ${CHANNEL_BINDING_CREDENTIALS_REMEDY}`,
-  });
-  await expectNoText(page, /Fix that setting in the Configuration JSON/);
-});
-
-test("bound Slack credential fields show Secret references without reading values", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Bound Slack credential gate");
-  const values = nativeValues("slack-bound", { harnessId: "codex", channels: { slack } });
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const secretBindings = {
-    SLACK_APP_TOKEN: envBinding(appSecret),
-    SLACK_BOT_TOKEN: envBinding(botSecret),
-  };
-  const agent = await createAgent(fixture, namespace.id, "Bound Slack Agent", values, {
-    executionMode: "dedicated",
-    secretBindings,
-  });
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  const appToken = page.getByLabel("Slack app token");
-  const botToken = page.getByLabel("Slack bot token");
-  await appToken.waitFor();
-  assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
-  assert.equal(await botToken.evaluate((node) => node.tagName), "INPUT");
-  await waitForInputValue(appToken, secretOptionLabel(appSecret));
-  await waitForInputValue(botToken, secretOptionLabel(botSecret));
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  // Picking the Secret that is already bound stages nothing.
-  await selectSecret(page, "Slack app token", appSecret);
-  await expectNoText(page, "Secret binding staged. Save changes to apply it.");
-  await waitForInputValue(appToken, secretOptionLabel(appSecret));
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
-
-test("Slack credential replacement switches only selected Secret references", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Replacement Slack credential gate");
-  const values = nativeValues("slack-replacement", { harnessId: "codex", channels: { slack } });
-  const [appSecret, botSecret] = await existingSlackSecrets(fixture, namespace.id);
-  const replacementAppSecret = await createSecret(
-    fixture,
-    namespace.id,
-    "Replacement Slack app token",
-    "xapp-replacement",
-  );
-  const secretBindings = {
-    SLACK_APP_TOKEN: envBinding(appSecret),
-    SLACK_BOT_TOKEN: envBinding(botSecret),
-  };
-  const agent = await createAgent(fixture, namespace.id, "Replacement Slack Agent", values, {
-    executionMode: "dedicated",
-    secretBindings,
-  });
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await selectSecret(page, "Slack app token", replacementAppSecret);
-  await expectNoText(page, /xapp-replacement/);
-  const saveResponse = page.waitForResponse(
-    (response) =>
-      response
-        .url()
-        .endsWith(`/namespaces/${namespace.id}/configurations/${agent.configurationId}`) &&
-      response.request().method() === "PATCH",
-  );
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  assert.equal((await saveResponse).status(), 200);
-  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
-  await expectNoText(page, /xapp-replacement/);
-  const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
-  assert.deepEqual(saved, {
-    SLACK_APP_TOKEN: envBinding(replacementAppSecret),
-    SLACK_BOT_TOKEN: secretBindings.SLACK_BOT_TOKEN,
-  });
-  assert.deepEqual(secretWrites(requests, namespace.id), []);
-  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    replacementAppSecret.id,
-  ]);
-  // Saving re-renders both pickers, which reload Secret metadata before showing names.
-  await waitForInputValue(
-    page.getByLabel("Slack app token"),
-    secretOptionLabel(replacementAppSecret),
-  );
-  await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
-
-test("partially bound Slack credentials save only the missing token", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Partial Slack credential gate");
-  const values = nativeValues("slack-partial", { harnessId: "codex", channels: { slack } });
-  const appSecret = await createSecret(
-    fixture,
-    namespace.id,
-    "Existing Slack app token",
-    "xapp-old",
-  );
-  const botSecret = await createSecret(
-    fixture,
-    namespace.id,
-    "New Slack bot token",
-    "xoxb-new-bot",
-  );
-  const secretBindings = {
-    SLACK_APP_TOKEN: envBinding(appSecret),
-  };
-  const agent = await createAgent(fixture, namespace.id, "Partial Slack Agent", values, {
-    executionMode: "dedicated",
-    secretBindings,
-  });
-  // Near-miss bindings on the bot Secret: another Agent holds the exact operate Role, and
-  // this Agent holds only a read Role. Neither is this Agent's operate grant.
-  const otherAgent = await createAgent(fixture, namespace.id, "Other Slack Agent", values, {
-    executionMode: "dedicated",
-  });
-  const policyPath = `/namespaces/${namespace.id}/iam`;
-  for (const [permission, subjectId] of [
-    [{ action: "operate", resourceKind: "secret" }, otherAgent.servicePrincipalId],
-    [{ action: "read", resourceKind: "secret" }, agent.servicePrincipalId],
-  ]) {
-    const role = await fixture.request("POST", `${policyPath}/roles`, {
-      body: { permissions: [permission] },
-    });
-    assert.equal(role.status, 201, JSON.stringify(role.body));
-    const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId,
-        roleId: stringField(record(role.data, "Created Role").id, "Role ID"),
-        resourceKind: "secret",
-        resourceId: botSecret.id,
-      },
-    });
-    assert.equal(binding.status, 201, JSON.stringify(binding.body));
-  }
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await selectSecret(page, "Slack bot token", botSecret);
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
-  assert.deepEqual(secretWrites(requests, namespace.id), []);
-  const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
-  assert.deepEqual(saved, {
-    SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN,
-    SLACK_BOT_TOKEN: envBinding(botSecret),
-  });
-  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [botSecret.id]);
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
-
-test("missing Slack credential fields require both Secret references before saving", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Slack credential gate");
-  const values = nativeValues("slack", { harnessId: "codex", channels: { slack } });
-  const appSecret = await createSecret(
-    fixture,
-    namespace.id,
-    "Slack Credential Agent Slack app token",
-    "xapp-console-secret",
-  );
-  const botSecret = await createSecret(
-    fixture,
-    namespace.id,
-    "Slack Credential Agent Slack bot token",
-    "xoxb-console-secret",
-  );
-  const agent = await createAgent(fixture, namespace.id, "Slack Credential Agent", values, {
-    executionMode: "dedicated",
-  });
-  // Roles that resemble secret operate but are not exactly it; grants must create their own.
-  for (const permissions of [
-    [
-      { action: "operate", resourceKind: "secret" },
-      { action: "read", resourceKind: "secret" },
-    ],
-    [{ action: "read", resourceKind: "secret" }],
-    [{ action: "operate", resourceKind: "agent" }],
-  ]) {
-    const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { permissions },
-    });
-    assert.equal(role.status, 201, JSON.stringify(role.body));
-  }
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await page
-    .getByText(/Complete these in Credentials before deploying: Slack Secret bindings/)
-    .waitFor();
-  assert.equal(await page.getByLabel("Slack app token").inputValue(), "");
-  assert.equal(await page.getByLabel("Slack bot token").inputValue(), "");
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await selectSecret(page, "Slack bot token", botSecret);
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-  await selectSecret(page, "Slack app token", appSecret);
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
-  await page.getByText(CHANNEL_SECRETS_SAVED_DEPLOY).waitFor();
-  // Confirmed grants leave nothing pending, so there is nothing left to save or retry.
-  assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
-
-  assert.deepEqual(secretWrites(requests, namespace.id), []);
-  assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [
-    appSecret.id,
-    botSecret.id,
-  ]);
-  const pageText = await page.locator("body").textContent();
-  assert.ok(pageText !== null);
-  assert.equal(pageText.includes("xapp-console-secret"), false);
-  assert.equal(pageText.includes("xoxb-console-secret"), false);
-  const saved = await savedSecretBindings(fixture, namespace.id, agent.configurationId);
-  assert.deepEqual(saved, {
-    SLACK_APP_TOKEN: envBinding(appSecret),
-    SLACK_BOT_TOKEN: envBinding(botSecret),
-  });
-  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
-});
 
 // A Codex Agent on a Credentials tab whose ServiceAccount list is
 // denied after Console admission. With `heldList`, the list waits for `list.release()`, so a test

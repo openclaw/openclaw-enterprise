@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requiresPostgres } from "../helpers/postgres-platform-state.ts";
+import {
+  caseDatabasesAvailable,
+  prepareCaseDatabase,
+  requiresPostgres,
+} from "../helpers/postgres-platform-state.ts";
 import {
   persistNamespaceLifecycle,
   refuseUninitializedInstallation,
@@ -96,10 +100,23 @@ test(
 );
 test(
   "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
-  requiresPostgres,
-  persistGuardedDeployment,
+  {
+    skip:
+      requiresPostgres.skip ||
+      (caseDatabasesAvailable
+        ? false
+        : "Run the prepared guarded receipt workflow in docs/testing/postgresql.md#other-postgresql-suites."),
+  },
+  async (context) => {
+    // Admitted revisions retain their Source, so this case must own its Installation and custody.
+    const databaseUrl = await prepareCaseDatabase(context, {
+      lane: "postgres-platform",
+      testFile: import.meta.url,
+    });
+    assert.ok(databaseUrl);
+    await persistGuardedDeployment(context, databaseUrl);
+  },
 );
-
 test(
   "PostgreSQL pins managed sources to a durable TokenService instance",
   requiresPostgres,

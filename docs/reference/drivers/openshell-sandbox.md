@@ -1,6 +1,6 @@
 # OpenShell SandboxDriver
 
-Development requires [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9), the pinned OCE runtime, [Kubernetes Compute](kubernetes-compute.md), and dedicated Codex or native OpenClaw. Embedded OpenClaw is unsupported. OCC owns Agents, revisions, Namespaces, routing, credentials, and authorization. A [Credential Gateway](openshell-credential-gateway.md) or [Credential Proxy](credential-proxy.md) delivers model credentials; see [implementation status](../credential-sources.md#implementation-status). Revision Providers supply enrollment and Codex files. [Production qualification](#qualification-contract) remains open.
+Development requires [OpenShell v0.1.9](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.9), the pinned runtime, [Kubernetes Compute](kubernetes-compute.md), and dedicated Codex or native OpenClaw. Embedded execution is unsupported. The paired [Credential Proxy](credential-proxy.md) delivers managed Sources. Revision Providers supply enrollment and Codex files. See [credential support](../credential-sources.md#implementation-status) and [remaining production qualification](#remaining-qualification-work).
 
 See [setup](openshell-sandbox/namespace-gateway.md) for Namespace-owned gateways. Settings below cover operator-owned gateways.
 
@@ -13,7 +13,7 @@ routing, and the per-Agent Gateway. Sandbox owns:
 - `configureAgent` pins either dedicated Harness’s main workspace to the Sandbox data mount before OCC saves the revision. Codex retains app-server containment policy.
 - `validateWorkspaceSetup` admits initial files only for that workspace and one main Agent (or no roster). Compute checks storage and identity; Sandbox initializes the mount.
 - In `operator` mode, `ensureNamespace` applies labels, workspace resources, and NetworkPolicies and owns the active Workspace. A [preprovisioned namespace](kubernetes-compute/preprovisioned-namespace.md) only verifies them.
-- `provisionHarness` creates and returns a Sandbox with [credential attachments](openshell-sandbox/harness-providers.md#credential-attachments) and a runtime Provider, validating Codex routing. Codex exposes app-server; native OpenClaw connects outward to Gateway and may expose a failure endpoint until enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) precedes execution.
+- `provisionHarness` creates and returns a Sandbox with a [runtime Provider](openshell-sandbox/harness-providers.md#dedicated-runtime-providers), validating Codex routing. Codex exposes app-server; native OpenClaw connects outward to Gateway and may expose a failure endpoint until enrollment. [Workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) precedes execution.
 - `provisionStagedHarness` creates an idle Sandbox for managed credentials. After policy and Provider readiness, Compute installs launch inputs with `prepareStagedHarness`. `activateStagedHarness` passes current Provider placeholders via fresh `ExecSandbox`; the supervisor starts the Harness.
 - OpenShell's controller creates and owns the Sandbox's Harness Pod.
 - `cleanup` derives Sandbox identity on retirement, even without its Pod. Namespace cleanup verifies ownership and removes the Workspace and configured resources before Compute deletes the namespace.
@@ -38,7 +38,10 @@ and per-tool sandboxes are deferred.
 
 ## Configuration
 
-Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway) must list the Sandbox ID and, if selected, the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver) ID. For managed delivery, OCC registers Sandbox and Credential Proxy together; Proxy exposes `credential_proxy_delivery`. Configure the Gateway connection and WSS CA (`rootCertificatePath`) on the Backend.
+Select `drivers.sandbox` with Kubernetes Compute. The [`openshell` Backend](../backends.md#openshell-gateway)
+must list the Sandbox ID. Configure the Gateway service connection and WSS CA
+(`rootCertificatePath`) on that Backend. The Sandbox registration supplies
+`credential_proxy_delivery` for managed Sources.
 
 ```yaml
 drivers:
@@ -285,7 +288,7 @@ OpenShell's optional [supervisor application listener](https://github.com/NVIDIA
 serves HTTP and WebSocket traffic on a separate port. OCE still needs routing to
 the owning supervisor and application authentication. Verify a real model turn
 there, deny management RPCs from Agent Gateways, and reserve control-plane
-access for authenticated Sandbox and Credential Gateway callers.
+access for authenticated Sandbox and Credential Proxy callers.
 
 OpenShell gateway authentication must bind each trusted control-plane caller to
 the requested Sandbox or Pod identity. Provider-managed files require real
@@ -305,8 +308,9 @@ becomes `RUNTIME_LOGS_SANDBOX_NOT_FOUND`. See
 
 - Startup requires bundled Kubernetes Compute and an OpenShell Backend. Configure
   the Gateway endpoint on the Backend.
-- For a credential attachment failure, verify that the selected Backend issued
-  the attachment and check its provider status in OpenShell.
+- If managed delivery fails, check that the selected TokenService owns the
+  Source and that the paired Proxy can reach the Sandbox. Verify the
+  [Source and delivery status](../credential-sources.md#retry-credential-delivery).
 - For an unavailable Gateway, check Service and Pod readiness.
 - For `SANDBOX_HARNESS_UNSUPPORTED`, select dedicated Codex or OpenClaw.
 - `OpenShell refused <method>: ... limit of durable request admissions ...`
@@ -378,7 +382,7 @@ See [Sandbox startup refusal codes](openshell-sandbox/harness-providers.md#sandb
 - [OpenShell testing](../../testing/openshell.md)
 - [OpenShell Sandbox provisioning flow](../../flows/openshell-sandbox-provisioning.md)
 - [OpenShell Harness providers and exposure](openshell-sandbox/harness-providers.md)
-- [SandboxDriver contract](sandbox.md) and [OpenShell Credential Gateway](openshell-credential-gateway.md)
+- [SandboxDriver contract](sandbox.md) and [Credential Proxy](credential-proxy.md)
 - [ComputeDriver contract](compute.md)
 - [Kubernetes ComputeDriver](kubernetes-compute.md)
 - [Configuration reference](../settings.md)

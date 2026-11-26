@@ -20,6 +20,7 @@ import {
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
+  DeviceAuthorizationSessionId,
   GatewayManagedModeSchema,
   AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
@@ -92,7 +93,7 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
     data: Type.Object(
       {
         session: Type.Object(
-          { id: SecretId, namespaceId: NamespaceId },
+          { id: DeviceAuthorizationSessionId, namespaceId: NamespaceId },
           {
             additionalProperties: false,
             description: "Device-login handle for the poll and cancel operations.",

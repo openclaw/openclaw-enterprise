@@ -1439,9 +1439,8 @@ describe("Presets", { concurrency: 2 }, () => {
   });
 
   test("SWE Agent Preset defaults to Astra and reuses an existing service-account Secret", async (t) => {
-    // The SWE Preset enables Slack, which Agent save refuses without an Installation channel
-    // runtime, as deployment does.
-    const fixture = await createFixture(t, { channelRuntime: true });
+    // The shipped Preset includes Slack, while this case qualifies service-account reuse.
+    const fixture = await createFixture(t);
     const namespace = await fixture.createNamespace("SWE Agent service account", { ready: true });
     const serviceAccount = await fixture.createSecret(
       namespace.id,
@@ -1502,22 +1501,11 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.equal(retained.status, 200, JSON.stringify(retained.body));
     assert.deepEqual(retained.data.template, originalTemplate);
 
-    // The channel editor binds the Slack tokens before the Agent is saved; Agent save refuses
-    // Slack references without bindings, as deployment does.
-    const slackSecrets = [
-      await fixture.createSecret(namespace.id, "SWE Slack app token", "synthetic-slack-app"),
-      await fixture.createSecret(namespace.id, "SWE Slack bot token", "synthetic-slack-bot"),
-    ];
-    const configuration = await createAgentConfiguration(fixture, namespace.id, {
-      ...rendered,
-      configuration: {
-        ...rendered.configuration,
-        secretBindings: {
-          SLACK_APP_TOKEN: { source: required(slackSecrets[0]).ref },
-          SLACK_BOT_TOKEN: { source: required(slackSecrets[1]).ref },
-        },
-      },
-    });
+    // An operator can disable Slack until they bind its Credential Sources. Do not create
+    // obsolete Channel Secrets as incidental setup for a model authentication assertion.
+    const channelDisabled = structuredClone(rendered);
+    record(field(channelDisabled, "configuration", "values", "channels", "slack")).enabled = false;
+    const configuration = await createAgentConfiguration(fixture, namespace.id, channelDisabled);
     assert.deepEqual(
       field(configuration.data.values, "channels", "slack", "replyToModeByChatType"),
       {
@@ -1535,7 +1523,7 @@ describe("Presets", { concurrency: 2 }, () => {
           "list Secrets",
         )
         .data.map((secret) => secret.id);
-    const existingSecretIds = [serviceAccount.id, ...slackSecrets.map((secret) => secret.id)];
+    const existingSecretIds = [serviceAccount.id];
     assert.deepEqual((await secretIds()).sort(), [...existingSecretIds].sort());
     const created = [];
     for (const name of ["SWE existing service account", "SWE existing service account reuse"]) {

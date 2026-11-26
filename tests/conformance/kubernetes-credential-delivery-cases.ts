@@ -9,12 +9,13 @@ import type {
 import type { createKubernetesClientConfiguration } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { workspaceSetupFixture } from "../helpers/kubernetes-workspace-setup.ts";
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   KubernetesComputeDriver,
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { CredentialSourceRevisionError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import {
@@ -190,6 +191,59 @@ export async function checkCanonicalGatewayChannelSecret() {
       ],
     ),
     /outside the admitted scope/,
+  );
+}
+
+export async function checkGatewayCredentialAggregateLimit() {
+  const fixture = workspaceSetupFixture(false);
+  const driver = concreteComputeDriver(fixture.driver);
+  const source = {
+    kind: "credential_source" as const,
+    namespaceId: fixture.revision.namespaceId,
+    id: `cs_${randomUUID()}`,
+  };
+  // Each Source value is legal, but 17 aliases exceed one Kubernetes Secret.
+  const values = Object.fromEntries(
+    Array.from({ length: 17 }, (_, index) => [`GW_TOKEN_${index}`, "x".repeat(65_000)]),
+  );
+  const revision = {
+    ...fixture.revision,
+    gatewayTokenServiceInstanceId: randomUUID(),
+    secretBindings: Object.fromEntries(Object.keys(values).map((name) => [name, { source }])),
+  };
+  await assert.rejects(
+    driver.prepareRevision(revision, {
+      ...authContext(revision),
+      secretEnvironment: [],
+      gatewayStartupCredentials: {
+        async authorize() {},
+        async resolve() {
+          return Object.fromEntries(
+            Object.entries(values).map(([name, value]) => [name, { value, sourceVersion: "v1" }]),
+          );
+        },
+      },
+    }),
+    (error: unknown) => {
+      if (!(error instanceof CredentialSourceRevisionError)) {
+        return false;
+      }
+      assert.equal(error.code, "GATEWAY_CREDENTIAL_DELIVERY_REFUSED");
+      assert.deepEqual(driver.describePrepareRevisionFailure(error), {
+        code: "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+        stage: "gateway_secret_environment",
+        errorClass: "CredentialSourceRevisionError",
+        message: "The staged Gateway credentials exceed the Kubernetes Secret limit of 1 MiB.",
+      });
+      return true;
+    },
+  );
+  assert.equal(
+    fixture.records.some(
+      ({ kind, metadata }) => kind === "Secret" && metadata.name.startsWith("gateway-secrets-"),
+    ),
+    false,
+    "oversized credential material must not reach a Kubernetes Secret write",
   );
 }
 
@@ -536,17 +590,17 @@ export async function checkStoppedRevisionCredentialCleanup(embedded: boolean) {
   assert.ok(revisionScoped().includes(credentialCopy));
 }
 
-export function checkNativeChannelSecretBindings(
+export function checkSlackCredentialBindings(
   driver: Pick<KubernetesComputeDriver, "validateHarnessAuth">,
   revision: Pick<AgentRevision, "harness" | "harnessAuth">,
 ) {
-  const envBinding = (id: string): SecretBindings[string] => ({
-    source: { kind: "secret", namespaceId: tenant.id, id },
+  const credentialSourceBinding = (id: string): SecretBindings[string] => ({
+    source: { kind: "credential_source", namespaceId: tenant.id, id },
     delivery: { type: "env" },
   });
   const secretBindings = Object.freeze({
-    SLACK_APP_TOKEN: envBinding("sec_00000000-0000-4000-8000-000000000001"),
-    SLACK_BOT_TOKEN: envBinding("sec_00000000-0000-4000-8000-000000000002"),
+    SLACK_APP_TOKEN: credentialSourceBinding("cs_00000000-0000-4000-8000-000000000001"),
+    SLACK_BOT_TOKEN: credentialSourceBinding("cs_00000000-0000-4000-8000-000000000002"),
   });
 
   const channelConfiguration = (channels: OpenClawConfigurationDocument) => ({
@@ -562,14 +616,30 @@ export function checkNativeChannelSecretBindings(
   const slackAccount = (account: OpenClawConfigurationDocument) =>
     channelConfiguration({ slack: { accounts: { ops: account } } });
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
-  const missingBotBinding = {
+  const unboundBotRefusal = {
     name: "ConfigurationHarnessError",
     message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
   };
 
+  // A stored Configuration may still bind a Namespace Secret. Its presence cannot
+  // satisfy a Slack token reference that requires a Credential Source.
+  assert.throws(
+    () =>
+      validate(slackToken(envRef("SLACK_BOT_TOKEN")), {
+        ...appBinding,
+        SLACK_BOT_TOKEN: {
+          source: {
+            kind: "secret",
+            namespaceId: tenant.id,
+            id: "sec_00000000-0000-4000-8000-000000000002",
+          },
+        },
+      }),
+    unboundBotRefusal,
+  );
   assert.throws(
     () => validate(slackToken(envRef("SLACK_BOT_TOKEN")), appBinding),
-    missingBotBinding,
+    unboundBotRefusal,
   );
   // Agent save passes null bindings: OCC's Configuration save runs the channel binding rule.
   validate(slackToken(envRef("SLACK_BOT_TOKEN")), null);
@@ -593,7 +663,7 @@ export function checkNativeChannelSecretBindings(
         assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
         assert.ok(
           error.message.endsWith(
-            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+            ` references ${shown} without a Credential Source binding: bind ${shown} to a Credential Source in secretBindings, or remove the reference.`,
           ),
           error.message,
         );
@@ -610,7 +680,7 @@ export function checkNativeChannelSecretBindings(
     "${SLACK_APP_TOKEN}${SLACK_BOT_TOKEN:-xoxb-fallback}",
     " $SLACK_BOT_TOKEN ",
   ]) {
-    assert.throws(() => validate(slackToken(botToken), appBinding), missingBotBinding, botToken);
+    assert.throws(() => validate(slackToken(botToken), appBinding), unboundBotRefusal, botToken);
   }
   for (const botToken of ["xoxb-$${SLACK_BOT_TOKEN}", "$SLACK_APP_TOKEN"]) {
     validate(slackToken(botToken), appBinding);

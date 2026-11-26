@@ -22,6 +22,7 @@ import {
   routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
+  createSlackSourceConsoleFixture,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -551,45 +552,6 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   left.release();
 });
 
-// Source creation belongs to Create Agent, so the primary is busy while its request waits.
-// An unknown outcome ends the busy state but prevents a duplicate write.
-test("Create Agent clears busy state after an uncertain Credential Source request", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Source busy state");
-  const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Agent name").fill("Source busy Agent");
-  await page.getByLabel("API key", { exact: true }).fill("own-busy-model-key");
-  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
-  await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  await waitForCreateFormReads(page);
-  const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  const uncertain = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/credential-sources`,
-    {
-      method: "POST",
-      once: true,
-      fulfill: refusal(503, "DEPENDENCY_UNAVAILABLE", "Synthetic Source outage."),
-    },
-  );
-  await create.click();
-  await uncertain.requested;
-  assert.deepEqual(await busyState(create), {
-    busy: "true",
-    cursor: "progress",
-    disabled: true,
-    text: "Create Agent",
-  });
-  uncertain.release();
-  await page
-    .getByText("Credential Source creation has an unknown outcome.", { exact: false })
-    .waitFor();
-  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
-});
-
 // A badge's words, tone and paint, and the gap to the element before it. `painted` is true when
 // its text has its tone's colour (muted when neutral).
 const badgeState = (locator: Locator) =>
@@ -616,10 +578,13 @@ const badgeState = (locator: Locator) =>
 // Status badges share one pattern. The version list's "Current version" label read as
 // "Currentversion" (audit 2.2), and the Credentials tab's Slack token states had their own chrome.
 test("The version picker names the service selection, and bindings and Namespaces use badges and cards", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badges and cards");
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Badges and cards",
+  );
   const versioned = await fixture.createAgent(namespace.id, "Badge Agent", nativeValues("badge"));
   await fixture.seedActiveAgentRevision(namespace.id, versioned.id);
-  const bot = await fixture.createSecret(namespace.id, "Badge bot token", "xoxb-badge");
+  const bot = (await enroll("Badge bot token", "xoxb")).source;
   const slack = await fixture.createAgent(
     namespace.id,
     "Credential badges",

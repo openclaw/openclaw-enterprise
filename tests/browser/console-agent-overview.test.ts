@@ -2618,6 +2618,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "CREDENTIAL_SOURCE_UNAVAILABLE",
       "CREDENTIAL_WITHDRAWN",
       "EGRESS_PROVIDER_UNAVAILABLE",
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
       "HARNESS_AUTH_REQUIRED",
       "HARNESS_AUTH_SOURCE_UNAVAILABLE",
       "INVALID_ACTIVE_REVISION",
@@ -3428,7 +3429,7 @@ async function pendingDeploy(
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
-  const open = async (outcome = "In progress", tab = "access") => {
+  const open = async (outcome = "In progress", tab = "access", heldReadPath?: string) => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, tab));
     await expectDeploymentOutcome(page, outcome, { reveal: false });
@@ -3436,7 +3437,7 @@ async function pendingDeploy(
     if (tab === "access") {
       await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     }
-    await waitForIdleFetches(page);
+    await waitForIdleFetches(page, { except: heldReadPath });
   };
   return { page, recordUrl, agent, pending, open };
 }
@@ -3995,6 +3996,151 @@ for (const viewport of [
     assert.ok(Math.abs(after - before) <= 1, `the record moved ${after - before} px`);
   });
 }
+
+test("Workspace preserves focus on Deployment when the first version activates", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, "First deployment", "Workspace");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  await trackSettledFetches(page);
+  let outcome: DeploymentResponseOptions["status"] = "queued";
+  await page.route(recordUrl, (route) =>
+    route.fulfill(deploymentStatusResponse(pending, { status: outcome })),
+  );
+
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "workspace"));
+  await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  const strip = page.getByRole("tablist", { name: "Agent configuration views" });
+  const deployment = strip.getByRole("tab", { name: "Deployment", exact: true });
+  const panel = page.getByRole("tabpanel", { name: "Workspace files" });
+  const heading = panel.getByRole("heading", { name: "Workspace files", exact: true });
+  const before = required(await heading.elementHandle());
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await strip.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
+  await strip.getByRole("tab", { name: "Workspace files" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await nextFrames(page);
+
+  const expectDeploymentFocus = async () => {
+    assert.equal(await panel.isVisible(), true);
+    assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "Workspace files");
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+    assert.equal(
+      await deployment.evaluate((node) => node.matches(":focus")),
+      true,
+      "Deployment keeps focus while Workspace files is selected",
+    );
+    assert.equal(await strip.locator('[role="tab"][tabindex="0"]').textContent(), "Deployment");
+  };
+  await expectDeploymentFocus();
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+  // Only the worker outcome is modeled. The Agent read sees the fixture's real selection.
+  await fixture.activateRevision(namespace.id, agent.id, pending.id);
+  outcome = "succeeded";
+  const read = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await page.waitForFunction((node) => !node.isConnected, before);
+  await before.dispose();
+  await heading.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  await expectDeploymentFocus();
+
+  // Enter goes to the browser's current focus. Pressing it on a locator would move focus first.
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("tabpanel", { name: "Deployment", exact: true })
+    .getByText("Recorded outcome: Completed", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getAttribute("aria-selected"), "true");
+  assert.equal(new URL(page.url()).searchParams.get("revision"), pending.id);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A failed deployment keeps a parked click on its Deployment tab", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 920, height: 900 },
+    "Parked Deployment tab",
+  );
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  const permissionsUrl = new URL("../permissions", recordUrl);
+  const permissions = await holdRequests(t, page, permissionsUrl.href, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await open("Queued", "configuration", permissionsUrl.pathname);
+  assert.equal(required(await permissions.requested).status(), 200);
+  const tabs = page.getByRole("tablist", { name: "Agent configuration views", exact: true });
+  const configuration = tabs.getByRole("tab", { name: "Configuration", exact: true });
+  const deployment = tabs.getByRole("tab", { name: "Deployment", exact: true });
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  const notice = page.locator(".agent-deployment-attention");
+  const queuedNotice = notice.getByText("A deployment is queued or in progress.", { exact: true });
+  await queuedNotice.waitFor();
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await deployment.hover();
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // The poll delivers the failure before the permissions response can show recovery.
+  record = deploymentStatusResponse(pending, {
+    status: "failed",
+    error: persistedDeploymentError("EXECUTION_ADMISSION_UNAVAILABLE"),
+  });
+  const read = page.waitForResponse(
+    (response) => response.url() === recordUrl && response.request().method() === "GET",
+  );
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await versionChooser(page)
+    .locator("option:checked")
+    .filter({ hasText: /^v2 · Failed$/ })
+    .waitFor({ state: "attached" });
+  await waitForIdleFetches(page, { except: permissionsUrl.pathname });
+  assert.equal(await settledFetches(page, permissionsUrl.pathname), 0);
+  assert.equal(await recovery.isVisible(), false);
+  assert.equal(await queuedNotice.isVisible(), false);
+  const interimFailure = notice.getByText("The latest visible deployment failed.", { exact: true });
+  const showedInterimFailure = await interimFailure.isVisible();
+
+  permissions.release();
+  const failure = recovery.getByRole("heading", { name: "v2 deployment failed", exact: true });
+  await failure.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // A locator click would find and scroll to the moved tab, hiding a missed physical click.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the original click still opens Deployment after the failure appears",
+  );
+  assert.equal(showedInterimFailure, true, "the notice shows the failure while permissions load");
+  assert.equal(await focusedTab(page), "Deployment");
+  const panel = page.getByRole("tabpanel", { name: "Deployment", exact: true });
+  await panel.getByText("Recorded outcome: Failed", { exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), pending.id);
+  assert.equal(await failure.isVisible(), true);
+});
 
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
@@ -5127,15 +5273,58 @@ test("Viewing version matches the Configuration snapshot when revisiting a queue
     assert.equal(new URL(page.url()).searchParams.get("revision"), id);
     assert.equal(await chooser.inputValue(), id);
   };
+  const heading = page.getByRole("heading", { name: "Picker Agent", exact: true });
+  const back = page.getByRole("link", { name: "← Agents", exact: true });
+  const copy = page.getByRole("button", { name: "Copy Agent ID", exact: true });
+  const hasFocus = (control: Locator) => control.evaluate((node) => node.matches(":focus-visible"));
+  const openQueuedVersion = async (control: Locator, ...keys: string[]) => {
+    const url = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/revisions/${second.id}`;
+    const read = await holdRequests(t, page, url, { method: "GET", once: true, afterServer: true });
+    await chooser.press("ArrowUp");
+    assert.equal((await read.requested)?.status(), 200);
+    assert.ok(await hasFocus(heading));
+    for (const key of keys) {
+      await page.keyboard.press(key);
+    }
+    assert.ok(await hasFocus(control));
+    read.release();
+    await checkVersion(second.id, "openai/gpt-5.1");
+    assert.deepEqual(
+      await control.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: node.matches(":focus-visible"),
+          inView: top >= 0 && bottom <= innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+    );
+  };
+
   await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
+  const destination = await back.getAttribute("href");
+  await openQueuedVersion(back, "Shift+Tab");
+  assert.equal(await back.getAttribute("href"), destination);
   const queuedPicker = required(await chooser.elementHandle());
-  await chooser.selectOption(first.id);
-  await checkVersion(first.id, "openai/gpt-4.1");
-  await chooser.selectOption(second.id);
-  await checkVersion(second.id, "openai/gpt-5.1");
-  assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  const namespaceSelect = page.getByRole("combobox", { name: "Namespace", exact: true });
+  for (const [control, ...keys] of [
+    [copy, "Tab"],
+    [namespaceSelect, "Tab", "Tab"],
+  ] as const) {
+    // Leave the header above the viewport but keep the picker in view.
+    await chooser.focus();
+    await page.mouse.wheel(0, 240);
+    await page.waitForFunction(
+      (button) => button.getBoundingClientRect().bottom < 0,
+      required(await copy.elementHandle()),
+    );
+    assert.ok(await chooser.evaluate((node) => node.getBoundingClientRect().top >= 0));
+    await page.keyboard.press("ArrowDown");
+    await checkVersion(first.id, "openai/gpt-4.1");
+    assert.ok(await hasFocus(heading));
+    await openQueuedVersion(control, ...keys);
+    assert.equal(await chooser.evaluate((node, previous) => node === previous, queuedPicker), true);
+  }
 });
 
 // The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),

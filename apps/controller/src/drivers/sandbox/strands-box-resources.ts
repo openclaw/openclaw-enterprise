@@ -433,6 +433,7 @@ mv -T preparing image`,
       ],
       env: [
         { name: "HOME", value: "/home/node" },
+        { name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" },
         { name: "OPENCLAW_WORKSPACE_DIR", value: workspace },
         { name: "OPENCLAW_WORKSPACE_SETUP_PATH", value: "/run/workspace-setup/setup.json" },
       ],

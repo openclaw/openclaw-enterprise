@@ -956,7 +956,8 @@ p {
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
-.page-meta-id {
+.page-meta-id,
+.page-meta-id-controls {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -966,16 +967,16 @@ p {
   font-size: var(--text-xs);
 }
 /* The separator before the Namespace control; none when the control is hidden. */
-.page-meta-id::after {
+.page-meta-id-controls::after {
   content: "·" / "";
   margin-left: var(--space-1);
 }
-.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id::after {
+.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id-controls::after {
   content: none;
 }
 /* Below 1100 px the row can wrap, and a wrapped separator would trail the ID. */
 @media (max-width: 1100px) {
-  .page-meta-id::after {
+  .page-meta-id-controls::after {
     content: none;
   }
 }
@@ -993,6 +994,22 @@ p {
 }
 .page-meta-copied:empty {
   display: none;
+}
+@media (width > 760px) {
+  /* Use the header's existing bottom space for one line of copy feedback.
+     Longer messages can grow without covering the next control. */
+  .page-header--agent {
+    margin-bottom: var(--space-1);
+  }
+  .page-meta-id {
+    display: contents;
+  }
+  .page-meta-id [role="status"] {
+    order: 1;
+    flex-basis: 100%;
+    min-height: var(--space-5);
+    overflow-wrap: anywhere;
+  }
 }
 @media (max-width: 1100px) {
   /* Give the title its own row before the sidebar and actions squeeze it. On phones,
@@ -1092,6 +1109,12 @@ p {
   opacity: 0.6;
 }
 @media (max-width: 760px) {
+  .page-meta-id {
+    min-height: 2lh;
+  }
+  .page-meta-id-controls {
+    display: contents;
+  }
   .page-meta .namespace-selector--compact {
     width: 100%;
     max-width: 100%;
@@ -1120,6 +1143,10 @@ p {
 }
 .collection-toolbar > input[type="search"] {
   max-width: 360px;
+}
+.credential-inventories {
+  display: grid;
+  gap: var(--space-8);
 }
 .agent-list-toolbar {
   container-type: inline-size;
@@ -2735,7 +2762,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .collection-toolbar > input[type="search"],
 .sandbox-policy input[type="search"],
 .sandbox-policy select,
-.repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
 .revision-selector select,
@@ -2752,11 +2778,22 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 /* A fixed value (the inline Create Secret dialog's Binding key) reads as text, not as a field
    the reader could edit (finding 2370). */
-.form-field input[readonly] {
+.form-field input[readonly],
+.credential-client-redirect input[readonly] {
   border-color: transparent;
   background: transparent;
   padding-inline: 0;
   font-family: var(--font-mono);
+}
+.credential-client-redirect {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-3);
+}
+.credential-client-redirect > label,
+.credential-client-redirect > .hint {
+  grid-column: 1 / -1;
 }
 .field input[type="checkbox"],
 .field input[type="radio"],
@@ -3105,9 +3142,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   margin-bottom: var(--space-5);
 }
 .credential-tabs a {
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-3);
   color: var(--color-text);
   text-decoration: none;
+  white-space: nowrap;
 }
 .credential-tabs a:hover {
   text-decoration: underline;
@@ -3333,8 +3372,23 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+/* The longer message sizes the row so typing does not move the field or its actions. */
 #create-namespace-description {
+  display: grid;
   overflow-wrap: anywhere;
+}
+#create-namespace-description > span {
+  grid-area: 1 / 1;
+}
+#create-namespace-description > [aria-hidden="true"] {
+  visibility: hidden;
+}
+#create-namespace-conflict {
+  color: var(--color-danger);
+}
+/* Keep Done in place when the access check adds a second action. */
+#create-namespace-access + .dialog-actions {
+  justify-content: space-between;
 }
 .dialog--framed {
   width: min(38rem, calc(100% - 2 * var(--space-4)));
@@ -3520,6 +3574,12 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .oauth-catalog-table thead th:last-child {
   width: 6rem;
 }
+.credential-source-catalog .oauth-catalog-table thead th:last-child {
+  width: 8rem;
+}
+.credential-source-catalog .oauth-catalog-table:has(.resource-row-actions) thead th:last-child {
+  width: 20rem;
+}
 .connection-template-catalog .oauth-catalog-table thead th:nth-last-child(2) {
   width: 6rem;
 }
@@ -3530,6 +3590,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   width: max-content;
   margin-inline-start: auto;
   align-items: center;
+}
+.credential-source-catalog .oauth-catalog-table .resource-row-actions {
+  width: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 @container oauth-catalog (max-width: 46rem) {
@@ -3611,6 +3676,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   font-weight: var(--weight-semibold);
 }
 .secret-row {
+  scroll-margin-block: var(--space-1);
   padding: var(--space-3) var(--space-10) var(--space-3) var(--space-4);
 }
 .secret-row::after {
@@ -4828,13 +4894,13 @@ html:has(#create-agent-form) {
   margin: 0;
   font-size: var(--text-md);
 }
-.repository-discovery > label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-weight: var(--weight-medium);
+.repository-discovery > .field {
+  margin-top: 0;
 }
 .repository-discovery input[type="search"] {
   min-height: 44px;
+  /* Leave room for the label when the browser scrolls to the search field. */
+  scroll-margin-block-start: calc(1lh + var(--space-2));
 }
 .repository-selected {
   margin-top: var(--space-6);

@@ -74,7 +74,7 @@ export async function verifyCodexPackaging(
     {
       historicalCodex,
       // Staging qualifies an already published image, even when its Codex pin matches.
-      expectBundledRepositoryRestSkill:
+      verifyPackagedRepositoryRestSkill:
         !historicalCodex && process.env.OCC_TEST_STAGING_CODEX_VERSION === undefined,
       stagingCodexVersion,
       deadlineMs: 30000 * imageSmokeTimeoutMultiplier,

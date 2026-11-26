@@ -59,6 +59,8 @@ const identifierPatterns = {
   agent: "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   revision: "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   secret: "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  deviceAuthorizationSession:
+    "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   credentialSource: "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   audit: "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 } as const;
@@ -948,7 +950,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
-          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
+          - 'secret_driver_id' - 'secret_bindings' - 'gateway_token_service_instance_id' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'credential_deployment') = '{}'::jsonb
     AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
@@ -1027,6 +1029,15 @@ export const agentRevisions = occSchema.table(
           NOT (${table.admittedSpec} ? 'credential_sources')
           OR occ.credential_source_snapshots_are_valid(${table.admittedSpec}->'credential_sources')
         )`.inlineParams(),
+    ),
+    check(
+      "agent_revisions_gateway_token_service_owner",
+      sql`CASE WHEN COALESCE(jsonb_path_exists(${table.admittedSpec}->'secret_bindings',
+        '$.* ? (@.source.kind == "credential_source")'), false)
+      THEN jsonb_typeof(${table.admittedSpec}->'gateway_token_service_instance_id') = 'string'
+        AND ${table.admittedSpec}->>'gateway_token_service_instance_id'
+          ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      ELSE NOT (${table.admittedSpec} ? 'gateway_token_service_instance_id') END IS TRUE`,
     ),
   ],
 );
@@ -2586,8 +2597,6 @@ export const oauthClients = occSchema.table(
     tokenEndpointAuthMethod: text("token_endpoint_auth_method").$type<
       import("@openclaw-enterprise/contracts").OAuthClientAuthMethod
     >(),
-    tokenUrl: text("token_url"),
-    revocationUrl: text("revocation_url"),
     appId: text("app_id"),
     tokenServiceInstanceId: text("token_service_instance_id").references(
       () => tokenServiceInstances.id,
@@ -2599,13 +2608,13 @@ export const oauthClients = occSchema.table(
     check(
       "oauth_clients_kind_shape",
       sql`CASE WHEN ${table.kind}='oauth2' THEN
-          ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL AND ${table.tokenUrl} IS NOT NULL
+          ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL
           AND ${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')
           AND ${table.appId} IS NULL
           AND ((${table.tokenEndpointAuthMethod}='none')=(${table.tokenServiceInstanceId} IS NULL))
         WHEN ${table.kind}='github-app' THEN
           ${table.issuer} IS NULL AND ${table.clientId} IS NULL
-          AND ${table.tokenUrl} IS NULL AND ${table.revocationUrl} IS NULL AND ${table.tokenEndpointAuthMethod} IS NULL
+          AND ${table.tokenEndpointAuthMethod} IS NULL
           AND CASE WHEN ${table.appId} ~ '^[1-9][0-9]{0,15}$' THEN ${table.appId}::numeric <= 9007199254740991 ELSE false END
           AND ${table.tokenServiceInstanceId} IS NOT NULL
         ELSE false END IS TRUE`,
@@ -2616,14 +2625,6 @@ export const oauthClients = occSchema.table(
     check(
       "oauth_clients_display_name_check",
       sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})`,
-    ),
-    check(
-      "oauth_clients_token_url_check",
-      sql`${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
-    ),
-    check(
-      "oauth_clients_revocation_url_check",
-      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
     ),
     check(
       "oauth_clients_id_format",
@@ -2727,6 +2728,12 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       jsonb("observed_metadata").$type<
         import("@openclaw-enterprise/contracts").McpAuthorizationMetadata
       >(),
+    issuerVerification:
+      jsonb("issuer_verification").$type<
+        NonNullable<
+          import("@openclaw-enterprise/contracts").OAuthConnectionTemplateVersion["issuerVerification"]
+        >
+      >(),
     authorizationUrl: collatedText("authorization_url").notNull(),
     tokenUrl: collatedText("token_url").notNull(),
     scopes: text("scopes").array().notNull(),
@@ -2764,6 +2771,14 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     check(
       "oauth_connection_template_versions_destinations_valid",
       sql`occ.valid_connection_destinations(${table.destinations})`,
+    ),
+    check(
+      "oauth_connection_template_versions_issuer_verification_valid",
+      sql`${table.issuerVerification} IS NULL OR ((jsonb_typeof(${table.issuerVerification})='object'
+        AND ${table.issuerVerification} ? 'tokenEndpointAuthMethods'
+        AND ${table.issuerVerification} - 'tokenEndpointAuthMethods'='{}'::jsonb
+        AND jsonb_typeof(${table.issuerVerification}->'tokenEndpointAuthMethods')='array'
+        AND ${table.issuerVerification}->'tokenEndpointAuthMethods' <@ '["none","client_secret_basic","client_secret_post"]'::jsonb) IS TRUE)`,
     ),
     check(
       "oauth_connection_template_versions_discovery",
@@ -2875,7 +2890,7 @@ export const authenticationStates = occSchema.table(
     check(
       "authentication_states_device_shape",
       sql`${table.kind} <> 'device_authorization' OR ((
-      ${table.id} ~ ${identifierPatterns.secret}
+      ${table.id} ~ ${identifierPatterns.deviceAuthorizationSession}
       AND ${table.connectionTemplateId} IS NULL
       AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
       AND jsonb_typeof(${table.binding}) = 'object'

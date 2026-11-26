@@ -16,6 +16,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 
 const origin = "https://console.oce.localhost";
 const authSecret = "private-test-auth-" + randomUUID();
@@ -91,7 +92,10 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
   const pool = await createPostgresPool(databaseUrl);
   const transport = transportUrl === databaseUrl ? pool : await createPostgresPool(transportUrl);
   const state = new PostgresPlatformState(transport);
-  const controller = new OpenClawController(installation, { state });
+  const controller = new OpenClawController(installation, {
+    state,
+    oauthIssuer: fixtureOAuthIssuer(manual),
+  });
   const iam = new NativeIAMDriver(state);
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
@@ -175,7 +179,6 @@ async function fixture(t: TestContext, transportUrl = databaseUrl) {
     kind: "oauth2",
     displayName: "Private client",
     issuer: manual.issuer,
-    tokenUrl: manual.tokenUrl,
     clientId: randomUUID(),
     tokenEndpointAuthMethod: "client_secret_basic" as const,
     clientSecret: inventedValue(),

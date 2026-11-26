@@ -647,16 +647,27 @@ export function registerNativeTerminalFailureCases(): void {
           },
         },
       );
-      // Codes outside the closed vocabulary print as unrecognized, with no log read.
-      const unknown = {
-        ...failed,
-        error: failure("RUNTIME_PRIVATE_SENTINEL"),
-        progress: { lastAttempt: { code: "PRIVATE_SENTINEL", message: "private-sentinel" } },
-      };
-      assert.deepEqual(await redeploy([unknown], [replacementPath]), {
-        category: "unrecognized",
-        deployment: { status: "failed", errorCode: "unrecognized", lastAttemptCode: "unknown" },
-      });
+      // Both the deployment table and the existing provisioning vocabulary contain safe codes.
+      // Neither of these failures warrants a model log read.
+      for (const code of ["SANDBOX_GATEWAY_UNAVAILABLE", "PROVISIONING_DEPLOYMENT_FAILED"]) {
+        assert.deepEqual(await redeploy([{ ...failed, error: failure(code) }], [replacementPath]), {
+          category: code,
+          deployment: { status: "failed", errorCode: code, lastAttemptCode: "none" },
+        });
+      }
+
+      // Unfamiliar codes and inherited table keys are withheld, along with peer text.
+      for (const code of ["RUNTIME_PRIVATE_SENTINEL", "constructor", "toString", "__proto__"]) {
+        const unknown = {
+          ...failed,
+          error: failure(code),
+          progress: { lastAttempt: failure("PRIVATE_SENTINEL") },
+        };
+        assert.deepEqual(await redeploy([unknown], [replacementPath]), {
+          category: "unrecognized",
+          deployment: { status: "failed", errorCode: "unrecognized", lastAttemptCode: "unknown" },
+        });
+      }
       // A different binding is rejected before status, diagnostics or an agent read.
       const otherBinding = {
         namespaceId: `ns_${randomUUID()}`,
