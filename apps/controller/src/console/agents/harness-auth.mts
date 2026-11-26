@@ -12,14 +12,12 @@ import {
   requestFailure,
   responseFields,
 } from "../api-client.mjs";
-import { button, element, replaceChildrenIfChanged, setUnavailable } from "../dom.mjs";
+import { element, setUnavailable } from "../dom.mjs";
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint-url.mjs";
 import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
 import { createSecretReferenceField, renderSecretReference } from "./secret-picker.mjs";
-import {
-  readCredentialSourceMetadata,
-  type CredentialSourceSummary,
-} from "../credential-source-metadata.mjs";
+import type { CredentialSourceSummary } from "../credential-source-metadata.mjs";
+import { createCredentialSourcePicker } from "../credential-source-picker.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
 import { createDeviceLogin, deviceLoginOffered, type DeviceLogin } from "./device-login.mjs";
 
@@ -125,44 +123,9 @@ export function credentialSourceOperateDenial(cause: unknown, id: string, curren
     : undefined;
 }
 
-/** A readable Source is a candidate; Agent save confirms operate permission. */
-export function createModelCredentialSourceField(
-  context: Pick<HarnessAuthContext, "namespaceId" | "request" | "isCurrent" | "onExpired">,
-  options: {
-    id: string;
-    label?: string;
-    initial?: CredentialSourceReference | null;
-    currentId?: string;
-    purpose?: ModelSourcePurpose;
-    addNew?: { label: string; initial?: boolean };
-    onChange(source: CredentialSourceReference | null): void;
-  },
-) {
-  const addNewValue = "new";
-  let selected = options.initial ?? null;
-  let creating = Boolean(options.addNew?.initial && !selected);
-  let addNewLabel = options.addNew?.label;
-  let addNewDisabled = false;
-  let purpose = options.purpose;
-  let sources: CredentialSourceSummary[] = [];
-  let loaded = false;
-  let loading = false;
-  let attempted = false;
-  let active = false;
-  let disabled = false;
-  const select = element("select", { id: options.id });
-  const hint = element("p", { className: "hint", role: "status" });
-  const retry = button("Retry Source list", () => void load(true), { tone: "ghost", size: "sm" });
-  retry.hidden = true;
-  const field = element(
-    "div",
-    { className: "form-field", hidden: true },
-    element("label", { for: select.id }, options.label ?? "Existing Credential Source"),
-    select,
-    hint,
-    retry,
-  );
-  function eligibleSource(source: CredentialSourceSummary) {
+/** Model-specific admission candidates; saving still checks exact Source operate. */
+export const modelCredentialSourceSelection = {
+  eligible(source: CredentialSourceSummary, purpose: ModelSourcePurpose | undefined) {
     if (source.state !== "ready" || source.connectionTemplateId !== undefined) {
       return false;
     }
@@ -177,195 +140,28 @@ export function createModelCredentialSourceField(
       source.modelPreset !== undefined &&
       (purpose === undefined || source.modelPreset === purpose)
     );
-  }
-  function acceptedSelection() {
-    return selected &&
-      (selected.id === options.currentId ||
-        (loaded && sources.some((source) => source.id === selected!.id && eligibleSource(source))))
-      ? selected
-      : null;
-  }
-  function showListStatus() {
-    if (sources.some(eligibleSource)) {
-      hint.textContent =
-        "Listing confirms read access. Saving the Agent checks Credential Source operate permission.";
-    } else if (purpose === "builtin_codex") {
-      hint.textContent =
-        "No matching ready ChatGPT OAuth Credential Sources are readable in this Namespace.";
-    } else if (purpose === undefined) {
-      hint.textContent =
-        "No matching ready model Credential Sources are readable in this Namespace.";
-    } else {
-      hint.textContent =
-        "No matching ready static model Credential Sources are readable in this Namespace.";
+  },
+  listStatus(hasEligible: boolean, purpose: ModelSourcePurpose | undefined) {
+    if (hasEligible) {
+      return "Listing confirms read access. Saving the Agent checks Credential Source operate permission.";
     }
-  }
-  function renderOptions() {
-    const eligible = sources.filter(eligibleSource);
-    const choices = [
-      element(
-        "option",
-        { value: "" },
-        options.addNew ? "Choose a saved credential" : "Choose a Credential Source",
-      ),
-      ...eligible.map((source) =>
-        element("option", { value: source.id }, `${source.name} · ${source.id}`),
-      ),
-    ];
-    if (
-      selected &&
-      selected.id === options.currentId &&
-      !eligible.some((source) => source.id === selected!.id)
-    ) {
-      choices.push(
-        element("option", { value: selected.id }, `Current Credential Source · ${selected.id}`),
-      );
+    if (purpose === "builtin_codex") {
+      return "No matching ready ChatGPT OAuth Credential Sources are readable in this Namespace.";
     }
-    if (addNewLabel !== undefined) {
-      const add = element("option", { value: addNewValue }, addNewLabel);
-      add.disabled = addNewDisabled;
-      choices.push(add);
-    }
-    replaceChildrenIfChanged(select, choices);
-    select.value = creating ? addNewValue : (selected?.id ?? "");
-    select.disabled = disabled || (!loaded && !selected && addNewLabel === undefined);
-    select.required = active && !creating;
-  }
-  async function load(force = false) {
-    if (loading || (!force && (loaded || attempted))) {
-      return;
-    }
-    attempted = true;
-    loading = true;
-    const wasLoaded = loaded;
-    if (force) {
-      retry.textContent = "Refreshing Source list…";
-      retry.setAttribute("aria-busy", "true");
-    }
-    hint.textContent = "Loading readable Credential Sources…";
-    renderOptions();
-    try {
-      const result = await context.request(
-        `${namespacePath(context.namespaceId)}/credential-sources`,
-      );
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (!Array.isArray(result)) {
-        throw new Error("The API did not return a Credential Source list.");
-      }
-      sources = result.flatMap((value) => {
-        const source = readCredentialSourceMetadata(value, context.namespaceId);
-        return source ? [source] : [];
-      });
-      loaded = true;
-      if (selected && selected.id !== options.currentId) {
-        const accepted = acceptedSelection();
-        if (!wasLoaded || accepted?.id !== selected.id) {
-          selected = accepted;
-          options.onChange(selected);
-        }
-      }
-      showListStatus();
-      retry.textContent = "Refresh Source list";
-      retry.hidden = false;
-    } catch (error) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      const status = requestFailure(error).status;
-      if (status === 401) {
-        context.onExpired();
-        return;
-      }
-      if (status === 400 || status === 403 || status === 404) {
-        sources = [];
-        loaded = false;
-        if (selected && selected.id !== options.currentId) {
-          selected = null;
-          options.onChange(null);
-        }
-      }
-      retry.textContent = "Retry Source list";
-      retry.hidden = false;
-      hint.textContent = describeFailure(error, {
-        need: {
-          task: "listing Credential Sources",
-          grant: "Namespace read and Credential Source read",
-        },
-      });
-    } finally {
-      loading = false;
-      retry.removeAttribute("aria-busy");
-      if (context.isCurrent()) {
-        renderOptions();
-      }
-    }
-  }
-  select.addEventListener("change", () => {
-    creating = addNewLabel !== undefined && select.value === addNewValue;
-    selected = creating
-      ? null
-      : (sources.find((source) => source.id === select.value && eligibleSource(source))?.ref ??
-        (selected?.id === select.value ? selected : null));
-    select.required = active && !creating;
-    options.onChange(selected);
-  });
-  renderOptions();
-  return {
-    field,
-    control: select,
-    setActive(value: boolean, nextPurpose = purpose) {
-      active = value;
-      field.hidden = !value;
-      if (nextPurpose !== purpose) {
-        purpose = nextPurpose;
-        if (
-          selected &&
-          sources.some((source) => source.id === selected!.id && !eligibleSource(source))
-        ) {
-          selected = null;
-          options.onChange(null);
-        }
-        if (loaded && !loading) {
-          showListStatus();
-        }
-      }
-      renderOptions();
-      if (value) {
-        void load();
-      }
-    },
-    setDisabled(value: boolean) {
-      disabled = value;
-      retry.disabled = value;
-      renderOptions();
-    },
-    reset() {
-      selected = null;
-      creating = false;
-      renderOptions();
-    },
-    setAddNewLabel(label: string) {
-      if (options.addNew && label !== addNewLabel) {
-        addNewLabel = label;
-        renderOptions();
-      }
-    },
-    setAddNewDisabled(value: boolean) {
-      if (addNewDisabled !== value) {
-        addNewDisabled = value;
-        renderOptions();
-      }
-    },
-    get creating() {
-      return creating;
-    },
-    get source() {
-      return acceptedSelection();
-    },
-  };
-}
+    return purpose === undefined
+      ? "No matching ready model Credential Sources are readable in this Namespace."
+      : "No matching ready static model Credential Sources are readable in this Namespace.";
+  },
+  listFailure(cause: unknown) {
+    return describeFailure(cause, {
+      need: {
+        task: "listing Credential Sources",
+        grant: "Namespace read and Credential Source read",
+      },
+    });
+  },
+};
+
 type HarnessAuthContext = AgentAccessContext & {
   agentId?: string | undefined;
   installationAdmin?: boolean | null;
@@ -527,11 +323,12 @@ export function createHarnessAuthFields(
   });
   const secretField = secretPicker.field;
   const secretLabel = secretField.querySelector("label")!;
-  const sourcePicker = createModelCredentialSourceField(context, {
+  const sourcePicker = createCredentialSourcePicker(context, {
+    ...modelCredentialSourceSelection,
     id: "harness-auth-existing-source",
     initial: selectedCredentialSource,
     ...(binding?.method === "credential_source" ? { currentId: binding.sourceId } : {}),
-    ...(harnessId !== "codex" || providerId !== "codex" ? { purpose: "openai" as const } : {}),
+    ...(harnessId !== "codex" || providerId !== "codex" ? { criteria: "openai" as const } : {}),
     onChange(source) {
       selectedCredentialSource = source;
       options.onChange?.();

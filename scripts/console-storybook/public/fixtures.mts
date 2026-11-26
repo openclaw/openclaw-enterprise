@@ -850,6 +850,20 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         if (method === "GET") {
           return response(source);
         }
+        if (method === "PATCH") {
+          const input = body !== null && typeof body === "object" ? Object(body) : {};
+          if (
+            source.type !== "static" ||
+            "ownerCapability" in source ||
+            source.state !== "ready" ||
+            typeof input.secret !== "string" ||
+            input.secret.trim() === ""
+          ) {
+            return error(400, "INVALID_REQUEST", "Choose a replacement static credential value.");
+          }
+          // The preview returns public metadata only and never retains the supplied value.
+          return response(source);
+        }
         if (method === "DELETE") {
           credentialSources.delete(id);
           return new Response(null, { status: 204 });

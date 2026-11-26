@@ -44,10 +44,11 @@ import {
   CODEX_SOURCE_DESTINATION_HINT,
   configuredHarnessId,
   credentialSourceOperateDenial,
-  createModelCredentialSourceField,
+  modelCredentialSourceSelection,
   harnessAuthDescription,
   modelSourceProvider,
 } from "./harness-auth.mjs";
+import { createCredentialSourcePicker } from "../credential-source-picker.mjs";
 import { type DeviceLogin, createDeviceLogin, deviceLoginOffered } from "./device-login.mjs";
 import {
   ACCESS_NOT_INCLUDED,
@@ -1259,7 +1260,8 @@ function renderAgentForm(
     { className: "hint", hidden: true },
     "Credential Sources require Dedicated execution. If this Installation supports it, choose Codex or select Dedicated under Runtime details.",
   );
-  const modelSourcePicker = createModelCredentialSourceField(context, {
+  const modelSourcePicker = createCredentialSourcePicker(context, {
+    ...modelCredentialSourceSelection,
     id: "agent-model-credential",
     label: "Model credential",
     addNew: {

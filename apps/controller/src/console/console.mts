@@ -7,7 +7,7 @@ import type {
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderCredentialClients } from "./credential-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
-import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
+import { finishConsentTab } from "./credential-consent.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -4473,6 +4473,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-if (!finishPluginConsentTab()) {
+if (!finishConsentTab()) {
   void loadPage();
 }
