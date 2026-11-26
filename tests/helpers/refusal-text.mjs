@@ -386,7 +386,7 @@ export const RELOAD_DRAFT_BEFORE_SAVING = `${SAVED_CONFIGURATION_CHANGED} Reload
 export const REPOSITORY_ACCESS_CHANGED =
   "Repository access changed while you were editing. Reload this draft before saving.";
 export const CHANNEL_SECRETS_CONFIGURATION_CHANGED =
-  "Configuration changed. Reload this draft before saving channel Secrets.";
+  "Configuration changed. Reload this draft before saving channel credentials.";
 
 // Actions the Agent page holds back while another editor has unsaved changes.
 export const REPOSITORY_EDITS_PENDING =
@@ -457,10 +457,10 @@ export const CHANNELS_NEED_DEDICATED =
 // configuration-rules.ts). `setting` is channels.<name>.
 export const unsupportedChannelRefusal = (setting) =>
   `Configuration setting ${setting} is not a supported channel: use slack, or set its enabled to false.`;
-// The Slack card's setup step, shown until both token Secrets are bound (finding 2438), and never
+// The Slack card's setup step, shown until both token Sources are bound (finding 2438), and never
 // on an Embedded Agent, which cannot have channels (finding D708).
 export const SLACK_SETUP_HINT =
-  "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.";
+  "Bind ready static Credential Sources to SLACK_APP_TOKEN and SLACK_BOT_TOKEN before deployment.";
 export const CHANNEL_BINDING_FORM_REMEDY =
   "Select a Credential Source for each referenced Slack credential in the Slack editor or Slack credential bindings before creating the Agent.";
 // A Codex network proxy setting that blocks the repository credential broker for an Agent with

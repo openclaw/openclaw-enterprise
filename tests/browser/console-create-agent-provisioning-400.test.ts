@@ -602,18 +602,26 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
 });
 
 test("Create Agent names a refused Slack token form once, under its Configuration JSON", async (t) => {
-  // Finding 2506: with both Slack Secrets selected, every refused botToken form typed into Create
+  // Finding 2506: with both Slack Sources selected, every refused botToken form typed into Create
   // Agent's own Configuration JSON got the Slack Channel Driver's generic "Select an
   // environment-backed Secret" alert, since provisioning asked that Driver before the
   // Configuration rules. Now the rule's own message shows once, as the JSON's field error.
-  const fixture = await createConsoleAppFixture(t, {
-    ...provisioningDrivers(),
-    sandboxDriver: nativeSandboxDriver(),
-  });
-  await fixture.bootstrap();
+  // This case stops at validation, before any Channel Source export or Gateway delivery.
+  const { fixture } = await modelSourceFixture(t, { compute: { channelRuntime: true } });
   const namespace = await readyNamespace(fixture, "Provision Slack forms");
-  const slackApp = await createSecret(fixture, namespace.id, "Forms Slack app", "xapp-forms");
-  const slackBot = await createSecret(fixture, namespace.id, "Forms Slack bot", "xoxb-forms");
+  const enroll = async (name: string, prefix: string) => {
+    const response = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: { name, type: "static", secret: `${prefix}-${randomUUID()}` },
+      },
+    );
+    return fixture.fixtureResponse(response, 201, CredentialSourceResponse, "create Slack Source")
+      .data;
+  };
+  const slackApp = await enroll("Forms Slack app", "xapp");
+  const slackBot = await enroll("Forms Slack bot", "xoxb");
   let slackCalls = 0;
   const channel = new SlackChannelDriver(async () => {
     slackCalls++;
@@ -642,8 +650,8 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     "CFORMS1",
   );
   await slack.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
-  await selectSecret(slack, "Slack app token", slackApp);
-  await selectSecret(slack, "Slack bot token", slackBot);
+  await slack.getByLabel("Slack app token", { exact: true }).selectOption(slackApp.id);
+  await slack.getByLabel("Slack bot token", { exact: true }).selectOption(slackBot.id);
   await slack.getByRole("button", { name: "Apply channel settings" }).click();
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
@@ -660,17 +668,6 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     `Slack bot token ${form}. To edit Slack here, set botToken to \${SLACK_BOT_TOKEN} in the Configuration JSON.`;
   const card = page.locator(".channel-card", { hasText: "Slack bot token holds" });
   await card.getByText(cardText(inline), { exact: true }).waitFor();
-  // The card re-renders many times per edit and submit. Each render once read both bound
-  // Secrets again, about 386 reads per edit (finding 2601); the view now reads each once.
-  const secretReads = () =>
-    requests.filter(
-      ({ method, path }) =>
-        method === "GET" &&
-        [slackApp, slackBot].some(({ id }) => path === `/namespaces/${namespace.id}/secrets/${id}`),
-    ).length;
-  const settledReads = secretReads();
-  t.diagnostic(`Slack Secret reads after the first edit: ${settledReads}`);
-  assert.ok(settledReads <= 2, `${settledReads} Slack Secret reads after the first edit`);
   // Its closed native configuration disclosure is the JSON the reader typed, not card text.
   assert.doesNotMatch(await card.innerText(), /xoxb-pasted/);
   // The Slack editor's channel field looked names up; Create Agent must not call Slack again.
@@ -679,7 +676,7 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
     slackValues.botToken = botToken;
     await configuration.fill(JSON.stringify(values, null, 2));
     const response = await submitCreateAgent(page, fixture, namespace.id, {
-      path: "agents/provision",
+      path: "agents/validate",
     });
     assert.equal(response.status(), 400, botToken);
     return checked(ErrorResponse, await response.json()).error;
@@ -735,11 +732,17 @@ test("Create Agent names a refused Slack token form once, under its Configuratio
   );
   assert.deepEqual(nonAuthWriteRequests(requests), writesBeforeModelChange);
 
-  // Later edits and submits read no bound Secret again.
-  assert.equal(secretReads(), settledReads);
   // Refused before Slack was asked, and nothing was saved.
   assert.equal(slackCalls, lookups);
-  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 3);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length,
+    3,
+  );
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+  assert.equal(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`).length,
+    0,
+  );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
 });
 

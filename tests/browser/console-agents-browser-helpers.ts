@@ -36,9 +36,6 @@ import type {
 } from "playwright";
 import type {
   Permission,
-  ComputeDriver,
-  SecretDriver,
-  TokenServiceDriver,
   OpenClawConfigurationDocument,
   Secret,
   Agent,
@@ -115,27 +112,20 @@ export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 export async function createSlackSourceConsoleFixture(
   t: TestContext,
   name: string,
-  options: NonNullable<Parameters<typeof createConsoleAppFixture>[1]> & {
-    secretDriver?: SecretDriver;
-    gatewayStartupSourceDelivery?: (compute: ComputeDriver, owner: TokenServiceDriver) => boolean;
-    wrapState?: (state: PlatformStateStore) => PlatformStateStore;
-  } = {},
+  options: { defaultPresets?: unknown[]; filesystemConfiguration?: boolean } = {},
 ) {
-  const secretDriver =
-    options.secretDriver ?? createTestSecretDriver({ id: `source-${randomUUID()}` });
+  const secretDriver = createTestSecretDriver({ id: `source-${randomUUID()}` });
   let state: PlatformStateStore | undefined;
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
     channelRuntime: true,
     filesystemConfiguration: true,
     ...options,
     secretDriver,
-    gatewayStartupSourceDelivery:
-      options.gatewayStartupSourceDelivery ??
-      ((compute: { id: string }, owner: unknown) =>
-        compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver),
+    gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
+      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
     wrapState(current: PlatformStateStore) {
-      state = options.wrapState?.(current) ?? current;
-      return state;
+      state = current;
+      return current;
     },
   });
   assert.ok(state);

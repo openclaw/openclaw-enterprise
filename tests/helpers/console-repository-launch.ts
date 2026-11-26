@@ -7,6 +7,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -39,14 +40,20 @@ type ManagedPolicy = Pick<NativeIAMState, "identities" | "roles" | "bindings">;
 type RepositoryLaunchOptions = {
   secretDriver?: SecretDriver;
   filesystemConfiguration?: boolean;
+  gatewaySources?: boolean;
 };
 type AgentPrincipal = Pick<Agent, "servicePrincipalId">;
 
 /** Real Console/API/Drivers with passive storage, but no cluster or external providers. */
 export async function createConsoleRepositoryLaunchFixture(
   t: CleanupRegistrar,
-  { secretDriver: suppliedSecretDriver, filesystemConfiguration }: RepositoryLaunchOptions = {},
+  {
+    secretDriver: suppliedSecretDriver,
+    filesystemConfiguration,
+    gatewaySources = false,
+  }: RepositoryLaunchOptions = {},
 ) {
+  const tokenServiceId = "console-launch-token-service";
   const resources = {
     requests: { cpu: "100m", memory: "64Mi" },
     limits: { cpu: "250m", memory: "128Mi" },
@@ -135,7 +142,7 @@ export async function createConsoleRepositoryLaunchFixture(
         assert.ok(stringData);
         const saved = {
           ...structuredClone(rest),
-          metadata: { ...body.metadata, uid: randomUUID() },
+          metadata: { ...body.metadata, uid: randomUUID(), resourceVersion: "1" },
           data: Object.fromEntries(
             Object.entries(stringData).map(([name, value]) => [
               name,
@@ -207,10 +214,35 @@ export async function createConsoleRepositoryLaunchFixture(
     secretDriver,
     recordOperations: true,
     filesystemConfiguration,
+    ...(gatewaySources && {
+      // Admission uses the actual qualified owner/Compute classes. The Kubernetes API below is
+      // passive fixture storage; this does not exercise Worker or Gateway delivery.
+      gatewayStartupSourceDelivery: (selectedCompute, owner) =>
+        selectedCompute === compute &&
+        selectedCompute instanceof KubernetesComputeDriver &&
+        owner instanceof OCCTokenServiceDriver &&
+        owner.id === tokenServiceId,
+    }),
     // Credential provisioning requires a configured browser CSRF origin.
     publicOrigin: true,
   });
   await fixture.bootstrap("Repository demo");
+  if (gatewaySources) {
+    assert.ok(secretDriver.privateSecrets);
+    const instanceId = await fixture.controller.activateTokenServiceInstance(
+      tokenServiceId,
+      randomUUID(),
+    );
+    const owner = new OCCTokenServiceDriver(
+      tokenServiceId,
+      fixture.controller.installation.id,
+      secretDriver.privateSecrets,
+      instanceId,
+      storage,
+    );
+    fixture.controller.registerDriver(owner);
+    fixture.controller.selectDriver("token_service", owner.id);
+  }
   // Namespace provisioning is outside this Console journey. Seed its completed
   // lifecycle through State, not by replacing any Agent admission decision.
   const namespace = await fixture.createNamespace("Engineering");
