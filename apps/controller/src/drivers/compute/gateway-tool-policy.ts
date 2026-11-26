@@ -133,6 +133,7 @@ const GATEWAY_ACTION_TOOLS = [
   "personal_instructions",
   "portal",
   "screen",
+  "session_project",
   "skill_workshop",
   "theme",
   "transcripts",
@@ -160,7 +161,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "9a838501b1e4471401fef588a1b73c61a2965056";
 
 type SettingError = (setting: string, requirement: string) => Error;
 

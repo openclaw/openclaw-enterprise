@@ -143,7 +143,7 @@ export function invalidInlinePlans(
         },
       }),
       message:
-        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required.",
+        "The request does not match the operation contract: body /configuration/secretBindings/TOOL_API_KEY/source/namespaceId is required; body /configuration/secretBindings/TOOL_API_KEY/source has an unsupported value.",
     },
     {
       description: "request-local Harness Secret source",

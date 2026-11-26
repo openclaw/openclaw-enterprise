@@ -27,6 +27,8 @@ type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type FieldValue = { value: string; checked?: boolean };
 type AppliedField = { id: string; detail: string; skipped?: boolean };
 type Drafts = ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+const channelSecretSource = (source: SecretBindings[string]["source"] | undefined) =>
+  source?.kind === "secret" ? source : undefined;
 
 interface ChannelDraft {
   provider: string;
@@ -299,7 +301,8 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     !disabledByMode &&
     (provider.secretBindings.length === 0 ||
       provider.secretBindings.some(
-        (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
+        (binding) =>
+          !channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
       ));
   // A disabled action is described by the reason shown on the card (findings 2495, D749), and
   // stays in the Tab order while it shows (class of finding 2899).
@@ -377,7 +380,7 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         {},
         renderSecretReference(
           state.drawerContext,
-          state.drawerContext.secretBindings?.[binding.key]?.source,
+          channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
         ),
       ),
     );
@@ -841,10 +844,12 @@ function openDrawer(
       ...applied.filter((entry) => !entry.skipped).map(fieldName),
       ...carried.secrets.map((key) => {
         const label = provider.secretBindings?.find((binding) => binding.key === key)?.label ?? key;
-        const saved = state.drawerContext.secretBindings?.[key]?.source;
+        const saved = channelSecretSource(state.drawerContext.secretBindings?.[key]?.source);
         // Another browser bound a different Secret here too; the reader's choice is shown.
-        return !sameSource(saved, retained.initialSecretBindings?.[key]?.source) &&
-          !sameSource(saved, retained.secretBindings?.[key]?.source)
+        return !sameSource(
+          saved,
+          channelSecretSource(retained.initialSecretBindings?.[key]?.source),
+        ) && !sameSource(saved, channelSecretSource(retained.secretBindings?.[key]?.source))
           ? `${label} (also changed in another browser)`
           : label;
       }),
