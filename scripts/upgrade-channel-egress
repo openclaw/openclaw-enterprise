@@ -15,9 +15,9 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 # Keep these reference forms aligned with packages/occ/src/channel-secret-bindings.ts.
-ENV_REFERENCE = re.compile(r"\$(\$)?\{([A-Z_][A-Z0-9_]*)(?::-([^${}]*))?\}")
-SLACK_CREDENTIAL_FIELDS = {("appToken",), ("botToken",), ("signingSecret",),
-                           ("userToken",), ("relay", "authToken")}
+ENV_REFERENCE = re.compile(r"\$(\$)?\{([A-Z_][A-Z0-9_]*)(?::-[^${}]*)?\}")
+SLACK_CREDENTIAL_FIELDS = (("appToken",), ("botToken",), ("signingSecret",),
+                           ("userToken",), ("relay", "authToken"))
 
 
 def require(condition, message):
@@ -25,27 +25,28 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def slack_references(value, keys=()):
-    """References Kubernetes Compute requires to be bound for an enabled Slack entry."""
-    if isinstance(value, dict):
-        if value.get("source") == "env" and isinstance(value.get("id"), str):
-            yield value["id"]
-        for key, item in value.items():
-            yield from slack_references(item, (*keys, key))
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            yield from slack_references(item, (*keys, index))
-    elif isinstance(value, str):
-        field = keys[2:] if len(keys) >= 2 and keys[0] == "accounts" and isinstance(keys[1], str) else keys
-        credential = field in SLACK_CREDENTIAL_FIELDS
-        for match in ENV_REFERENCE.finditer(value):
-            escaped, name, fallback = match.groups()
-            if escaped is None and (credential or fallback is None):
-                yield name
-        if credential:
-            shorthand = re.fullmatch(r"\$([A-Z][A-Z0-9_]{0,127})", value.strip())
-            if shorthand:
-                yield shorthand.group(1)
+def slack_credential_references(slack):
+    """Find Source-only credential bindings on an enabled Slack channel and its active accounts."""
+    targets = [slack]
+    accounts = slack.get("accounts")
+    if isinstance(accounts, dict):
+        targets.extend(account for account in accounts.values()
+                       if isinstance(account, dict) and account.get("enabled") is not False)
+    for target in targets:
+        for field in SLACK_CREDENTIAL_FIELDS:
+            value = target
+            for key in field:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, dict) and value.get("source") == "env" and isinstance(value.get("id"), str):
+                yield value["id"]
+            elif isinstance(value, str):
+                for match in ENV_REFERENCE.finditer(value):
+                    escaped, name = match.groups()
+                    if escaped is None:
+                        yield name
+                shorthand = re.fullmatch(r"\$([A-Z][A-Z0-9_]{0,127})", value.strip())
+                if shorthand:
+                    yield shorthand.group(1)
 
 
 def require_private_regular_file(info):
@@ -349,11 +350,11 @@ def lifecycle(action, args):
         bindings = configuration.get("secretBindings", {})
         require(isinstance(bindings, dict),
                 f"Slack bindings were not readable for Agent {agent_id}; no additional Agent was stopped")
-        for name in slack_references(slack):
+        for name in slack_credential_references(slack):
             binding = bindings.get(name)
             source = binding.get("source") if isinstance(binding, dict) else None
             require(not (isinstance(source, dict) and source.get("kind") == "secret"),
-                    f"Agent {agent_id} has enabled Slack settings bound to a public Namespace Secret; no additional Agent was stopped. Stop that Agent under the old controller and start a fresh upgrade attempt. After the upgrade, select the qualified OCC TokenService with Kubernetes Compute, recreate its credentials as Credential Sources, update its Slack Configuration bindings, and deploy it")
+                    f"Agent {agent_id} has an enabled Slack credential bound to a public Namespace Secret; no additional Agent was stopped. Stop that Agent under the old controller and start a fresh upgrade attempt. After the upgrade, select the qualified OCC TokenService with Kubernetes Compute, recreate its credentials as Credential Sources, update its Slack Configuration bindings, and deploy it")
 
     if action == "stop":
         # An earlier completed Stop can still need its original revision for Deploy.

@@ -138,11 +138,13 @@ gateway-only credential values:
 | `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
-On the bundled Kubernetes Compute, every `${NAME}` reference and environment
-SecretRef in an enabled native channel needs a matching Credential Source in `secretBindings`,
-including a reference inside other text (`xoxb-${NAME}`). Outside credential
-fields a reference with a fallback (`${NAME:-text}`) needs none: the fallback
-fills the unset name. `$${NAME}` is literal text, not a reference.
+On bundled Kubernetes Compute, every `${NAME}` reference and environment
+SecretRef in an enabled native channel needs a matching `secretBindings` entry.
+Active Slack credential inputs require a Credential Source. Ordinary settings
+such as Slack `allowFrom` can use a Namespace Secret or a Credential Source.
+This rule includes references inside other text (`xoxb-${NAME}`). Outside
+credential fields, a fallback (`${NAME:-text}`) can supply the value without a
+binding. `$${NAME}` is literal text.
 
 A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
 `userToken` and `relay.authToken`, on the channel or a named account; Teams

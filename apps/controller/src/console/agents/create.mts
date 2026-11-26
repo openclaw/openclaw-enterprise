@@ -2862,7 +2862,7 @@ function renderAgentForm(
     const excludeKeys = slack.support(values).supported
       ? SLACK_SECRET_BINDINGS.map(({ key }) => key)
       : [];
-    const bindingKeys = slackCredentialBindingKeys(values).filter(
+    const bindingKeys = slackCredentialBindingKeys(values, configurationSecretBindings).filter(
       (key) => !excludeKeys.includes(key),
     );
     const bindingFieldsKey = JSON.stringify([bindingKeys, Boolean(savedConfiguration)]);

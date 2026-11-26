@@ -962,8 +962,8 @@ export async function renderAgentDetail(
   // replace, leaves Channels and channel Secrets editable: a save must replace each of them
   // (finding 2444). The Configuration editor submits no bindings, so it keeps the rule above.
   const channelBindingsReplace = () => channelBindingsToReplace(callerPermissions);
-  const credentialBindingsReplace = (values: Record<string, unknown>) =>
-    channelBindingsToReplace(callerPermissions, values);
+  const credentialBindingsReplace = (values: Record<string, unknown>, bindings?: SecretBindings) =>
+    channelBindingsToReplace(callerPermissions, values, bindings);
   const channelsReadOnly = () => configurationReadOnly() && channelBindingsReplace() === null;
   const channelsAccessUnconfirmed = () =>
     selected === "draft" &&
@@ -3945,7 +3945,9 @@ export async function renderAgentDetail(
           canGrant: context.installationAdmin !== false,
           sourceDiscoveryActive: selectedTab === "credentials",
           // Binding Secrets saves the Configuration (finding 2432).
-          readOnly: () => configurationReadOnly() && credentialBindingsReplace(values) === null,
+          readOnly: () =>
+            configurationReadOnly() &&
+            credentialBindingsReplace(values, snapshot.secretBindings) === null,
           readOnlyReason: () =>
             callerPermissions?.configurationUpdate === false
               ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
@@ -3954,7 +3956,7 @@ export async function renderAgentDetail(
                   undefined,
                   snapshot.secretBindings,
                 ),
-          bindingsToReplace: () => credentialBindingsReplace(values),
+          bindingsToReplace: () => credentialBindingsReplace(values, snapshot.secretBindings),
           bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
           onReadDenied: context.onProtectedReadDenied,
           isCurrent: () => panelNumber === channelPanelCount,
@@ -7585,12 +7587,6 @@ export async function renderAgentDetail(
     function refreshBindingFields() {
       const nextValues = parseEditor();
       const keys = slackCredentialBindingKeys(nextValues);
-      const excluded = keys.filter(
-        (key) =>
-          slackSourceForBinding(initialSecretBindings[key], namespaceId) &&
-          sameValue(stagedSecretBindings[key], initialSecretBindings[key]),
-      );
-      const signature = JSON.stringify(keys.filter((key) => !excluded.includes(key)));
       if (nextValues !== undefined) {
         const retainedBindings = { ...stagedSecretBindings };
         for (const key of Object.keys(retainedBindings)) {
@@ -7608,6 +7604,13 @@ export async function renderAgentDetail(
         }
         stagedSecretBindings = retainedBindings;
       }
+      const pickerKeys = slackCredentialBindingKeys(nextValues, stagedSecretBindings);
+      const excluded = pickerKeys.filter(
+        (key) =>
+          slackSourceForBinding(initialSecretBindings[key], namespaceId) &&
+          sameValue(stagedSecretBindings[key], initialSecretBindings[key]),
+      );
+      const signature = JSON.stringify(pickerKeys.filter((key) => !excluded.includes(key)));
       if (signature === bindingSignature && bindingFields) {
         return;
       }
@@ -7638,7 +7641,7 @@ export async function renderAgentDetail(
     }
 
     function missingEditedBindings() {
-      return slackCredentialBindingKeys(parseEditor()).filter(
+      return slackCredentialBindingKeys(parseEditor(), stagedSecretBindings).filter(
         (key) => !slackSourceForBinding(stagedSecretBindings[key], namespaceId),
       );
     }

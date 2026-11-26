@@ -536,12 +536,24 @@ export function registerConfigurationChannelCredentialCases(
       botRefusal,
       { label: "create with one binding" },
     );
+    // A policy reference can keep a Namespace Secret while both Slack tokens use Sources.
+    const policySecret = await context.controller.createSecret(context.principalId, {
+      namespaceId: context.namespace.id,
+      name: "slack-allowed-user",
+      value: "U0123456789",
+    });
+    const policyBindings = {
+      ...bothBindings,
+      SLACK_ALLOWED_USER: { source: policySecret.ref, delivery: { type: "env" as const } },
+    };
     const saved = await context.request("POST", context.collection, {
       kind: "agent",
-      values: slack,
-      secretBindings: bothBindings,
+      values: slackWith({ dmPolicy: "allowlist", allowFrom: ["${SLACK_ALLOWED_USER}"] }),
+      secretBindings: policyBindings,
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    assert.ok(Check(schemaContext, ConfigurationResponse, saved.body));
+    assert.deepEqual(saved.body.data.secretBindings, policyBindings);
 
     // Update that adds the references and keeps the Configuration's bindings (none).
     assertRefused(await context.request("PATCH", item, { values: slack }), appRefusal, {

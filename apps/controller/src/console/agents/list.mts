@@ -531,14 +531,15 @@ export function readFailureReason(cause: unknown, need?: AccessNeed): string {
 export const readFailure = (subject: string, cause: unknown, need?: AccessNeed) =>
   `${subject} could not be read. ${readFailureReason(cause, need)}`;
 
-// A channel credential value that Configuration save or provisioning refuses: a reference without
-// a Source binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
+// A channel value that Configuration save or provisioning refuses: a reference without
+// a binding, a `${` the runtime does not substitute, or a value the setting "holds" that is
 // not one whole reference or a SecretRef it accepts, an inline credential included (findings 2319,
 // 2477, 2493, 2517); otherwise undefined. The message names the setting, so a form shows it under
 // the field that holds the Configuration.
 export const channelMissingBindingRefusal = (message: string) =>
   message.includes(" without a Credential Source binding: ");
-const CHANNEL_REFERENCE_REFUSAL = / the runtime does not substitute: | holds /;
+const CHANNEL_REFERENCE_REFUSAL =
+  / without a Configuration binding: | the runtime does not substitute: | holds /;
 // The Credentials tab can bind every referenced Slack credential name. The simple drawer edits
 // only the standard app and bot token names.
 export const CHANNEL_BINDING_PLACES =

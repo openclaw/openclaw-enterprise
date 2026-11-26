@@ -15,7 +15,8 @@ import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 const { isRecord } = await importConsoleModule("channels/shared-ui.mjs");
 const { slack } = await importConsoleModule("channels/slack.mjs");
-const { missingChannelCredentialGroups } = await importConsoleModule("agents/credentials.mjs");
+const { missingChannelCredentialGroups, slackCredentialBindingKeys } =
+  await importConsoleModule("agents/credentials.mjs");
 
 // These are form inputs, not a replacement for configuration or threading logic.
 const fields = {
@@ -176,6 +177,32 @@ test("the deploy gate requires a named Slack account's own keys, not the default
   legacy.secretBindings.SLACK_WORK_BOT_TOKEN = secretBound("former_bot");
   assert.deepEqual(missingChannelCredentialGroups(named, legacy), [
     "Slack credential bindings (SLACK_WORK_BOT_TOKEN)",
+  ]);
+  const withPolicy = {
+    channels: {
+      slack: {
+        ...named.channels.slack,
+        replyToMode: "${WORK_REPLY_MODE}",
+        extra: env("WORK_EXTRA"),
+        accounts: {
+          ...named.channels.slack.accounts,
+          off: { enabled: false, botToken: env("OFF_BOT") },
+        },
+      },
+    },
+  };
+  const withPolicyBindings = sourceBound("SLACK_WORK_APP_TOKEN", "SLACK_WORK_BOT_TOKEN");
+  for (const key of ["WORK_REPLY_MODE", "WORK_EXTRA", "OFF_BOT"]) {
+    withPolicyBindings.secretBindings[key] = secretBound(key);
+  }
+  assert.deepEqual(missingChannelCredentialGroups(withPolicy, withPolicyBindings), []);
+  assert.deepEqual(slackCredentialBindingKeys(withPolicy, withPolicyBindings.secretBindings), [
+    "SLACK_WORK_APP_TOKEN",
+    "SLACK_WORK_BOT_TOKEN",
+  ]);
+  delete withPolicyBindings.secretBindings.WORK_REPLY_MODE;
+  assert.deepEqual(missingChannelCredentialGroups(withPolicy, withPolicyBindings), [
+    "Slack credential bindings (WORK_REPLY_MODE)",
   ]);
   // The default account keeps its fixed keys.
   const standard = { channels: { slack: { enabled: true } } };

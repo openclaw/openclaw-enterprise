@@ -560,6 +560,35 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
     async (t) => {
       const f = await lifecycleFixture(t);
       const [first, second] = f.targets;
+      // The upgrade retires active Slack credential bindings. An ordinary policy
+      // setting and a dormant account may retain their existing Secret bindings.
+      first.configuration.values.channels = {
+        slack: {
+          enabled: true,
+          appToken: "${SLACK_APP}",
+          botToken: { source: "env", id: "SLACK_BOT" },
+          replyToMode: "${SLACK_REPLY_MODE}",
+          accounts: { paused: { enabled: false, signingSecret: "${PAUSED_SLACK_SIGNING}" } },
+        },
+      };
+      Object.assign(first.configuration.secretBindings, {
+        SLACK_APP: {
+          source: { kind: "credential_source", namespaceId, id: id("cs", 5) },
+          delivery: { type: "env" },
+        },
+        SLACK_BOT: {
+          source: { kind: "credential_source", namespaceId, id: id("cs", 6) },
+          delivery: { type: "env" },
+        },
+        SLACK_REPLY_MODE: {
+          source: { kind: "secret", namespaceId, id: id("sec", 8) },
+          delivery: { type: "env" },
+        },
+        PAUSED_SLACK_SIGNING: {
+          source: { kind: "secret", namespaceId, id: id("sec", 9) },
+          delivery: { type: "env" },
+        },
+      });
       await f.run("stop");
       await f.run("deploy");
       assert.deepEqual(

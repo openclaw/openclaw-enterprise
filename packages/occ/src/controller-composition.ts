@@ -332,7 +332,7 @@ function createComputeConfigurationPolicy(
     }
   }
 
-  // Configuration writes and Kubernetes admission apply the same Channel Source binding rule.
+  // Configuration writes and Kubernetes admission apply the same channel binding rule.
   function requireBundledChannelBindings(
     values: OpenClawConfigurationDocument,
     secretBindings: SecretBindings,
@@ -341,9 +341,9 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name) =>
+        (name, requiresSource) =>
           Object.hasOwn(secretBindings, name) &&
-          secretBindings[name]?.source.kind === "credential_source",
+          (!requiresSource || secretBindings[name]?.source.kind === "credential_source"),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );

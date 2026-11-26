@@ -88,10 +88,12 @@ Sources, choose channels and people, save, deploy, and verify a threaded reply.
 **Configured (enabled)** means the settings are saved; it does not prove that Slack is connected.
 
 To replace a token, update its Credential Source or select a replacement Source in the draft,
-then deploy a new version. Old Namespace Secrets are not imported; recreate their values as Sources and update the bindings.
+then deploy a new version. Recreate existing Namespace Secret tokens as Sources and update their
+bindings. Ordinary policy references such as `allowFrom` can keep their current bindings.
 
 If you manage Configuration through the API, use the
 [native Slack Socket Mode example](../../reference/configuration/secrets.md#native-channel-configuration).
+The Slack directory lookup API takes `sourceId` in place of `secretId`.
 The console supports the default Socket Mode account and gateway environment
 references; non-Socket settings, wildcard channel maps, mixed per-channel
 mention settings, mixed per-channel sender lists, and sender IDs that cannot be
