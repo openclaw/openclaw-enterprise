@@ -2373,7 +2373,8 @@ exec "$0.fixture" "$@"
   });
 
   // The Pod is scheduled but its volume never mounts, so it reports no status
-  // condition; only the kubelet's event names the missing ConfigMap.
+  // condition; only the kubelet's event names the missing ConfigMap. The mount
+  // event repeated after the other warning, so its series time must win.
   const unmountablePod = {
     status: {
       phase: "Pending",
@@ -2384,7 +2385,13 @@ exec "$0.fixture" "$@"
         reason: "FailedMount",
         message:
           'MountVolume.SetUp failed for volume "repository-registry" : configmap "gone" not found',
-        lastTimestamp: "2026-11-25T14:23:20Z",
+        eventTime: "2026-11-25T14:20:00.000000Z",
+        series: { count: 3, lastObservedTime: "2026-11-25T14:25:00.000000Z" },
+      },
+      {
+        reason: "BackOff",
+        message: "older than the last mount failure",
+        lastTimestamp: "2026-11-25T14:21:00Z",
       },
     ],
   };

@@ -1327,8 +1327,16 @@ function podWarning([eventsPath, podUid]: [string, string]): string {
   if (!Array.isArray(items)) {
     fail("cannot read startup preflight Pod events.");
   }
+  // A repeated event keeps its first time in eventTime; series holds the latest.
   const time = (event: JsonObject) =>
-    String(event.lastTimestamp ?? event.eventTime ?? object(event.metadata)?.creationTimestamp);
+    Date.parse(
+      String(
+        object(event.series)?.lastObservedTime ??
+          event.lastTimestamp ??
+          event.eventTime ??
+          object(event.metadata)?.creationTimestamp,
+      ),
+    ) || 0;
   const [latest] = items
     .flatMap((item) => {
       const event = object(item);
@@ -1336,7 +1344,7 @@ function podWarning([eventsPath, podUid]: [string, string]): string {
         ? [event]
         : [];
     })
-    .sort((a, b) => time(b).localeCompare(time(a)));
+    .sort((a, b) => time(b) - time(a));
   return latest ? report(latest.reason, latest.message, "Warning") : "";
 }
 
