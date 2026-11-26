@@ -1619,6 +1619,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     reply: FastifyReply,
     operation: OccApiRoute,
   ): Promise<void> {
+    function sendData(data: unknown): void {
+      reply.send({ data, meta: { requestId: request.id } });
+    }
+
     const context = contexts.get(request);
     if (!context) {
       throw dependencyUnavailable();
@@ -1749,8 +1753,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       const configurations = await controller.discoverConfigurations(context.actorId, {
         scope: "installation",
       });
-      reply.send({ data: { configurations }, meta: { requestId: request.id } });
-      return;
+      return sendData({ configurations });
     }
 
     const templateHandler = connectionTemplateHandlers[operation.operationId];
@@ -1802,23 +1805,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "getInstallation") {
-      reply.send({
-        data: clientInstallation(
+      return sendData(
+        clientInstallation(
           await controller.getInstallation(context.actorId),
           options.computeDriver,
           options.nativeAdmin?.enabled === true,
         ),
-        meta: { requestId: request.id },
-      });
-      return;
+      );
     }
 
     if (operation.operationId === "getInstallationDeploymentInventory") {
-      reply.send({
-        data: await controller.getInstallationDeploymentInventory(context.actorId),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(await controller.getInstallationDeploymentInventory(context.actorId));
     }
 
     if (operation.operationId === "listBackends") {
@@ -1827,20 +1824,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       if (backends === undefined) {
         throw dependencyUnavailable();
       }
-      reply.send({
-        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(backends.map((backend) => ({ id: backend.id, type: backend.type })));
     }
 
     if (operation.operationId === "getObservability") {
       await requireInstallationAdmin(request, operation, context);
-      reply.send({
-        data: { url: options.observabilityUrl ?? null },
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData({ url: options.observabilityUrl ?? null });
     }
 
     if (operation.operationId === "createNamespace") {
@@ -1864,11 +1853,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (operation.operationId === "listNamespaces") {
-      reply.send({
-        data: await controller.listNamespaces(context.actorId),
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(await controller.listNamespaces(context.actorId));
     }
 
     const namespaceId = params.namespaceId;
@@ -1882,24 +1867,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      reply.send({
-        data: namespace,
-        meta: { requestId: request.id },
-      });
-      return;
+      return sendData(namespace);
     }
 
     if (operation.operationId === "getNamespaceAgentCapabilities") {
-      reply.send({
-        data: {
-          capabilities: {
-            ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
-            ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
-          },
+      return sendData({
+        capabilities: {
+          ...(await controller.getNamespaceAgentCapabilities(context.actorId, namespaceId)),
+          ...(options.nativeAdmin?.enabled ? { nativeAdmin: true } : {}),
         },
-        meta: { requestId: request.id },
       });
-      return;
     }
 
     if (
@@ -1913,8 +1890,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         installationId,
         callerMay,
       });
-      reply.send({ data, meta: { requestId: request.id } });
-      return;
+      return sendData(data);
     }
 
     if (operation.operationId === "deleteNamespace") {
@@ -1946,8 +1922,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         apiKey: body?.apiKey as string,
       });
       reply.header("cache-control", "no-store");
-      reply.send({ data: models, meta: { requestId: request.id } });
-      return;
+      return sendData(models);
     }
 
     if (
@@ -1991,8 +1966,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               readManagedMcpToolNames,
             );
       reply.header("cache-control", "no-store");
-      reply.send({ data: result, meta: { requestId: request.id } });
-      return;
+      return sendData(result);
     }
 
     if (operation.operationId === "getSavedAgentPluginPolicyCapabilities") {
@@ -2002,8 +1976,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: capabilities, meta: { requestId: request.id } });
-      return;
+      return sendData(capabilities);
     }
 
     if (operation.operationId === "discoverSavedAgentPlugins") {
@@ -2021,8 +1994,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         pluginDiscoveryRequestSignal(reply),
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: catalog, meta: { requestId: request.id } });
-      return;
+      return sendData(catalog);
     }
 
     if (operation.operationId === "discoverSavedAgentPluginDetails") {
@@ -2035,8 +2007,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         readManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
-      reply.send({ data: plugin, meta: { requestId: request.id } });
-      return;
+      return sendData(plugin);
     }
 
     if (operation.operationId === "lookupChannelDirectory") {
@@ -2052,8 +2023,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           : { configurationId: body.configurationId as string }),
       });
       reply.header("cache-control", "no-store");
-      reply.send({ data: directory, meta: { requestId: request.id } });
-      return;
+      return sendData(directory);
     }
 
     const resourceHandler = handlers[operation.operationId];
@@ -2177,8 +2147,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         callerDecision,
         callerMay,
       });
-      reply.send({ data, meta: { requestId: request.id } });
-      return;
+      return sendData(data);
     }
 
     if (
@@ -2219,8 +2188,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             disconnected.signal,
             admitRead,
           );
-          reply.send({ data: description, meta: { requestId: request.id } });
-          return;
+          return sendData(description);
         }
         const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
         const query = request.query as AgentRuntimeLogsQuery;
@@ -2275,8 +2243,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
-        reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
-        return;
+        return sendData(runtimeLogPageBody(page));
       } finally {
         reply.raw.off("close", onClose);
       }

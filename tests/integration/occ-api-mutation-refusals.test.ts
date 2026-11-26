@@ -53,20 +53,8 @@ function assertApiError(
   assert.equal(error.code, code, message);
 }
 
-function createInjectedFixture() {
-  return createInjectedControllerFixture(
-    {},
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
-      },
-    },
-  );
-}
-
 async function configuredController() {
-  const fixture = await createInjectedFixture();
+  const fixture = await createInjectedControllerFixture({});
   const request: FixtureRequest = (method, pathname, options) =>
     injectedRequest(fixture.app, method, pathname, options);
   return { fixture, request };
@@ -449,7 +437,7 @@ test("OCC Fastify enforces strict schemas, canonical errors, and its real 64 KiB
   await checkMalformedResourcePaths(controller, namespace, agent);
   await checkPayloadLimitAndAllowedMethods(controller, namespace, agent);
 
-  const fixture = await createInjectedFixture();
+  const fixture = await createInjectedControllerFixture({});
   const bootstrapped = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
     body: { name: "Validation-order installation" },
   });

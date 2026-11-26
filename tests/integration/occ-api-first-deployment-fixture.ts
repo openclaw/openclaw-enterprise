@@ -40,15 +40,11 @@ export async function prepareFixture({
     assert.fail("Guarded admission must never contact Slack");
   });
   const secretDriver = createTestSecretDriver();
-  const fixture = await createInjectedControllerFixture(
-    { recordOperations: true, channelDriver, secretDriver },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
-      },
-    },
-  );
+  const fixture = await createInjectedControllerFixture({
+    recordOperations: true,
+    channelDriver,
+    secretDriver,
+  });
   const request: FixtureRequest = (method, pathname, options) =>
     injectedRequest(fixture.app, method, pathname, options);
   const controller = { fixture, request };

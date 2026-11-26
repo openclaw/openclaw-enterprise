@@ -12,6 +12,7 @@ import {
   checkedInjectedBody,
   createInjectedControllerFixture,
   injectedRequest,
+  withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -47,13 +48,7 @@ export async function configuredController(options: FixtureOptions = {}) {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createInjectedControllerFixture(
     { ...options, auditSink },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...appOptions }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(appOptions);
-      },
-    },
+    withoutBackendSummaries,
   );
   const request: FixtureRequest = (method, pathname, requestOptions) =>
     injectedRequest(fixture.app, method, pathname, requestOptions);
@@ -63,11 +58,9 @@ export async function configuredController(options: FixtureOptions = {}) {
 type TestController = Awaited<ReturnType<typeof configuredController>>;
 
 export async function defaultNamespace(controller: TestController) {
-  const { data } = checkedInjectedBody(
-    await controller.request("GET", "/namespaces"),
-    200,
-    NamespaceListResponse,
-  );
+  const response = await controller.request("GET", "/namespaces");
+  const { data, meta } = checkedInjectedBody(response, 200, NamespaceListResponse);
+  assert.equal(meta.requestId, response.headers.get("x-request-id"));
   const found = data.find((namespace) => namespace.name === BOOTSTRAP_DEFAULT_NAMESPACE_NAME);
   assert.ok(found, "fresh bootstrap must create the default Namespace");
   assert.equal(found.status, "provisioning");

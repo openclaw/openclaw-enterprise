@@ -43,6 +43,7 @@ import {
   createProvisioningCapableComputeDriver,
   injectedRequest,
   readyNamespaceFixture,
+  withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -56,13 +57,7 @@ function checkApiError(reply: InjectedReply, status: number, code: ErrorCode) {
 }
 
 async function createAdmissionController(options: FixtureOptions) {
-  const fixture = await createInjectedControllerFixture(options, {
-    wrapPlatformState: (state) => state,
-    invokeApplication(factory, { backendSummaries, ...options }) {
-      assert.equal(backendSummaries, undefined);
-      return factory(options);
-    },
-  });
+  const fixture = await createInjectedControllerFixture(options, withoutBackendSummaries);
   const request: FixtureRequest = (method, pathname, requestOptions) =>
     injectedRequest(fixture.app, method, pathname, requestOptions);
   return { fixture, request };

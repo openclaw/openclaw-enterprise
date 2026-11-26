@@ -20,6 +20,7 @@ import {
   createNamespace,
   injectedRequest,
   readyNamespaceFixture,
+  withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -31,16 +32,7 @@ type ProviderResult = Omit<ChannelDirectoryResult, "candidates"> & {
 };
 
 async function configuredController(secretDriver: ReturnType<typeof createTestSecretDriver>) {
-  const fixture = await createInjectedControllerFixture(
-    { secretDriver },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(options);
-      },
-    },
-  );
+  const fixture = await createInjectedControllerFixture({ secretDriver }, withoutBackendSummaries);
   const request: FixtureRequest = (method, path, options) =>
     injectedRequest(fixture.app, method, path, options);
   return { fixture, request };

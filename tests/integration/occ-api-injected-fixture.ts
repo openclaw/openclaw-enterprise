@@ -97,6 +97,18 @@ interface FixtureAdapters {
   ): App;
 }
 
+const invokeWithOptionalBackendSummaries: FixtureAdapters["invokeApplication"] = (
+  factory,
+  { backendSummaries, ...options },
+) => factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
+
+export const withoutBackendSummaries: Pick<FixtureAdapters, "invokeApplication"> = {
+  invokeApplication(factory, { backendSummaries, ...options }) {
+    assert.equal(backendSummaries, undefined);
+    return factory(options);
+  },
+};
+
 interface InjectedRequestOptions {
   readonly identity?: boolean | undefined;
   readonly session?: Pick<FixtureSession, "cookie" | "origin"> | string | null | undefined;
@@ -110,7 +122,10 @@ export const identifier = (prefix: string) => new RegExp(`^${prefix}_${uuidV4}$`
 
 export async function createInjectedControllerFixture(
   options: InjectedFixtureOptions,
-  adapters: FixtureAdapters,
+  {
+    invokeApplication = invokeWithOptionalBackendSummaries,
+    wrapPlatformState,
+  }: Partial<FixtureAdapters> = {},
 ) {
   const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
   const authFixture = await createTestAuthPrincipal({
@@ -200,7 +215,7 @@ export async function createInjectedControllerFixture(
     identity: IdentityWithId = principal,
     createApplication: ApplicationFactory<object> = createControllerApp,
   ) {
-    const created = adapters.invokeApplication(createApplication, {
+    const created = invokeApplication(createApplication, {
       ...(controller
         ? { controller }
         : {
@@ -210,7 +225,7 @@ export async function createInjectedControllerFixture(
                 resolveIAMIdentity: (identityId) =>
                   state.identities.find((identity) => identity.id === identityId),
               });
-              platformState = adapters.wrapPlatformState(baseState);
+              platformState = wrapPlatformState ? wrapPlatformState(baseState) : baseState;
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,

@@ -81,9 +81,6 @@ async function configuredController({
           ? state
           : stateWithDeploymentWork(state, deploymentWorks);
       },
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        return factory(backendSummaries === undefined ? options : { ...options, backendSummaries });
-      },
     },
   );
   const request: FixtureRequest = (method, pathname, options) =>

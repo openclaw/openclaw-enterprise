@@ -8,6 +8,7 @@ import {
   createAgent as createInjectedAgent,
   createInjectedControllerFixture,
   injectedRequest,
+  withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -34,16 +35,7 @@ export function assertApiError(reply: Reply, status: number, code: ErrorCode, la
 
 export async function configuredController() {
   const auditSink = new InMemoryAuditSink();
-  const fixture = await createInjectedControllerFixture(
-    { auditSink },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(options);
-      },
-    },
-  );
+  const fixture = await createInjectedControllerFixture({ auditSink }, withoutBackendSummaries);
   const request: FixtureRequest = (method, path, options) =>
     injectedRequest(fixture.app, method, path, options);
   return { fixture, request, auditSink };

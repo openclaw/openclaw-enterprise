@@ -23,6 +23,7 @@ import {
   createServiceAccount,
   identifier,
   injectedRequest,
+  withoutBackendSummaries,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
@@ -49,13 +50,7 @@ async function setupServiceAccounts({ recordOperations = false } = {}) {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createInjectedControllerFixture(
     { auditSink, recordOperations },
-    {
-      wrapPlatformState: (state) => state,
-      invokeApplication(factory, { backendSummaries, ...options }) {
-        assert.equal(backendSummaries, undefined);
-        return factory(options);
-      },
-    },
+    withoutBackendSummaries,
   );
   const request: FixtureRequest = (method, path, requestOptions) =>
     injectedRequest(fixture.app, method, path, requestOptions);
