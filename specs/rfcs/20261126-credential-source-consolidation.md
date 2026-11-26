@@ -130,9 +130,11 @@ See the [implementation plan](../plans/20261126-credential-source-consolidation.
 
 - **Embedded model delivery:** Place the private Proxy with Worker or give it
   a separate service. Decide which setup-token and custom provider profiles
-  must move before the direct path is retired. The pinned OpenClaw client
-  treats a private URL as a generic provider. Decide whether the first cutover
-  must also preserve native Responses WebSockets, continuation, and compaction.
+  must move before the direct path is retired. HTTP continuation and inline
+  compaction use the streamed `POST /v1/responses` route. A private URL can
+  change when OpenClaw enables them. Decide whether the first cutover must
+  also support opt-in Responses WebSockets and the separate
+  `POST /v1/responses/compact` for eligible manual or budget-triggered compaction.
 - **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications
