@@ -305,6 +305,9 @@ button[aria-busy="true"] {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
+:where(button:focus-visible) {
+  scroll-margin-block: var(--space-1);
+}
 .focus-inset:focus-visible,
 .focus-inset:has(input:focus-visible),
 .agent-tabs button:focus-visible,

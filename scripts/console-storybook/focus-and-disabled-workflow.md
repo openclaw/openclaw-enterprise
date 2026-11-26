@@ -6,6 +6,12 @@ inside a scrolling list or tab strip, which would clip an outer ring. Wrappers
 draw the ring for a borderless child. Use the keyboard, not the mouse: the ring
 follows `:focus-visible`. No part of any ring may be cut off.
 
+At 1440 × 900, open **Pages / Agent detail / New Version**. Tab to
+**Edit Configuration** and press Enter. Press Space, Tab to **Save
+Configuration**, Tab to **Cancel**, then press Shift+Tab to return to **Save
+Configuration**. Before scrolling at each stop, check that the whole focus
+ring, including its bottom edge, is visible. Repeat at 390 px.
+
 1. Open **Pages / Agents / Populated**. Tab from the navigation to the Agent
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
