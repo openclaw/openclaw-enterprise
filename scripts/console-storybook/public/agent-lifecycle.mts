@@ -121,6 +121,7 @@ type LifecycleScenario = Parameters<typeof createAgentRoutes>[0] & {
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   candidateDeploymentWarnings?: AgentDeploymentStatusWire["warnings"];
   candidateActivates?: boolean;
+  candidateFailsOnPoll?: true;
   emptyAgents?: boolean;
   unreadableAgentConfiguration?: string;
   unreadableRevisionConfiguration?: string;
@@ -439,8 +440,8 @@ export function createAgentLifecycle(
             ? deploymentError(candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
-        // The next status poll records success and selects v7 for service.
-        ...(scenario.candidateActivates ? { reads: 0 } : {}),
+        // The first read is pending, and the next poll records the configured outcome.
+        ...(scenario.candidateActivates || scenario.candidateFailsOnPoll ? { reads: 0 } : {}),
       });
     }
   }
@@ -730,10 +731,17 @@ export function createAgentLifecycle(
         }
       }
       if (deployment.reads !== undefined && ++deployment.reads > 1) {
-        deployment.status = "succeeded";
         deployment.progress = null;
-        saved.desiredRuntimeState = "running";
-        saved.activeRevisionId = deployment.deploymentId;
+        if (scenario.candidateFailsOnPoll && deployment.deploymentId === candidateRevisionId) {
+          deployment.status = "failed";
+          deployment.error ??= deploymentError(
+            revisions.get(candidateRevisionId)?.createdAt ?? createdAt,
+          );
+        } else {
+          deployment.status = "succeeded";
+          saved.desiredRuntimeState = "running";
+          saved.activeRevisionId = deployment.deploymentId;
+        }
       }
       const { reads: _reads, cleanupReads: _cleanupReads, ...status } = deployment;
       return response(status);
