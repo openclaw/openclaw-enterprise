@@ -3711,7 +3711,6 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 .source-create-dialog > .dialog-content {
   flex: 1;
-  scrollbar-gutter: stable;
 }
 @media (width > 760px) {
   .secret-detail-dialog {

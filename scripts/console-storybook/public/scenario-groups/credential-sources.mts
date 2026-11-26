@@ -125,6 +125,7 @@ export const credentialSourceScenarios = {
     group: "Pages/Credentials",
     name: "Dismiss while loading",
     path,
+    oauthCatalog: "ready",
     description:
       "Secret details and Source templates take three seconds to load. Try dismissing each dialog while you wait.",
     rules: [
