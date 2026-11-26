@@ -105,7 +105,7 @@ test(
       requiresPostgres.skip ||
       (caseDatabasesAvailable
         ? false
-        : "Set OPENCLAW_ENTERPRISE_CI_STATE to own an isolated PostgreSQL case database."),
+        : "Run the prepared guarded receipt workflow in docs/testing/postgresql.md#other-postgresql-suites."),
   },
   async (context) => {
     // Admitted revisions retain their Source, so this case must own its Installation and custody.

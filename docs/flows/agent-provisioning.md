@@ -65,7 +65,7 @@ When the Installation offers the selected model preset through TokenService, Con
 
 Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without enrolling credentials again.
 
-For drafts, Console creates the Configuration and Agent. Deployment admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must already authorize the Agent. Credential-access retry keeps the Agent.
+Draft creation saves the Configuration and Agent. At deployment, admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must authorize the Agent. Credential-access retry retains the Agent but cannot grant Slack Source access.
 
 ### 2. OCC admits one job
 
