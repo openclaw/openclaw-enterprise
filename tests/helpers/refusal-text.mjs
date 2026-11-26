@@ -413,7 +413,7 @@ export const referenceFormRefusal = (setting, form) =>
 // its name, and other text (which may be the token) not at all
 // (packages/occ/src/channel-secret-bindings.ts).
 export const unboundReferenceRefusal = (setting, name) =>
-  `Configuration setting ${setting} references ${name} without a Configuration credential binding: bind ${name} to a stored credential in secretBindings, or remove the reference.`;
+  `Configuration setting ${setting} references ${name} without a Credential Source binding: bind ${name} to a Credential Source in secretBindings, or remove the reference.`;
 // Kubernetes Compute admission of an Agent's plugin secret input whose unset variable stops its
 // Gateway at startup (findings 3040, 3041, 3042): an APP_SERVER_ variable on an embedded or
 // Dedicated OpenClaw Agent at Agent save and deployment, any other unbound name a binding could
