@@ -13,9 +13,11 @@ import {
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
+import { readAggregateReceipt } from "./ci-runner-aggregate-evidence.ts";
 
 interface RunnerSummary {
   scope: string;
+  status: string;
   testName?: string;
   counts: { passed: number; failed: number; skipped: number; todo: number; total: number };
   files: {
@@ -112,8 +114,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
     assert.equal(await readFile(join(root, `state/${lane}.jsonl`), "utf8"), `${selectedPath}\n`);
     // Even a one-file lane cannot turn explicitly focused proof into full qualification.
     const aggregated = runRunnerSync(aggregateArgs(root, lane));
-    assert.equal(aggregated.status, 1, aggregated.stderr);
-    const evidence: Pick<RunnerSummary, "issues"> = JSON.parse(aggregated.stdout);
+    const evidence = readAggregateReceipt(aggregated, 1);
     assert.ok(evidence.issues.some(({ code }) => code === "focused-lane-evidence"));
     if (lane === "baseline") {
       assert.ok(evidence.issues.some(({ code }) => code === "missing-lane-evidence"));
@@ -122,42 +123,43 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
   // The literal name must reach the actual Node child. The other required
   // case must not execute, but the result remains focused evidence.
   const testName = "required case";
-  const singleManifest = (name: string) =>
-    writeRunnerManifest(root, {
+  const checkSelectedName = async (name: string, resultName: string) => {
+    await writeRunnerManifest(root, {
       lanes: {
         single: {
           files: [{ path: selectedPath, expectedTests: [name, "unselected required case"] }],
         },
       },
     });
-  await singleManifest(testName);
-  await writeFile(
-    join(root, selectedPath),
-    [
-      'import test from "node:test";',
-      'test("required case", () => {});',
-      'test("unselected required case", () => { throw new Error("unselected case executed"); });',
-    ].join("\n"),
-  );
+    await writeFile(
+      join(root, selectedPath),
+      `import test from "node:test";
+      test(${JSON.stringify(name)}, () => {});
+      test("unselected required case", () => { throw new Error("unselected case executed"); });\n`,
+    );
+    // A leading switch-like name needs the equals form; the throwing sibling
+    // proves that exactly the selected literal reaches the child.
+    const selector = name.startsWith("--") ? [`--test-name=${name}`] : ["--test-name", name];
+    const { result, summary: evidence } = await runCaseLane(root, "single", resultName, [
+      ...fileSelector,
+      ...selector,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(evidence.scope, "focused");
+    assert.equal(evidence.testName, name);
+    assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
+    assert.deepEqual(
+      evidence.files[0]?.tests.map(({ name }) => name),
+      [name],
+    );
+    assert.equal(evidence.files[0]?.cleanup.status, "passed");
+  };
+
   // This aggregate control needs the canonical single-lane filename again.
   await unlink(join(root, "results/single.json"));
-  const { result: filtered, summary: focused } = await runCaseLane(root, "single", "single", [
-    ...fileSelector,
-    "--test-name",
-    testName,
-  ]);
-  assert.equal(filtered.status, 0, filtered.stderr);
-  assert.equal(focused.scope, "focused");
-  assert.equal(focused.testName, testName);
-  assert.deepEqual(focused.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
-  assert.deepEqual(
-    focused.files[0]?.tests.map(({ name }) => name),
-    [testName],
-  );
-  assert.equal(focused.files[0]?.cleanup.status, "passed");
+  await checkSelectedName(testName, "single");
   const filteredAggregate = runRunnerSync(aggregateArgs(root, "single"));
-  assert.equal(filteredAggregate.status, 1, filteredAggregate.stderr);
-  const filteredEvidence: Pick<RunnerSummary, "issues"> = JSON.parse(filteredAggregate.stdout);
+  const filteredEvidence = readAggregateReceipt(filteredAggregate, 1);
   assert.ok(filteredEvidence.issues.some(({ code }) => code === "focused-lane-evidence"));
 
   // Node can also match trimmed ancestry. Reject every extra or differently
@@ -253,31 +255,7 @@ test("focused runs retain case enforcement and cleanup but cannot complete a ful
   // the manifest and reported name must both match exactly.
   const literalNames = ["--dry-run=preserves state", "literal [case].* /i", "é".repeat(128)];
   for (const [index, name] of literalNames.entries()) {
-    await singleManifest(name);
-    await writeFile(
-      join(root, selectedPath),
-      `import test from "node:test";
-      test(${JSON.stringify(name)}, () => {});
-      test("unselected required case", () => { throw new Error("unselected case executed"); });\n`,
-    );
-    // A leading switch-like name needs the equals form; the throwing sibling
-    // proves that exactly the selected literal reaches the child.
-    const selector = name.startsWith("--") ? [`--test-name=${name}`] : ["--test-name", name];
-    const { result, summary: evidence } = await runCaseLane(
-      root,
-      "single",
-      `literal-name-${index}`,
-      [...fileSelector, ...selector],
-    );
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(evidence.scope, "focused");
-    assert.equal(evidence.testName, name);
-    assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 });
-    assert.deepEqual(
-      evidence.files[0]?.tests.map(({ name }) => name),
-      [name],
-    );
-    assert.equal(evidence.files[0]?.cleanup.status, "passed");
+    await checkSelectedName(name, `literal-name-${index}`);
   }
 
   // Restore the file-only lanes for their unchanged missing-case contract.
@@ -430,13 +408,16 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
       ["todo case", "todo"],
     ],
   );
-  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
-  assert.ok(suiteSkip?.source);
-  assert.equal(suiteSkip.file, path);
-  assert.equal(suiteSkip.source.file, suiteSkip.file);
-  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
-  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
-  assert.equal(suiteSkip.source.nesting, 0);
+  function assertSuiteSource(issue: RunnerSummary["issues"][number] | undefined) {
+    assert.ok(issue?.source);
+    assert.equal(issue.file, path);
+    const { file, line, column, nesting } = issue.source;
+    assert.equal(file, path);
+    assert.ok(Number.isSafeInteger(line) && line > 0);
+    assert.ok(Number.isSafeInteger(column) && column > 0);
+    assert.equal(nesting, 0);
+  }
+  assertSuiteSource(summary.issues.find((entry) => entry.name === "skipped suite"));
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     `run-tests: issue missing-expected-test ${path}: expected test did not run: missing named case`,
@@ -447,6 +428,56 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     `run-tests: issue unexpected-skip ${path}: selected suite did not run its tests: skipped suite`,
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Match Node's file argument even if the temporary directory is a symlink.
+  const pass = { path, expectedTests: ["ordinary pass"] };
+  for (const [kind, declaration] of [
+    [
+      "suite",
+      `describe(name, { skip: "missing [suite].*" }, () => {
+        test("hidden case", () => { throw new Error("skipped suite child ran"); });
+      });`,
+    ],
+    ["skip", 'test(name, { skip: "missing [case].*" }, () => {});'],
+    ["todo", 'test(name, { todo: "pending [case].*" });'],
+  ] as const) {
+    const fixture = await createRunnerFixture(t);
+    await writeCleanupFixture(fixture);
+    await writeRunnerManifest(fixture, { lanes: { [lane]: { files: [pass] } } });
+    const source = `import test, { describe } from "node:test";
+      const name = ${JSON.stringify(join(fixture, path))};
+      test("ordinary pass", () => {});
+      ${declaration}\n`;
+    await writeFile(join(fixture, path), source);
+    const { result, summary: evidence } = await runCaseLane(fixture, lane, kind);
+    assert.ok(!result.stderr.includes(fixture), `${kind}: issue log exposed the fixture root`);
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(evidence.scope, "full");
+    assert.equal(evidence.status, "failed");
+    const files = evidence.files.map((file) => [file.path, file.nodeExitCode, file.cleanup.status]);
+    assert.deepEqual(files, [[path, 0, "passed"]]);
+
+    const disposition = kind === "todo" ? "todo" : "skipped";
+    assert.deepEqual(
+      evidence.issues.map(({ code, file, name, status }) => [code, file, name, status]),
+      [["unexpected-skip", path, path, disposition]],
+    );
+    const rows = [["ordinary pass", "passed"]];
+    if (kind === "suite") {
+      assertSuiteSource(evidence.issues[0]);
+    } else {
+      assert.equal(evidence.issues[0]?.source, undefined);
+      rows.push([path, disposition]);
+    }
+    const cases = evidence.files[0]?.tests.map(({ name, status }) => [name, status]);
+    assert.deepEqual(cases, rows);
+    const skipped = Number(kind === "skip");
+    const todo = Number(kind === "todo");
+    assert.deepEqual(evidence.counts, { passed: 1, failed: 0, skipped, todo, total: rows.length });
+    const issueLog = `run-tests: issue unexpected-skip ${path}: `;
+    const log = result.stderr.split("\n").find((line) => line.startsWith(issueLog));
+    assert.ok(log?.endsWith(`: ${path}`), `missing ${kind} issue for ${path}`);
   }
 
   // Filesystem traversal follows the symlink before '..'; lexical normalization

@@ -256,9 +256,14 @@ function isTerminalEvent(event: unknown, absolutePath: string): event is Termina
     return false;
   }
   const data = reporterField(event, "data");
+  if (!isRecord(data)) {
+    return false;
+  }
+  // Node also uses the file path as a wrapper name, but a flagged pass is a real skip or TODO.
+  const skippedCase = type === "test:pass" && (data.skip !== undefined || data.todo !== undefined);
   return (
-    isRecord(data) &&
-    (data.testType === "suite" || (Number.isInteger(data.line) && data.name !== absolutePath))
+    data.testType === "suite" ||
+    (Number.isInteger(data.line) && (data.name !== absolutePath || skippedCase))
   );
 }
 
@@ -467,7 +472,7 @@ export function readFileEvidence(
       });
     }
     return {
-      name,
+      name: name === absolutePath ? relativePath : name,
       status: testStatus(event),
       ...(coverageAssertions?.has(event) ? { assertionFailure: true } : {}),
       file: caseFile,
@@ -528,12 +533,12 @@ export function readFileEvidence(
   evidence.skippedSuites = terminalEvents
     .filter(
       ({ type, data }) =>
-        type === "test:pass" &&
-        data.testType === "suite" &&
-        data.skip !== undefined &&
-        data.name !== absolutePath,
+        type === "test:pass" && data.testType === "suite" && data.skip !== undefined,
     )
-    .map(({ data }) => ({ name: data.name, source: suiteSource(root, data) }));
+    .map(({ data }) => ({
+      name: data.name === absolutePath ? relativePath : data.name,
+      source: suiteSource(root, data),
+    }));
 }
 
 // Read the redacted error on the named case. A sibling may report a different
