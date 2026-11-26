@@ -209,6 +209,7 @@
       "expectedTests": [
         "a missing tenant Namespace cannot confirm a mixed Gateway and Proxy withdrawal",
         "public managed Source enrollment and active staged Agent withdrawal preserve custody",
+        "successor admission preserves a Source's Proxy policy after removing its Gateway binding",
         "Worker honors each withdrawal requester's authority at dispatch"
       ]
     },

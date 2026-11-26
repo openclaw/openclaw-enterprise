@@ -497,14 +497,19 @@ cases.revisionTest(
     const patchDeployment = clients.apps.patchNamespacedDeployment!;
     const readSecret = clients.core.readNamespacedSecret!;
     let applies = 0;
+    let gatewayDeploymentName: string | undefined;
     let reuseReads = 0;
     clients.apps.patchNamespacedDeployment = async (request) => {
       if (!request.body.metadata.name.startsWith("gateway-")) {
         return patchDeployment(request);
       }
       applies += 1;
+      gatewayDeploymentName = request.body.metadata.name;
       const applied = await patchDeployment(request);
       if (applies === 1) {
+        assert.ok(
+          transport.objects.has(transport.key("Deployment", gatewayDeploymentName, namespace)),
+        );
         // An uncertain apply creates the real candidate Deployment and stage, then causes a retry.
         throw new Error("controlled Gateway Deployment apply failure");
       }
@@ -529,6 +534,17 @@ cases.revisionTest(
     assert.equal(reuseReads, 1, "the denial must follow the existing stage read");
     assert.equal(applies, 1, "revocation must prevent the retry's Gateway Deployment mutation");
     assert.equal(stagedWrites.length, 1, "the retry must reuse the already staged revision copy");
+    assert.ok(gatewayDeploymentName);
+    assert.equal(
+      transport.objects.has(transport.key("Deployment", gatewayDeploymentName, namespace)),
+      false,
+      "the refused candidate Gateway Deployment must be removed",
+    );
+    assert.equal(
+      transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+      false,
+      "the refused candidate's staged credential must be removed",
+    );
     assert.deepEqual(core.secrets.get(custodyKey), custody, "the Source owner retains custody");
     const denial = await fixture.observerPool.query(
       `SELECT actor_id, details->'__occAuditMetadata'->'authorization' AS authorization,
