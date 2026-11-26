@@ -71,6 +71,11 @@ the Source owner, selected Drivers, and admitted request profile.
 Any process in that exact Pod can call the admitted route. The dedicated Sandbox
 can also enforce an executable restriction.
 
+Check a Pod-bound identity for the Proxy's audience against the registered Pod
+UID. Control Plane ownership determines which Pod Compute can register. Permit
+the model startup probe under the candidate's current work claim. After
+activation, bind requests to the serving revision and fence its predecessor.
+
 Credential Proxy authenticates the exact workload, matches the method and path,
 and verifies upstream TLS. It replaces caller credential headers on a matching
 request and refuses redirects and arbitrary forwarding. The built-in Anthropic
@@ -90,7 +95,7 @@ Compute and Proxy cannot fence both revisions independently.
 - Channel directory: `secretId` → `sourceId`; Namespace scope remains server-owned.
 - Upstream proxy: `networkProxy.credentialSecretId` → `credentialSourceId`.
 - Switch schemas, handlers, permission advice, Console callers, and generated API together.
-- Migrated bindings use Credential Source IDs (`cs_`). Device-authorization sessions use their own IDs (`das_`).
+- Migrated bindings use Credential Source IDs (`cs_`). Device authorization keeps its existing session IDs and generates them independently of Namespace Secret resources.
 - At the removal gate, delete Secret Harness auth, Secret Configuration bindings, legacy issuer `secrets` inputs, the five Secret CRUD operations, and Secret permission endpoints.
 
 ### IAM
@@ -112,12 +117,17 @@ Use Source IAM and existing target permissions. Remove the public Secret IAM cat
 
 ## Delivery order
 
+See the [implementation plan](../plans/20261126-credential-source-consolidation.md).
+
 1. Complete Gateway Source delivery while preserving the current Slack Namespace Secret path.
 2. Switch Slack validation, bindings, directory APIs, Console callers, and generated contracts together. Qualify actual Gateway Slack startup before claiming support.
 3. Complete remaining model and upstream proxy replacements, then remove public Secrets after no supported runtime caller depends on them.
 
 ## Open decisions
 
+- **Embedded model delivery:** Place the private Proxy with Worker or give it
+  a separate service. Decide which setup-token and custom provider profiles
+  must move before the direct path is retired.
 - **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications

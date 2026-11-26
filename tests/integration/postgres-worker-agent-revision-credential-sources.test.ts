@@ -34,6 +34,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import type { KubernetesChannelEgress } from "../../apps/controller/src/drivers/compute/kubernetes/channel-egress.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -222,8 +223,8 @@ async function gatewaySourceWorkerFixture(
 }
 
 async function slackChannelSourceFixture(fixture: RevisionFixture, context: TestContext) {
-  const { controller, compute, core, enroll, namespaceId, beforeEnrollment } =
-    await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const worker = await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const { controller, core, enroll, namespaceId, beforeEnrollment } = worker;
   const configurationDriver = createTestConfigurationDriver({
     id: `slack-configuration-${randomUUID()}`,
     exact: true,
@@ -345,9 +346,7 @@ async function slackChannelSourceFixture(fixture: RevisionFixture, context: Test
     },
   );
   return {
-    controller,
-    compute,
-    namespaceId,
+    ...worker,
     bot,
     model,
     configuration,
@@ -1190,6 +1189,167 @@ cases.revisionTest(
       scenario.transport.templates.some(({ name }) => name.startsWith("gateway-")),
       false,
     );
+  },
+);
+
+test(
+  "the Worker refuses Gateway launch when the Envoy Source is withdrawn after preparation",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 1 });
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      configurationDriver,
+      configuration,
+      harnessAuth,
+      enroll,
+      namespace,
+      namespaceId,
+      placeholder,
+    } = await slackChannelSourceFixture(fixture, context);
+    const basic = `Basic ${Buffer.from(`fixture:${randomUUID()}`).toString("base64")}`;
+    const source = await enroll(basic, null);
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const egress = Reflect.get(compute, "channelEgress") as KubernetesChannelEgress;
+    assert.ok(egress);
+    // Control Envoy and workload readiness. OCC and Kubernetes Compute still own
+    // admission, Source resolution, withdrawal, and the Gateway Deployment request.
+    context.mock.method(egress, "available", async () => true);
+    context.mock.method(egress, "admitProxy", async () => "approved-proxy-fixture");
+    context.mock.method(egress, "retire", async () => {});
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...configuration,
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Withdrawn upstream credential ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+        networkProxy: { url: "https://proxy.example:8443", credentialSourceId: source.id },
+      },
+      resolveApprovedHarness,
+    );
+    const prior = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = prior.id;
+    let preparationCompleted = false;
+    context.mock.method(egress, "prepare", (async (
+      preparedRevision,
+      gatewayNamespace,
+      routing,
+      revisionContext,
+      signal,
+    ) => {
+      const credential = revisionContext?.networkProxyCredential;
+      assert.ok(credential);
+      assert.equal((await credential.resolve(signal)).value, basic);
+      await credential.authorize(signal);
+      const { serviceName, envoyNamespace, listenerPortStart } = channelEgressOptions;
+      routing.proxyUrl = `http://${serviceName}.${envoyNamespace}.svc:${listenerPortStart}`;
+      routing.binding = {
+        id: "fixture-channel-egress",
+        namespaceId,
+        namespace: gatewayNamespace,
+        agentId: agent.id,
+        revisionId: preparedRevision.id,
+        policyHash: "prepared-fixture",
+        port: listenerPortStart,
+        state: "active",
+      };
+      if (preparedRevision.id !== prior.id) {
+        // Withdraw from the serving revision while the successor is between Envoy
+        // preparation and Gateway creation. OCC also withdraws the admitted successor.
+        const withdrawal = await controller.withdrawAgentCredentialSource(fixture.actor.id, {
+          namespaceId,
+          agentId: agent.id,
+          credentialSourceId: source.id,
+        });
+        assert.equal(withdrawal.revisionId, prior.id);
+        assert.equal(withdrawal.state, "pending");
+        assert.equal(
+          (
+            await fixture.state.read((view) =>
+              view.credentialSources.findCredentialWithdrawal(
+                namespaceId,
+                preparedRevision.id,
+                source.id,
+              ),
+            )
+          )?.state,
+          "pending",
+        );
+        preparationCompleted = true;
+      }
+    }) satisfies KubernetesChannelEgress["prepare"]);
+    const prepare = compute.prepareRevision.bind(compute);
+    const priorReadiness = context.mock.method(compute, "prepareRevision", (async (
+      revision,
+      revisionContext,
+    ) => {
+      const observed = await prepare(revision, revisionContext);
+      assert.equal(revision.id, prior.id);
+      assert.ok(transport.templates.some(({ name }) => name.startsWith("gateway-")));
+      return { ...observed, ready: true };
+    }) satisfies ComputeDriver["prepareRevision"]);
+    const priorActivation = context.mock.method(compute, "activateRevision", async () => {});
+    const events: Readonly<Record<string, unknown>>[] = [];
+    await fixture.start(compute, {
+      transformDrivers: () => ({ ...runtime, configurationDriver }),
+      emit: (event) => {
+        events.push(event);
+      },
+    });
+    await fixture.work(
+      { id: prior.id, idempotencyKey: `agent_revision:${prior.id}:reconcile` },
+      "succeeded",
+    );
+    assert.equal((await fixture.currentAgent(agent))?.activeRevisionId, prior.id);
+    priorReadiness.mock.restore();
+    priorActivation.mock.restore();
+    // A lost Gateway is recreated during successor preparation. Keep the active
+    // OCC revision and remove only the fixture Deployment before admitting again.
+    const gatewayName = transport.templates.find(({ name }) => name.startsWith("gateway-"))?.name;
+    assert.ok(gatewayName);
+    await transport.clients.apps.deleteNamespacedDeployment!({ name: gatewayName, namespace });
+    const priorLaunches = transport.templates.filter(({ name }) => name === gatewayName).length;
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    const launchRequested = () =>
+      transport.templates.filter(({ name }) => name === gatewayName).length > priorLaunches;
+    await waitFor("a Gateway Deployment request or Worker refusal", async () => {
+      if (launchRequested()) {
+        return true;
+      }
+      return (await fixture.workResult(work)).rows[0]?.reason_code ?? undefined;
+    });
+    assert.equal(
+      preparationCompleted,
+      true,
+      `the withdrawal must follow successful authorization in Envoy preparation: ${JSON.stringify(events.slice(-3))}`,
+    );
+    assert.equal(launchRequested(), false, "a withdrawn Envoy Source must block the Gateway write");
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "DEPENDENCY_UNAVAILABLE");
   },
 );
 
@@ -2975,5 +3135,80 @@ cases.revisionTest(
         },
       },
     ]);
+  },
+);
+
+cases.revisionTest(
+  "a proxy Source withdrawn from a revision without enabled channels does not require Stop",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+    const { compute, controller, core, runtime, transport, namespace, namespaceId, enroll } =
+      scenario;
+    const egress = Reflect.get(compute, "channelEgress") as KubernetesChannelEgress;
+    context.mock.method(egress, "available", async () => true);
+    // The Installation accepts this endpoint. With no enabled channels, Compute never stages it.
+    context.mock.method(egress, "admitProxy", async () => "approved-proxy-fixture");
+    const prepare = context.mock.method(egress, "prepare");
+    const actorId = fixture.actor.id;
+    const source = await enroll(randomUUID(), null);
+    const model = await controller.createSecret(actorId, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const configuration = await controller.createConfiguration(actorId, {
+      namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5"),
+    });
+    const agent = await controller.createAgent(
+      actorId,
+      {
+        namespaceId,
+        name: `Dormant channel proxy ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: model.ref },
+        networkProxy: { url: "https://proxy.example:8443", credentialSourceId: source.id },
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      actorId,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    scenario.placeholder.id = revision.id;
+    const prepareRevision = compute.prepareRevision.bind(compute);
+    // Prepare the actual Gateway spec, then control readiness for the unlaunched Pods.
+    context.mock.method(compute, "prepareRevision", (async (candidate, candidateContext) => {
+      const observed = await prepareRevision(candidate, candidateContext);
+      assert.ok(transport.templates.some(({ name }) => name.startsWith("gateway-")));
+      return { ...observed, ready: true };
+    }) satisfies ComputeDriver["prepareRevision"]);
+    context.mock.method(compute, "activateRevision", async () => {});
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    await fixture.work(
+      { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` },
+      "succeeded",
+    );
+    assert.equal(prepare.mock.callCount(), 0, "the active revision must have no Envoy route");
+
+    const target = { namespaceId, agentId: agent.id, credentialSourceId: source.id };
+    await controller.withdrawAgentCredentialSource(actorId, target);
+    const status = await waitFor("proxy Source withdrawal to settle", async () => {
+      const result = await controller.readAgentCredentialWithdrawal(actorId, target);
+      return result.withdrawalInProgress ? undefined : result;
+    });
+    assert.equal(status.state, "revoked", status.lastReason ?? "withdrawal did not finish");
+    assert.equal(
+      (await controller.getAgent(actorId, namespaceId, agent.id)).activeRevisionId,
+      revision.id,
+    );
   },
 );

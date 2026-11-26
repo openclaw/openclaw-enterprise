@@ -2,9 +2,10 @@
 
 Open **Pages/Create Agent → Gateway channel proxy**. Enter an HTTP or HTTPS
 endpoint without credentials in the URL. If the proxy requires Basic
-authentication, select **Channel proxy credential (simulated)** or choose
-**Add new credential…** to create a static Credential Source. Select **Create
-Agent**, then inspect the saved endpoint and Source ID on the draft.
+authentication, focus **Proxy credential** to load the Source list. Select
+**Channel proxy credential (simulated)** or choose **Add new credential…** to
+create a static Credential Source. Select **Create Agent**, then inspect the
+saved endpoint and Source ID on the draft.
 
 Open **Pages/Agent detail → Gateway channel proxy empty** to update an existing
 Agent. Select **Save Network proxy for next deployment**. The draft displays

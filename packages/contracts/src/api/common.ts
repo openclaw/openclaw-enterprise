@@ -6,8 +6,10 @@ import {
 import {
   BACKEND_ID_MAX_CHARACTERS,
   BACKEND_ID_PATTERN,
+  CREDENTIAL_SOURCE_ID_PATTERN,
   NAME_MAX_CHARACTERS,
   PLAIN_TEXT_PATTERN,
+  UUID_V4,
 } from "./plain-text.ts";
 
 // The Name and Backend ID text rules live in a module with no dependencies, so the
@@ -21,8 +23,6 @@ export {
   NAME_RULE,
 } from "./plain-text.ts";
 
-const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
-
 export const InstallationId = Type.String({ pattern: `^ins_${UUID_V4}$` });
 export const NamespaceId = Type.String({ pattern: `^ns_${UUID_V4}$` });
 export const PresetId = Type.String({ pattern: `^pre_${UUID_V4}$` });
@@ -35,11 +35,11 @@ export const ModelProviderId = Type.String({
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
-export const DEVICE_AUTHORIZATION_SESSION_ID_PREFIX = "das_";
+export const DEVICE_AUTHORIZATION_SESSION_ID_PREFIX = "sec_";
 export const DeviceAuthorizationSessionId = Type.String({
   pattern: `^${DEVICE_AUTHORIZATION_SESSION_ID_PREFIX}${UUID_V4}$`,
 });
-export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
+export const CredentialSourceId = Type.String({ pattern: CREDENTIAL_SOURCE_ID_PATTERN });
 export const CredentialClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });

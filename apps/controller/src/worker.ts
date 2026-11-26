@@ -113,6 +113,7 @@ import {
   CREDENTIAL_WITHDRAWAL_TARGET,
   controllerWorkDeploymentStatus,
   credentialWithdrawalCompanionRevisions,
+  enabledChannelEntries,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
   isRepositoryExpiryCleanupWork,
@@ -761,7 +762,7 @@ interface CredentialWithdrawalAttempt {
   /** The withdrawal's own requester, whose `agent:operate` authorizes its detach. */
   readonly requestedBy: string;
   readonly code: string;
-  /** True once the gateway confirmed revocation or the Sandbox no longer exists. */
+  /** True once the delivery copy is gone or the revision could not have created one. */
   readonly revoked: boolean;
   /** Present when the requester no longer holds `agent:operate`; nothing was detached. */
   readonly denial?: Pick<DispatchResult, "authorization" | "decision">;
@@ -934,8 +935,11 @@ function revisionCredentialSourceIds(revision: Readonly<AgentRevision>): readonl
   ];
 }
 
-function retirementSourceIds(revision: Readonly<AgentRevision>): readonly string[] {
-  const proxySource = revision.networkProxy?.credentialSourceId;
+function revisionGatewaySourceIds(
+  revision: Readonly<AgentRevision>,
+  includeChannelProxy = true,
+): readonly string[] {
+  const proxySource = includeChannelProxy ? revision.networkProxy?.credentialSourceId : undefined;
   return [
     ...new Set([
       ...Object.values(revision.secretBindings ?? {}).flatMap(({ source }) =>
@@ -3831,7 +3835,7 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
   ): Promise<void> {
-    const retirementSources = retirementSourceIds(revision);
+    const retirementSources = revisionGatewaySourceIds(revision);
     if (revision.egressPlan !== undefined) {
       // Preserve the existing enrollment-retirement transaction for revisions without
       // Gateway exports, and retain the receipt used by policy cleanup.
@@ -4316,17 +4320,27 @@ export class ControllerWorker {
           });
         }
       }
-      const retirementSources = new Set(retirementSourceIds(revision));
+      // A saved proxy may be dormant. The immutable revision can stage an Envoy copy
+      // only when it enables a channel, even if its draft or Installation changes later.
+      const retirementSources = new Set(
+        revisionGatewaySourceIds(
+          revision,
+          enabledChannelEntries(revision.configuration).length > 0,
+        ),
+      );
       const executionSources = new Set(revisionCredentialSourceIds(revision));
       const detachable: typeof allowed = [];
       for (const entry of allowed) {
         const { source, withdrawal } = entry;
-        if (retirementSources.has(source.id) && !executionSources.has(source.id)) {
+        if (!executionSources.has(source.id)) {
+          const revoked = !retirementSources.has(source.id);
           attempts.push({
             credentialSourceId: source.id,
             requestedBy: withdrawal.requestedBy,
-            code: CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
-            revoked: false,
+            code: revoked
+              ? "CREDENTIALS_WITHDRAWN"
+              : CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
+            revoked,
           });
         } else {
           detachable.push(entry);
@@ -4438,7 +4452,7 @@ export class ControllerWorker {
       const pending = [];
       for (const sourceId of new Set([
         ...revisionCredentialSourceIds(revision),
-        ...retirementSourceIds(revision),
+        ...revisionGatewaySourceIds(revision),
       ])) {
         const withdrawal = await view.credentialSources.findCredentialWithdrawal(
           namespaceId,
@@ -4898,7 +4912,7 @@ export class ControllerWorker {
   ): Promise<void> {
     const sourceIds = new Set([
       ...(revision.credentialSources ?? []).map(({ sourceId }) => sourceId),
-      ...retirementSourceIds(revision),
+      ...revisionGatewaySourceIds(revision),
     ]);
     const pending = await this.state.read((view) =>
       this.pendingCredentialWithdrawals(view, revision, sourceIds),
@@ -6055,7 +6069,7 @@ export class ControllerWorker {
       .filter((id) => !withdrawnSourceIds.has(id))
       .map((id) => ({ kind: "credential_source", id, namespaceId: revision.namespaceId }));
     if (operation === "reconcile") {
-      for (const id of retirementSourceIds(revision)) {
+      for (const id of revisionGatewaySourceIds(revision)) {
         if (
           !withdrawnSourceIds.has(id) &&
           !sources.some(
@@ -7249,7 +7263,7 @@ export class ControllerWorker {
             claim.agentId!,
             claim.revisionId!,
           );
-          return revision !== undefined && retirementSourceIds(revision).length > 0;
+          return revision !== undefined && revisionGatewaySourceIds(revision).length > 0;
         });
       } catch (error) {
         // An invalid stored revision cannot be handed to Compute yet. Transfer its retirement

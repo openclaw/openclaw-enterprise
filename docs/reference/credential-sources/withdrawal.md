@@ -22,8 +22,10 @@ For a Source bound to Gateway startup, withdrawal blocks another managed start o
 
 A Gateway channel proxy credential follows the same pending status. Compute
 drains the Envoy route and verifies that Envoy dropped its copy during Stop
-or retirement. Worker can then record revocation. Remove the Source from the
-draft before deploying without that credential.
+or retirement. Worker can then record revocation. If the revision has no
+enabled channels and Envoy is the Source's only delivery path, Worker records
+revocation without stopping the Agent. Remove the Source from the draft
+before deploying without that credential.
 
 For a staged TokenService Source, the Worker rechecks the requester's exact `agent:operate`
 authority. Compute asks the selected native Credential Proxy to remove the binding from the saved

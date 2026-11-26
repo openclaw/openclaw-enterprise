@@ -72,6 +72,8 @@ export function createNetworkProxyFields({
     initial: source,
     inputClassName: "form-field",
     deliveryHint: "The credential takes effect after you save the draft and deploy a new version.",
+    loadOnFocus: true,
+    listLabel: "proxy credential list",
     onChange(selected) {
       source = selected;
       changed();

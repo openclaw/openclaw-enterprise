@@ -306,7 +306,7 @@ test(
          SELECT $2,kind,namespace_id,actor_id,expires_at,binding || '{"redirectUri":"invalid"}'::jsonb,
                 phase,next_poll_at,encrypted_challenge,private_state,version
          FROM occ.authentication_states WHERE id = $1`,
-        [id, `das_${randomUUID()}`],
+        [id, `sec_${randomUUID()}`],
       ),
       { code: "23514" },
     );

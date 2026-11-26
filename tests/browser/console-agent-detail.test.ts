@@ -316,6 +316,16 @@ test("the Agent Network proxy editor sends a Source reference and refuses URL cr
 
   await input.fill("https://proxy.example:8443");
   const picker = page.getByLabel("Proxy credential", { exact: true });
+  const sourcesPath = `/namespaces/${namespace.id}/credential-sources`;
+  // Opening the draft and editing the endpoint do not discover unrelated credentials.
+  assert.ok(!requests.some(({ method, path }) => method === "GET" && path === sourcesPath));
+  const listing = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + sourcesPath && response.request().method() === "GET",
+  );
+  await picker.focus();
+  assert.equal((await listing).status(), 200);
+  await page.getByRole("button", { name: "Refresh proxy credential list", exact: true }).waitFor();
   await picker.selectOption("new");
   await page.getByLabel("Proxy credential Source name").fill("Proxy Basic authentication");
   const credential = `Basic ${Buffer.from(`proxy-user:${password}`).toString("base64")}`;

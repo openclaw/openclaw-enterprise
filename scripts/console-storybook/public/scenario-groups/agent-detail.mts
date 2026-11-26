@@ -608,6 +608,7 @@ export function createAgentDetailScenarios({
         path: draft,
         deployed: true,
         initialCredentialSources: [previewChannelProxyCredential],
+        actions: [{ selector: "#agent-network-proxy-credential", focus: true }],
         rules: [{ suffix: "/credential-sources", method: "GET", delayMs: 4000 }],
         description:
           "The proxy credential selector reports loading while it reads Sources in this Namespace.",
@@ -618,6 +619,7 @@ export function createAgentDetailScenarios({
         name: "Gateway channel proxy Sources error",
         path: draft,
         deployed: true,
+        actions: [{ selector: "#agent-network-proxy-credential", focus: true }],
         rules: [
           {
             suffix: "/credential-sources",

@@ -824,6 +824,12 @@ async function runHistoryCommand(db, mode = "development", flag, refusal, instal
     if (code === 1 && output.includes('"code":"MIGRATION_HISTORY_PENDING"')) {
       return { ok: false, code: "MIGRATION_HISTORY_PENDING" };
     }
+    if (code === 1 && output.includes('"code":"MIGRATION_LEGACY_PROXY_REFERENCES"')) {
+      if (refusal !== undefined) {
+        assert.match(output, refusal);
+      }
+      return { ok: false, code: "MIGRATION_LEGACY_PROXY_REFERENCES" };
+    }
     if (code === 1 && output.includes('"code":"MIGRATION_REGISTRATION_PENDING"')) {
       assert.ok(stdout === "", "A blocked registration must not report migration success.");
       if (refusal !== undefined) {
@@ -1583,7 +1589,6 @@ test(
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
       [100, "preUpstreamProxyCredentialSources"],
-      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1793,6 +1798,18 @@ test(
     );
     const before = await canonicalData(db);
     const receipts = await historyReceipts(db.migrator);
+    // The upgrade's read-only check must catch this blocker before any Agent Stops.
+    assert.deepEqual(
+      await runHistoryCommand(
+        db,
+        "production",
+        "--check",
+        /Delete affected Agents and settle their outstanding provisioning work/,
+      ),
+      { ok: false, code: "MIGRATION_LEGACY_PROXY_REFERENCES" },
+    );
+    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await historyReceipts(db.migrator), receipts);
     assert.deepEqual(
       await runHistoryMigration(db, "production", undefined, undefined, (error) => {
         const cause = error?.cause ?? error;
@@ -1821,82 +1838,6 @@ test(
       ).rows,
       [{ network_proxy_url: proxyUrl, network_proxy_credential_source_id: null }],
     );
-  },
-);
-
-test(
-  "Device authorization ID migration drops old polling handles and keeps the enrolled Source",
-  requiresHistoryPostgres,
-  async (context) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "device_session_ids", { prefix: 101 });
-    const installationId = `ins_${randomUUID()}`;
-    const namespaceId = `ns_${randomUUID()}`;
-    const actorId = `usr_${randomUUID()}`;
-    const sourceId = `cs_${randomUUID()}`;
-    const instanceId = randomUUID();
-    await db.app.query("INSERT INTO occ.installation VALUES ($1,'Upgrade',now())", [
-      installationId,
-    ]);
-    await db.app.query(
-      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Upgrade','ready',now())",
-      [namespaceId],
-    );
-    await db.app.query(
-      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$1)",
-      [actorId],
-    );
-    await db.app.query(
-      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ-token-service','device-login-fixture')",
-      [installationId, instanceId],
-    );
-    await db.app.query(
-      `INSERT INTO occ.credential_sources
-        (id,namespace_id,name,type,config,owner_capability,state,created_at,
-         token_service_instance_id,oauth_provenance,oauth_account,oauth_owner_principal_id,
-         oauth_requested_scopes,oauth_granted_scopes)
-       VALUES($1,$2,'Enrolled device account','oauth2-refresh-token','{}','token_service','ready',now(),
-         $3,'builtin_codex',$4,$5,ARRAY['openid'],ARRAY['openid'])`,
-      [
-        sourceId,
-        namespaceId,
-        instanceId,
-        { accountId: randomUUID(), planType: "plus", isFedramp: false },
-        actorId,
-      ],
-    );
-    const writeReceipt = (sessionId) =>
-      db.app.query(
-        `INSERT INTO occ.authentication_states
-        (id,kind,namespace_id,actor_id,expires_at,credential_source_id,binding,phase,next_poll_at,encrypted_challenge,version)
-       VALUES($1,'device_authorization',$2,$3,now()+interval '24 hours',$4,$5,'ready',now(),'sealed-challenge',2)`,
-        [
-          sessionId,
-          namespaceId,
-          actorId,
-          sourceId,
-          { harnessId: "codex", tokenServiceInstanceId: instanceId, intervalSeconds: 5 },
-        ],
-      );
-    // The previous schema retained the completed attempt alongside the enrolled account.
-    const oldId = `sec_${randomUUID()}`;
-    await writeReceipt(oldId);
-    assert.deepEqual(await runHistoryMigration(db, "production"), {
-      ok: true,
-      history: "preDeviceAuthorizationSessionIds",
-    });
-    assert.equal(
-      (await db.app.query("SELECT id FROM occ.authentication_states WHERE id=$1", [oldId]))
-        .rowCount,
-      0,
-    );
-    assert.deepEqual(
-      (await db.app.query("SELECT id,state FROM occ.credential_sources WHERE id=$1", [sourceId]))
-        .rows,
-      [{ id: sourceId, state: "ready" }],
-    );
-    await assert.rejects(writeReceipt(oldId), { constraint: "authentication_states_device_shape" });
-    assert.equal((await writeReceipt(`das_${randomUUID()}`)).rowCount, 1);
   },
 );
 
@@ -2160,7 +2101,6 @@ test(
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
       [100, "preUpstreamProxyCredentialSources"],
-      [101, "preDeviceAuthorizationSessionIds"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3394,7 +3334,6 @@ test(
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
       [100, "preUpstreamProxyCredentialSources"],
-      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3538,7 +3477,6 @@ test(
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
       [100, "preUpstreamProxyCredentialSources"],
-      [101, "preDeviceAuthorizationSessionIds"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3715,7 +3653,6 @@ test(
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
       [100, "preUpstreamProxyCredentialSources"],
-      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3744,6 +3681,7 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
+                [100, "ALTER TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],
@@ -3783,6 +3721,12 @@ test(
         let failAt = "";
         if (prefix === 0) {
           failAt = "IF to_regclass('occ.token_service_instances') IS NULL THEN RETURN; END IF;";
+        } else if (prefix === 100) {
+          // Abort after 0101 renames the Agent draft column.
+          failAt = `IF NOT EXISTS (
+            SELECT 1 FROM pg_attribute WHERE attrelid='occ.agents'::regclass
+              AND attname='network_proxy_credential_source_id' AND NOT attisdropped
+          ) THEN RETURN; END IF;`;
         } else if (prefix === 95) {
           // The Source guard follows the Client constraint change in 0096.
           failAt = "";

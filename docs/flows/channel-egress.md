@@ -79,7 +79,7 @@ config:
     htmlLabels: true
 ---
 flowchart TB
-  Draft["<b>Agent draft</b><br/>Endpoint and Secret ID"] -->|deploy| Revision["<b>Agent revision</b><br/>Admitted route"]
+  Draft["<b>Agent draft</b><br/>Endpoint and Source ID"] -->|deploy| Revision["<b>Agent revision</b><br/>Admitted route"]
   Revision -->|reserve| Binding["<b>Compute binding</b><br/>Listener and scoped grant"]
   Binding -->|if authenticated| Slot["<b>Exact Secret slot</b><br/>ADS SDS reference"]
   Binding --> Envoy["<b>Envoy listener</b><br/>Authorize CONNECT"]
@@ -145,6 +145,11 @@ warns when targets do not fit or the candidate image reports that the check is
 unavailable. With targets mounted, a successful Job must report a direct-egress
 guard result or explicit unavailability before Stop.
 
+The candidate migration preflight also checks for authenticated proxy selections
+that still reference a Namespace Secret. A reference in a draft, retained
+revision, or outstanding provisioning request blocks the upgrade before it
+stops Agents or OCC writers.
+
 For enabled channels, `scripts/upgrade-channel-egress:lifecycle` saves the
 complete original running set in a private journal. Before any new Stop, it
 refuses an uncertain Stop submission anywhere in that set. It then checks every
@@ -190,10 +195,11 @@ separate PostgreSQL snapshot.
 
 `packages/occ/src/agent-deployment-admission.ts:createAgentDeploymentAdmission`
 
-Core saves the Agent's proxy selection and private Compute admission in the
-revision. The worker rechecks the caller and Agent principal on the exact
-Secret and passes Compute only its backend identity. No enabled channels means
-Compute creates no listener binding or proxy grant.
+Admission saves the Agent's proxy selection and private Compute admission in
+the revision. For authenticated proxies, the revision pins the Source and its
+TokenService instance. Worker gives Compute callbacks to authorize and resolve
+the Source. Without enabled channels, Compute creates no listener binding or
+proxy grant.
 
 ### 2. Reserve and configure a listener
 
@@ -205,10 +211,10 @@ stable EnvoyPatchPolicy's Kubernetes resource version. The initial policy denies
 all targets. A conflicting reservation is read again; exhaustion rejects
 activation. A different rules hash gets a different binding.
 For a proxy selection, the hash also binds the admitted endpoint, scoped
-addresses, trust, and source Secret UID/resource version. Compute fills only
-the assigned preallocated Secret slot and waits for its fixed deny-only route
-to be accepted before activating the listener. A changed credential version
-on retry requires a new deployment.
+addresses, trust, and, for authenticated routes, the Source ID and version.
+Compute fills only the assigned preallocated Secret slot and waits for its fixed
+deny-only route to be accepted before activating the listener. A changed
+credential version on retry requires a new deployment.
 
 `apps/controller/src/drivers/compute/kubernetes/channel-egress-policy.ts:channelEgressFilterChain`
 
@@ -243,6 +249,8 @@ For an authenticated route, Worker rechecks the exact Source, the admitting
 caller, and the Agent service principal. Compute resolves the Source through
 Worker and writes the header to the reserved Envoy Secret slot. A retry checks
 authorization and the staged credential version before reusing the slot.
+Compute asks Worker to recheck authorization just before it applies the Gateway
+Deployment.
 
 ### 4. Revoke before reuse
 

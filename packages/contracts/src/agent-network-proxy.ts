@@ -1,6 +1,6 @@
-import { Check } from "typebox/value";
+import { CREDENTIAL_SOURCE_ID_PATTERN } from "./api/plain-text.ts";
 
-import { CredentialSourceId } from "./api/common.ts";
+const credentialSourceIdPattern = new RegExp(CREDENTIAL_SOURCE_ID_PATTERN, "u");
 
 /** An Agent's Gateway-channel-only upstream proxy selection. */
 export interface AgentNetworkProxy {
@@ -76,7 +76,8 @@ export function normalizeAgentNetworkProxy(value: unknown): Readonly<AgentNetwor
   }
   if (
     selection.credentialSourceId !== undefined &&
-    !Check(CredentialSourceId, selection.credentialSourceId)
+    (typeof selection.credentialSourceId !== "string" ||
+      !credentialSourceIdPattern.test(selection.credentialSourceId))
   ) {
     throw new Error("Invalid Network proxy Credential Source reference.");
   }

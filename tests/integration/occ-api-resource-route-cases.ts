@@ -308,15 +308,15 @@ export async function checkMalformedResourcePaths(
   const { error: agentError } = checkedInjectedBody(nonV4Agent, 400, ErrorResponse);
   assert.deepEqual(agentError.details, [{ path: "/agentId", code: "INVALID_FORMAT" }]);
 
-  // A valid Secret ID cannot address a device login, even before authentication.
+  // A malformed device-login handle is rejected before the caller needs to authenticate.
   const malformedSession = await controller.request(
     "DELETE",
-    `/namespaces/${namespace.id}/agents/device-authorizations/sec_00000000-0000-4000-8000-000000000000`,
+    `/namespaces/${namespace.id}/agents/device-authorizations/sec_not-a-uuid`,
     { identity: false },
   );
   const { error: sessionError } = checkedInjectedBody(malformedSession, 400, ErrorResponse);
   assert.deepEqual(sessionError.details, [{ path: "/sessionId", code: "INVALID_FORMAT" }]);
-  assert.match(sessionError.message, /params \/sessionId .* expected das_ /);
+  assert.match(sessionError.message, /params \/sessionId .* expected sec_ /);
 
   // A deployment is addressed by its revision ID, so the message names the rev_ prefix.
   const malformedDeployment = await controller.request(

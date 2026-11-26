@@ -708,13 +708,6 @@
       "when": 1787000000101,
       "tag": "0101_agent_network_proxy_credential_sources",
       "breakpoints": true
-    },
-    {
-      "idx": 102,
-      "version": "7",
-      "when": 1787000000102,
-      "tag": "0102_device_authorization_session_ids",
-      "breakpoints": true
     }
   ]
 }

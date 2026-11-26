@@ -154,7 +154,7 @@ Stores OCC's transient [browser OAuth connection attempts](../../flows/connectio
 
 - Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
 - `oauth_connection`: `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scopes, redirect, and issuer data. The immutable Template version identifies the OAuth client. No Source exists yet.
-- `device_authorization`: `das_` ID, `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, Driver, and polling-interval data. A completed login references its Credential Source separately.
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, Driver, and polling-interval data. A completed login references its Credential Source separately.
 
 OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
 

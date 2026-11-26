@@ -19039,7 +19039,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "das_123e4567-e89b-42d3-a456-426614174001",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -19067,7 +19067,7 @@
                           "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
-                              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "namespaceId": {
@@ -19260,14 +19260,14 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "das_123e4567-e89b-42d3-a456-426614174001"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
             "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -19380,14 +19380,14 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "das_123e4567-e89b-42d3-a456-426614174001"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
             "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -19413,7 +19413,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "das_123e4567-e89b-42d3-a456-426614174001",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -19441,7 +19441,7 @@
                           "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
-                              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "namespaceId": {
@@ -29798,7 +29798,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "das_123e4567-e89b-42d3-a456-426614174001",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -29826,7 +29826,7 @@
                           "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
-                              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "namespaceId": {
@@ -30035,14 +30035,14 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "das_123e4567-e89b-42d3-a456-426614174001"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
             "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -30171,14 +30171,14 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "das_123e4567-e89b-42d3-a456-426614174001"
+                "value": "sec_123e4567-e89b-42d3-a456-426614174001"
               }
             },
             "in": "path",
             "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string"
             }
           }
@@ -30204,7 +30204,7 @@
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
                         "session": {
-                          "id": "das_123e4567-e89b-42d3-a456-426614174001",
+                          "id": "sec_123e4567-e89b-42d3-a456-426614174001",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         },
                         "status": "pending",
@@ -30232,7 +30232,7 @@
                           "description": "Device-login handle for the poll and cancel operations.",
                           "properties": {
                             "id": {
-                              "pattern": "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
                             "namespaceId": {

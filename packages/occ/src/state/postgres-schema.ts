@@ -60,7 +60,7 @@ const identifierPatterns = {
   revision: "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   secret: "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   deviceAuthorizationSession:
-    "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   credentialSource: "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   audit: "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 } as const;
@@ -350,7 +350,7 @@ export const agents = occSchema.table(
   (table): PgTableExtraConfigValue[] => [
     check(
       "agents_network_proxy_shape",
-      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`,
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`.inlineParams(),
     ),
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
@@ -819,7 +819,7 @@ export const agentRevisions = occSchema.table(
   (table): PgTableExtraConfigValue[] => [
     check(
       "agent_revisions_network_proxy_shape",
-      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`,
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`.inlineParams(),
     ),
     check(
       "agent_revisions_network_proxy_source_owner_shape",

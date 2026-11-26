@@ -11,7 +11,7 @@ export function registerDeviceAuthorizationSessionCases(): void {
   test("cancelling or expiring a pending device login closes temporary state without creating a Source", async (t) => {
     const fixture = await createFixture(t, { approve: async () => false });
     const cancelled = await fixture.start();
-    assert.match(cancelled.session.id, /^das_/);
+    assert.match(cancelled.session.id, /^sec_/);
     assert.equal(
       (await fixture.request("DELETE", `${fixture.path}/${cancelled.session.id}`)).status,
       204,

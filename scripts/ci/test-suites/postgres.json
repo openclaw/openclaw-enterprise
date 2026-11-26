@@ -32,7 +32,6 @@
         "First installation requires empty migration history under the migration lock",
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Upstream proxy Source migration refuses a legacy authenticated selection without changing it",
-        "Device authorization ID migration drops old polling handles and keeps the enrolled Source",
         "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
