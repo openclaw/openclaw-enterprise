@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-24
-last_updated_session: authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3
+updated: 2026-11-26
+last_updated_session: authoring-run/2442f94c-71c1-4b08-9bd6-3ca52f354ae2
 ---
 
 # Harness Execution Topology Flow
@@ -70,6 +70,8 @@ ServicePrincipal. Compute and Sandbox gate the [Harness topology](../reference/h
 Custom images declare native-worker support. An associated `access_token` requires
 dedicated Codex and an opaque Secret snapshot. Compute resolves overrides before
 admission; OCC saves Harness settings, checks consent, and fingerprints the provider.
+
+For Dedicated Codex, [Strands Box](../reference/drivers/strands-box.md) sets the revision’s WebSocket address, token and peer certificate references together. The Gateway uses the listener for that revision even when a custom Configuration omits the URL or names another server.
 
 ### 2. Claim work and realize the approved topology
 
@@ -333,6 +335,8 @@ removal.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 04:59: Explain how Strands selects the revision listener. (authoring-run/2442f94c-71c1-4b08-9bd6-3ca52f354ae2 - 28b1973112c415befd20b168336bbfaa6cbc09fb)
 
 - 2026-11-24 10:41: Describe placeholder-backed Codex account launch through the native HTTPS provider. (authoring-run/327102e0-6dec-42cc-b735-3c5cfe2874d3 - 219356409a900924f407bb247b6bc064710a218a)
 

@@ -13,6 +13,8 @@ workspace setup succeeds.
 
 Use a Gateway runtime that supports the Codex plugin setting `appServer.tlsPeerCertificate`. The worker checks the Pod's Deployment and ReplicaSet ownership before recording its public certificate in an immutable revision ConfigMap. The Gateway and worker verify that certificate on each connection to the supervisor before sending the transport bearer. Port 18791 accepts only the revision readiness request. Port 18790 accepts the Gateway upgrade. Both reach the same supervisor TLS server. The file node and contained workload receive neither the listener key nor the revision bearer.
 
+Use the Dedicated Codex preset. If you write a custom Configuration, you can omit `appServer.transport`, `url`, `authToken` and `tlsPeerCertificate`. Strands sets these fields on the revision to connect the Gateway to its own listener, even if you supply different values. If you omit the app server mode, Strands uses the preset’s `guardian` mode. Explicit mode and approval policy settings are preserved. The transport token authenticates the Gateway to the listener. Configure model authentication separately.
+
 A replacement Pod or restarted supervisor cannot reuse the recorded execution identity. Admit a new revision to resume after execution loss. Use API key authentication for the model and workspace workflow.
 
 Managed Codex plugins require a ChatGPT workspace credential. The contained

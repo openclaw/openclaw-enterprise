@@ -48,6 +48,8 @@ import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { agentPrincipalDenied } from "../helpers/refusal-text.mjs";
 import { servedAs } from "../helpers/agent-identity.ts";
 import { admittedConfiguration } from "../helpers/admitted-configuration.mjs";
+import { gatewayRouting } from "../helpers/kubernetes-routed-options.ts";
+import { StrandsBoxSandboxDriver } from "../../apps/controller/src/drivers/sandbox/strands-box.ts";
 
 const installation = {
   id: "installation-a",
@@ -1127,6 +1129,69 @@ async function createDedicatedAgentForSandboxAdmission(
   await bindHarnessAuth(controller, agent);
   return { namespaceId, agentId: agent.id };
 }
+
+test("a Strands revision connects Dedicated Codex to its own pinned listener", async () => {
+  const { controller } = createController();
+  const sandbox = new StrandsBoxSandboxDriver(
+    {
+      kubernetes: {
+        seccompProfile: "strands.json",
+        nodeSelector: { "kubernetes.io/arch": "arm64" },
+        controlPlanePeer: { namespace: "controller", podLabels: { app: "controller" } },
+      },
+      policy: { network: { endpoints: [] } },
+    },
+    {
+      id: "strands",
+      authentication: { mode: "inCluster" },
+      dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
+      routing: gatewayRouting,
+    },
+  );
+  controller.registerDriver(sandbox);
+  controller.selectDriver("sandbox", sandbox.id);
+
+  // Test both a missing preset and a custom app server. The saved Configuration
+  // belongs to the caller. Only the revision gets the listener credentials by reference.
+  const custom = {
+    transport: "stdio",
+    url: "wss://other.example.test",
+    authToken: "${APP_SERVER_URL}",
+    mode: "yolo",
+    approvalPolicy: "on-request",
+  };
+  for (const appServer of [undefined, custom]) {
+    const values = {
+      ...codexSandboxConfiguration(),
+      ...(appServer && { plugins: { entries: { codex: { config: { appServer } } } } }),
+    };
+    const target = await createDedicatedAgentForSandboxAdmission(
+      controller,
+      appServer ? "Custom transport" : "No preset",
+      "Dedicated Codex",
+      values,
+    );
+    const revision = await controller.deployAgent(
+      "principal-admin",
+      target,
+      resolveApprovedDevelopmentHarness,
+    );
+    const config = nested(revision.configuration, "plugins", "entries", "codex", "config");
+    const server = nested(config, "appServer");
+    assert.equal(server.transport, "websocket");
+    assert.equal(server.url, "${APP_SERVER_URL}");
+    assert.equal(server.authToken, "${APP_SERVER_TOKEN}");
+    assert.equal(server.tlsPeerCertificate, "${OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE}");
+    assert.equal(server.mode, appServer?.mode ?? "guardian");
+    assert.equal(server.approvalPolicy, appServer?.approvalPolicy);
+    const saved = await controller.getConfiguration(
+      "principal-admin",
+      target.namespaceId,
+      revision.configurationId,
+    );
+    assert.deepEqual(saved.values, values);
+  }
+});
 
 test("Sandbox admission applies provider-owned Agent configuration before freezing its revision", async () => {
   const iam = createIAMDriver({

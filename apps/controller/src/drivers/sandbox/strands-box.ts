@@ -332,7 +332,14 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
             config: {
               ...config,
               appServer: {
+                // Match the Dedicated Codex preset when the caller omits its mode.
+                mode: "guardian",
                 ...appServer,
+                // Use the Agent’s transport token only with the listener and
+                // certificate that Compute supplies for this revision.
+                transport: "websocket",
+                url: "${APP_SERVER_URL}",
+                authToken: "${APP_SERVER_TOKEN}",
                 tlsPeerCertificate: "${OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE}",
                 sandbox: "danger-full-access",
                 approvalsReviewer: "user",
