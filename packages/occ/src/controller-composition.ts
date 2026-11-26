@@ -24,6 +24,7 @@ import {
 import {
   createRepositoryPolicyOperations,
   type InstallationRepositoryAdmission,
+  type StagedRepositoryCredentialAdmission,
   type SupportsStagedRepositoryRecipient,
   validateRepositoryBrokerNetworkProxy,
 } from "./repository-policy.ts";
@@ -67,15 +68,12 @@ import { createDeviceAuthorizationFlow } from "./device-authorization-flow.ts";
 import type {
   Agent,
   AgentRevision,
-  AdmittedRepositoryBinding,
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
-  DeploymentRequestMatch,
   HarnessAuthSnapshot,
-  GitHubAppInstallationCredentialSource,
   Installation,
   InstallationCapabilities,
   InstallationDeploymentInventory,
@@ -85,7 +83,6 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PresetDraftDefinition,
-  RepositoryNetworkGrant,
   BackendDefinition,
   RevisionHarnessDescriptor,
   ResourceKind,
@@ -184,12 +181,7 @@ export interface ControllerOptions {
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
   /** Bundled composition verifies finite Git Source coverage against the current Repo registry. */
-  readonly repositoryCredentialAdmission?: (input: {
-    readonly namespaceId: string;
-    readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-    readonly bindings: readonly AdmittedRepositoryBinding[];
-    readonly grants: readonly RepositoryNetworkGrant[];
-  }) => readonly DeploymentRequestMatch[] | undefined;
+  readonly repositoryCredentialAdmission?: StagedRepositoryCredentialAdmission;
   /** Qualify the exact selected native recipient without extending a Driver contract. */
   readonly supportsStagedRepositoryRecipient?: SupportsStagedRepositoryRecipient;
   /** Composition qualifies the selected implementations against the complete deployment policy. */
