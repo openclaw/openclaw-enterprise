@@ -1786,6 +1786,13 @@ export async function renderAgentDetail(
     role: "tablist",
     "aria-label": "Agent configuration views",
   });
+  function inUseTabStripTop() {
+    if (!detailShown || !tabs.querySelector("button:hover, button:focus-visible")) {
+      return null;
+    }
+    const bounds = tabs.getBoundingClientRect();
+    return bounds.bottom > 0 && bounds.top < window.innerHeight ? bounds.top : null;
+  }
   function restoreTabStripTop(top: number | null) {
     if (top === null) {
       return;
@@ -2674,6 +2681,8 @@ export async function renderAgentDetail(
     }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
+    const workspaceStripTop =
+      workspaceAvailabilityChanged && mountedTab?.id === "workspace" ? inUseTabStripTop() : null;
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -2708,6 +2717,9 @@ export async function renderAgentDetail(
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
     logsServingChange?.(servingChange());
+    // The panel can grow after a deployment notice shrank the page. Keep the tab in view at
+    // the position it occupied before this synchronous rebuild.
+    restoreTabStripTop(workspaceStripTop);
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2870,17 +2882,12 @@ export async function renderAgentDetail(
   function renderLatestDeployment() {
     // Recovery can change when the outcome arrives, or later when permissions or revision details
     // arrive. Keep an in-use tab in place while that content above it is rendered.
-    const tabBounds =
-      detailShown &&
-      latestDeploymentStatus !== null &&
-      !deploymentPending(latestDeploymentStatus) &&
-      tabs.querySelector("button:hover, button:focus-visible")
-        ? tabs.getBoundingClientRect()
+    const stripTop =
+      latestDeploymentStatus !== null && !deploymentPending(latestDeploymentStatus)
+        ? inUseTabStripTop()
         : null;
     updateLatestDeployment();
-    if (tabBounds && tabBounds.bottom > 0 && tabBounds.top < window.innerHeight) {
-      restoreTabStripTop(tabBounds.top);
-    }
+    restoreTabStripTop(stripTop);
   }
 
   function updateLatestDeployment() {
@@ -5504,6 +5511,8 @@ export async function renderAgentDetail(
   }
 
   async function renderTab({ activated = false } = {}) {
+    const refreshingWorkspace =
+      !activated && selectedTab === "workspace" && mountedTab?.id === selectedTab;
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -5551,19 +5560,23 @@ export async function renderAgentDetail(
     setLayoutShape();
     restoreTabStripTop(stripTop);
     const tab = selectedTab;
-    const focusInStrip = tabs.contains(document.activeElement);
-    for (const [id, control] of tabControls) {
-      control.setAttribute("aria-selected", String(id === tab));
-      control.tabIndex = id === tab ? 0 : -1;
-    }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
     content.toggleAttribute("data-restore-panel-focus", selected === "draft" && tab === "channels");
-    // History can select another tab while focus is in the strip; focus follows the selection,
-    // so the focused tab is the one revealed and the Tab stop.
-    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
-      tabControls.get(tab)?.focus({ preventScroll: true });
+    // A serving change rebuilds Workspace files in place. Keep focus and scroll in the tab
+    // strip while the panel is replaced.
+    if (!refreshingWorkspace) {
+      const focusInStrip = tabs.contains(document.activeElement);
+      for (const [id, control] of tabControls) {
+        control.setAttribute("aria-selected", String(id === tab));
+        control.tabIndex = id === tab ? 0 : -1;
+      }
+      // History can select another tab while focus is in the strip; focus follows the selection,
+      // so the focused tab is the one revealed and the Tab stop.
+      if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+        tabControls.get(tab)?.focus({ preventScroll: true });
+      }
+      revealSelectedTab();
     }
-    revealSelectedTab();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
