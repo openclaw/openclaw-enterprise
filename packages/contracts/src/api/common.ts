@@ -477,11 +477,14 @@ export const SecretDelivery = Type.Object(
 );
 
 export const SecretBinding = Type.Object(
-  { source: SecretReference, delivery: Type.Optional(SecretDelivery) },
+  {
+    source: Type.Union([SecretReference, CredentialSourceReference]),
+    delivery: Type.Optional(SecretDelivery),
+  },
   {
     additionalProperties: false,
     description:
-      'Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ "type": "env" }` during admission.',
+      'Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ "type": "env" }` during admission.',
   },
 );
 

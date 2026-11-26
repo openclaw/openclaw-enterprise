@@ -9,6 +9,7 @@ import type {
   Secret,
   SecretBinding,
   SecretBindings,
+  SecretReference,
 } from "@openclaw-enterprise/contracts";
 import type { Pool } from "pg";
 import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
@@ -78,7 +79,7 @@ function secret(namespaceId: string, name = `model-key-${randomUUID()}`): Secret
   };
 }
 
-function bindingValue(storedSecret: Secret): SecretBinding {
+function bindingValue(storedSecret: Secret): SecretBinding & { readonly source: SecretReference } {
   return {
     source: {
       kind: "secret",

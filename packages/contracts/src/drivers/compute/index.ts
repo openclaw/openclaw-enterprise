@@ -64,6 +64,15 @@ export type AgentChatCompletionsResolution =
   | { readonly status: "unsupported" };
 
 export interface ComputeRevisionContext {
+  /** Worker-owned authorization and resolution for exported Gateway startup credentials. */
+  readonly gatewayStartupCredentials?: {
+    authorize(signal: AbortSignal): Promise<void>;
+    resolve(
+      signal: AbortSignal,
+    ): Promise<
+      Readonly<Record<string, { readonly value: string; readonly sourceVersion?: string }>>
+    >;
+  };
   /** Worker configures the exact staged target without exposing source resolution to Compute. */
   readonly configureCredentialDeployment?: (
     expected: CredentialDeploymentConfiguration,
