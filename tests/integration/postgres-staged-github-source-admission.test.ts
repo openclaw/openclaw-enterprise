@@ -1862,8 +1862,9 @@ test(
     delete gitEndpoint.provider_credentialed;
     target.serving = true;
     await waitFor(
-      "the current observation to recheck Repository policy",
-      () => target.policyReads > 0 || undefined,
+      "two maintenance sweeps to recheck the invalid Repository policy",
+      () => target.policyReads >= 2 || undefined,
+      20_000,
     );
     assert.equal((await readReceipt()).deliveryPending, true);
     assert.equal(deliveryAttempts, attemptsBeforeAttached + 1);
