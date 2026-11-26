@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { admitProducer, validateResults } from "../../scripts/ci/full-integration-reuse.ts";
@@ -554,7 +554,10 @@ test("full coverage receipts require real case evidence and retain approved same
   await verify(1, false);
 });
 
-test("release qualification runs and aggregates the selected ancestor after main advances", async (t) => {
+async function verifyReleaseAncestor(
+  t: TestContext,
+  layout: "current" | "historical" | "ambiguous",
+) {
   const directory = await temporaryDirectory(t, "release-test-source-");
   const artifactDirectory = await temporaryDirectory(t, "release-qualification-artifacts-");
   const env: NodeJS.ProcessEnv = {
@@ -593,33 +596,69 @@ test("release qualification runs and aggregates the selected ancestor after main
       ...args,
     ]);
   git("init", "-q");
-  const file = "tests/integration/source.test.mjs";
   const suite = join(directory, "scripts/ci");
   await mkdir(join(directory, "tests/integration"), { recursive: true });
   await mkdir(suite, { recursive: true });
-  const fixtureSuite = loadTestSuites(
-    fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
-    "full-integration",
-  );
-  const installerPaths = files(readSuiteLane(fixtureSuite, "openshell-installers")).map(
-    ({ path }) => path,
-  );
+  const file = "tests/integration/openshell-refresh-real.test.ts";
+  const finiteRemovalFile = "tests/integration/openshell-git-finite-removal-real.test.ts";
+  const scratchFile = "tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts";
+  // Freeze the ancestor producer's shard membership independently of the dispatch code.
+  const producerLanes = {
+    "openshell-policy": [
+      file,
+      "tests/integration/openshell-withdrawal-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      scratchFile,
+      "tests/integration/openshell-plugin-install-real.test.ts",
+      "tests/integration/namespace-driver-openshell-k3d-real.test.ts",
+      "tests/integration/openshell-git-retention-real.test.ts",
+    ],
+    "openshell-installers": [
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/dev-up-openshell-k3d-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+      finiteRemovalFile,
+    ],
+  };
+  const entries = (paths: string[]) =>
+    paths.map((path) => ({ path, expectedTests: ["source test"] }));
+  let sourcePaths: string[];
+  if (layout === "current") {
+    const current = loadTestSuites(
+      fileURLToPath(new URL("../../scripts/ci/test-suites.json", import.meta.url)),
+    );
+    sourcePaths = files(readSuiteLane(current, "openshell")).map(({ path }) => path);
+  } else {
+    // The earlier manifest has the same paths except for the scratch test.
+    if (layout === "ambiguous") {
+      producerLanes["openshell-policy"] = producerLanes["openshell-policy"].filter(
+        (path) => path !== scratchFile,
+      );
+    }
+    sourcePaths = Object.values(producerLanes).flat().reverse();
+    await writeFile(
+      join(suite, "producer-suites.json"),
+      JSON.stringify({
+        version: 1,
+        lanes: Object.fromEntries(
+          Object.entries(producerLanes).map(([lane, paths]) => [lane, { files: entries(paths) }]),
+        ),
+        groups: {},
+      }),
+    );
+  }
   await writeFile(
     join(suite, "test-suites.json"),
     JSON.stringify({
       version: 1,
-      lanes: {
-        openshell: {
-          files: [file, ...installerPaths].map((path) => ({
-            path,
-            expectedTests: ["source test"],
-          })),
-        },
-      },
+      lanes: { openshell: { files: entries(sourcePaths) } },
       groups: { full: ["openshell"] },
     }),
   );
-  for (const path of [file, ...installerPaths]) {
+  for (const path of sourcePaths) {
     await writeFile(
       join(directory, path),
       'import test from "node:test"; test("source test", () => {});',
@@ -662,16 +701,19 @@ test("release qualification runs and aggregates the selected ancestor after main
   const cleanup = fileURLToPath(new URL("../../scripts/ci/cleanup.ts", import.meta.url));
   // Execute the test that passes only in the ancestor, record its cleanup, then verify
   // the receipt with dispatch-owned code and the selected source's manifest.
-  for (const lane of ["openshell-policy", "openshell-installers"]) {
+  const producerManifest =
+    layout === "current" ? "" : " --manifest scripts/ci/producer-suites.json";
+  for (const lane of Object.keys(producerLanes)) {
     const paths = {
       NODE: process.execPath,
       RUNNER: runner,
       CLEANUP: cleanup,
       LANE: lane,
       BASH_ENV: shellEnv,
+      ...(layout === "current" ? {} : { OCC_CI_SUITE_VIEW: "default" }),
     };
     bash(
-      '"$NODE" "$RUNNER" run "$LANE" --root . --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"',
+      `"$NODE" "$RUNNER" run "$LANE" --root .${producerManifest} --state "state/$LANE.json" --results "$RUNNER_TEMP/results/$LANE.json"`,
       paths,
     );
     bash(
@@ -691,9 +733,68 @@ test("release qualification runs and aggregates the selected ancestor after main
       .run,
   );
   bash(aggregate, { TEST_SOURCE: dispatch }, 1);
+  const marker = join(artifactDirectory, "full-integration-exercised");
+  const reject = async (code: string, lane: string, path?: string) => {
+    const rejected = jsonRecord(bash(aggregate, { TEST_SOURCE: selected }, 1));
+    assert.ok(
+      array(rejected.issues).some((row) => {
+        const issue = record(row);
+        return issue.code === code && issue.lane === lane && issue.file === path;
+      }),
+      JSON.stringify(rejected.issues),
+    );
+    assert.equal(rejected.fullCoverageExercised, undefined);
+    await assert.rejects(readFile(marker), { code: "ENOENT" });
+  };
+  if (layout === "ambiguous") {
+    // Matching the finite-removal path alone would accept these receipts.
+    await reject("missing-lane-evidence", "openshell-policy", finiteRemovalFile);
+    return;
+  }
   const summary = jsonRecord(bash(aggregate, { TEST_SOURCE: selected }));
   assert.equal(summary.sourceSha, selected);
   assert.equal(summary.fullCoverageExercised, true);
   assert.equal(summary.status, "passed");
   assert.equal(git("rev-parse", "HEAD"), dispatch);
+
+  assert.equal(await readFile(marker, "utf8"), "1\n");
+  if (layout === "current") {
+    return;
+  }
+  await rm(marker);
+  const receiptPath = (lane: string) => join(artifactDirectory, "results", `${lane}.json`);
+  const policyPath = receiptPath("openshell-policy");
+  const installerPath = receiptPath("openshell-installers");
+  const policyReceipt = jsonRecord(await readFile(policyPath, "utf8"));
+  const installerReceipt = jsonRecord(await readFile(installerPath, "utf8"));
+  const installerFiles = array(installerReceipt.files);
+  const removed = present(installerFiles.find((row) => record(row).path === finiteRemovalFile));
+
+  // Placing the finite-removal result in policy cannot qualify this release source.
+  await writeFile(
+    installerPath,
+    JSON.stringify({ ...installerReceipt, files: installerFiles.filter((row) => row !== removed) }),
+  );
+  await writeFile(
+    policyPath,
+    JSON.stringify({ ...policyReceipt, files: [...array(policyReceipt.files), removed] }),
+  );
+  await reject("missing-lane-evidence", "openshell-installers", finiteRemovalFile);
+  await writeFile(installerPath, JSON.stringify(installerReceipt));
+  await writeFile(policyPath, JSON.stringify({ ...policyReceipt, sourceSha: dispatch }));
+  await reject("source-sha-mismatch", "openshell-policy");
+  await writeFile(policyPath, JSON.stringify({ ...policyReceipt, scope: "focused" }));
+  await reject("focused-lane-evidence", "openshell-policy");
+}
+
+test("release qualification runs and aggregates the selected ancestor after main advances", async (t) => {
+  await t.test("current layout uses the default producer invocation", (t) =>
+    verifyReleaseAncestor(t, "current"),
+  );
+  await t.test("historical layout retains the producer shard", (t) =>
+    verifyReleaseAncestor(t, "historical"),
+  );
+  await t.test("earlier ambiguous layout keeps its existing projection", (t) =>
+    verifyReleaseAncestor(t, "ambiguous"),
+  );
 });
