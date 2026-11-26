@@ -14,6 +14,7 @@ import {
   type DeviceIssuerOptions,
 } from "../helpers/device-token-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   MEMBER_WRITE,
@@ -138,6 +139,7 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
     apiClockAheadMs += ms;
   };
   let approved = false;
+  const externalIssuer = "https://issuer.example.test";
   const { fixture, namespace, issuer, owner } = await createOAuthConsoleNamespace(
     t,
     "OAuth console",
@@ -145,6 +147,14 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
       provisionedPeople: [],
       agentProvisioning: true,
       now: () => new Date(Date.now() + apiClockAheadMs),
+      oauthIssuer: fixtureOAuthIssuer(
+        {
+          issuer: externalIssuer,
+          authorizationUrl: `${externalIssuer}/authorize`,
+          tokenUrl: `${externalIssuer}/token`,
+        },
+        ["none"],
+      ),
     },
     { approve: async () => approved },
   );
@@ -507,7 +517,6 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
   }
   // A Template OAuth Source is a valid readable OAuth credential, but it does not carry the
   // built-in Codex consent needed to authenticate this model provider.
-  const externalIssuer = "https://issuer.example.test";
   const template = await fixture.request("POST", "/connection-templates", {
     body: {
       namespaceId: namespace.id,
@@ -527,7 +536,6 @@ test("Codex OAuth console saves and reuses a Source for Agent creation and plugi
       kind: "oauth2",
       namespaceId: namespace.id,
       issuer: externalIssuer,
-      tokenUrl: `${externalIssuer}/token`,
       displayName: "External account client",
       clientId: "public-fixture-client",
       tokenEndpointAuthMethod: "none",

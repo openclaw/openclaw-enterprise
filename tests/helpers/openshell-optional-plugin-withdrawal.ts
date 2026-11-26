@@ -310,7 +310,6 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
       kind: "oauth2",
       namespaceId: namespace.id,
       issuer: googleSlot.issuer,
-      tokenUrl: googleSlot.tokenEndpoint,
       displayName: "Google fixture client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",

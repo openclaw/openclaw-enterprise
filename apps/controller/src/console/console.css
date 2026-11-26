@@ -2755,11 +2755,22 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 }
 /* A fixed value (the inline Create Secret dialog's Binding key) reads as text, not as a field
    the reader could edit (finding 2370). */
-.form-field input[readonly] {
+.form-field input[readonly],
+.credential-client-redirect input[readonly] {
   border-color: transparent;
   background: transparent;
   padding-inline: 0;
   font-family: var(--font-mono);
+}
+.credential-client-redirect {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-3);
+}
+.credential-client-redirect > label,
+.credential-client-redirect > .hint {
+  grid-column: 1 / -1;
 }
 .field input[type="checkbox"],
 .field input[type="radio"],
