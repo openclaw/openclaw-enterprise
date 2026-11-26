@@ -149,10 +149,7 @@ export function prepareOpenShellRepositorySource(
       installationId: registry.githubInstallationId,
       resolveGrants(source) {
         const verified = selectedSourceRepositories(registry, { namespaceId, source, bindings });
-        if (
-          verified.length !== requested.length ||
-          source.scope.repositories.length !== verified.length
-        ) {
+        if (verified.length !== requested.length) {
           return undefined;
         }
         const grants = requested.flatMap(({ repository, limit, access }) => {

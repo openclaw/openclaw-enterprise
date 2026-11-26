@@ -10,8 +10,9 @@ OCE supplies authentication. The deployed grant determines which operations you 
 ## Open a pull request with a managed GitHub App Source
 
 Use the approved target, head, and base for the request. Save `title`, `head`,
-and `base` in a private JSON file outside the checkout and set `payload` to
-its path. The supported publication request is `POST repos/OWNER/REPO/pulls`.
+`base`, and any requested `body` in a private JSON file outside the checkout.
+Set `draft: true` for a draft PR and set `payload` to the file's path.
+The supported publication request is `POST repos/OWNER/REPO/pulls`.
 `gh pr create` uses GraphQL, which this binding does not admit.
 
 Use only the binding's inert placeholder. Dedicated Codex supplies it as

@@ -13,11 +13,11 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
-import { admitOpenShellRepositoryCredentials } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
@@ -189,7 +189,15 @@ test(
     const installation = {
       ...buildSandboxInstallation(),
       iam: defaultUsersIAM(),
-      sandboxNetworkPolicyCeiling: [modelGrant],
+      sandboxNetworkPolicyCeiling: [
+        modelGrant,
+        {
+          ...modelGrant,
+          id: "openclaw-model",
+          binary: "/usr/local/bin/node",
+          host: "api.openai.com",
+        },
+      ],
       // The deployed selections exercise a qualified owner limit and a short-name limit.
       repositoryNetworkPolicyCeiling: registryRepositories.map(({ repository }, index) => ({
         repository: index === 1 ? repository.split("/")[1]!.toUpperCase() : repository,
@@ -204,7 +212,10 @@ test(
     };
     assert.equal(installation.drivers.compute.configuration.images.gateway, fixtureRelease.gateway);
     assert.equal(installation.drivers.compute.configuration.images.agent, fixtureRelease.agent);
-    assert.equal(installation.drivers.sandbox.configuration.integrationMode, "legacy");
+    const sandboxConfiguration = installation.drivers.sandbox.configuration;
+    sandboxConfiguration.integrationMode = "service";
+    sandboxConfiguration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+    sandboxConfiguration.policy.networkPolicies[0]!.endpoints[0]!.host = "baseline.example.test";
     Reflect.deleteProperty(installation.drivers, "credential_gateway");
     Reflect.deleteProperty(installation.backend[0]!.drivers, "credential_gateway");
     Object.assign(installation.drivers, {
@@ -677,6 +688,35 @@ test(
     assert.equal(deniedClientRegistration.statusCode, 403, deniedClientRegistration.body);
     assert.equal(core.calls.createNamespacedSecret, createsBeforeDeniedRegistration);
     assert.equal(github.trace.length, issuerCallsBeforeDeniedRegistration);
+    const insertAlteredRevision = (revision: AgentRevision, field: string[], value: unknown) =>
+      pool.query(
+        `INSERT INTO occ.agent_revisions
+           (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at,
+            backend_id, gateway_managed_mode)
+         SELECT $4, namespace_id, agent_id, revision_number + 1,
+                jsonb_set(admitted_spec, $5::text[], $6::jsonb),
+                admitted_at, backend_id, gateway_managed_mode
+           FROM occ.agent_revisions
+          WHERE namespace_id=$1 AND agent_id=$2 AND id=$3`,
+        [
+          namespaceId,
+          revision.agentId,
+          revision.id,
+          `rev_${randomUUID()}`,
+          field,
+          JSON.stringify(value),
+        ],
+      );
+    const publicationRequest = (repository: string) => ({
+      binary: "/usr/local/bin/gh",
+      host: "api.github.com",
+      ports: [{ from: 443, to: 443 }],
+      requestPolicy: {
+        type: "http" as const,
+        method: "POST",
+        path: `/repos/${repository}/pulls`,
+      },
+    });
     const agents = [];
     let gitSourceId: string | undefined;
     for (const access of ["write", "read"] as const) {
@@ -822,16 +862,6 @@ test(
       });
       const deployedPolicy = revision.credentialDeployment;
       assert.ok(deployedPolicy);
-      const publicationRequest = (repository: string) => ({
-        binary: "/usr/local/bin/gh",
-        host: "api.github.com",
-        ports: [{ from: 443, to: 443 }],
-        requestPolicy: {
-          type: "http" as const,
-          method: "POST",
-          path: `/repos/${repository}/pulls`,
-        },
-      });
       const publication =
         access === "write" ? [publicationRequest(repositories[1]!.repository)] : [];
       const repositoryInjection = deployedPolicy.injectionPolicies.find(
@@ -847,33 +877,6 @@ test(
         publication,
       );
       if (agents.length === 0) {
-        // A Source can read both repositories. The shared policy compiler must retain Git
-        // push but withhold PR creation if the Agent omits the possible private fork head.
-        const source = await state.read((view) =>
-          view.credentialSources.findCredentialSource(namespaceId, repositorySnapshot.sourceId),
-        );
-        assert.ok(
-          source?.ownerCapability === "token_service" && source.type === "github-app-installation",
-        );
-        const subset = admitOpenShellRepositoryCredentials(runtime.repositoryRegistry, {
-          namespaceId,
-          source,
-          bindings: authority.bindings.filter(
-            ({ repositoryRef }) => repositoryRef === repositories[1]!.repositoryRef,
-          ),
-          grants: grants.filter(({ access }) => access === "write"),
-        });
-        assert.ok(subset);
-        assert.ok(
-          subset.some(
-            ({ requestPolicy }) =>
-              requestPolicy?.path === `/${repositories[1]!.repository}.git/git-receive-pack`,
-          ),
-        );
-        assert.equal(
-          subset.some(({ host }) => host === "api.github.com"),
-          false,
-        );
         // The obsolete standalone snapshot has a valid finite deadline and the same grants;
         // removing the Source marker cannot turn it into an eligible native revision.
         const obsoleteAuthority = {
@@ -888,31 +891,12 @@ test(
           }),
           false,
         );
-        const insertAlteredRevision = (field: string[], value: unknown) =>
-          pool.query(
-            `INSERT INTO occ.agent_revisions
-               (id, namespace_id, agent_id, revision_number, admitted_spec, admitted_at,
-                backend_id, gateway_managed_mode)
-             SELECT $4, namespace_id, agent_id, revision_number + 1,
-                    jsonb_set(admitted_spec, $5::text[], $6::jsonb),
-                    admitted_at, backend_id, gateway_managed_mode
-               FROM occ.agent_revisions
-              WHERE namespace_id=$1 AND agent_id=$2 AND id=$3`,
-            [
-              namespaceId,
-              agent.id,
-              revision.id,
-              `rev_${randomUUID()}`,
-              field,
-              JSON.stringify(value),
-            ],
-          );
         // A writer cannot grant publication on a Read target by adding the identical
         // request to both policy lists. The immutable revision still enforces its Write grant.
         const readTarget = publicationRequest(repositories[0]!.repository);
         await assert.rejects(
           () =>
-            insertAlteredRevision(["credential_deployment"], {
+            insertAlteredRevision(revision, ["credential_deployment"], {
               ...deployedPolicy,
               networkAccessPolicy: {
                 allowed: [...deployedPolicy.networkAccessPolicy.allowed, readTarget],
@@ -927,7 +911,7 @@ test(
         );
         // Use the application role's real write path to check the authority/context invariant.
         await assert.rejects(
-          () => insertAlteredRevision(["repository_credentials"], obsoleteAuthority),
+          () => insertAlteredRevision(revision, ["repository_credentials"], obsoleteAuthority),
           {
             code: "23514",
             constraint: "agent_revisions_source_backed_repository_authorization",
@@ -938,16 +922,11 @@ test(
         await assert.rejects(
           () =>
             insertAlteredRevision(
+              revision,
               ["sandbox_policy", "repositoryNetworkPolicy", "grants", "0", "access"],
               "write",
             ),
-          (error: unknown) => {
-            const failure = error as { code?: string; where?: string };
-            return (
-              failure.code === "23514" &&
-              failure.where?.includes("guard_sandbox_repository_policy_revision") === true
-            );
-          },
+          { code: "23514", where: /guard_sandbox_repository_policy_revision/ },
         );
       }
       assert.deepEqual(admitted.json().data.credentialSources, [
@@ -1714,7 +1693,7 @@ test(
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: modelSource.id },
       credentialSources: [{ sourceId: modelSource.id }],
-      repositoryAccess: { ...selected("read"), githubAppClientId: namespaceClientId },
+      repositoryAccess: { ...selected("write"), githubAppClientId: namespaceClientId },
     });
     assert.equal(scopedAgent.statusCode, 201, scopedAgent.body);
     assert.equal(github.issuesOfTokens.length, mintsBeforeScopedDeployment);
@@ -1732,10 +1711,25 @@ test(
         scopedDeployment.json().data.id,
       ),
     );
-    const scopedBinding = scopedRevision?.credentialDeployment?.bindings.find(
+    assert.ok(scopedRevision?.sandboxPolicy?.repositoryNetworkPolicy);
+    const scopedPolicy = scopedRevision.credentialDeployment;
+    assert.ok(scopedPolicy);
+    const scopedBinding = scopedPolicy.bindings.find(
       ({ consumer }) => consumer.kind === "repository",
     );
     assert.ok(scopedBinding);
+    const secondRepository = repositories[1]!;
+    const scopedPublication = [publicationRequest(secondRepository.repository)];
+    assert.deepEqual(
+      scopedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
+      scopedPublication,
+    );
+    assert.deepEqual(
+      scopedPolicy.injectionPolicies
+        .find(({ bindingRef }) => bindingRef === scopedBinding.bindingRef)
+        ?.allowedRequests.filter(({ host }) => host === "api.github.com"),
+      scopedPublication,
+    );
     assert.notEqual(scopedBinding.sourceRef.id, gitSource.id);
     const scopedSource = await request(
       "GET",
@@ -1745,6 +1739,106 @@ test(
     assert.equal(scopedSource.json().data.namespaceId, namespaceId);
     assert.equal(scopedSource.json().data.clientId, namespaceClientId);
     assert.deepEqual(scopedSource.json().data.scope.repositories, gitSource.scope.repositories);
+
+    // OpenClaw can push to the same target using the same Source. Omitting the other private
+    // repository leaves a possible fork head outside the Agent grants and withholds publication.
+    const openClawConfiguration = await request("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    assert.equal(openClawConfiguration.statusCode, 201, openClawConfiguration.body);
+    const openClawModel = await request("POST", `${base}/credential-sources`, {
+      name: "OpenClaw model",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: randomUUID(),
+    });
+    assert.equal(openClawModel.statusCode, 201, openClawModel.body);
+    const openClawDraft = {
+      name: "Dedicated OpenClaw Contributor",
+      configurationId: openClawConfiguration.json().data.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: openClawModel.json().data.id },
+      credentialSources: [{ sourceId: openClawModel.json().data.id }],
+      repositoryAccess: {
+        defaultProfile: "github-repository",
+        githubAppClientId: namespaceClientId,
+        repositories: [{ repositoryRef: secondRepository.repositoryRef, access: "write" }],
+      },
+    };
+    const mintsBeforeOpenClaw = github.issuesOfTokens.length;
+    const unqualified = await request("POST", `${base}/agents`, openClawDraft);
+    assert.equal(unqualified.statusCode, 409, unqualified.body);
+    assert.match(
+      unqualified.json().error.message,
+      /repository credentials to this Harness topology/i,
+    );
+    // Select only the controlled build digest. Compute and the installed Sandbox/Proxy pair
+    // still perform their production eligibility checks at save and deploy.
+    t.mock.getter(inspectedWorkspaceBuild, "openClawRelease", () => ({
+      gatewayDigest: fixtureRelease.gateway.split("@")[1]!,
+    }));
+    const openClaw = await request("POST", `${base}/agents`, openClawDraft);
+    assert.equal(openClaw.statusCode, 201, openClaw.body);
+    const deployment = await request(
+      "POST",
+      `${base}/agents/${openClaw.json().data.id}/deploy`,
+      {},
+    );
+    assert.equal(deployment.statusCode, 202, deployment.body);
+    const revision = await state.read((view) =>
+      view.revisions.findRevision(namespaceId, openClaw.json().data.id, deployment.json().data.id),
+    );
+    assert.ok(revision && isNativeStagedRepositoryRevision(revision));
+    assert.equal(revision.harness.id, "openclaw");
+    const policy = revision.credentialDeployment;
+    assert.ok(policy);
+    assert.equal(
+      policy.bindings.find(({ consumer }) => consumer.kind === "model")?.sourceRef.id,
+      openClawModel.json().data.id,
+    );
+    const git = policy.bindings.find(({ consumer }) => consumer.kind === "repository");
+    assert.ok(git);
+    assert.equal(git.sourceRef.id, scopedBinding.sourceRef.id);
+    assert.equal(github.issuesOfTokens.length, mintsBeforeOpenClaw);
+    assert.deepEqual(revision.sandboxPolicy?.repositoryNetworkPolicy?.grants, [
+      { repository: secondRepository.repository, access: "write" },
+    ]);
+    const gitRoutes = policy.injectionPolicies.find(
+      ({ bindingRef }) => bindingRef === git.bindingRef,
+    );
+    assert.ok(gitRoutes);
+    assert.ok(gitRoutes.allowedRequests.every(({ binary }) => binary !== "/usr/local/bin/node"));
+    assert.deepEqual(
+      gitRoutes.allowedRequests,
+      policy.networkAccessPolicy.allowed.filter(({ host }) => host === "github.com"),
+    );
+    assert.ok(policy.networkAccessPolicy.allowed.every(({ host }) => host !== "api.github.com"));
+    assert.deepEqual(
+      new Set(
+        gitRoutes.allowedRequests.map(
+          ({ requestPolicy }) => `${requestPolicy?.method} ${requestPolicy?.path}`,
+        ),
+      ),
+      new Set([
+        `GET /${secondRepository.repository}.git/info/refs`,
+        `POST /${secondRepository.repository}.git/git-upload-pack`,
+        `POST /${secondRepository.repository}.git/git-receive-pack`,
+      ]),
+    );
+
+    const fullRepositoryPolicy = scopedRevision.sandboxPolicy.repositoryNetworkPolicy;
+    // The wider Source is valid, but importing the other Agent's valid two-repository
+    // policy into this revision must still be refused by the database under the application role.
+    await assert.rejects(
+      () =>
+        insertAlteredRevision(
+          revision,
+          ["sandbox_policy", "repositoryNetworkPolicy"],
+          fullRepositoryPolicy,
+        ),
+      { code: "23514", where: /guard_sandbox_repository_policy_revision/ },
+    );
 
     const retiringClient = await registerScopedClient("Retiring GitHub App", namespaceId);
     assert.equal(retiringClient.statusCode, 201, retiringClient.body);

@@ -30,9 +30,7 @@ For a legacy session with one `github-repository` binding, the Installation and 
 The approved scope includes the exact repository identity and permission map.
 Legacy sessions for multiple selected repositories remain finite.
 
-With TokenService Git, the revision records its Agent Repository grants
-independently of the installation token's expiry. The legacy session duration
-does not set a deadline on those grants.
+A TokenService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
@@ -84,13 +82,14 @@ repositoryNetworkPolicyCeiling:
 
 ### Native Git delivery
 
-Use a dedicated Codex Agent with a supported TokenService model Source,
-Kubernetes Compute, and the paired OpenShell Sandbox and Credential Proxy.
+Use a Dedicated Agent with a supported TokenService model Source, Kubernetes
+Compute, and the paired OpenShell Sandbox and Credential Proxy.
 [Installation and Agent setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
-Dedicated OpenClaw with native Git is unsupported. Compute contains a guarded
-placement path, but OCC refuses that recipient at deployment and no qualified
-OpenClaw image pin is supplied. A live combined run remains unverified.
+Dedicated Codex requires inspected Gateway and Agent images. Dedicated OpenClaw
+requires service mode and an inspected Gateway image qualified for model turns
+and scoped Git in the worker role. An unset image pin disables that placement.
+[Controller image qualification](../../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git)
 
 In the Namespace registry, select `nativeGit: "v1"` with the
 `github-repository` profile for each selected repository. Register the GitHub
