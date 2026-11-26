@@ -160,7 +160,20 @@ test("runtime assembly preserves executable assets and links while excluding dev
   const root = join(directory, "source");
   const output = join(directory, "output");
   const files = {
-    "package.json": '{"packageManager":"pnpm@12.4.2","dependencies":{"dep":"1.0.0"}}',
+    "package.json": JSON.stringify({
+      packageManager: "pnpm@12.4.2",
+      dependencies: { dep: "1.0.0" },
+      files: [
+        "openclaw.mjs",
+        "release-launcher-forward.mjs",
+        "node-runtime-recovery.mjs",
+        "node-runtime-env.mjs",
+        "node-compile-cache.mjs",
+        "*.mjs",
+        "qa/nested-selector.mjs",
+        "!negated-selector.mjs",
+      ],
+    }),
     "pnpm-lock.yaml": `lockfileVersion: '9.0'
 
 packages:
@@ -173,10 +186,15 @@ packages:
 `,
     "dist/index.js": "export const ready = true;\n",
     "openclaw.mjs":
-      'import { ready } from "./node-runtime-recovery.mjs"; process.stdout.write(ready);\n',
+      'import { ready } from "./release-launcher-forward.mjs"; process.stdout.write(ready);\n',
+    "release-launcher-forward.mjs": 'export { ready } from "./node-runtime-recovery.mjs";\n',
     "node-runtime-recovery.mjs": 'export { ready } from "./node-runtime-env.mjs";\n',
     "node-runtime-env.mjs": 'export { ready } from "./node-compile-cache.mjs";\n',
     "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',
+    "development-only.mjs": "export {};\n",
+    "nested-selector.mjs": "export {};\n",
+    "qa/nested-selector.mjs": "export {};\n",
+    "!negated-selector.mjs": "export {};\n",
     "extensions/slack/skills/slack/SKILL.md": "Slack runtime skill",
     "extensions/slack/src/client.test.ts": "development test",
     "extensions/slack/__tests__/fixture.json": "{}",
@@ -277,6 +295,9 @@ packages:
   for (const name of [
     "src",
     "qa",
+    "development-only.mjs",
+    "nested-selector.mjs",
+    "!negated-selector.mjs",
     "docs/images",
     "extensions/slack/src/client.test.ts",
     "extensions/slack/__tests__",
