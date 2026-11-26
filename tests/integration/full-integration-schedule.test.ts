@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -544,6 +544,124 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     runAll: false,
     reason: "stale-event",
   });
+
+  await t.test("CLI reports deliberately skipped ticks in the Actions summary", async (t) => {
+    const now = Date.parse("2026-06-15T12:00:00Z");
+    t.mock.method(Date, "now", () => now);
+    const dir = mkdtempSync(join(tmpdir(), "schedule-summary-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const cli = fileURLToPath(
+      new URL("../../scripts/ci/full-integration-preflight.ts", import.meta.url),
+    );
+    const output = join(dir, "output");
+    const summary = join(dir, "summary");
+    const otherSha = "b".repeat(40);
+    for (const [name, github, reason, explanation, summaryPath] of [
+      [
+        "main moved during preflight",
+        fixtures([sha, sha, otherSha]).github,
+        "stale-event",
+        /scheduled commit is no longer the tip of main/,
+        summary,
+      ],
+      [
+        "active full attempt",
+        previousRun({ startedAgo: 100, finishedAgo: 0, active: true }),
+        "active-full",
+        /Another run is still active/,
+        summary,
+      ],
+      [
+        "cooldown after a failed attempt",
+        previousRun({ startedAgo: 100, finishedAgo: 5 }),
+        "cooldown",
+        /scheduler is waiting/,
+        summary,
+      ],
+      [
+        "same SHA exercised by a failed attempt",
+        previousRun({ startedAgo: 100, finishedAgo: 80, covered: true }),
+        "unchanged-main",
+        /earlier run exercised this commit/,
+        summary,
+      ],
+      ["missing summary path", fixtures([otherSha]).github, "stale-event", null, undefined],
+      ["unwritable summary path", fixtures([otherSha]).github, "stale-event", null, dir],
+      ["admitted tick", fixtures([sha, sha, sha]).github, null, null, summary],
+    ] as const) {
+      await t.test(name, async () => {
+        // Replay the existing metadata fixtures at the command's HTTP boundary.
+        // Unexpected requests fail, and the CLI still parses and decides admission.
+        const responses: [string, unknown][] = [];
+        await validateFullIntegrationPreflight({
+          env,
+          github: async (request) => {
+            const body = await github(request);
+            responses.push([request.path, body]);
+            return body;
+          },
+        });
+        const stub = `
+          Date.now = () => ${now};
+          const responses = ${JSON.stringify(responses)};
+          globalThis.fetch = async (url) => {
+            const path = url.slice(${JSON.stringify(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}`)}.length);
+            const response = responses.shift();
+            if (response?.[0] !== path) throw new Error("Unexpected metadata request.");
+            return Response.json(response[1]);
+          };
+        `;
+        const previousSummary = "Existing summary text.\n\n";
+        writeFileSync(summary, previousSummary);
+        writeFileSync(output, "");
+        const child = spawnSync(
+          process.execPath,
+          ["--import", "data:text/javascript," + encodeURIComponent(stub), cli],
+          {
+            env: {
+              ...env,
+              GITHUB_ACTIONS: "true",
+              GITHUB_OUTPUT: output,
+              GITHUB_STEP_SUMMARY: summaryPath,
+            },
+            encoding: "utf8",
+            timeout: 10_000,
+          },
+        );
+        assert.equal(child.stderr, "");
+        assert.equal(child.status, 0);
+        assert.equal(
+          child.stdout,
+          reason
+            ? `::notice title=Full Integration schedule::Full Integration schedule skipped: ${reason}.\n`
+            : "Full Integration authorized by scheduled admission.\n",
+        );
+        assert.equal(
+          readFileSync(output, "utf8"),
+          reason ? "selected_lane=skip\nrun_all=false\n" : "selected_lane=all\nrun_all=true\n",
+        );
+        const markdown = readFileSync(summary, "utf8");
+        if (explanation) {
+          assert.ok(markdown.startsWith(previousSummary));
+          assert.match(markdown, /No integration tests ran/);
+          assert.match(markdown, explanation);
+          assert.ok(markdown.includes(sha));
+          assert.ok(!markdown.includes(otherSha));
+          assert.match(markdown, /Execute \/ Full Integration Aggregate/);
+          assert.match(markdown, /actions\/workflows\/full-integration\.yml/);
+          assert.doesNotMatch(markdown, /success|passed/i);
+          if (reason === "cooldown") {
+            assert.match(markdown, /2026-06-15T12:10:00\.000Z/);
+          } else {
+            assert.doesNotMatch(markdown, /can start no earlier/);
+          }
+        } else {
+          assert.equal(markdown, previousSummary);
+        }
+      });
+    }
+  });
+
   // The same marker lookup can reject or return unusable metadata. Neither
   // outcome may select a lane, read policy, or put supplied text in the error.
   for (const [kind, response] of [
