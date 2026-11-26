@@ -145,6 +145,8 @@ test(
             profiles: ["github-repository"],
             nativeGit: "v1",
             permissions,
+            ...(approvedNamespaceId === otherNamespaceId &&
+              repositoryRef === "second" && { apiLimits: { pull_requests: "read" } }),
           })),
         })),
       }),
@@ -235,9 +237,12 @@ test(
       },
     });
     const workspace = core.addNamespace(namespaceId);
-    const namespaceObject = core.namespaces.get(workspace);
-    assert.ok(namespaceObject);
-    Object.assign(namespaceObject, { apiVersion: "v1", kind: "Namespace" });
+    const limitedWorkspace = core.addNamespace(otherNamespaceId);
+    for (const name of [workspace, limitedWorkspace]) {
+      const namespaceObject = core.namespaces.get(name);
+      assert.ok(namespaceObject);
+      Object.assign(namespaceObject, { apiVersion: "v1", kind: "Namespace" });
+    }
     let deliveryAttempts = 0;
     let failNextDelivery = true;
     let holdNextDelivery: (() => Promise<void>) | undefined;
@@ -249,6 +254,14 @@ test(
         labels: {
           "app.kubernetes.io/managed-by": "openclaw-enterprise",
           "openclaw.dev/namespace-id": namespaceId,
+        },
+      },
+      {
+        id: "controlled-limited-workspace",
+        name: limitedWorkspace,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": otherNamespaceId,
         },
       },
     ]);
@@ -1838,6 +1851,74 @@ test(
           fullRepositoryPolicy,
         ),
       { code: "23514", where: /guard_sandbox_repository_policy_revision/ },
+    );
+
+    // This Agent covers the full Source and can write to the target. The Namespace
+    // limits PRs to Read independently of the token's verified PR Write permission.
+    const limitedBase = `/namespaces/${otherNamespaceId}`;
+    const limitedConfiguration = await request("POST", `${limitedBase}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+    });
+    assert.equal(limitedConfiguration.statusCode, 201, limitedConfiguration.body);
+    const limitedModel = await request("POST", `${limitedBase}/credential-sources`, {
+      name: "OpenClaw model for API-limited repository",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: randomUUID(),
+    });
+    assert.equal(limitedModel.statusCode, 201, limitedModel.body);
+    const limitedAgent = await request("POST", `${limitedBase}/agents`, {
+      ...openClawDraft,
+      name: "Contributor with Namespace PR Read limit",
+      configurationId: limitedConfiguration.json().data.id,
+      harnessAuth: { method: "credential_source", sourceId: limitedModel.json().data.id },
+      credentialSources: [{ sourceId: limitedModel.json().data.id }],
+      repositoryAccess: { ...selected("write"), githubAppClientId: foreignClientId },
+    });
+    assert.equal(limitedAgent.statusCode, 201, limitedAgent.body);
+    const limitedAgentId = limitedAgent.json().data.id;
+    const limitedDeploy = await request(
+      "POST",
+      `${limitedBase}/agents/${limitedAgentId}/deploy`,
+      {},
+    );
+    assert.equal(limitedDeploy.statusCode, 202, limitedDeploy.body);
+    const limitedRevision = await state.read((view) =>
+      view.revisions.findRevision(otherNamespaceId, limitedAgentId, limitedDeploy.json().data.id),
+    );
+    assert.ok(limitedRevision && isNativeStagedRepositoryRevision(limitedRevision));
+    assert.deepEqual(
+      limitedRevision.sandboxPolicy?.repositoryNetworkPolicy?.grants,
+      fullRepositoryPolicy.grants,
+    );
+    const limitedPolicy = limitedRevision.credentialDeployment;
+    const limitedGit = limitedPolicy?.bindings.find(
+      ({ consumer }) => consumer.kind === "repository",
+    );
+    assert.ok(limitedPolicy && limitedGit);
+    const limitedSource = await request(
+      "GET",
+      `${limitedBase}/credential-sources/${limitedGit.sourceRef.id}`,
+    );
+    assert.equal(limitedSource.statusCode, 200, limitedSource.body);
+    assert.deepEqual(limitedSource.json().data.scope.repositories, gitSource.scope.repositories);
+    assert.equal(limitedSource.json().data.scope.permissions.pull_requests, "write");
+    const limitedRequests = limitedPolicy.injectionPolicies.find(
+      ({ bindingRef }) => bindingRef === limitedGit.bindingRef,
+    )?.allowedRequests;
+    assert.ok(limitedRequests);
+    assert.ok(
+      limitedRequests.some(
+        ({ host, requestPolicy }) =>
+          host === "github.com" &&
+          requestPolicy?.method === "POST" &&
+          requestPolicy.path === `/${secondRepository.repository}.git/git-receive-pack`,
+      ),
+    );
+    assert.ok(limitedRequests.every(({ host }) => host !== "api.github.com"));
+    assert.ok(
+      limitedPolicy.networkAccessPolicy.allowed.every(({ host }) => host !== "api.github.com"),
     );
 
     const retiringClient = await registerScopedClient("Retiring GitHub App", namespaceId);

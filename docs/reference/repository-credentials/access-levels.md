@@ -118,6 +118,9 @@ does not change the Agent's grants.
 ### Pull request creation
 
 The GitHub App and Namespace registration must allow `pull_requests: write`.
+Namespace `apiLimits` can withhold creation while Git Write remains available.
+`pull_requests: read` or `none` withholds creation. `default: none` also
+withholds it unless `pull_requests: write` overrides the default.
 The Agent needs Write on the target and at least Read on every repository
 covered by the Source token. GitHub can read a fork head named in the request
 body, so a missing Read grant withholds publication for the entire Source.
@@ -131,7 +134,7 @@ Stock OpenShell can inject the token on matching plaintext HTTP port 443 and
 match descendants of `gh`. These temporary exceptions apply to the exact
 publication route. Stock `gh` uses verified TLS. [RFC](https://github.com/openclaw/openclaw-enterprise/pull/7447)
 
-Earlier OpenShell REST routes, API limits, and issue and pull request behavior
+Earlier OpenShell REST routes, Agent-level API limits, and issue and pull request behavior
 are documented in the [historical REST reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery).
 The separate [prepared native Git broker](prepared-native-git.md) is outside 1.0;
 its draft-PR feature is not equivalent to a Source-backed Git grant.
