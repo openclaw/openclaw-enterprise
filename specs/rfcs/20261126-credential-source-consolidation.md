@@ -27,6 +27,8 @@ This removes a duplicate credential management model. It does not remove the Sec
 | Credential Proxy  | Admitted data-plane credential delivery and any copies it owns, such as an OpenShell Provider created for an OCC-owned Source. An OpenShell-owned Source can instead use its authoritative Provider directly. |
 | Platform operator | Bootstrap and infrastructure credentials such as database URLs, OCC signing keys, and TLS keys. Kubernetes stores these separately; Deployments refer to them across Pod restarts.                            |
 
+A **public Namespace Secret** is a top-level OCC resource with its own ID, IAM permissions, and CRUD API. Authorized users can list or read its metadata, but not its plaintext value. A **private Secret** is storage owned by another object: OCC TokenService stores Source and Client values through `SecretDriver.privateSecrets`, without creating a separate Namespace Secret resource or list entry. Both can be stored as Kubernetes Secrets.
+
 A delivery copy is not an independently user-managed credential. Some copies can be shared or retained until cleanup succeeds. Removing the Namespace Secret resource must not remove private Source or Client material, platform secrets, or Compute and Proxy copies that are still needed.
 
 ## Replace the remaining callers
@@ -68,7 +70,7 @@ Remove `occ.secrets`, Agent Secret columns, `credential_source_secrets`, and obs
 
 - **Channel:** Change `ChannelCredentialReader` from a Secret Driver callback to transient, authorized TokenService Source use. Keep provider checks and target/Source/owner rechecks outside the write transaction. Bot validation uses `auth.test`; app validation does not open a socket.
 - **Compute:** Keep the Gateway startup contract and replace the Secret-backed proxy context as described above. Remove `secretEnvironment` only after its remaining callers have replacements.
-- **Secret:** Retain `SecretDriver.privateSecrets`. Remove the public Namespace Secret methods only after consumer replacement and selected-driver qualification.
+- **Secret:** Keep `SecretDriver.privateSecrets` for TokenService's internal storage. Once all public Namespace Secret consumers use Sources, verify the selected Driver still supports private credential storage and cleanup, then remove its Namespace Secret methods.
 
 ## Delivery order and open decisions
 
