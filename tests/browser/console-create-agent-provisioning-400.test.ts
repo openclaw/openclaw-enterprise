@@ -65,6 +65,7 @@ import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
 } from "../integration/sandbox-driver-installation-fixture.ts";
+import { prepareDismissTap, responseTo } from "./console-action-helpers.ts";
 import {
   apiRequests,
   asksBeforeUnload,
@@ -74,6 +75,7 @@ import {
   login,
   nativeValues,
   newPage,
+  nextFrames,
   nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
@@ -1062,6 +1064,53 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   await page.keyboard.press("Enter");
   await loadingForm.waitFor({ state: "detached" });
   assert.equal(pathRequests(requests, "POST", base).length, 0);
+
+  await t.test("Source Cancel keeps its touch point while templates load", async (t) => {
+    const { page: phone } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width: 320, height: 640 }, isMobile: true, hasTouch: true },
+    });
+    await login(phone, fixture, `/console/secrets?namespace=${namespace.id}`);
+    const requests = apiRequests(phone, fixture.origin);
+    await phone.route("**/*", (route) =>
+      route.request().method() === "GET" ? route.fallback() : route.abort(),
+    );
+    const held = await holdRequests(t, phone, templatesUrl, {
+      method: "GET",
+      afterServer: true,
+      once: true,
+    });
+    const opener = phone.getByRole("button", { name: "Create Source", exact: true });
+    await opener.tap();
+    const dialog = phone.getByRole("dialog", { name: "Create Credential Source", exact: true });
+    const heading = dialog.getByRole("heading", { name: "Create Credential Source", exact: true });
+    const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+    await dialog
+      .getByText("Checking Source creation access and available templates…", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal((await held.requested)?.status(), 200);
+
+    assert.equal(await hasFocus(heading), true);
+    await phone.keyboard.press("Tab");
+    assert.equal(await hasFocus(cancel), true);
+    const tapCancel = await prepareDismissTap(dialog, cancel, "Cancel");
+
+    const loaded = responseTo(phone, "GET", templatesUrl);
+    held.release();
+    assert.equal((await loaded).status(), 200);
+    await dialog.getByLabel("Source name", { exact: true }).waitFor();
+    await nextFrames(phone);
+    assert.equal(await hasFocus(cancel), true, "loading templates keeps keyboard focus on Cancel");
+    await tapCancel();
+    await dialog.waitFor({ state: "detached" });
+    assert.equal(await hasFocus(opener), true, "Cancel returns focus to Create Source");
+    assert.ok(
+      requests.every((request) => request.method === "GET"),
+      "cancellation is read-only",
+    );
+  });
 
   const fill = async (name: string, purpose = "model:openai") => {
     const form = await open();

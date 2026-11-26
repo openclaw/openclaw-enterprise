@@ -14,6 +14,7 @@ export const CredentialSourcesMobile = story("credentialsSourceInventory", {
   frameWidth: "390px",
   frameHeight: "844px",
 });
+export const DismissWhileLoading = story("credentialsDialogLoading");
 export const CredentialSourcesEmpty = {
   ...story("credentialsSourceEmpty"),
   name: "No readable Credential Sources",

@@ -121,6 +121,21 @@ export const credentialSourceScenarios = {
     description:
       "Inspect the single Credentials tab with readable static, OAuth and protected Proxy Source metadata alongside Namespace Secrets. The fixture contains no credential values, and the page does not show OAuth consent or Proxy configuration.",
   },
+  credentialsDialogLoading: {
+    group: "Pages/Credentials",
+    name: "Dismiss while loading",
+    path,
+    description:
+      "Secret details and Source templates take three seconds to load. Try dismissing each dialog while you wait.",
+    rules: [
+      { suffix: "/secrets/sec_demo_model", delayMs: 3000 },
+      { suffix: "/connection-templates", delayMs: 3000 },
+    ],
+    steps: [
+      "Open Demo model API key (simulated) and Tab to Close. When the details appear, check that Close stays focused in the same place. Press Enter to return to the Secret.",
+      "Open Create Source and Tab to Cancel. When the form appears, check that Cancel is still visible and focused. Press Enter to return to Create Source.",
+    ],
+  },
   credentialsSourceEmpty: {
     group: "Pages/Credentials",
     name: "No readable Credential Sources",

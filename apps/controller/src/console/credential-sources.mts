@@ -312,7 +312,7 @@ export function renderCredentialSources(context: Context) {
       return;
     }
     const current = element("dialog", {
-      className: "dialog dialog--framed secret-dialog",
+      className: "dialog dialog--framed secret-dialog dialog--anchored-footer source-create-dialog",
       "aria-labelledby": "source-dialog-title",
     });
     dialog = current;
@@ -324,16 +324,13 @@ export function renderCredentialSources(context: Context) {
     const body = element("div", { className: "dialog-body" });
     const cancel = button("Cancel", closeDialog);
     const actions = element("div", { className: "dialog-actions" }, cancel);
-    current.append(
-      element(
-        "header",
-        { className: "dialog-header" },
-        element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
-        heading,
-      ),
-      body,
-      actions,
+    const header = element(
+      "header",
+      { className: "dialog-header" },
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
+      heading,
     );
+    current.append(element("div", { className: "dialog-content" }, header, body), actions);
     current.addEventListener("cancel", (event) => {
       event.preventDefault();
       closeDialog();

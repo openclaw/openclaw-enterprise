@@ -70,7 +70,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { responseTo } from "./console-action-helpers.ts";
+import { prepareDismissTap, responseTo } from "./console-action-helpers.ts";
 import { refocusHeld } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
@@ -1152,6 +1152,50 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     "Hidden credential",
     "synthetic-hidden-value",
   );
+
+  await t.test("Secret Close keeps its touch point while metadata loads", async (t) => {
+    const { page: phone } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width: 390, height: 700 }, isMobile: true, hasTouch: true },
+    });
+    await login(phone, fixture, secretsUrl(namespace));
+    const requests = apiRequests(phone, fixture.origin);
+    await phone.route("**/*", (route) =>
+      route.request().method() === "GET" ? route.fallback() : route.abort(),
+    );
+    const url = `${fixture.origin}${secretPath(namespace)}/${secret.id}`;
+    const heldDetail = await holdRequests(t, phone, url, {
+      method: "GET",
+      afterServer: true,
+      once: true,
+    });
+    const opener = phone.getByRole("button", { name: secret.name, exact: true });
+    await opener.tap();
+    const inspector = dialog(phone, secret.name);
+    const close = inspector.getByRole("button", { name: "Close", exact: true });
+    const heading = inspector.getByRole("heading", { name: secret.name, exact: true });
+    await inspector.getByText("Reading Secret metadata and consumers…", { exact: true }).waitFor();
+    assert.equal((await heldDetail.requested)?.status(), 200);
+    assert.equal(await hasFocus(heading), true);
+
+    const tapClose = await prepareDismissTap(inspector, close, "Close");
+
+    const response = responseTo(phone, "GET", url);
+    heldDetail.release();
+    assert.equal((await response).status(), 200);
+    await inspector.getByText("No current consumers were found.", { exact: true }).waitFor();
+    await nextFrames(phone);
+    assert.equal(await hasFocus(heading), true, "reading metadata preserves keyboard focus");
+    // Fail before a touch could activate the Delete Secret control at these coordinates.
+    await tapClose();
+    await inspector.waitFor({ state: "detached" });
+    assert.equal(await hasFocus(opener), true, "Close returns focus to the Secret row");
+    assert.ok(
+      requests.every((request) => request.method === "GET"),
+      "inspection is read-only",
+    );
+  });
+
   const [member] = fixture.provisionedAccounts;
   assert.ok(member, "the fixture must provision the Secret reader");
   const memberId = member.principal.id;
