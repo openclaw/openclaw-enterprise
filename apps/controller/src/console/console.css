@@ -956,7 +956,8 @@ p {
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
-.page-meta-id {
+.page-meta-id,
+.page-meta-id-controls {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -966,16 +967,16 @@ p {
   font-size: var(--text-xs);
 }
 /* The separator before the Namespace control; none when the control is hidden. */
-.page-meta-id::after {
+.page-meta-id-controls::after {
   content: "·" / "";
   margin-left: var(--space-1);
 }
-.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id::after {
+.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id-controls::after {
   content: none;
 }
 /* Below 1100 px the row can wrap, and a wrapped separator would trail the ID. */
 @media (max-width: 1100px) {
-  .page-meta-id::after {
+  .page-meta-id-controls::after {
     content: none;
   }
 }
@@ -993,6 +994,22 @@ p {
 }
 .page-meta-copied:empty {
   display: none;
+}
+@media (width > 760px) {
+  /* Use the header's existing bottom space for one line of copy feedback.
+     Longer messages can grow without covering the next control. */
+  .page-header--agent {
+    margin-bottom: var(--space-1);
+  }
+  .page-meta-id {
+    display: contents;
+  }
+  .page-meta-id [role="status"] {
+    order: 1;
+    flex-basis: 100%;
+    min-height: var(--space-5);
+    overflow-wrap: anywhere;
+  }
 }
 @media (max-width: 1100px) {
   /* Give the title its own row before the sidebar and actions squeeze it. On phones,
@@ -1092,6 +1109,12 @@ p {
   opacity: 0.6;
 }
 @media (max-width: 760px) {
+  .page-meta-id {
+    min-height: 2lh;
+  }
+  .page-meta-id-controls {
+    display: contents;
+  }
   .page-meta .namespace-selector--compact {
     width: 100%;
     max-width: 100%;
