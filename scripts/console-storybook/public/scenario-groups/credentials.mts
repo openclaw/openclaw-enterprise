@@ -53,7 +53,7 @@ export const credentialsThemeScenario = [
   "authMissing",
   "Custom missing credentials",
   "custom",
-] satisfies [string, keyof ReturnType<typeof credentialsRecoveryScenarios>, string, "custom"];
+] satisfies [string, keyof ReturnType<typeof credentialsScenarios>, string, "custom"];
 
 export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies, "draft">) {
   return {

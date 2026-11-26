@@ -25,7 +25,6 @@ import {
 import {
   credentialsOAuthScenarios,
   credentialsScenarios,
-  credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
 import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
@@ -1474,7 +1473,6 @@ const authoredScenarios = {
   }),
   ...credentialsScenarios({ draft, reservedConfigurationWrite }),
   ...agentDetailScenarios.saveAccess,
-  ...credentialsRecoveryScenarios({ draft }),
   nativeOperatorChat: {
     group: "Components/Native admin",
     name: "Operator chat",
