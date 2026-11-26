@@ -1130,7 +1130,7 @@ async function createDedicatedAgentForSandboxAdmission(
   return { namespaceId, agentId: agent.id };
 }
 
-test("a Strands revision connects Dedicated Codex to its own pinned listener", async () => {
+test("Strands admission binds Dedicated Codex to the revision listener", async () => {
   const { controller } = createController();
   const sandbox = new StrandsBoxSandboxDriver(
     {
@@ -1157,17 +1157,27 @@ test("a Strands revision connects Dedicated Codex to its own pinned listener", a
     transport: "stdio",
     url: "wss://other.example.test",
     authToken: "${APP_SERVER_URL}",
+    headers: { Host: "other.example.test" },
     mode: "yolo",
     approvalPolicy: "on-request",
   };
-  for (const appServer of [undefined, custom]) {
-    const values = {
+  const implicitMode = {
+    transport: "websocket",
+    url: "${APP_SERVER_URL}",
+    authToken: "${APP_SERVER_TOKEN}",
+  };
+  for (const [name, appServer] of [
+    ["No preset", undefined],
+    ["Custom transport", custom],
+    ["Implicit mode", implicitMode],
+  ] as const) {
+    const values: OpenClawConfigurationDocument = {
       ...codexSandboxConfiguration(),
       ...(appServer && { plugins: { entries: { codex: { config: { appServer } } } } }),
     };
     const target = await createDedicatedAgentForSandboxAdmission(
       controller,
-      appServer ? "Custom transport" : "No preset",
+      name,
       "Dedicated Codex",
       values,
     );
@@ -1182,8 +1192,9 @@ test("a Strands revision connects Dedicated Codex to its own pinned listener", a
     assert.equal(server.url, "${APP_SERVER_URL}");
     assert.equal(server.authToken, "${APP_SERVER_TOKEN}");
     assert.equal(server.tlsPeerCertificate, "${OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE}");
-    assert.equal(server.mode, appServer?.mode ?? "guardian");
-    assert.equal(server.approvalPolicy, appServer?.approvalPolicy);
+    assert.equal(Object.hasOwn(server, "headers"), false);
+    assert.equal(server.mode, appServer === custom ? custom.mode : "guardian");
+    assert.equal(server.approvalPolicy, appServer === custom ? custom.approvalPolicy : undefined);
     const saved = await controller.getConfiguration(
       "principal-admin",
       target.namespaceId,
