@@ -68,21 +68,24 @@ Create calls
 `createNamespacedConfigMap`, read calls `readNamespacedConfigMap`, replace calls
 `replaceNamespacedConfigMap` with the observed `resourceVersion`, and delete
 calls `deleteNamespacedConfigMap` with the observed object identity when
-available. Creation starts at generation `1`; each successful PATCH replaces
-the entire native document and advances the generation exactly once. Metadata
-and ConfigMap updates share OCC's existing transactional/compensating boundary;
-create, update and delete register their compensation before the write, so a write
-that applied but answered an error is undone as well. A failed create deletes only
-the exact Configuration `inspectExact` finds, a failed delete recreates the previous
-one only when it is gone, and a failed update restores the stored generation. When
-that check cannot read the backend, the request fails as a rollback failure (503).
-A Driver without `inspectExact`, such as the filesystem development Driver, compensates
-only a write it saw succeed. Compensations run after the failed transaction released
-its row locks, so delete and update compensations first re-read the metadata row and
-act only while it is unchanged: a Configuration another request deleted or updated
-in the meantime is left as that request committed it. If that re-read fails, the
-compensation proceeds as before. A write still in flight, or
-another change that lands between that re-read and the compensation, is not covered.
+available. Creation starts at generation `1`. PATCH replaces the native
+document and advances its stored generation by one. If the document remains ahead of
+OCC metadata after rollback, GET and fresh deployment return `503 DEPENDENCY_UNAVAILABLE`.
+See [how to recover with PATCH](../../reference/drivers/configuration.md#troubleshooting).
+
+OCC registers compensation before each Driver write and skips it when the
+PostgreSQL commit outcome is unknown. Even after a lost reply, `inspectExact`
+lets OCC attempt to undo a create on an exact match or a delete on confirmed
+absence. Without it, as with the filesystem development Driver, OCC attempts
+either only after reported success. Update compensation restores the prior
+document only if `read` finds the attempted generation. Failed compensation
+returns `503`.
+
+Rollback releases the row locks. Before restoring a deleted or updated document,
+OCC rereads the metadata and skips restoration if the record changed or
+disappeared. If the reread fails, restoration can proceed. A write still in
+flight or a change after the reread can race with restoration.
+
 Each Kubernetes call has its own 10-second limit. A Configuration or Secret create,
 update or delete gives all of its Kubernetes calls 12 seconds from the start of its API
 handler (`apps/controller/src/admission/mutation-deadline.ts:withMutationDeadline`;
@@ -193,8 +196,8 @@ PostgreSQL enforces the supported kind, positive generation, exact admitted
 snapshot shape, ownership, and Agent revision immutability. OCC records an
 attributable sanitized admission event and hands the Agent revision to
 Compute-owned reconciliation without resolving credential bytes or starting a
-gateway during HTTP admission. A development worker can subsequently create or
-reuse exactly one gateway for the owning Agent during Agent revision preparation.
+gateway during HTTP admission. During revision preparation, a development worker
+can create or reuse exactly one gateway for the owning Agent.
 When Kubernetes Compute owns that gateway, it creates a distinct immutable,
 Agent-owned ConfigMap from the admitted configuration and mounts it
 read-only at `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`. The gateway
@@ -202,9 +205,16 @@ wrapper (`GATEWAY_RUNTIME_ENTRYPOINT` in `kubernetes/runtime-entrypoints.ts`)
 starts OpenClaw with `OPENCLAW_CONFIG_READONLY=1` whenever that file's directory
 is not writable, so OpenClaw skips its last-known-good backup. It never mounts
 the mutable Configuration Driver ConfigMap; each changed admitted generation
-selects a new immutable snapshot and rolls the stable Agent gateway. Previous
-snapshots remain until Namespace deletion because earlier Pods may still mount
-them; safe earlier cleanup is deferred. Production workers also reconcile
+selects a new immutable snapshot and rolls the stable Agent gateway.
+
+During embedded repair or activation, Compute can update the gateway Deployment
+template and remove the older revision's gateway ConfigMap once its dedicated
+Harness Deployment and Agent Pods are gone. This can precede gateway Pod
+termination and successor readiness. Dedicated activation skips this early cleanup.
+Stop and retirement wait for that revision's gateway Pods to terminate.
+The saved Agent revision retains its configuration.
+
+Production workers also reconcile
 embedded OpenClaw and dedicated Codex Agent revisions, connecting each
 Agent-owned gateway only to its own active workload.
 

@@ -35,6 +35,11 @@ A Configuration has `id`, `namespaceId`, `kind`, `generation`, `values`, and
 checks returned resources against its metadata. A result for another Namespace,
 ID, kind, or generation cannot substitute for the requested resource.
 
+The optional `inspectExact(configuration)` must return the matching document,
+including its values. Return `undefined` only for confirmed absence. Throw on
+a mismatch or backend failure. Returning `undefined` for either could let OCC
+delete the metadata while the stored document survives.
+
 ### Optional validation
 
 `validateValues?(values)` validates native JSON without a Configuration identity
@@ -71,9 +76,11 @@ interface has no startup or disposal method. Resource operations begin when OCC
 accepts a request; shutting down the process does not delete configurations.
 
 OCC starts new configurations at generation 1 and checks generation before
-accepting a replacement. It reads and retains the prior document during an
-update or deletion so it can attempt to restore it on transaction rollback; after
-a create it registers deletion for rollback. OCC refuses deletion while an Agent
+accepting a replacement. Before calling `create`, OCC registers a rollback action
+to delete the new document. Before updating or deleting an existing document,
+OCC keeps a copy so it can attempt to restore it on rollback. If the document
+is already missing, OCC can delete the remaining metadata only when the
+Driver's optional `inspectExact` confirms its absence. OCC refuses deletion while an Agent
 still references the Configuration. This is not permission for callers to roll
 back generations themselves. See the [persistence flow](../../flows/configuration-driver/persistence-and-revisions.md).
 
@@ -94,9 +101,20 @@ the `AgentRevision`. Later storage updates or deletion cannot change that saved 
 | Symptom                                     | What to check                                                                                                                                                                |
 | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A read fails or returns an invalid resource | Check Namespace, ID, kind, and generation against OCC metadata; verify the selected backend can read the owned document. Do not adopt another object.                        |
-| An update conflicts                         | Reload the current generation and resubmit the intended change. If an OCC transaction failed, check the backend before retrying because restoration can fail independently.  |
+| An update conflicts                         | Reload the current generation before resubmitting. If the transaction failed, check the backend for failed restoration as described below.                                   |
 | Deletion is rejected                        | Find the Agent that still references the Configuration and change that reference through OCC before retrying.                                                                |
 | Storage is unavailable                      | Check selected-Driver startup settings, backend availability, and resource permissions. For Kubernetes use the [storage and RBAC reference](../configuration/kubernetes.md). |
+
+If rollback leaves the Driver document ahead of OCC metadata, Configuration
+GET and fresh deployment return `503 DEPENDENCY_UNAVAILABLE`. GET cannot
+reload the generation in this state.
+
+An authorized PATCH can recover a document 1 to 100 generations ahead if
+its ID, Namespace, kind and creation time match the metadata. Confirm the
+intended full replacement values before submitting them. If supplied,
+`expectedGeneration` must match the OCC metadata generation. OCC advances
+the metadata to one beyond the stored generation, so generation numbers
+can be skipped.
 
 ## Implementations
 
