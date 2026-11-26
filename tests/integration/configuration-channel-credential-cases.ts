@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Static } from "typebox";
 import { Check } from "typebox/value";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
@@ -212,7 +213,13 @@ async function deployableAgent(
     values,
     name,
     secretName,
-  }: { values: OpenClawConfigurationDocument; name: string; secretName: string },
+    executionMode,
+  }: {
+    values: OpenClawConfigurationDocument;
+    name: string;
+    secretName: string;
+    executionMode?: CreateAgentBody["executionMode"];
+  },
 ) {
   const created = await request("POST", collection, { kind: "agent", values });
   assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -222,6 +229,7 @@ async function deployableAgent(
   const agent = await request("POST", agentPath, {
     name,
     configurationId,
+    ...(executionMode === undefined ? {} : { executionMode }),
   } satisfies CreateAgentBody);
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
   assert.ok(Check(schemaContext, AgentResponse, agent.body));
@@ -474,13 +482,14 @@ export function registerConfigurationChannelCredentialCases(
     const context = await fixture({
       configurationDriver,
       computeDriver: kubernetesRules("compute-channel-bindings"),
-      computeImplementation: "kubernetes-local",
+      computeImplementation: "occ/kubernetes",
     });
-    const valid = runtimeSelected;
-    const { created, configurationId, item } = await deployableAgent(context, {
+    const valid = createHarnessConfiguration("codex", "gpt-5");
+    const { created, configurationId, item, agentPath } = await deployableAgent(context, {
       values: valid,
       name: "Channel bindings consumer",
       secretName: "channel-bindings-key",
+      executionMode: "dedicated",
     });
     const bothBindings = {
       SLACK_APP_TOKEN: await createEnvSourceBinding(context, "slack-app"),
@@ -536,24 +545,65 @@ export function registerConfigurationChannelCredentialCases(
       botRefusal,
       { label: "create with one binding" },
     );
-    // A policy reference can keep a Namespace Secret while both Slack tokens use Sources.
+    // A bound legacy Secret cannot supply a Slack policy ID. The caller enters the ID directly.
     const policySecret = await context.controller.createSecret(context.principalId, {
       namespaceId: context.namespace.id,
       name: "slack-allowed-user",
       value: "U0123456789",
     });
-    const policyBindings = {
-      ...bothBindings,
-      SLACK_ALLOWED_USER: { source: policySecret.ref, delivery: { type: "env" as const } },
-    };
+    const oldPolicy = slackWith({ dmPolicy: "allowlist", allowFrom: ["${SLACK_ALLOWED_USER}"] });
+    const oldPolicyBindings = { ...bothBindings, SLACK_ALLOWED_USER: { source: policySecret.ref } };
+    const oldPolicyRefusal = setting(
+      "channels.slack.allowFrom[0]",
+      "must use a literal Slack user ID",
+    );
+    assertRefused(
+      await context.request("POST", context.collection, {
+        kind: "agent",
+        values: oldPolicy,
+        secretBindings: oldPolicyBindings,
+      }),
+      oldPolicyRefusal,
+      { label: "Secret-backed Slack policy ID" },
+    );
+    const literalPolicy = slackWith({
+      dmPolicy: "allowlist",
+      allowFrom: ["U0123456789"],
+      channels: { C0123456789: { users: ["U0123456789"] } },
+    });
     const saved = await context.request("POST", context.collection, {
       kind: "agent",
-      values: slackWith({ dmPolicy: "allowlist", allowFrom: ["${SLACK_ALLOWED_USER}"] }),
-      secretBindings: policyBindings,
+      values: literalPolicy,
+      secretBindings: bothBindings,
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
     assert.ok(Check(schemaContext, ConfigurationResponse, saved.body));
-    assert.deepEqual(saved.body.data.secretBindings, policyBindings);
+    assert.deepEqual(saved.body.data.values, literalPolicy);
+    assert.deepEqual(saved.body.data.secretBindings, bothBindings);
+
+    // A Source may supply a token, but cannot supply a named account's user policy or a channel key.
+    for (const { channels, path, requirement } of [
+      {
+        channels: {
+          C0123456789: { users: [{ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }] },
+        },
+        path: "channels.slack.accounts.work.channels.C0123456789.users[0]",
+        requirement: "must use a literal Slack user ID",
+      },
+      {
+        channels: { "${SLACK_BOT_TOKEN}": { users: ["U0123456789"] } },
+        path: "channels.slack.accounts.work.channels",
+        requirement: "must use literal Slack channel IDs",
+      },
+    ]) {
+      assertRefused(
+        await context.request("PATCH", item, {
+          values: slackWith({ accounts: { work: { channels } } }),
+          secretBindings: bothBindings,
+        }),
+        setting(path, requirement),
+      );
+    }
 
     // Update that adds the references and keeps the Configuration's bindings (none).
     assertRefused(await context.request("PATCH", item, { values: slack }), appRefusal, {
@@ -662,6 +712,23 @@ export function registerConfigurationChannelCredentialCases(
       assert.equal(checked.status, 204, JSON.stringify(checked.body));
       assert.equal(checked.body, undefined);
     }
+
+    // The legacy row is still readable, but it cannot admit a revision with a policy placeholder.
+    const beforeCutover = await context.request("PATCH", item, {
+      values: literalPolicy,
+      secretBindings: oldPolicyBindings,
+    });
+    assert.equal(beforeCutover.status, 200, JSON.stringify(beforeCutover.body));
+    await writePastOcc(configurationDriver, configurationId, oldPolicy);
+    assert.equal((await context.request("GET", item)).status, 200);
+    const channel = new SlackChannelDriver(async () => assert.fail("Unexpected Slack request"));
+    context.controller.registerDriver(channel);
+    context.controller.selectDriver("channel", channel.id);
+    assertRefused(await context.request("POST", `${agentPath}/deploy`), oldPolicyRefusal);
+    const revisions = await context.request("GET", `${agentPath}/revisions`);
+    assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
+    assert.ok(Check(schemaContext, AgentRevisionListResponse, revisions.body));
+    assert.deepEqual(revisions.body.data, []);
   });
 
   // The Slack Channel Driver reads a token only from an env SecretRef with the default provider or

@@ -71,6 +71,10 @@ export function requireChannelSecretBindings(
   createError: SettingError,
 ): void {
   const channels = asRecord(configuration.channels) ?? {};
+  const policy = slackPolicyReferenceRefusal(channels.slack, "channels.slack");
+  if (policy !== undefined) {
+    throw createError(policy.path, policy.requirement);
+  }
   for (const provider of providers) {
     const refusal = channelReferenceRefusal(
       channels[provider],
@@ -90,6 +94,62 @@ export function requireChannelSecretBindings(
   if (slack !== undefined) {
     throw createError(slack.path, slack.requirement);
   }
+}
+
+// Reject references in Slack policy selections before the credential binding scan.
+// Channel identifiers are map keys, which the generic walk does not visit.
+function slackPolicyReferenceRefusal(value: unknown, path: string) {
+  const slack = asRecord(value);
+  const accounts = [
+    { settings: slack, path },
+    ...Object.entries(asRecord(slack?.accounts) ?? {}).map(([id, settings]) => ({
+      settings: asRecord(settings),
+      path: keyedSettingPath(`${path}.accounts`, id),
+    })),
+  ];
+
+  function selectionReference(selection: unknown): boolean {
+    if (typeof selection === "string") {
+      return selection.includes("${") || secretInputShorthandName(selection) !== undefined;
+    }
+    const ref = asRecord(selection);
+    return typeof ref?.source === "string" && typeof ref.id === "string";
+  }
+
+  function userListRefusal(selection: unknown, path: string) {
+    const index = Array.isArray(selection) ? selection.findIndex(selectionReference) : -1;
+    if (index !== -1 || selectionReference(selection)) {
+      return {
+        path: index === -1 ? path : `${path}[${index}]`,
+        requirement: "must use a literal Slack user ID",
+      };
+    }
+    return undefined;
+  }
+
+  for (const { settings, path } of accounts) {
+    const directMessage = userListRefusal(settings?.allowFrom, `${path}.allowFrom`);
+    if (directMessage !== undefined) {
+      return directMessage;
+    }
+    const channels = settings?.channels;
+    if (selectionReference(channels)) {
+      return { path: `${path}.channels`, requirement: "must use literal Slack channel IDs" };
+    }
+    for (const [id, channel] of Object.entries(asRecord(channels) ?? {})) {
+      if (selectionReference(id)) {
+        return { path: `${path}.channels`, requirement: "must use literal Slack channel IDs" };
+      }
+      const users = userListRefusal(
+        asRecord(channel)?.users,
+        `${keyedSettingPath(`${path}.channels`, id)}.users`,
+      );
+      if (users !== undefined) {
+        return users;
+      }
+    }
+  }
+  return undefined;
 }
 
 const configuredValue = (value: unknown): boolean =>

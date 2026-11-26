@@ -142,10 +142,12 @@ gateway-only credential values:
 
 On bundled Kubernetes Compute, every `${NAME}` reference and environment
 SecretRef in an enabled native channel needs a matching `secretBindings` entry.
-Active Slack credential inputs require a Credential Source. Ordinary settings
-such as Slack `allowFrom` can use a Namespace Secret or a Credential Source.
-This rule includes references inside other text (`xoxb-${NAME}`). Outside
-credential fields, a fallback (`${NAME:-text}`) can supply the value without a
+Active Slack credential inputs require a Credential Source. For the default and
+named accounts, save Slack user IDs directly in `allowFrom` and channel `users`
+lists. Use literal channel IDs as `channels` map keys. OCC refuses placeholders
+and SecretRefs for these selections. The supported `*` wildcard remains valid.
+This rule includes references inside other text (`xoxb-${NAME}`). In fields that
+accept references and do not hold credentials, a fallback (`${NAME:-text}`) can supply the value without a
 binding. `$${NAME}` is literal text.
 
 A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
@@ -297,7 +299,7 @@ For Slack setup, use a dedicated Agent with Kubernetes Compute and OCC TokenServ
 
 1. In **Credentials**, [create a ready static Source](../credential-sources/managed-static.md#console) for each Slack credential, or reuse an existing Source in the Agent's Namespace. Creation requires `credential_source:create` on that Namespace.
 2. Enable the native Slack plugin and select the Sources in the Agent's Channel or Configuration editor. Saving requires `configuration:create` or `configuration:update` and `credential_source:operate` on each selected Source. Preserve the Agent's model settings.
-3. Deploy the updated Agent with `agent:deploy` and exact Source `operate` permission. OCC grants the Agent service principal access during admission. The dedicated Gateway receives revision-scoped delivery copies; the Harness does not receive the Slack credentials. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md).
+3. Deploy the updated Agent with `agent:deploy` and exact Source `operate` permission. The Agent service principal also needs exact Source `operate`. Managed transactional Native IAM can grant it during admission. Kubernetes Compute projects revision-scoped copies only into the dedicated Gateway. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md).
 
 Teams message ingress requires a separately deployed and reviewed public Bot
 Framework `/api/messages` webhook. Enterprise does not provide that webhook;

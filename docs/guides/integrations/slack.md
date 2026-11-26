@@ -89,7 +89,9 @@ Sources, choose channels and people, save, deploy, and verify a threaded reply.
 
 To replace a token, update its Credential Source or select a replacement Source in the draft,
 then deploy a new version. Recreate existing Namespace Secret tokens as Sources and update their
-bindings. Ordinary policy references such as `allowFrom` can keep their current bindings.
+bindings. If a Slack policy uses a placeholder in `allowFrom`, channel `users`,
+or a channel map key, enter or reselect the IDs directly in Configuration. Remove
+the old policy binding when no other setting uses it.
 
 If you manage Configuration through the API, use the
 [native Slack Socket Mode example](../../reference/configuration/secrets.md#native-channel-configuration).
