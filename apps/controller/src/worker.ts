@@ -4804,11 +4804,7 @@ export class ControllerWorker {
     });
     for (const source of sources) {
       this.assertCredentialWithdrawalOwner(revision, source);
-      await this.withClaimHeartbeat(claim, (signal) =>
-        withdraw(revision, source, signal, {
-          recheck: true,
-        }),
-      );
+      await this.withClaimHeartbeat(claim, (signal) => withdraw(revision, source, signal));
     }
   }
 

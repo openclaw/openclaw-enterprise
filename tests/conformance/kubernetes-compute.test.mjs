@@ -1476,7 +1476,7 @@ test("staged Compute prepares mixed model and HTTP Plugin credential projections
     withdrawn,
   );
   assert.deepEqual(
-    await driver.withdrawCredentialSource(revision, pluginSource, signal, { recheck: true }),
+    await driver.withdrawCredentialSource(revision, pluginSource, signal),
     withdrawn,
   );
   const removal = {

@@ -428,13 +428,6 @@ interface CredentialPolicyReducerOperations {
   ): Promise<CredentialPolicyObservation | undefined>;
 }
 
-export interface CredentialPolicyWithdrawalOptions {
-  readonly recheck?: boolean;
-  readonly reducePolicy?: (
-    context: ProxyRevisionContext,
-  ) => Promise<"withdrawn" | "pending" | "retire-runtime">;
-}
-
 /** Material-free change event; a missing version does not prevent delivery. */
 export interface CredentialUpdateNotification {
   readonly sourceRef: CredentialSourceReference;

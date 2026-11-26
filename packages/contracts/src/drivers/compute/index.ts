@@ -8,10 +8,7 @@ import type {
   CredentialDeploymentConfiguration,
   CredentialProjection,
 } from "../../credential-deployment.ts";
-import type {
-  CredentialPolicyWithdrawalOptions,
-  EgressInstallation,
-} from "../credential-proxy/index.ts";
+import type { EgressInstallation } from "../credential-proxy/index.ts";
 import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
@@ -511,18 +508,15 @@ export interface ComputeDriver extends Driver {
    */
   resolveSandboxNamespace?(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>>;
   /**
-   * Revokes `source` from the revision's paired Sandbox through the selected Credential
-   * Gateway. Returns `revoked` only after the gateway confirms revocation, and `absent` when
-   * the revision has no Sandbox or attachment left to revoke. Required for withdrawal.
-   * `options.recheck` is passed through to the gateway's withdrawal context. Throws OCC's
-   * CredentialWithdrawalRefusedError when retrying cannot help: a configuration that cannot
-   * reach the revision's Sandbox, or an object the Driver does not own.
+   * Withdraws the Source's admitted bindings from the exact revision. Repeated calls target
+   * the same bindings. Returns `revoked` or `absent` after confirmation. Required for withdrawal.
+   * Throws OCC's CredentialWithdrawalRefusedError for unsupported configuration or an object
+   * the Driver does not own.
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
     source: Readonly<StoredCredentialSource>,
     signal: AbortSignal,
-    options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
   /**
    * Withdraws the Harness exposure a Sandbox Driver created for Compute's status read of a

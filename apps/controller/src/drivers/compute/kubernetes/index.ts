@@ -8780,12 +8780,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   /**
-   * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
-   * derived exactly as provisioning created it, so the gateway withdraws and confirms whether or
-   * not the Kubernetes Namespace still exists: the provider's Workspace record outlives the
-   * Namespace, and only the gateway can tell a missing Sandbox from a hidden one (finding 1693).
-   * A configuration that cannot reach the Sandbox, or an object this Driver does not own, is a
-   * CredentialWithdrawalRefusedError: retrying cannot change it.
+   * Withdraws the exact revision's admitted bindings for one Source through the paired Proxy.
+   * The Proxy confirms removal against the Sandbox that Compute originally prepared.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,

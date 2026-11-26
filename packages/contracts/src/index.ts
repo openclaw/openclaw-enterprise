@@ -31,7 +31,6 @@ export type {
   CredentialPolicyReduction,
   CredentialPolicyObservation,
   CredentialPolicyReducer,
-  CredentialPolicyWithdrawalOptions,
   EgressRef,
   EgressSourceKey,
   ExecutionAdmission,
