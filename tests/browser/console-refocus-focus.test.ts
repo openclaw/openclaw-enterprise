@@ -415,6 +415,10 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   await detailHeading.waitFor();
   await view.waitFor();
   await waitForIdleFetches(page);
+  const detailScrollY = await page.evaluate(() => window.scrollY);
+  assert.equal(await fullyInView(detailHeading), true, "the Agent heading starts fully in view");
+  const detailHeadingTop = await detailHeading.evaluate((node) => node.getBoundingClientRect().top);
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
 
   const read = await holdRequests(t, page, agentsUrl, {
     once: true,
@@ -430,6 +434,27 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
       "the Controller admitted the unchanged list",
     );
     await page.locator(heldView).waitFor();
+    // Sample after native history restoration and before the reader moves focus.
+    const heldScrollY = await page.evaluate(
+      () => new Promise<number>((resolve) => requestAnimationFrame(() => resolve(window.scrollY))),
+    );
+    assert.equal(
+      heldScrollY,
+      detailScrollY,
+      "Back keeps the outgoing Agent at its previous scroll position",
+    );
+    assert.equal(
+      await fullyInView(detailHeading),
+      true,
+      "the held Agent heading stays fully in view",
+    );
+    await status.waitFor();
+    assert.equal(await fullyInView(status), true, "the delayed status is fully in view");
+    assert.equal(
+      await detailHeading.evaluate((node) => node.getBoundingClientRect().top),
+      detailHeadingTop,
+      "the delayed status leaves the held Agent heading in place",
+    );
     await waitForEnabled(selector);
     assert.equal(await hasFocus(selector), false, "focus starts outside the Namespace selector");
     for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
@@ -444,6 +469,7 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   await page.waitForURL(listUrl);
   await opened.waitFor();
   await waitForIdleFetches(page);
+  assert.equal(await status.count(), 0, "the status leaves with the held Agent");
   assert.equal(await viewTag(page), "kept", "Back reused the unchanged list");
   assert.equal(await hasFocus(selector), true, "Back keeps focus on the Namespace selector");
   assert.equal(
