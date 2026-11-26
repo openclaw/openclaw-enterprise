@@ -2941,6 +2941,146 @@ test(
     });
 
     await t.test(
+      "removing a Gateway binding preserves the same Source's Proxy policy on redeploy",
+      async () => {
+        const retirementClients = Reflect.get(compute, "apiClients");
+        const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+        const configuration = await request(
+          "POST",
+          `${base}/configurations`,
+          {
+            kind: "agent",
+            values: { ...values, cron: { webhookToken: "${GW_HOOK_TOKEN}" } },
+            secretBindings: { GW_HOOK_TOKEN: { source: nativeSource.ref } },
+          },
+          201,
+        );
+        const agent = await request(
+          "POST",
+          `${base}/agents`,
+          {
+            name: "Gateway binding removed, Proxy retained",
+            configurationId: configuration.id,
+            executionMode: "dedicated",
+            harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
+            credentialSources: [{ sourceId: nativeSource.id }],
+          },
+          201,
+        );
+        const agentPath = `${base}/agents/${agent.id}`;
+        const networking = `${agentPath}/sandbox-policy/networking`;
+        await request("PATCH", `${networking}/editing`, { enabled: true }, 200);
+        await request("PUT", networking, { expectedVersion: 1, additions: [grant] }, 200);
+        try {
+          assert.ok(Reflect.set(compute, "apiClients", admissionClients));
+          const first = await request("POST", `${agentPath}/deploy`, {}, 202);
+          assert.ok(Reflect.set(compute, "apiClients", retirementClients));
+          const revision = await state.read((view) =>
+            view.revisions.findRevision(namespaceId, agent.id, first.id),
+          );
+          assert.ok(revision?.credentialDeployment);
+          assert.equal(revision.secretBindings?.GW_HOOK_TOKEN?.source.id, nativeSource.id);
+          assert.equal(revision.credentialDeployment.bindings[0]?.sourceRef.id, nativeSource.id);
+
+          // The first revision's activation and external Sandbox are controlled fixture state.
+          // Stop still runs through the actual API, Worker, Compute and Proxy cleanup path.
+          const targetName = `credential-target-${digest(agent.id)}-rev-${digest(revision.id)}`;
+          const sandboxId = "controlled-gateway-removal-sandbox";
+          const target = compute.manifest(
+            "v1",
+            "ConfigMap",
+            targetName,
+            {
+              namespaceId,
+              agentId: agent.id,
+              servicePrincipalId: revision.servicePrincipalId,
+              revisionId: revision.id,
+            },
+            { name: kubernetesNamespace, plane: "control" },
+          );
+          stopTransport.objects.set(stopTransport.key("ConfigMap", targetName), {
+            ...target,
+            metadata: {
+              ...target.metadata,
+              uid: "controlled-gateway-removal",
+              resourceVersion: "1",
+            },
+            immutable: true,
+            data: { sandboxId },
+          });
+          const sandboxName = sandbox.harnessResource!({
+            namespace: placedNamespace,
+            revision,
+          }).resourceName;
+          nativeTransport.seed(nativeSource.id);
+          nativeTransport.seedSandbox(revision, sandboxName, sandboxId);
+          await pool.query(
+            "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE idempotency_key=$1 AND state='queued'",
+            [`agent_revision:${revision.id}:reconcile`],
+          );
+          const active = await state.transact((unit) =>
+            unit.agents.compareAndSetActiveRevision(namespaceId, agent.id, undefined, revision.id),
+          );
+          assert.equal(active?.activeRevisionId, revision.id);
+
+          await request(
+            "PATCH",
+            `${base}/configurations/${configuration.id}`,
+            { expectedGeneration: configuration.generation, values, secretBindings: {} },
+            200,
+          );
+          await request("POST", `${agentPath}/stop`, undefined, 202);
+          const worker = createWorker();
+          try {
+            await worker.start();
+            const stopped = await waitFor("Gateway removal Agent Stop to complete", async () => {
+              const { rows } = await pool.query(
+                "SELECT state, reason_code FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='stopped' ORDER BY created_at DESC LIMIT 1",
+                [namespaceId, agent.id],
+              );
+              return ["succeeded", "failed_permanent"].includes(rows[0]?.state)
+                ? rows[0]
+                : undefined;
+            });
+            assert.equal(stopped.state, "succeeded", stopped.reason_code);
+          } finally {
+            await worker.stop();
+          }
+
+          assert.ok(Reflect.set(compute, "apiClients", admissionClients));
+          const redeployed = await request("POST", `${agentPath}/deploy`, {}, 202);
+          const next = await state.read((view) =>
+            view.revisions.findRevision(namespaceId, agent.id, redeployed.id),
+          );
+          assert.ok(next?.credentialDeployment);
+          // This verifies OCC's admitted Gateway and Proxy policy, not native request enforcement.
+          assert.equal(next.gatewayTokenServiceInstanceId, undefined);
+          assert.deepEqual(next.secretBindings ?? {}, {});
+          assert.deepEqual(
+            next.credentialDeployment.bindings.map(({ sourceRef }) => sourceRef.id),
+            [nativeSource.id],
+          );
+          const requests = [
+            {
+              binary: grant.binary,
+              host: grant.host,
+              ports: grant.ports,
+              requestPolicy: { type: "http", method: "POST", path: "/v1/responses" },
+            },
+          ];
+          assert.deepEqual(next.credentialDeployment.injectionPolicies, [
+            { bindingRef: "model", allowedRequests: requests },
+          ]);
+          assert.deepEqual(next.credentialDeployment.networkAccessPolicy.allowed, [
+            { binary: grant.binary, host: grant.host, ports: grant.ports },
+          ]);
+        } finally {
+          assert.ok(Reflect.set(compute, "apiClients", retirementClients));
+        }
+      },
+    );
+
+    await t.test(
       "a missing tenant Namespace cannot confirm a mixed Gateway and Proxy withdrawal",
       async () => {
         const retirementClients = Reflect.get(compute, "apiClients");

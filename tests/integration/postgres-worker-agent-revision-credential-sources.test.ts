@@ -477,6 +477,81 @@ async function gatewaySourceCandidate(
 }
 
 cases.revisionTest(
+  "the Worker denies reuse of a staged Gateway credential after Source authority is revoked",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, controller, core, runtime, transport, namespaceId, namespace, stagedWrites } =
+      scenario;
+    const { source, custodyKey, custody, agent, revision } = await gatewaySourceCandidate(
+      fixture,
+      scenario,
+    );
+    const grant = await fixture.observerPool.query<{ id: string }>(
+      `SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2`,
+      [agent.servicePrincipalId, source.id],
+    );
+    assert.equal(grant.rowCount, 1);
+
+    const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+    const patchDeployment = clients.apps.patchNamespacedDeployment!;
+    const readSecret = clients.core.readNamespacedSecret!;
+    let applies = 0;
+    let reuseReads = 0;
+    clients.apps.patchNamespacedDeployment = async (request) => {
+      if (!request.body.metadata.name.startsWith("gateway-")) {
+        return patchDeployment(request);
+      }
+      applies += 1;
+      const applied = await patchDeployment(request);
+      if (applies === 1) {
+        // An uncertain apply creates the real candidate Deployment and stage, then causes a retry.
+        throw new Error("controlled Gateway Deployment apply failure");
+      }
+      return applied;
+    };
+    clients.core.readNamespacedSecret = async (request) => {
+      const secret = await readSecret(request);
+      if (applies === 1 && request.name === stagedWrites[0] && reuseReads === 0) {
+        reuseReads += 1;
+        assert.ok(transport.objects.has(transport.key("Secret", request.name, namespace)));
+        // The retry passed earlier IAM checks. Revoke only after Compute finds the existing stage,
+        // so denial now depends on the authorization callback immediately before Deployment apply.
+        await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, grant.rows[0]!.id);
+      }
+      return secret;
+    };
+
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "AUTHORIZATION_DENIED");
+    assert.equal(reuseReads, 1, "the denial must follow the existing stage read");
+    assert.equal(applies, 1, "revocation must prevent the retry's Gateway Deployment mutation");
+    assert.equal(stagedWrites.length, 1, "the retry must reuse the already staged revision copy");
+    assert.deepEqual(core.secrets.get(custodyKey), custody, "the Source owner retains custody");
+    const denial = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->'authorization' AS authorization,
+              details - '__occAuditMetadata' AS details
+       FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_id=$2 AND kind='authorization_denial'`,
+      [namespaceId, agent.id],
+    );
+    assert.deepEqual(denial.rows, [
+      {
+        actor_id: fixture.actor.id,
+        authorization: {
+          principalId: agent.servicePrincipalId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: source.id },
+        },
+        details: { revisionId: revision.id },
+      },
+    ]);
+  },
+);
+
+cases.revisionTest(
   "the Worker reports a withdrawn Gateway Source before resolving or staging credentials",
   async (fixture, context) => {
     const scenario = await gatewaySourceWorkerFixture(fixture, context);
