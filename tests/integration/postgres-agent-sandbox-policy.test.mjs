@@ -436,20 +436,14 @@ test(
             restarted.selectDriver(capability, driver.id);
           }
           if (scenario.noAdmission) {
-            // Use the existing external package's genuine Sandbox capability, with its
-            // real factory validation. Neither optional policy member is implemented.
+            // Use an external Sandbox with neither optional policy member.
             const external =
-              await import("../fixtures/driver-packages/protected-execution-driver/index.ts");
-            const registration = external.createDriver({
+              await import("../fixtures/driver-packages/external-sandbox-driver/index.ts");
+            const driver = external.createDriver({
               id: "deployment-no-policy",
               implementation: "deployment-no-policy-fixture",
-              configuration: {
-                endpoint: "https://127.0.0.1:443",
-                ca: "unused-admission-fixture-ca",
-              },
+              configuration: {},
             });
-            t.after(() => registration.close?.());
-            const driver = registration.capabilities.sandbox;
             assert.ok(driver);
             assert.equal(driver.networkPolicy, undefined);
             assert.equal(driver.admitNetworkPolicy, undefined);

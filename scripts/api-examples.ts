@@ -243,7 +243,6 @@ const oauthClientInput = {
   displayName: "Example provider client",
   clientId: "example-client",
   issuer: "https://accounts.example.com",
-  tokenUrl: "https://accounts.example.com/token",
   tokenEndpointAuthMethod: "client_secret_basic",
 };
 const oauthClient = {
@@ -256,7 +255,7 @@ const connectionTemplateInput = {
   mode: "manual",
   issuer: oauthClient.issuer,
   authorizationUrl: "https://accounts.example.com/authorize",
-  tokenUrl: oauthClient.tokenUrl,
+  tokenUrl: "https://accounts.example.com/token",
   scopes: ["profile.read"],
   destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
@@ -269,6 +268,7 @@ const createdConnectionTemplate = {
     ...connectionTemplateInput,
     templateId: connectionTemplateId,
     authorizationParameters: {},
+    issuerVerification: { tokenEndpointAuthMethods: ["client_secret_basic"] },
     version: 1,
     createdAt: time,
   },
@@ -284,7 +284,7 @@ const discovered = {
   issuers: [oauthClient.issuer],
   issuer: oauthClient.issuer,
   authorizationUrl: connectionTemplateInput.authorizationUrl,
-  tokenUrl: oauthClient.tokenUrl,
+  tokenUrl: connectionTemplateInput.tokenUrl,
   requestedScopes: ["profile.read"],
   resourceScopes: ["profile.read"],
   tokenEndpointAuthMethods: ["client_secret_basic"],
@@ -308,7 +308,7 @@ const oauthSource = {
     requestedScopes: connectionTemplateInput.scopes,
     grantedScopes: connectionTemplateInput.scopes,
     issuer: oauthClient.issuer,
-    tokenUrl: oauthClient.tokenUrl,
+    tokenUrl: connectionTemplateInput.tokenUrl,
     clientId: oauthClient.clientId,
     destinations: connectionTemplateInput.destinations,
   },

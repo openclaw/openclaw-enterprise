@@ -1100,6 +1100,7 @@ export function createShell({
       observabilityLink?.remove();
       observabilityLink = null;
     },
+    focusLeaveFeedback,
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
     },

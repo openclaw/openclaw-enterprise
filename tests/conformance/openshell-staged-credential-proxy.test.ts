@@ -14,6 +14,7 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { OpenShellCredentialDeliveryRefusedError } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
 import { isNativeStagedRepositoryRevision } from "../../packages/contracts/src/credential-deployment.ts";
 import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/repository-network-policy.ts";
@@ -3048,8 +3049,8 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   };
   f.sandbox.spec.policy = structuredClone(baseline);
   f.state.policyStatus = {
-    revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: baseline },
-    active_version: 1,
+    revision: { version: 1, status: "POLICY_STATUS_PENDING", policy: baseline },
+    active_version: 0,
   };
   let resolutions = 0;
   const input = {
@@ -3086,12 +3087,51 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     },
   };
   await assert.rejects(f.proxy.configureDeployment(overlapping, input), DependencyUnavailableError);
+  const configure = () => f.proxy.configureDeployment(context, input);
+  const pending = { name: ActivationPendingError.name, code: "CREDENTIAL_ACTIVATION_PENDING" };
+  const initial = record(f.state.policyStatus.revision);
+  // A pending revision must still contain one of the approved policies.
+  initial.policy = {
+    ...baseline,
+    network_policies: {
+      ...baseline.network_policies,
+      broad: { name: "broad", endpoints: [{ host: "github.com", ports: [443] }] },
+    },
+  };
+  await assert.rejects(configure, OpenShellCredentialDeliveryRefusedError);
+  initial.policy = baseline;
+  initial.status = "POLICY_STATUS_FAILED";
+  await assert.rejects(configure, OpenShellCredentialDeliveryRefusedError);
+  // Stock OpenShell reports the initial idle policy before it has an active version.
+  initial.status = "POLICY_STATUS_PENDING";
+  await assert.rejects(configure, pending);
   assert.equal(resolutions, 0);
-  const configured = await f.proxy.configureDeployment(context, input);
+  assert.equal(f.state.profile, undefined);
+  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.state.attaches.length, 0);
+  assert.equal(f.state.policyUpdates.length, 0);
+  initial.status = "POLICY_STATUS_LOADED";
+  f.state.policyStatus.active_version = 1;
+  const configured = await configure();
   assert.deepEqual(configured.credentialProjections, [
     { bindingRef: "repository", environment: "GITHUB_TOKEN", placeholder: { kind: "runtime" } },
   ]);
   assert.equal(resolutions, 1);
+  assert.equal(f.state.policyUpdates.length, 1);
+  // The combined policy now exists at v2 while v1 is still active on the same Sandbox.
+  const combined = record(f.state.policyStatus.revision);
+  assert.equal(combined.version, 2);
+  combined.status = "POLICY_STATUS_PENDING";
+  f.state.policyStatus.active_version = 1;
+  await assert.rejects(configure, pending);
+  combined.status = "POLICY_STATUS_LOADED";
+  await assert.rejects(configure, pending);
+  f.state.policyStatus.active_version = 2;
+  assert.deepEqual(await configure(), configured);
+  assert.equal(resolutions, 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
   assert.equal(f.state.policyUpdates.length, 1);
   // A resumed preparation must use the reduced effective policy even though the immutable
   // revision still contains the withdrawn Plugin. Recreate a missing Repository Provider.

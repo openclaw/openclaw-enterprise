@@ -332,8 +332,11 @@ export async function prepareOccTokenServiceProviderCopy(input: {
   let resolved: ResolvedCredential;
   try {
     resolved = await input.resolveCredential();
-  } catch {
+  } catch (error) {
     signal.throwIfAborted();
+    if (error instanceof ActivationPendingError && error.code === "CREDENTIAL_ACTIVATION_PENDING") {
+      throw error;
+    }
     refuse();
   }
   if (!resolved.credential || !resolved.version) {

@@ -21,7 +21,10 @@ BEGIN
           AND NOT i.retired
       )
     )
-    SELECT FROM legacy s WHERE
+    -- A protected Git-only revision can retain an enrollment without a Source.
+    SELECT 1 FROM referenced_revisions r WHERE (r.admitted_spec->'egress_plan') ? 'repositoryGit'
+    UNION ALL
+    SELECT 1 FROM legacy s WHERE
       EXISTS (
         SELECT FROM referenced_revisions r WHERE r.namespace_id = s.namespace_id AND (
           (r.admitted_spec #>> '{harness_auth,method}' = 'credential_source'

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-24"
-last_updated_session: authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516
+updated: "2026-11-25"
+last_updated_session: authoring-run/54f2bbef-5382-4917-8b10-9f9feba47c47
 ---
 
 # Managed OpenShell workload flow
@@ -132,8 +132,7 @@ its service for the app-server transport.
 
 ### 3. Select storage paths and connect the node
 
-For a saved native Git grant, Kubernetes Compute freezes the inspected image
-and the Agent's Gateway node URL. `repositoryRuntimeInputs` also admits staged
+For a saved native Git grant, OCC checks the selected Sandbox and Credential Proxy, then asks Kubernetes Compute to qualify the Harness. Compute freezes the inspected image and the Agent's Gateway node URL. `repositoryRuntimeInputs` also admits staged
 version 8 for Dedicated Codex or OpenClaw when the selected managed Sandbox,
 Credential Proxy, canonical Repository binding, immutable image and inspected
 Workspace route agree. A missing release pin or changed route blocks deployment;
@@ -142,14 +141,27 @@ Gateway image in the Agent worker role. The Sandbox verifies the node setup
 against that URL and checks the exact Workspace rule during policy readback.
 For staged Repository delivery, its creation digest binds the fixed baseline
 while excluding Proxy-owned dynamic rules; observation separately verifies the
-complete configured and loaded credential policy. The Worker revalidates the
-saved Repository binding before preparation and activation. Withdrawal removes
+complete configured and loaded credential policy. While OpenShell loads an
+approved Repository policy, the Credential Proxy leaves activation pending.
+The Worker rechecks the same Sandbox. Credential delivery requires an active,
+approved policy, and Harness release requires the combined policy and ready Providers.
+The Worker revalidates the
+saved Repository binding before preparation and activation. A shared Source may cover other repositories. Only the Agent's admitted grants enter its Sandbox policy. Withdrawal removes
 that Agent's effective Repository binding without retiring a shared Source.
 The generated Gateway pairs the node identified by the revision's binding.
 If an installed binding disappears, becomes invalid, or changes, the Gateway
 drops its acknowledgment and stops the process that holds the old File Transfer
 policy. The restart reads the current binding and rebuilds the policy from the
 admitted configuration. A changed image or route blocks startup.
+
+For a Dedicated OpenClaw Agent with an OCC TokenService Git Source, the staged
+Sandbox launcher selects the Runner's read-only Git configuration and passes
+the worker its admitted repository paths and the attached Provider's stable
+`GITHUB_TOKEN` placeholder. Stock Git verifies
+HTTPS with the managed Supervisor's mounted CA bundle and asks the image's
+credential helper for the exact repository. OpenShell substitutes the
+installation token only on the admitted request. This path
+requires an OpenClaw worker build that supports node-owned execution settings.
 
 `deploy/runtime/openshell-bootstrap.cjs:prepareManaged` creates the private
 home at `/opt/oce/managed/private/home` and links retained workspace, generated images
@@ -173,17 +185,19 @@ selects `/sandbox/oce/workspace`. See
 
 ### 4. Retain or delete
 
-`ManagedOpenShellSandbox.cleanup` checks the Sandbox owner and revision. For the
-current running revision, it calls `StopSandbox` and reads the Sandbox again to
-confirm that it stopped. A stop retains Sandbox storage. Cleanup for an older
-revision leaves the successor workload running.
+`apps/controller/src/drivers/sandbox/openshell/managed.ts:cleanup` checks the
+Sandbox owner and revision. For the current running revision, it calls
+`StopSandbox` and reads the Sandbox again to confirm that it stopped. A stop
+retains Sandbox storage. Cleanup for an older revision leaves the successor
+workload running.
 
 When a stopped revision has staged credentials, Compute reads the saved Sandbox
 target and calls `CredentialProxyDriver.removeDeployment`. The native Proxy
 verifies the target is stopped, then updates the stored policy to remove
 endpoints that reference the revision's credential Providers. It reads back the
 stored policy and confirms the Sandbox is still stopped before detaching those
-Providers. It checks the resulting Sandbox attachments. Compute deletes the saved target after Proxy cleanup succeeds.
+Providers. It checks the resulting Sandbox attachments. Compute deletes the
+saved target after Proxy cleanup succeeds.
 TokenService retains the Sources. See the
 [Credential Proxy lifecycle](../reference/drivers/credential-proxy.md#lifecycle).
 
@@ -217,6 +231,14 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-26 11:37: Trace Credential Proxy policy reduction before managed Sandbox Provider detachment. (authoring-run/9e7eba0e-3ac2-4ff9-acbb-585d79e9b823 - 601dde30e759198c4db615a105846c4f3c0e6ad7)
+
+- 2026-11-25 23:14: Use the managed Supervisor CA bundle for Dedicated OpenClaw Git HTTPS. (authoring-run/54f2bbef-5382-4917-8b10-9f9feba47c47 - 34c49c709384dbaa815bdd931eb22c75778052ad)
+
+- 2026-11-25 15:17: Trace activation while OpenShell loads the approved Repository policy. (authoring-run/3a63e1a9-f687-4e19-9a63-f0b30ad5c0b2 - 2c1e993be144fa534cedf292aa82c5e54455b9eb)
+
+- 2026-11-25 06:17: Trace Compute placement and per-Agent grants for shared Git Sources. (authoring-run/ee533e3c-94ac-4b41-8155-e9b2afede620 - 2b7559218658c2260ae534e96a86d956df100c04)
 
 - 2026-11-24 05:22: Trace staged Repository runtime qualification. (authoring-run/522ebc0c-e6e7-4b4a-9225-54318de68516 - e06270a6179d60c2aa88647bf8e71382589e81bb)
 

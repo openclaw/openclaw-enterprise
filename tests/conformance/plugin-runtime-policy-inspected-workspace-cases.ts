@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, matchesGlob } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInContext } from "node:vm";
 
 import { gatewayRuntimeEntrypoint } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -216,10 +216,15 @@ export function registerInspectedWorkspaceCases() {
     t.after(() => rm(directory, { recursive: true, force: true }));
     const pinPath = "apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
     const target = join(directory, pinPath);
-    const source = await readFile(new URL(`../../${pinPath}`, import.meta.url), "utf8");
+    const sourceUrl = new URL(`../../${pinPath}`, import.meta.url);
+    const source = await readFile(sourceUrl, "utf8");
     await mkdir(dirname(target), { recursive: true });
+    // Load the rendered release module against the same Driver dependencies as the controller.
+    await symlink(new URL("../compute", sourceUrl), join(dirname(target), "../compute"), "dir");
+    const nodePolicy = "openshell-workspace-node-policy.ts";
+    await symlink(new URL(nodePolicy, sourceUrl), join(dirname(target), nodePolicy));
     await writeFile(target, source);
-    const render = (gateway: string, agent: string) =>
+    const render = (gateway: string, agent: string, openClaw: string) =>
       spawnSync(
         process.execPath,
         [
@@ -228,31 +233,49 @@ export function registerInspectedWorkspaceCases() {
           ),
           gateway,
           agent,
+          openClaw,
         ],
         { cwd: directory, encoding: "utf8" },
       );
 
     const gateway = `sha256:${enrolled}`;
     const agent = `sha256:${replacement}`;
-    assert.equal(render("", "").status, 0);
+    const openClaw = `sha256:${"3".repeat(64)}`;
+    assert.equal(render("", "", "").status, 0);
     assert.equal(await readFile(target, "utf8"), source);
-    for (const [gatewayInput, agentInput] of [
-      [gateway, ""],
-      ["runtime:tag", agent],
+    for (const [gatewayInput, agentInput, openClawInput] of [
+      [gateway, "", openClaw],
+      ["runtime:tag", agent, ""],
+      [gateway, agent, "runtime:tag"],
     ] as const) {
-      const refused = render(gatewayInput, agentInput);
+      const refused = render(gatewayInput, agentInput, openClawInput);
       assert.equal(refused.status, 1, refused.stderr);
-      assert.match(refused.stderr, /exact Gateway and Agent image manifest digests/u);
+      assert.match(refused.stderr, /image manifest digest/u);
       assert.equal(await readFile(target, "utf8"), source);
     }
 
-    const pinned = render(gateway, agent);
-    assert.equal(pinned.status, 0, pinned.stderr);
-    const content = await readFile(target, "utf8");
-    assert.ok(content.includes(`gatewayDigest: "${gateway}"`));
-    assert.ok(content.includes(`agentDigest: "${agent}"`));
-    assert.match(content, /const pin: InspectedWorkspaceRelease \| undefined = Object.freeze/u);
-    assert.equal(await readFile(new URL(`../../${pinPath}`, import.meta.url), "utf8"), source);
+    const images = {
+      gateway: `registry.example.test/gateway@${gateway}`,
+      agent: `registry.example.test/agent@${agent}`,
+    };
+    for (const [codexGateway, codexAgent, openClawGateway] of [
+      [gateway, agent, ""],
+      ["", "", openClaw],
+      [gateway, agent, openClaw],
+    ] as const) {
+      await writeFile(target, source);
+      const pinned = render(codexGateway, codexAgent, openClawGateway);
+      assert.equal(pinned.status, 0, pinned.stderr);
+      const built = (await import(
+        `${pathToFileURL(target).href}?codex=${Boolean(codexGateway)}&openclaw=${Boolean(openClawGateway)}`
+      )) as typeof import("../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts");
+      assert.equal(built.hasInspectedWorkspaceImages(images), Boolean(codexGateway));
+      assert.equal(
+        built.hasInspectedOpenClawImage(`registry.example.test/runtime@${openClaw}`),
+        Boolean(openClawGateway),
+      );
+      assert.equal(built.hasInspectedOpenClawImage(images.gateway), false);
+    }
   });
 
   test("inspected workspace starts for ordinary setup then selects the exact revision-owned node", async () => {

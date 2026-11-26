@@ -166,6 +166,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNamespaceGitHubAppClients";
   }
   if (count === 96 && completedCount > 96) {
+    return "preOAuthEndpointAuthority";
+  }
+  if (count === 97 && completedCount > 97) {
+    return "preSharedGitSourceRepositoryGrants";
+  }
+  if (count === 98 && completedCount > 98) {
     return "preLegacyProxySourceRetirement";
   }
   if (count === completedCount) {

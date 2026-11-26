@@ -1,3 +1,4 @@
+import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
 import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
@@ -1318,7 +1319,9 @@ function convergenceDeadlineResultData(
 function uniqueSecretRefs(bindings: SecretBindings): SecretReference[] {
   const refs = new Map<string, SecretReference>();
   for (const { source } of Object.values(bindings)) {
-    refs.set(`${source.namespaceId}\u0000${source.id}`, source);
+    if (source.kind === "secret") {
+      refs.set(`${source.namespaceId}\u0000${source.id}`, source);
+    }
   }
   return [...refs.values()];
 }
@@ -1651,6 +1654,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
+      oauthIssuer: oauthIssuerOperations,
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
       preparedTokens: this.preparedTokens,
@@ -6137,7 +6141,7 @@ export class ControllerWorker {
           bindings: repository.bindings,
           grants,
         },
-      );
+      )?.credentialRequests;
       const injection = policy.injectionPolicies.find(
         ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
       );

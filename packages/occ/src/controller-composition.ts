@@ -9,7 +9,11 @@ import {
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 import { createNamespaceOperations, type NamespaceOperations } from "./namespace-operations.ts";
-import { createConnectionAdministration } from "./connection-administration.ts";
+import {
+  createConnectionAdministration,
+  type OAuthIssuerOperations,
+} from "./connection-administration.ts";
+import { createCredentialClientAdministration } from "./credential-client-administration.ts";
 import { CONNECTION_OPERATION_TIMEOUT_MS, createOAuthConsent } from "./oauth-consent.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
@@ -20,6 +24,7 @@ import {
 import {
   createRepositoryPolicyOperations,
   type InstallationRepositoryAdmission,
+  type StagedRepositoryCredentialAdmission,
   type SupportsStagedRepositoryRecipient,
   validateRepositoryBrokerNetworkProxy,
 } from "./repository-policy.ts";
@@ -53,15 +58,12 @@ import { createDeviceAuthorizationFlow } from "./device-authorization-flow.ts";
 import type {
   Agent,
   AgentRevision,
-  AdmittedRepositoryBinding,
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
-  DeploymentRequestMatch,
   HarnessAuthSnapshot,
-  GitHubAppInstallationCredentialSource,
   Installation,
   InstallationCapabilities,
   InstallationDeploymentInventory,
@@ -71,7 +73,6 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PresetDraftDefinition,
-  RepositoryNetworkGrant,
   BackendDefinition,
   RevisionHarnessDescriptor,
   ResourceKind,
@@ -149,6 +150,7 @@ import { createConfigurationOperations } from "./configuration-operations.ts";
 import { createServiceAccountOperations } from "./service-account-operations.ts";
 
 export interface ControllerOptions {
+  readonly oauthIssuer?: OAuthIssuerOperations;
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
@@ -168,12 +170,7 @@ export interface ControllerOptions {
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
   /** Bundled composition verifies finite Git Source coverage against the current Repo registry. */
-  readonly repositoryCredentialAdmission?: (input: {
-    readonly namespaceId: string;
-    readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-    readonly bindings: readonly AdmittedRepositoryBinding[];
-    readonly grants: readonly RepositoryNetworkGrant[];
-  }) => readonly DeploymentRequestMatch[] | undefined;
+  readonly repositoryCredentialAdmission?: StagedRepositoryCredentialAdmission;
   /** Qualify the exact selected native recipient without extending a Driver contract. */
   readonly supportsStagedRepositoryRecipient?: SupportsStagedRepositoryRecipient;
   /** Composition qualifies the selected implementations against the complete deployment policy. */
@@ -214,7 +211,6 @@ export interface ControllerOptions {
   readonly configuredServiceAccountDriverId?: string;
   /** Installation startup `runtime.nativeWorkerSupport`; never set from the API. */
   readonly nativeWorkerSupport?: NativeWorkerSupport;
-  /** Installation startup `drivers.credential_proxy.requestCapacity`; defaults when absent. */
 }
 export type ReconciliationOperation = PlatformOperation;
 // The bundled Kubernetes Compute Driver's implementations: the Installation default and the
@@ -231,7 +227,6 @@ interface ControllerDispatch
     Pick<NamespaceOperations, "getNamespace">,
     Pick<ReturnType<typeof createAgentQueries>, "getRevision">,
     Pick<ReturnType<typeof createSandboxPolicyOperations>, "getAgentSandboxPolicy">,
-    Pick<ReturnType<typeof createConnectionAdministration>, "withOAuthClientSecret">,
     Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
   refreshTokenServiceSource(
@@ -452,6 +447,7 @@ function createCredentialServices({
   drivers,
   publicController,
   credentialSourceDelivery,
+  oauthIssuer,
   deviceCipher,
 }: {
   installationId: string;
@@ -460,9 +456,10 @@ function createCredentialServices({
   drivers: Pick<DriverRegistry, "hasSelection" | "enabledPluginDrivers">;
   publicController: Pick<
     ControllerDispatch,
-    "selectedDriver" | "getNamespace" | "withOAuthClientSecret" | "refreshTokenServiceSource"
+    "selectedDriver" | "getNamespace" | "refreshTokenServiceSource"
   >;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
+  oauthIssuer: ControllerOptions["oauthIssuer"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
 }) {
   const credentialSourceOperations: CredentialSourceOperations = createCredentialSourceOperations({
@@ -546,6 +543,14 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    oauthIssuer,
+    timestamp: resourceValues.timestamp,
+  });
+  const credentialClientAdministration = createCredentialClientAdministration({
+    installationId,
+    transactions,
+    authority,
     tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
     tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
@@ -559,12 +564,14 @@ function createCredentialServices({
     iamPolicyDriver: iamPolicy.iamPolicyDriver,
     selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
     currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
-    withOAuthClientSecret: (client, use) => publicController.withOAuthClientSecret(client, use),
+    withOAuthClientSecret: credentialClientAdministration.withOAuthClientSecret,
+    oauthIssuer,
     timestamp: resourceValues.timestamp,
   });
   return {
     agentCredentialAccess,
     connectionAdministration,
+    credentialClientAdministration,
     credentialSourceOperations,
     deviceAuthorization,
     managedCredentialSources,
@@ -639,6 +646,7 @@ export function createControllerComposition(
     drivers,
     publicController,
     credentialSourceDelivery: options.credentialSourceDelivery,
+    oauthIssuer: options.oauthIssuer,
     deviceCipher,
   });
   const { agentCredentialAccess, managedCredentialSources } = credentials;

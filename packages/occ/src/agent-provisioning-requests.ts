@@ -1015,7 +1015,9 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     networkProxy: AgentNetworkProxy | undefined,
   ): Promise<void> {
     for (const binding of Object.values(bindings ?? {})) {
-      await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
+      if (binding.source.kind === "secret") {
+        await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
+      }
     }
     if (networkProxy?.credentialSecretId !== undefined) {
       const selected = await authorizeProvisioningSecretSource(state, principalId, namespaceId, {

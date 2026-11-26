@@ -16,8 +16,8 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 
 | Resource            | Purpose and owner                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connection Template | Defines approved OAuth consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                                       |
-| OAuth2Client        | OCC records the application's issuer, ID, endpoints, and authentication method. TokenService holds any confidential client secret.                                |
+| Connection Template | Defines verified OAuth endpoints and approved consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                |
+| OAuth2Client        | OCC records the application's issuer, ID, and authentication method. TokenService holds any confidential client secret.                                           |
 | GitHubAppClient     | OCC records the App ID. TokenService uses its signing key to mint installation tokens.                                                                            |
 | CredentialSource    | Identifies an enrolled credential in a Namespace. TokenService owns its lifecycle and any Template or client references. OCC exposes metadata and authorizes use. |
 
@@ -130,7 +130,8 @@ Repository grants permit Read or Read/write Git. Branch protection is outside Cr
 ## 1.0 scope and tradeoffs
 
 - OCC TokenService can use OpenShell's embedded Proxy or a compatible standalone Proxy such as iron-proxy, with routing enforced by the Sandbox. OpenShell TokenService uses native OpenShell delivery. Each composition requires qualification.
-- Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers require separate Source authorization.
+- Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console consumers require separate Source authorization.
+- The proposed [Gateway startup credentials RFC](../20261125-gateway-startup-credentials.md) would let an operator explicitly bind a static Source to the dedicated OpenClaw Gateway. That binding authorizes a usable copy outside Credential Proxy request restrictions. This path is not implemented; Slack Channel startup still uses Namespace Secrets.
 - Credential-free metadata uses separately admitted Sandbox network access. For example, an Agent can send `GET https://api.github.com/repos/acme/widgets` and receive the upstream response. No Source, credential injection, OCC callback, or response filtering is required. This retires the [earlier protected metadata offer](tokenservice-cutover-contract.md#proposed-change-to-protected-github-metadata).
 - The protected exchanges and their `LegacyEgressProxyDriver` are removed. The paired native Driver supplies `credential_proxy`. Credential Gateway and Credential Refresh Driver selection is already unsupported; the OpenClaw Gateway continues to serve the Agent.
 
@@ -140,10 +141,11 @@ Companions preserve earlier decisions, including the Codex held-launcher release
 
 - [TokenService cutover contract](tokenservice-cutover-contract.md) and the [original client registration, custody, and rotation proposal](client-registration-and-custody.md)
 - [OAuth client selection and consent](oauth-client-associations.md)
+- [OAuth endpoint authority](../20261125-oauth-endpoint-authority.md) supersedes the earlier client endpoint binding.
 - [Initial OAuth grant scopes and renewal](../0027-agent-oauth-connections/contracts.md#client-authentication-and-account-custody)
 - [Installation ownership and delivery](installation-credential-ownership.md) and [TokenService identity and updates](token-service-instance-and-updates.md)
 - [Source registration and lifecycle](credential-source-ownership.md)
 - [Worker preparation and activation](worker-credential-configuration.md), including [optional Plugin Source withdrawal](worker-credential-configuration.md#amendment-continue-without-a-withdrawn-optional-plugin-source)
 - [Codex device login and account projection](codex-device-login.md)
 - [Shared GitHub App tokens and Agent repository access](github-app-template-policy.md)
-- Proposed [Dedicated OpenClaw Git RFC](../20261124-credential-cutover-pat-and-native-git/index.md). [#7224](https://github.com/openclaw/openclaw-enterprise/pull/7224) implemented [PAT enrollment](../../../docs/reference/credential-sources.md#use-a-codex-pat-source), [ServiceAccount issuance and revocation](../../../docs/reference/service-accounts.md#account-and-credential-lifecycle), and [Dedicated Codex Git](../../../docs/reference/repository-credentials/access-levels.md#native-git-delivery). Dedicated OpenClaw Git remains unsupported.
+- Proposed [Dedicated OpenClaw Git RFC](../20261124-credential-cutover-pat-and-native-git/index.md). [#7224](https://github.com/openclaw/openclaw-enterprise/pull/7224) implemented [PAT enrollment](../../../docs/reference/credential-sources.md#use-a-codex-pat-source), [ServiceAccount issuance and revocation](../../../docs/reference/service-accounts.md#account-and-credential-lifecycle), and [Dedicated Codex Git](../../../docs/reference/repository-credentials/access-levels.md#native-git-delivery). [#7346](https://github.com/openclaw/openclaw-enterprise/pull/7346) added Git delivery for qualified Dedicated OpenClaw runtimes.

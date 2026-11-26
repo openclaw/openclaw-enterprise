@@ -231,9 +231,7 @@ export function installationControllerOptions(
         !(sandbox instanceof OpenShellSandboxDriver) ||
         !(proxy instanceof OpenShellCredentialProxyDriver) ||
         proxy.id !== sandbox.id ||
-        proxy.implementation !== sandbox.implementation ||
-        harness.mode !== "dedicated" ||
-        harness.id !== "codex"
+        proxy.implementation !== sandbox.implementation
       ) {
         return false;
       }

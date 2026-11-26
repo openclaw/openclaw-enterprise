@@ -115,13 +115,7 @@ export async function oauthCredentialSourceMetadata(
     source.consent.version,
   );
   const client = await view.credentialClients.find(source.consent.oauthClientId);
-  if (
-    !version ||
-    !client ||
-    client.kind !== "oauth2" ||
-    client.issuer !== version.issuer ||
-    client.tokenUrl !== version.tokenUrl
-  ) {
+  if (!version || !client || client.kind !== "oauth2" || client.issuer !== version.issuer) {
     throw new ResourceStateConflictError("The original OAuth consent registration is unavailable.");
   }
   return Object.freeze({

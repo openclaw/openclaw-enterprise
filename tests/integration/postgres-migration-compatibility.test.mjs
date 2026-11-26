@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -1579,7 +1579,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preLegacyProxySourceRetirement"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2018,7 +2020,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preLegacyProxySourceRetirement"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2468,6 +2472,94 @@ test(
       { code: "55000" },
     );
     assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "OAuth endpoint authority refuses confidential Client custody before dropping its address",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "oauth_endpoint_authority", { prefix: 96 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const confidentialId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'OAuth fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'OAuth fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ','fixture')",
+      [installationId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_url,token_endpoint_auth_method,token_service_instance_id,created_at)
+       VALUES($1,'oauth2','Confidential','https://accounts.google.com','confidential','https://oauth2.googleapis.com/token','client_secret_post',$2,now())`,
+      [confidentialId, instanceId],
+    );
+    const before = await historySnapshot(db);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        const failure = error.cause ?? error;
+        assert.equal(failure.code, "55000");
+        assert.match(failure.message, /complete private-material cleanup/);
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(
+      (await db.app.query("SELECT token_url FROM occ.oauth_clients WHERE id=$1", [confidentialId]))
+        .rows,
+      [{ token_url: "https://oauth2.googleapis.com/token" }],
+    );
+
+    // Simulate the old release completing private-material cleanup before removing the row.
+    await db.app.query("DELETE FROM occ.oauth_clients WHERE id=$1", [confidentialId]);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preOAuthEndpointAuthority",
+    });
+    const starter = (
+      await db.app.query(
+        "SELECT t.id,v.issuer_verification FROM occ.connection_templates t JOIN occ.oauth_connection_template_versions v ON v.template_id=t.id AND v.version=t.current_oauth_version WHERE t.display_name='Google OAuth'",
+      )
+    ).rows[0];
+    assert.equal(starter.issuer_verification, null);
+    const publicId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_endpoint_auth_method,created_at) VALUES($1,'oauth2','Public','https://accounts.google.com','public','none',now())",
+      [publicId],
+    );
+    const matches = async (version) =>
+      (
+        await db.app.query("SELECT occ.oauth_client_matches_template($1,$2,$3,$4) AS matches", [
+          namespaceId,
+          starter.id,
+          version,
+          publicId,
+        ])
+      ).rows[0].matches;
+    assert.equal(await matches(1), false, "the seeded version remains unverified");
+    await db.app.query(
+      `INSERT INTO occ.oauth_connection_template_versions(template_id,version,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,issuer_verification,created_at)
+       SELECT template_id,2,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,'{"tokenEndpointAuthMethods":["none"]}'::jsonb,now()
+       FROM occ.oauth_connection_template_versions WHERE template_id=$1 AND version=1`,
+      [starter.id],
+    );
+    assert.equal(await matches(2), true, "verified methods admit the same-issuer client");
+    assert.deepEqual(
+      (
+        await db.migrator.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_schema='occ' AND table_name='oauth_clients' AND column_name IN ('token_url','revocation_url')",
+        )
+      ).rows,
+      [],
+    );
   },
 );
 
@@ -3159,7 +3251,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preLegacyProxySourceRetirement"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3298,7 +3392,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preLegacyProxySourceRetirement"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3618,6 +3714,98 @@ async function assertLegacyProxySourceRetirement(context, db) {
     )
   ).rows;
 
+  // Old OpenShell could admit finite online Git without any Source in the revision.
+  // The Source-backed enrollment above is already retired when this path blocks.
+  const gitRevision = `rev_${randomUUID()}`;
+  const repositoryGit = {
+    driver: { id: "github", implementation: "github" },
+    deadlineWallMs: Date.now() + 600_000,
+    bindings: [
+      {
+        repositoryRef: "repository",
+        profile: "github-repository",
+        backendId: "github",
+        grant: { providerInstanceId: "github", repositoryId: "1000", grantId: "repo-grant" },
+      },
+    ],
+  };
+  const gitPlan = {
+    ...plan,
+    id: randomUUID(),
+    execution: {
+      ...execution,
+      revisionId: gitRevision,
+      executionId: randomBytes(24).toString("base64url"),
+    },
+    routes: [],
+    repositoryGit,
+    repositoryGitAuthorization: "online-request",
+  };
+  const [gitSnapshot] = (
+    await db.app.query(
+      `INSERT INTO occ.agent_revisions
+          (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+       SELECT $1,namespace_id,agent_id,3,(admitted_spec - 'credential_sources') || $2::jsonb,backend_id,now()
+       FROM occ.agent_revisions WHERE id=$3
+       RETURNING admitted_spec`,
+      [
+        gitRevision,
+        {
+          harness_auth: { method: "runtime", protectedExecutionVersion: 5 },
+          execution_admission: { version: 5, mode: "protected" },
+          repository_credentials: repositoryGit,
+          egress_plan: gitPlan,
+        },
+        protectedRevision,
+      ],
+    )
+  ).rows;
+  await db.app.query(
+    "UPDATE occ.agents SET active_revision_id=$2,desired_runtime_state='running' WHERE id=$1",
+    [agent, gitRevision],
+  );
+  await assertRetirementBlocked();
+  await db.app.query(
+    `INSERT INTO occ.egress_installations
+      (sender_id,sandbox_id,namespace_id,revision_id,agent_id,installation)
+     VALUES($1,'migration-sandbox',$2,$3,$4,$5)`,
+    [
+      driverId,
+      namespace,
+      gitRevision,
+      agent,
+      {
+        sender: source.sender,
+        plan: gitPlan,
+        sandboxId: "migration-sandbox",
+        installedAt: new Date().toISOString(),
+        enforcement: {
+          instanceId: "migration-sandbox",
+          configurationId: gitPlan.driver.configurationId,
+          policyHash: "a".repeat(64),
+          authorityScope: "execution",
+          repositoryGitRecipient: {
+            authorization: "online-request",
+            deliveryProfile: "github_repository",
+            providerId: "git-provider",
+            attachmentEpoch: "epoch",
+          },
+        },
+      },
+    ],
+  );
+  await db.app.query(
+    "UPDATE occ.agents SET active_revision_id=NULL,desired_runtime_state='stopped' WHERE id=$1",
+    [agent],
+  );
+  await assertRetirementBlocked();
+  const retiredGitEnrollment = (
+    await db.app.query(
+      "UPDATE occ.egress_installations SET retired=true WHERE revision_id=$1 RETURNING *",
+      [gitRevision],
+    )
+  ).rows;
+
   assert.deepEqual(await runHistoryMigration(db, "production"), {
     ok: true,
     history: "preLegacyProxySourceRetirement",
@@ -3627,8 +3815,13 @@ async function assertLegacyProxySourceRetirement(context, db) {
   assert.deepEqual((await db.app.query("SELECT * FROM occ.credential_sources")).rows, managed);
   assert.deepEqual((await db.app.query("SELECT * FROM occ.secrets")).rows, secretMetadata);
   assert.deepEqual(
-    (await db.app.query("SELECT * FROM occ.egress_installations")).rows,
-    retiredEnrollment,
+    (
+      await db.app.query(
+        `SELECT i.* FROM occ.egress_installations i
+         JOIN occ.agent_revisions r ON r.id=i.revision_id ORDER BY r.revision_number`,
+      )
+    ).rows,
+    [...retiredEnrollment, ...retiredGitEnrollment],
   );
   assert.equal(
     (await db.app.query("SELECT credential_sources FROM occ.agents WHERE id=$1", [agent])).rows[0]
@@ -3637,11 +3830,12 @@ async function assertLegacyProxySourceRetirement(context, db) {
   );
   assert.deepEqual(
     (
-      await db.app.query("SELECT admitted_spec FROM occ.agent_revisions WHERE id=$1", [
-        protectedRevision,
-      ])
+      await db.app.query(
+        "SELECT admitted_spec FROM occ.agent_revisions WHERE id IN ($1,$2) ORDER BY revision_number",
+        [protectedRevision, gitRevision],
+      )
     ).rows,
-    snapshot,
+    [...snapshot, gitSnapshot],
   );
   await context.test("The cleaned Namespace accepts deletion", async (httpContext) => {
     const controller = await startController(httpContext, { databaseUrl: db.applicationUrl });
@@ -3717,7 +3911,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preLegacyProxySourceRetirement"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preLegacyProxySourceRetirement"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

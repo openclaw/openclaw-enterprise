@@ -107,18 +107,23 @@ export type PrepareStagedRepositorySource = (input: {
     }
   | undefined;
 
+export type StagedRepositoryCredentialAdmission = (input: {
+  readonly namespaceId: string;
+  readonly source: Readonly<GitHubAppInstallationCredentialSource>;
+  readonly bindings: readonly AdmittedRepositoryBinding[];
+  readonly grants: readonly RepositoryNetworkGrant[];
+}) =>
+  | {
+      readonly credentialRequests: readonly DeploymentRequestMatch[];
+      readonly publicNetworkRequests: readonly DeploymentRequestMatch[];
+    }
+  | undefined;
+
 interface RepositoryPolicyDependencies {
   readonly installationId: string;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
   readonly supportsStagedRepositoryRecipient: SupportsStagedRepositoryRecipient | undefined;
-  readonly repositoryCredentialAdmission:
-    | ((input: {
-        readonly namespaceId: string;
-        readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-        readonly bindings: readonly AdmittedRepositoryBinding[];
-        readonly grants: readonly RepositoryNetworkGrant[];
-      }) => readonly DeploymentRequestMatch[] | undefined)
-    | undefined;
+  readonly repositoryCredentialAdmission: StagedRepositoryCredentialAdmission | undefined;
   readonly stagedRepositoryCeiling: StagedRepositoryCeiling | undefined;
   readonly prepareStagedRepositorySource: PrepareStagedRepositorySource | undefined;
   readonly validateDeploymentGitHubAppClient: (
@@ -759,13 +764,12 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     const selection = { namespaceId, source, bindings: repository.resolution.bindings };
     const configured = dependencies.repositoryNetworkPolicyCeiling;
     const projectCeiling = dependencies.stagedRepositoryCeiling;
-    const requests = (grants: readonly RepositoryNetworkGrant[]) =>
-      approve({ ...selection, grants });
+    const admit = (grants: readonly RepositoryNetworkGrant[]) => approve({ ...selection, grants });
     const approvesAll = (grants: readonly RepositoryNetworkGrant[]) =>
-      (requests(grants)?.length ?? 0) > 0;
+      (admit(grants)?.credentialRequests.length ?? 0) > 0;
     return {
       ceiling: projectCeiling ? projectCeiling({ ...selection, ceiling: configured }) : configured,
-      requests,
+      admit,
       authority: projectCeiling
         ? {
             allows: (grant: RepositoryNetworkGrant) => approvesAll([grant]),
@@ -850,7 +854,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       return undefined;
     }
     validateRepositoryDeliveryProfiles(resolved.resolution.bindings);
-    let requests: readonly DeploymentRequestMatch[] | undefined;
+    let stagedAdmission: ReturnType<StagedRepositoryCredentialAdmission>;
     const stagedPolicy =
       staged && stagedRepositoryAuthority(agent.namespaceId, staged.source, resolved);
     if (staged) {
@@ -866,8 +870,8 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
       if (dependencies.stagedRepositoryCeiling === undefined) {
         assertSelectedRepositoryGrants(staged.grants, resolved.resolution);
       }
-      requests = stagedPolicy?.requests(staged.grants);
-      if (!requests?.length || !resolved.unchanged()) {
+      stagedAdmission = stagedPolicy?.admit(staged.grants);
+      if (!stagedAdmission?.credentialRequests.length || !resolved.unchanged()) {
         throw new ResourceStateConflictError(
           "The staged repository Source and saved grants cannot be admitted.",
         );
@@ -894,7 +898,7 @@ export function createRepositoryPolicyOperations(dependencies: RepositoryPolicyD
     return {
       credentials: immutableCopy(snapshot),
       requiresNetworkPolicy: resolved.resolution.requiresNetworkPolicy,
-      requests,
+      stagedAdmission,
       stagedPolicy,
     };
   }

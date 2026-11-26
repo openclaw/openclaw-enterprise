@@ -21,6 +21,7 @@ import {
 } from "../helpers/provider-http-transport.ts";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { controlDeviceIssuer } from "../helpers/device-token-service.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
@@ -94,6 +95,7 @@ test(
       `http://127.0.0.1:${issuer.port}`,
     );
     const authSecret = "postgres-device-login-test-signing-secret";
+    const consentIssuer = "https://accounts.example.test";
     const secretDriver = createTestSecretDriver();
     const options = {
       label: "device-login",
@@ -101,6 +103,14 @@ test(
       secretDriver,
       authSecret,
       controllerOptions: {
+        oauthIssuer: fixtureOAuthIssuer(
+          {
+            issuer: consentIssuer,
+            authorizationUrl: `${consentIssuer}/authorize`,
+            tokenUrl: `${consentIssuer}/token`,
+          },
+          ["none"],
+        ),
         now: () => new Date(clock.wallNow()),
         authenticationStateEncryptionSecret: authSecret,
         iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
@@ -180,7 +190,6 @@ test(
       `/connection-templates/${staticTemplate.json().data.id}`,
     );
     assert.equal(removedStatic.statusCode, 204, removedStatic.body);
-    const consentIssuer = "https://accounts.example.test";
     const template = await first.inject("POST", "/connection-templates", {
       namespaceId,
       displayName: "Shared state OAuth",
@@ -196,7 +205,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer: consentIssuer,
-      tokenUrl: `${consentIssuer}/token`,
       displayName: "Public test client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",

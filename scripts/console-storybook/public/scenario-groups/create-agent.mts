@@ -1936,7 +1936,7 @@ export const createAgentProvisioningScenarios = {
     actions: [...repositoryForm, { selector: "#repository-search", value: "application" }],
     repositoryOptions: repositorySearchOptions,
     description:
-      "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+      "Exact names appear first, followed by prefixes and substrings. The search field names the repository Enter will select. After each selection, the query stays in place and the next name appears.",
   },
   createRepositoriesNoMatches: {
     group: "Pages/Create Agent",

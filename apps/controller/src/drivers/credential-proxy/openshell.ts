@@ -21,6 +21,7 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  ActivationPendingError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
@@ -48,6 +49,7 @@ import {
 import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
 import type {
   OpenShellGatewayClient,
+  OpenShellPolicyStatus,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 import type { OpenShellNativeProvider } from "../token-service/openshell.ts";
@@ -664,15 +666,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           { workspace: target.workspace, sandbox: target.name },
           context.signal,
         );
-        if (
-          status.state !== "POLICY_STATUS_LOADED" ||
-          status.activeVersion !== status.version ||
-          ![repositoryPolicy.idle, repositoryPolicy.generic, repositoryPolicy.combined].some(
-            (policy) => sameOpenShellPolicy(status.policy, policy),
-          )
-        ) {
-          throw new OpenShellCredentialDeliveryRefusedError();
-        }
+        requireLoadedRepositoryPolicy(status, repositoryPolicy);
         if (!sameOpenShellPolicy(status.policy, repositoryPolicy.combined)) {
           if (!target.sandbox.resourceVersion || !target.client.updatePolicy) {
             throw new DependencyUnavailableError(
@@ -699,6 +693,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         })),
       };
     } catch (attachmentError) {
+      if (
+        attachmentError instanceof ActivationPendingError &&
+        attachmentError.code === "CREDENTIAL_ACTIVATION_PENDING"
+      ) {
+        throw attachmentError;
+      }
       throw await failureAfterCleanup(
         attachmentError,
         "Native credential attachment failed and Provider cleanup is unconfirmed.",
@@ -1188,15 +1188,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       { workspace: target.workspace, sandbox: target.name },
       context.signal,
     );
-    if (
-      status.state !== "POLICY_STATUS_LOADED" ||
-      status.activeVersion !== status.version ||
-      ![policies.idle, policies.generic, policies.combined].some((policy) =>
-        sameOpenShellPolicy(status.policy, policy),
-      )
-    ) {
-      throw new OpenShellCredentialDeliveryRefusedError();
-    }
+    requireLoadedRepositoryPolicy(status, policies);
     await this.readSandboxTarget(context, expected);
     return policies;
   }
@@ -1417,6 +1409,31 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     );
     assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
     return { ...scope, sandbox };
+  }
+}
+
+function requireLoadedRepositoryPolicy(
+  status: OpenShellPolicyStatus,
+  policies: ReturnType<typeof openShellRepositoryDeploymentPolicy>,
+): void {
+  if (
+    ![policies.idle, policies.generic, policies.combined].some((policy) =>
+      sameOpenShellPolicy(status.policy, policy),
+    )
+  ) {
+    throw new OpenShellCredentialDeliveryRefusedError();
+  }
+  if (
+    status.state === "POLICY_STATUS_PENDING" ||
+    (status.state === "POLICY_STATUS_LOADED" && status.activeVersion < status.version)
+  ) {
+    throw new ActivationPendingError(
+      "CREDENTIAL_ACTIVATION_PENDING",
+      "OpenShell is loading the admitted Repository policy.",
+    );
+  }
+  if (status.state !== "POLICY_STATUS_LOADED" || status.activeVersion !== status.version) {
+    throw new OpenShellCredentialDeliveryRefusedError();
   }
 }
 

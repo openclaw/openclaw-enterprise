@@ -7206,6 +7206,20 @@ export async function renderAgentDetail(
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
+    // Chrome can leave a textarea with selected text offscreen on Tab. Require its
+    // input-device information to preserve scripted preventScroll focus.
+    editor.addEventListener("focus", (event) => {
+      if (!("sourceCapabilities" in event) || !event.sourceCapabilities) {
+        return;
+      }
+      if (document.activeElement !== editor || editor.selectionStart === editor.selectionEnd) {
+        return;
+      }
+      const box = editor.getBoundingClientRect();
+      if (box.top >= window.innerHeight || box.bottom <= 0) {
+        editor.scrollIntoView({ block: "center", inline: "nearest" });
+      }
+    });
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
@@ -7718,7 +7732,7 @@ export async function renderAgentDetail(
   }
 
   view.append(dangerZone);
-  context.setTabNavigation((next) => {
+  context.setTabNavigation((next, onBlocked) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const requestedTab = next.searchParams.get("tab");
     const nextTab =
@@ -7744,7 +7758,9 @@ export async function renderAgentDetail(
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      showLeaveBlock();
+      showLeaveBlock(
+        selectedTab === "repositories" && !draftWriteInFlight() ? onBlocked : undefined,
+      );
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });

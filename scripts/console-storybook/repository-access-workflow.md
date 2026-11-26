@@ -23,6 +23,15 @@ The shared catalog offers `example/application` as collaborator-only Git access,
 Git repository choices. The existing `RepositoryEditor` and loading/refusal
 stories retain their older profile fixtures.
 
+## Leave an unsaved selection
+
+In the standalone Repository Collaborator preview, open **Channels**, then
+return to **Repositories**. Select `example/application` and scroll up until
+the save actions are out of view. Press Back. The selection stays checked.
+The explanation takes focus, with **Save repository access** and **Cancel**
+in view. Press Shift+Tab to reach **Cancel**. Cancel the edit, then check
+that Back opens **Channels**. Repeat at phone width.
+
 ## Positive and negative checks
 
 1. In the empty story, confirm no selected repositories and a Contributor Agent
@@ -72,14 +81,22 @@ discovery denied**, which display their own status instead.
 
 ## Repository search keyboard
 
-Open **Pages / Create Agent / Repository Exact Search**
-(`pages-create-agent--repository-exact-search`). With `application` in the search field and
-both exact matches unchecked, press and hold Enter. Only `omega/application`
-should become selected, even while the key repeats. Release Enter and press it
-again to select `zeta/application`. Reset the story, then use Enter to commit
-text with an input method in the search field. Committing text must neither
-select a repository nor submit the form. These checks change only the unsaved
-selection and do not grant access or create an Agent.
+Open **Pages / Create Agent / Exact repository names before prefix matches**
+(`pages-create-agent--repository-exact-search`). Search for `application` with
+both exact matches unchecked. The cue names `omega/application` as the next selection.
+Press and hold Enter. Only `omega/application` becomes selected while the key
+repeats, and the cue changes to `zeta/application`.
+
+Release Enter and press Escape. Press Enter once to reopen the results. The cue
+again names `zeta/application`. Release Enter and press it again to select that
+repository. The cue now names `alpha/application-api`. Check at phone width
+that you can read the next name below the search field even when its row is
+out of view. Select the last two matches. The field now reports **4 selected**.
+
+Reset the story and use Enter to commit text with an input method in the search
+field. Committing text must neither select a repository nor submit the form.
+These checks change the unsaved selection. They do not save the form, create an
+Agent, or grant runtime repository access.
 
 ## First-deployment warning
 

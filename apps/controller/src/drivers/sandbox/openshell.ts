@@ -3832,7 +3832,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             loginMode: "api_key",
             command: [
               ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(stagedHarnessSupervisor(launchSpec.command)),
+              ...nodeProgramArguments(
+                stagedHarnessSupervisor(
+                  launchSpec.command,
+                  !codex && stagedRepository
+                    ? repositoryPolicy!.grants.map(({ repository }) => repository)
+                    : undefined,
+                ),
+              ),
             ],
           },
         },

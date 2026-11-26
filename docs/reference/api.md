@@ -1574,6 +1574,8 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1641,6 +1643,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -1776,6 +1783,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1832,6 +1841,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2027,6 +2041,8 @@ Get one connection template
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2083,6 +2099,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2211,6 +2232,8 @@ Example request
 | `data.current.destinations[].path` | `string` | Yes | — |
 | `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data.current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data.current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2267,6 +2290,11 @@ Example response
         }
       ],
       "issuer": "https://accounts.example.com",
+      "issuerVerification": {
+        "tokenEndpointAuthMethods": [
+          "client_secret_basic"
+        ]
+      },
       "mode": "manual",
       "scopes": [
         "profile.read"
@@ -2342,8 +2370,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {
@@ -2382,9 +2409,7 @@ Register an OAuth or GitHub App credential client
 | `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `kind` | `"oauth2"` | Yes | — |
 | `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 **`kind: "github-app"`**
 
@@ -2405,8 +2430,7 @@ Example request
   "issuer": "https://accounts.example.com",
   "kind": "oauth2",
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-  "tokenEndpointAuthMethod": "client_secret_basic",
-  "tokenUrl": "https://accounts.example.com/token"
+  "tokenEndpointAuthMethod": "client_secret_basic"
 }
 ```
 
@@ -2445,8 +2469,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2570,8 +2593,7 @@ Example response
     "issuer": "https://accounts.example.com",
     "kind": "oauth2",
     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-    "tokenEndpointAuthMethod": "client_secret_basic",
-    "tokenUrl": "https://accounts.example.com/token"
+    "tokenEndpointAuthMethod": "client_secret_basic"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -2627,6 +2649,8 @@ List connection templates available in this Namespace
 | `data[].current.destinations[].path` | `string` | Yes | — |
 | `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
+| `data[].current.issuerVerification` | `object` | No | Present only after issuer metadata verifies this version's OAuth endpoints. |
+| `data[].current.issuerVerification.tokenEndpointAuthMethods` | `array<"none" or "client_secret_basic" or "client_secret_post">` | Yes | — |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp.serverUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2693,6 +2717,11 @@ Example response
           }
         ],
         "issuer": "https://accounts.example.com",
+        "issuerVerification": {
+          "tokenEndpointAuthMethods": [
+            "client_secret_basic"
+          ]
+        },
         "mode": "manual",
         "scopes": [
           "profile.read"
@@ -2836,9 +2865,7 @@ List OAuth clients eligible for a connection template in this Namespace
 | `data[].issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].kind` | `"oauth2"` | Yes | — |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `data[].tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -2864,8 +2891,7 @@ Example response
       "issuer": "https://accounts.example.com",
       "kind": "oauth2",
       "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-      "tokenEndpointAuthMethod": "client_secret_basic",
-      "tokenUrl": "https://accounts.example.com/token"
+      "tokenEndpointAuthMethod": "client_secret_basic"
     }
   ],
   "meta": {

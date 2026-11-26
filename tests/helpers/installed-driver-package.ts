@@ -36,17 +36,3 @@ export async function installedDriverPackage(
   }
   return { directory, entry };
 }
-
-/** Exercise the external package loader against an installed, independently authored Driver. */
-export async function protectedDriverPackage(
-  t: TestContext,
-  id: string,
-  filename: "index" | "repository-git" = "index",
-) {
-  return installedDriverPackage(
-    t,
-    id,
-    "protected-execution-driver",
-    filename === "repository-git" ? [filename, "index"] : [filename],
-  );
-}
