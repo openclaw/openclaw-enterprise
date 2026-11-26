@@ -174,15 +174,17 @@ test(
       permissions: [{ action: "operate", resourceKind: "credential_source" }],
     });
     assert.equal(role.status, 201);
-    const grantCredential = () =>
-      topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+    const grant = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/iam/access-bindings`,
+      {
         subjectKind: "identity",
         subjectId: topology.secretApi.assignmentPrincipalId,
         roleId: role.data.id,
         resourceKind: "credential_source",
         resourceId: sourceId,
-      });
-    const grant = await grantCredential();
+      },
+    );
     assert.equal(grant.status, 201);
     const saved = await topology.request("PATCH", agentPath, {
       networkProxy: { url, credentialSourceId: sourceId },
@@ -219,23 +221,6 @@ test(
       undefined,
       "Editing the draft cannot change a serving revision.",
     );
-
-    // The saved draft cannot replace the caller's exact Source grant at deployment.
-    const timeline = await topology.request("GET", `${agentPath}/revisions`);
-    assert.equal(timeline.status, 200);
-    assert.equal(
-      (
-        await topology.adminRequest(
-          "DELETE",
-          `/namespaces/${namespaceId}/iam/access-bindings/${grant.data.id}`,
-        )
-      ).status,
-      204,
-    );
-    const deniedDeploy = await topology.request("POST", `${agentPath}/deploy`);
-    assert.equal(deniedDeploy.status, 403);
-    assert.deepEqual((await topology.request("GET", `${agentPath}/revisions`)).data, timeline.data);
-    assert.equal((await grantCredential()).status, 201);
 
     const deploy = await topology.request("POST", `${agentPath}/deploy`);
     assert.equal(deploy.status, 202);

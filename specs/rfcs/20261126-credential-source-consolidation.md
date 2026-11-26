@@ -81,7 +81,10 @@ and verifies upstream TLS. It replaces caller credential headers on a matching
 request and refuses redirects and arbitrary forwarding. The built-in Anthropic
 API-key profile uses `POST https://api.anthropic.com/v1/messages` and `x-api-key`.
 Keep the existing Anthropic Messages version header and streaming behavior.
-OpenAI retains its admitted Responses route and Bearer presentation.
+For a built-in OpenAI API key, the revision pins one HTTPS route on
+`api.openai.com:443`. Responses uses `POST /v1/responses` and Chat Completions
+uses `POST /v1/chat/completions`. Credential Proxy sends the Source value in
+the `Authorization` header as a Bearer token and relays HTTP streaming.
 
 Use the existing versioned Source delivery flow. Withdrawal disables the
 Agent revision's Proxy binding and removes its serving copy. Preserve the Source
@@ -127,7 +130,9 @@ See the [implementation plan](../plans/20261126-credential-source-consolidation.
 
 - **Embedded model delivery:** Place the private Proxy with Worker or give it
   a separate service. Decide which setup-token and custom provider profiles
-  must move before the direct path is retired.
+  must move before the direct path is retired. The pinned OpenClaw client
+  treats a private URL as a generic provider. Decide whether the first cutover
+  must also preserve native Responses WebSockets, continuation, and compaction.
 - **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications

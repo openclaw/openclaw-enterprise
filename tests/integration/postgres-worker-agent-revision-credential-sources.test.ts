@@ -3178,11 +3178,55 @@ cases.revisionTest(
       },
       resolveApprovedHarness,
     );
-    const revision = await controller.deployAgent(
-      actorId,
-      { namespaceId, agentId: agent.id },
-      resolveApprovedHarness,
+    const { app, headers, principalId } = await authenticatedSourceOperator(fixture, controller);
+    context.after(() => app.close());
+    const role = await controller.createIAMRole(actorId, {
+      namespaceId,
+      permissions: [
+        { action: "read", resourceKind: "agent" },
+        { action: "operate", resourceKind: "agent" },
+        { action: "deploy", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "operate", resourceKind: "secret" },
+        { action: "operate", resourceKind: "credential_source" },
+      ],
+    });
+    const grant = (
+      resourceKind: "agent" | "configuration" | "secret" | "credential_source",
+      resourceId: string,
+    ) =>
+      controller.createIAMAccessBinding(actorId, {
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: principalId,
+        roleId: role.id,
+        resourceKind,
+        resourceId,
+      });
+    await grant("agent", agent.id);
+    await grant("configuration", configuration.id);
+    await grant("secret", model.id);
+    const sourceGrant = await grant("credential_source", source.id);
+    const deploy = () =>
+      app.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/${agent.id}/deploy`,
+        headers,
+        payload: {},
+      });
+    // The persisted draft still selects the Source after the deploy caller loses its exact grant.
+    await controller.deleteIAMAccessBinding(actorId, namespaceId, sourceGrant.id);
+    const denied = await deploy();
+    assert.equal(denied.statusCode, 403, denied.body);
+    assert.deepEqual(
+      await fixture.state.read((view) => view.revisions.listRevisions(namespaceId, agent.id)),
+      [],
     );
+    await grant("credential_source", source.id);
+    const accepted = await deploy();
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    const revision = accepted.json<{ data: AgentRevision }>().data;
+    assert.equal(revision.networkProxy?.credentialSourceId, source.id);
     scenario.placeholder.id = revision.id;
     const prepareRevision = compute.prepareRevision.bind(compute);
     // Prepare the actual Gateway spec, then control readiness for the unlaunched Pods.
