@@ -212,14 +212,24 @@ export async function selectNativeSourceImage(
       const diagnostic = typeof details?.stderr === "string" ? details.stderr.trim() : "";
       const stdout = typeof details?.stdout === "string" ? details.stdout.trim() : "";
       if (
-        details?.exitCode === 1 &&
         !details.signal &&
         ["", "[]"].includes(stdout) &&
-        [
-          `Error response from daemon: No such image: ${expected}`,
-          `Error response from daemon: No such image: ${reference}`,
-          `Error: ${expected}: image not known`,
-        ].includes(diagnostic)
+        ((details?.exitCode === 1 &&
+          [
+            `Error response from daemon: No such image: ${expected}`,
+            `Error response from daemon: No such image: ${reference}`,
+            `Error: ${expected}: image not known`,
+          ].includes(diagnostic)) ||
+          // Podman 6 reports a local miss as
+          // Error: unable to inspect "<reference>": failed to find image
+          // <reference>: <repository@digest>: image not known
+          // and exits 125 where Docker exits 1. A local inspect never
+          // contacts a registry, so this wording is only a miss; every other
+          // failure keeps failing loudly below.
+          (details?.exitCode === 125 &&
+            diagnostic.startsWith('Error: unable to inspect "') &&
+            diagnostic.includes(reference) &&
+            diagnostic.endsWith(": image not known")))
       ) {
         return undefined;
       }

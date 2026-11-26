@@ -224,6 +224,7 @@ export function registerAgentSandboxImageCustodyCase() {
       "falsy-descriptor",
       "inspect-error",
       "mixed-error",
+      "podman-miss",
       "reuse-config",
       "reuse-cri",
     ]) {
@@ -288,8 +289,11 @@ export function registerAgentSandboxImageCustodyCase() {
                 ? "Cannot connect to the Docker daemon"
                 : scenario === "mixed-error"
                   ? `Cannot connect to the Docker daemon: No such image: ${source}`
-                  : `Error response from daemon: No such image: ${source}`;
-            return `printf '%s\\n' ${bashString(diagnostic)} >&2; exit 1`;
+                  : scenario === "podman-miss"
+                    ? `Error: unable to inspect "${source}": failed to find image ${source}: ${repository}@${index}: image not known`
+                    : `Error response from daemon: No such image: ${source}`;
+            // Podman reports a local miss with exit code 125 where Docker exits 1.
+            return `printf '%s\\n' ${bashString(diagnostic)} >&2; exit ${scenario === "podman-miss" ? 125 : 1}`;
           }
           if (args[0] === "image" && args[1] === "inspect" && args.at(-1) === cached) {
             if (args.includes("--platform")) {
