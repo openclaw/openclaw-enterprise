@@ -585,7 +585,8 @@ async function inGatewayContainer<T>(
   );
 }
 
-const unverifiableOwner = /an unverifiable owner will not be reclaimed automatically/;
+const waitingForGatewayOwner =
+  /waiting for the previous Gateway to stop \(last heartbeat \d+s ago\)/;
 
 // The 3257 sequence on one retained state volume: the Pod stop reaches a
 // Gateway that holds its state lock mid-startup and ends it, then a new Pod
@@ -672,14 +673,13 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       gatewayManagedMode: false,
       cpus: restartGatewayCpus,
       until: ({ events, output }: StartupProbeSnapshot) =>
-        events.some(observedValue("ready", true)) || unverifiableOwner.test(output),
+        events.some(observedValue("ready", true)) || waitingForGatewayOwner.test(output),
       act: undefined,
     });
     await withStartupProbeEvidence(replacement, async () => {
-      // Before the fix: "Waiting up to 95 seconds for the previous Gateway to
-      // release state; an unverifiable owner will not be reclaimed automatically",
-      // then "Gateway failed to start: cannot verify Gateway ownership".
-      assert.doesNotMatch(replacement.snapshot.output, unverifiableOwner);
+      // Recovery released the stopped Gateway's lock. Its replacement must serve
+      // without waiting for the old owner's heartbeat.
+      assert.doesNotMatch(replacement.snapshot.output, waitingForGatewayOwner);
       assert.equal(replacement.snapshot.events.some(observedValue("ready", true)), true);
     });
   });
@@ -726,7 +726,7 @@ export function liveHolderKeepsStateTest(title: string): void {
     const refused = /is not attributable to the terminated namespace/;
     const contender = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ output }: { output: string }) => unverifiableOwner.test(output),
+      until: ({ output }: { output: string }) => waitingForGatewayOwner.test(output),
       act: async ({
         containerName,
         collect,

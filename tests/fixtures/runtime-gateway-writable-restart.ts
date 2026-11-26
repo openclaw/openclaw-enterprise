@@ -640,10 +640,8 @@ export async function runWritableGatewayRestart(t: TestContext) {
   const leaseText = leaseLogs.stderr + leaseLogs.stdout;
   // OpenClaw's own start met the lease, after the tool policy step's validation passed; it
   // exited after its wait, and the wrapper names the lock and OpenClaw's holder description.
-  assert.match(
-    leaseText,
-    /Waiting up to \d+ seconds for the previous Gateway to release state.*cannot verify Gateway ownership/,
-  );
+  assert.match(leaseText, /waiting for the previous Gateway to stop \(last heartbeat \d+s ago\)/);
+  assert.match(leaseText, /cannot verify Gateway ownership from this process/);
   assert.match(
     leaseText,
     /still holds the Gateway state lock.*OpenClaw reported: .*holder \d+ at [^ ]+\/pid-ns \d+/,

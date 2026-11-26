@@ -44,7 +44,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
-    sha256: "cc284f483113e89535df6efd438abfd86f2999732db0a944a49733eef9abe9cb",
+    sha256: "daef1a6a57d10ff1fd9f300bcbef4b25212b2e95094ebc9fc85147b513f90888",
   },
   {
     file: "openclaw-google-worker-placeholder.patch",

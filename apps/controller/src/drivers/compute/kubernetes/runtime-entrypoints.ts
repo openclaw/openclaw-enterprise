@@ -3635,6 +3635,9 @@ function holdInvalidGatewayConfiguration(code, signal) {
     return false;
   }
   if (report?.valid !== false) return false;
+  // A foreign holder can block the validator's configuration read after native startup exits.
+  const lockRefusal = gatewayStateLockRefusal(validation.stdout);
+  if (lockRefusal !== undefined) return holdGatewayStartupFailure(new GatewayStateLockError(lockRefusal));
   gatewayStartupHeld = true;
   publishRuntimeFailure("gateway-config", "UNAVAILABLE");
   console.error(invalidOpenClawConfigurationLine(

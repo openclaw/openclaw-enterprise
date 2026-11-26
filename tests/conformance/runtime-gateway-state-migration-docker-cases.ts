@@ -156,8 +156,9 @@ test("Docker development Gateway refuses an unreadable pending-maintenance marke
   await assert.rejects(runDockerGateway(directory), /Invalid pending maintenance marker/);
 });
 
-test("Docker development Gateway migrates an older agent database before starting OpenClaw", async (t) => {
-  const directory = await stateDirectory(t, { main: CURRENT - 1 });
+test("Docker development Gateway migrates the schema 44 agent database before starting OpenClaw", async (t) => {
+  // The previous runtime wrote these versions. Only the Agent database needs Doctor.
+  const directory = await stateDirectory(t, { main: 44 }, { shared: 42, marker: 42 });
   const outcome = await runDockerGateway(directory, (child) => {
     setVersion(databasePath(directory, "main"), CURRENT);
     finishDoctor(child, {

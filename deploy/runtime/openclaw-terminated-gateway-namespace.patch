@@ -42,10 +42,59 @@ index 406a25e..d44122d 100644
              defaultRuntime.writeJson(result);
            } else {
 diff --git a/src/infra/gateway-lock-payload.ts b/src/infra/gateway-lock-payload.ts
-index 2c70e2f..090bf8d 100644
+index 2c70e2f..efef966 100644
 --- a/src/infra/gateway-lock-payload.ts
 +++ b/src/infra/gateway-lock-payload.ts
-@@ -247,6 +247,8 @@ export const LockPayloadSchema = z.object({
+@@ -2,7 +2,6 @@ import fs from "node:fs";
+ import os from "node:os";
+ import { z } from "zod";
+ import { safeParseJsonWithSchema } from "../utils/zod-parse.js";
+-import { isContainerEnvironment } from "./container-environment.js";
+ import { readProcessMachineIdentity } from "./current-machine-identity.js";
+ import { isLockOwnerDefinitelyStale } from "./stale-lock-file.js";
+ import { createManagedHandoffBootIdentityReader } from "./update-managed-service-handoff-boot.js";
+@@ -152,7 +151,6 @@ export function classifyGatewayLockProcessNamespace(
+   }
+   return classifyGatewayOwnerProcessNamespace(holder?.processNamespace, {
+     machineIdentity: holder?.machineIdentity,
+-    readGatewayHeartbeat: lockPath ? () => readLockHeartbeat(lockPath) : undefined,
+   });
+ }
+
+@@ -162,7 +160,6 @@ export function classifyGatewayOwnerProcessNamespace(
+   options: {
+     ownerHost?: string;
+     machineIdentity?: unknown;
+-    readGatewayHeartbeat?: () => number | undefined;
+   } = {},
+ ): "same" | "dead" | "unknown" {
+   const owner = GatewayProcessNamespaceSchema.safeParse(value).data;
+@@ -176,22 +173,8 @@ export function classifyGatewayOwnerProcessNamespace(
+   if (owner.platform !== current.platform) {
+     return "unknown";
+   }
+-  if (options.readGatewayHeartbeat && isForeignLinuxNamespace(owner, current)) {
+-    // Docker and Podman default to a container ID hostname, already stored in the record.
+-    if (
+-      owner.host === current.host &&
+-      /^[a-f0-9]{12}$/u.test(current.host) &&
+-      isContainerEnvironment()
+-    ) {
+-      return "dead";
+-    }
+-    // A container paused for over 90s can resume alongside its replacement until its
+-    // next restart. We don't add fencing; native SQLite locking still protects the file.
+-    const heartbeatAt = options.readGatewayHeartbeat();
+-    if (heartbeatAt !== undefined && Date.now() - heartbeatAt > GATEWAY_OWNER_HEARTBEAT_STALE_MS) {
+-      return "dead";
+-    }
+-  }
++  // OCE requires proof that a foreign owner stopped. A paused Gateway can resume
++  // after its heartbeat expires, and a hostname does not identify a PID namespace.
+   if (owner.platform === "darwin" && options.machineIdentity !== undefined) {
+     const machine = MachineIdentitySchema.safeParse(options.machineIdentity).data;
+     const currentMachine = readProcessMachineIdentity();
+@@ -247,6 +230,8 @@ export const LockPayloadSchema = z.object({
      .optional(),
    stateDir: z.string().optional(),
    startTime: z.number().optional(),
@@ -418,7 +467,7 @@ index 63498f7..61fcc63 100644
  export async function recoverGatewayLock(options: { confirmation: string }) {
    const inspection = await inspectGatewayLockRecovery();
 diff --git a/src/infra/gateway-lock.ts b/src/infra/gateway-lock.ts
-index 2e6a4dc..a45cd34 100644
+index 2e6a4dc..803181e 100644
 --- a/src/infra/gateway-lock.ts
 +++ b/src/infra/gateway-lock.ts
 @@ -11,7 +11,7 @@ import {
@@ -438,6 +487,16 @@ index 2e6a4dc..a45cd34 100644
      ...(role === "gateway" ? { cronOwnerProjection: "dynamic-default-v1" as const } : {}),
      ...(typeof opts.port === "number" &&
      Number.isInteger(opts.port) &&
+@@ -652,6 +653,9 @@ export async function acquireGatewayLock(
+     // schema work retains the same fs-safe owner through its final reference.
+     const shouldReclaim = ({ payload: previous }: { payload: unknown }) => {
+       const holder = LockPayloadSchema.safeParse(previous).data;
++      if (holder && classifyGatewayLockProcessNamespace(holder, paths.stateLockPath) === "unknown") {
++        throw new GatewayLockNamespaceError(holder, paths.stateLockPath);
++      }
+       return (
+         holder !== undefined &&
+         resolveGatewayOwnerStatusSync(holder.pid, holder, opts.platform ?? process.platform, {
 diff --git a/src/infra/gateway-owner-lease.ts b/src/infra/gateway-owner-lease.ts
 index 6b71db5..030db88 100644
 --- a/src/infra/gateway-owner-lease.ts
@@ -459,11 +518,41 @@ index 6b71db5..030db88 100644
      port: params.port,
      mode: params.mode,
      supervisor: params.supervisor,
+diff --git a/src/infra/gateway-state-owner-record.ts b/src/infra/gateway-state-owner-record.ts
+index b59df50..11bd270 100644
+--- a/src/infra/gateway-state-owner-record.ts
++++ b/src/infra/gateway-state-owner-record.ts
+@@ -53,7 +53,7 @@ function comparableStateOwnerStaleReason(
+       : undefined;
+ }
+
+-/** Reclamation uses native identity for local owners and heartbeat expiry across namespaces. */
++/** Reclamation requires evidence of process death in the recorded namespace. */
+ export function isGatewayStateOwnerDefinitelyStale(value: unknown, lockPath?: string): boolean {
+   const payload = isRecord(value) ? value : null;
+   if (!payload) {
 diff --git a/src/infra/state-lease-process-owner.ts b/src/infra/state-lease-process-owner.ts
-index 9d59a8c..d81cc69 100644
+index 9d59a8c..ebaef48 100644
 --- a/src/infra/state-lease-process-owner.ts
 +++ b/src/infra/state-lease-process-owner.ts
-@@ -195,8 +195,9 @@ export function readStateLeaseProcessOwnerStatus(
+@@ -179,7 +179,7 @@ export function parseStateLeaseProcessOwner(
+
+ export function readStateLeaseProcessOwnerStatus(
+   owner: StateLeaseProcessOwner | null,
+-  gatewayHeartbeatAt?: number,
++  _heartbeatAt?: number,
+ ): "live" | "dead" | "unknown" {
+   if (!owner) {
+     return "unknown";
+@@ -187,7 +187,6 @@ export function readStateLeaseProcessOwnerStatus(
+   const namespace = classifyGatewayOwnerProcessNamespace(owner.processNamespace, {
+     ownerHost: owner.host,
+     machineIdentity: owner.machineIdentity,
+-    readGatewayHeartbeat: gatewayHeartbeatAt === undefined ? undefined : () => gatewayHeartbeatAt,
+   });
+   if (namespace !== "same") {
+     return namespace;
+@@ -195,8 +194,9 @@ export function readStateLeaseProcessOwnerStatus(
    return readSameNamespaceProcessOwnerStatus(owner);
  }
  

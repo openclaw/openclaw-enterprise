@@ -161,10 +161,11 @@ state after admission.
 - A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a Gateway
   that OpenClaw refused to configure or to start: an earlier Gateway process did
   not stop cleanly, and this container cannot verify that the holder stopped.
-  The log line quotes each holder. A dedicated Kubernetes Gateway holds it when
-  `config validate` meets the lock, as after a kill. OpenClaw's own start can
-  also refuse, for example on a force-deleted Pod's owner lease, and exit 1. A
-  Kubernetes Gateway that never served then runs the read-only
+  The log line quotes the holder. The Kubernetes Gateway wrapper holds the lock
+  failure when `config validate` reports a blocked read during tool configuration
+  or after a Gateway exits before serving. OpenClaw can also exit 1 on a lock
+  that validation does not read, such as a force-deleted Pod's owner lease.
+  The wrapper then runs the read-only
   `openclaw gateway recover-lock --json` (never `--confirm`) and holds when
   holders remain, or exits 1 if none do. Every 5 minutes either hold
   (`runtime-entrypoints.ts:holdGatewayStartupFailure`) retries a failed release

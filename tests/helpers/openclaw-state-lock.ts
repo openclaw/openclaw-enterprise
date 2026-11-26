@@ -50,15 +50,12 @@ export const released = { status: 0, stdout: JSON.stringify({ recovered: true, r
 // What it does when one record is not attributable to this namespace: it recovers nothing.
 export const keptLocks = { status: 1, stdout: "" };
 
-// Captured from a dedicated Gateway container started again after its native Gateway was
-// killed (SIGKILL): the new PID namespace cannot verify the recorded holder, so the tool policy
-// step's `config validate --json` reports OpenClaw's refusal to read the configuration.
+// The validator's root read issue when the new PID namespace cannot verify a recorded holder.
 export const gatewayLockNamespaceRefusal =
-  "cannot verify Gateway ownership from this process; heartbeat age" +
-  " does not prove that the holder stopped. holder 608 at 54b9b0fe1247/pid-ns 4026536051, last" +
-  " renewed 14 s ago. Run this command inside the Gateway container or with a shared PID" +
-  " namespace; if the holder has stopped, run `openclaw gateway recover-lock` to inspect and" +
-  " explicitly recover the unchanged owner.";
+  "cannot verify Gateway ownership from this process at" +
+  " /home/node/.openclaw/tmp/openclaw-1000/state.c3867134fe5820b9.lock. holder 608 at" +
+  " 54b9b0fe1247/pid-ns 4026536051, last renewed 14 s ago. Run this command inside" +
+  " the Gateway container or with a shared PID namespace.";
 export const validateLockRefusal = openClawConfigValidationRefusal(
   [
     {

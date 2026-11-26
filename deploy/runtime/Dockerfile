@@ -215,7 +215,7 @@ COPY --from=openclaw-source /source/ ./
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo 'cc284f483113e89535df6efd438abfd86f2999732db0a944a49733eef9abe9cb  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo 'daef1a6a57d10ff1fd9f300bcbef4b25212b2e95094ebc9fc85147b513f90888  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder to native worker children.
@@ -257,7 +257,7 @@ RUN --network=none rm -rf .artifacts && mkdir .artifacts && \
     src/cli/update-cli/update-command-service-drain.native.test.ts \
     src/gateway/server-methods.suspension-admission.test.ts \
     src/gateway/server.auth.delegation.test.ts src/gateway/trusted-proxy-delegation.test.ts \
-    src/state/user-profile-delegation.test.ts \
+    src/state/user-profile-delegation.test.ts src/state/openclaw-agent-db.storage-migration.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
     extensions/codex/src/app-server/thread-policy.test.ts extensions/codex/src/app-server/thread-lifecycle.adoption.test.ts \
     extensions/codex/src/app-server/config.test.ts extensions/codex/src/app-server/config-network-proxy.test.ts \

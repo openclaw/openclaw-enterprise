@@ -266,6 +266,19 @@ export function registerGatewayStateLockCases(): void {
     assert.ok(gateway.logs.includes(lockHoldLine(reported)), JSON.stringify(gateway.logs));
   });
 
+  test("Kubernetes Gateway holds the state lock reported by validation after a startup exit", async (t) => {
+    const gateway = await startCodexGatewaySupervisor(t, { runtimeStatus: true });
+    // Validation first encounters the foreign holder after the native Gateway exits.
+    gateway.validation = validateLockRefusal;
+    gateway.serving = false;
+    required(gateway.children[0]).exit(1, null);
+    assert.equal(heldCheck(gateway), "gateway-state-lock");
+    assert.ok(gateway.logs.includes(lockHoldLine(gatewayLockNamespaceRefusal)));
+    gateway.lockInspection = freeLock;
+    recheck(gateway);
+    assertDeliberateRestart(gateway, "GATEWAY_STATE_LOCK_RELEASED");
+  });
+
   test("Kubernetes Gateway holds an invalid configuration before it inspects the state lock", async (t) => {
     const gateway: GatewaySupervisor = await startCodexGatewaySupervisor(t, {
       runtimeStatus: true,

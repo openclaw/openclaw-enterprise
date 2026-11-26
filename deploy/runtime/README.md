@@ -41,10 +41,10 @@ profile revocation still stop dispatch.
 [OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile. Remove it once upstream matches.
-`openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover its Gateway records, or, inside it,
-any record whose PID is dead. OC compares its lock fingerprint first.
-Unattributed owners need operator confirmation.
+With `openclaw-terminated-gateway-namespace.patch`, OpenClaw checks the lock
+fingerprint before a supervisor recovers a stopped private PID namespace or a
+dead PID inside it. Foreign locks and SQLite leases require proof of shutdown
+or operator confirmation, even after heartbeat expiry or a hostname match.
 [Restart recovery](../../docs/flows/harness-restart-recovery.md) in the selected source waits for workspace reconnection and surviving Codex work before continuing.
 The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
 final delivery retains its progress window after a long Codex turn.
