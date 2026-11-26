@@ -397,13 +397,18 @@ cases.revisionTest(
       ...allFields,
     });
     assert.equal(effects.providerCalls, 0);
-    const accepted = await controller.provisionAgent(callerId, {
+    const provisioningRequest = {
       ...request(),
       configuration: allFields,
-    });
+    };
+    const accepted = await controller.provisionAgent(callerId, provisioningRequest);
     assert.ok(accepted.provisioning.workId);
     assert.equal(effects.providerCalls, 1);
     assert.ok(effects.appCustodyReads > 0, "the xapp Source is resolved and validated locally");
+    // An accepted replay reuses the original work rather than authenticating with Slack again.
+    const replay = await controller.provisionAgent(callerId, provisioningRequest);
+    assert.equal(replay.provisioning.workId, accepted.provisioning.workId);
+    assert.equal(effects.providerCalls, 1, "accepted replay does not repeat Slack provider I/O");
     const agent = await controller.createAgent(
       fixture.actor.id,
       {

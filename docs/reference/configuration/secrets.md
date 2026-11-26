@@ -34,7 +34,7 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 `KUBERNETES_`, `OPENAI_`, `PATH`, `HOME`, or proxy variables. Model
 authentication destinations are reserved for `harnessAuth`.
 
-The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. All five Slack credential fields require Source bindings: `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken`, including named accounts. The Slack Channel Driver validates only app and bot tokens; the Gateway consumes the other fields directly.
+The caller needs `operate` on the exact Source when saving or assigning the Configuration. At deployment, OCC checks the deployer's exact Source authority and delegates that authority to the Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. All five Slack credential fields require Source bindings: `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken`, including named accounts. The Slack Channel Driver validates only app and bot tokens; the Gateway consumes the other fields directly.
 
 Kubernetes Compute stages Source values in a Secret for each Agent revision. A replacement Pod for that running revision reuses the staged value; a managed redeploy reads the current Source. Revocation prevents a later managed start but does not erase the running Gateway's environment. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md) for cleanup and access.
 
@@ -289,17 +289,11 @@ application password is an environment SecretRef:
 }
 ```
 
-For Slack setup, set the Agent's `executionMode` to `dedicated`; embedded mode
-is rejected because its combined gateway/Agent cannot isolate channel
-credentials. Preserve existing Codex/model settings and enable the native Slack
-plugin. Explicitly redeploy the Agent to snapshot the updated document. Store
-each channel value as a Namespace Secret and bind its exact reference to the
-native environment destination with `secretBindings`. Grant the consuming
-Agent's returned `servicePrincipalId` access through the
-[Namespace IAM APIs](../authorization.md#manage-namespace-policy). Only its
-dedicated gateway receives these admitted bindings; generated runtime
-credentials contain no channel tokens. See
-[Kubernetes credential ownership](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
+For Slack setup, use a dedicated Agent with Kubernetes Compute and OCC TokenService:
+
+1. In **Credentials**, [create a ready static Source](../credential-sources/managed-static.md#console) for each Slack credential, or reuse an existing Source in the Agent's Namespace. Creation requires `credential_source:create` on that Namespace.
+2. Enable the native Slack plugin and select the Sources in the Agent's Channel or Configuration editor. Saving requires `configuration:create` or `configuration:update` and `credential_source:operate` on each selected Source. Preserve the Agent's model settings.
+3. Deploy the updated Agent with `agent:deploy` and exact Source `operate` permission. OCC grants the Agent service principal access during admission. The dedicated Gateway receives revision-scoped delivery copies; the Harness does not receive the Slack credentials. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md).
 
 Teams message ingress requires a separately deployed and reviewed public Bot
 Framework `/api/messages` webhook. Enterprise does not provide that webhook;

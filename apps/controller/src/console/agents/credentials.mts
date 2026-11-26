@@ -227,7 +227,7 @@ export function createSlackCredentialBindingFields(
     const picker = createCredentialSourcePicker(context, {
       ...staticCredentialSourceSelection,
       id: `slack-binding-${key.toLowerCase().replaceAll("_", "-")}`,
-      label: SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key,
+      label: slackBindingLabel(options.values, key),
       initial: slackSourceForBinding(options.bindings[key], context.namespaceId),
       ...(currentId ? { currentId } : {}),
       onChange(source) {
@@ -240,12 +240,23 @@ export function createSlackCredentialBindingFields(
   return fields;
 }
 
-// Every Slack setting that references an environment key uses the same static Source binding.
-// Keep familiar labels for the standard keys; custom and named-account keys identify themselves.
+// A familiar label is accurate only when the default account uses the standard key for that role.
+function slackBindingLabel(values: unknown, key: string) {
+  if (!usesNamedSlackAccounts(values)) {
+    const reads = defaultSlackAccountReads(responseFields(channelPolicy(values, "slack")));
+    const matches = reads.filter((read) => read.key === key);
+    if (matches.length === 1 && STANDARD_SLACK_KEYS[matches[0]!.role] === key) {
+      return SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key;
+    }
+  }
+  return key;
+}
+
+// Every referenced environment key uses the same static Source binding.
 function slackFormBindings(values: unknown) {
   return slackBindingKeys(values).map((key) => ({
     key,
-    label: SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key,
+    label: slackBindingLabel(values, key),
   }));
 }
 
@@ -1175,8 +1186,10 @@ export function createChannelSecretsPanel({
             context.namespaceId,
           )?.id,
       );
+      readOnlyNote.hidden = listOnly || !readOnly();
+      readOnlyNote.textContent = readOnlyReason();
       for (const picker of pickers) {
-        picker.setDisabled(state.saving || !canEnterChannelCredentials());
+        picker.setDisabled(state.saving || !canEnterChannelCredentials(), readOnlyNote);
         picker.setRequired(true);
       }
       // With the saved bindings shown, the button only retries their outstanding grants.
@@ -1187,8 +1200,6 @@ export function createChannelSecretsPanel({
       const saveUnavailable = !canSaveChannelSecrets();
       // A session that cannot grant gets no Retry the API would refuse (finding 2263). A reader
       // gets no Save the API would refuse either (finding 2432).
-      readOnlyNote.hidden = listOnly || !readOnly();
-      readOnlyNote.textContent = readOnlyReason();
       const replace = readOnly() || listOnly ? [] : (bindingsToReplace() ?? []);
       replaceNote.hidden = replace.length === 0;
       replaceNote.textContent = replace.length
@@ -1207,7 +1218,7 @@ export function createChannelSecretsPanel({
           (binding) =>
             slackSourceForBinding(draft.secretBindings[binding.key], context.namespaceId) === null,
         )
-          ? "Choose a ready static Credential Source for each Slack credential. Former Secret-backed settings require newly created Credential Sources."
+          ? "Choose a ready static Credential Source for each Slack credential."
           : "No channel credential changes to save.";
       }
       saveHint.textContent = saveReason;
@@ -1546,7 +1557,7 @@ export function createChannelSecretsPanel({
           "p",
           { className: "muted" },
           slackOn
-            ? "Select ready static Credential Sources for Slack tokens, then deploy a new version. Former Secret-backed settings require newly created Credential Sources. Saved bindings do not confirm live channel readiness."
+            ? "Select ready static Credential Sources for Slack credentials, then deploy a new version. Saved bindings do not confirm live channel readiness."
             : SLACK_OFF_BOUND_HINT,
         ),
         bindings,

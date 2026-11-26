@@ -4,7 +4,7 @@ import {
   readCredentialSourceMetadata,
   type CredentialSourceSummary,
 } from "./credential-source-metadata.mjs";
-import { button, element, replaceChildrenIfChanged } from "./dom.mjs";
+import { button, element, replaceChildrenIfChanged, setUnavailable } from "./dom.mjs";
 import type { NamespacePageContext } from "./namespaces.mjs";
 
 type PickerContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
@@ -76,6 +76,7 @@ export function createCredentialSourcePicker<Criteria>(
   let attempted = false;
   let active = false;
   let disabled = false;
+  let disabledReason: HTMLElement | null = null;
   let required = true;
   const select = element("select", { id: options.id });
   const hint = element("p", { className: "hint", role: "status" });
@@ -128,7 +129,11 @@ export function createCredentialSourcePicker<Criteria>(
     }
     replaceChildrenIfChanged(select, choices);
     select.value = creating ? addNewValue : (selected?.id ?? "");
-    select.disabled = disabled || (!loaded && !selected && addNewLabel === undefined);
+    setUnavailable(
+      select,
+      disabled || (!loaded && !selected && addNewLabel === undefined),
+      disabled && disabledReason ? disabledReason : hint,
+    );
     select.required = active && required && !creating;
   }
   async function load(force = false) {
@@ -229,8 +234,9 @@ export function createCredentialSourcePicker<Criteria>(
         void load();
       }
     },
-    setDisabled(value: boolean) {
+    setDisabled(value: boolean, reason: HTMLElement | null = null) {
       disabled = value;
+      disabledReason = reason;
       retry.disabled = value;
       renderOptions();
     },

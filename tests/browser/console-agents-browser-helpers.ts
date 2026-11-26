@@ -5,7 +5,13 @@ import {
   JsonValue,
 } from "../../packages/contracts/src/api/common.ts";
 import { validatePresetTemplate } from "../../packages/contracts/src/index.ts";
-import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
+import {
+  AgentDeploymentStatusSchema,
+  CredentialSourceSchema,
+  type CredentialSourceWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
@@ -30,6 +36,9 @@ import type {
 } from "playwright";
 import type {
   Permission,
+  ComputeDriver,
+  SecretDriver,
+  TokenServiceDriver,
   OpenClawConfigurationDocument,
   Secret,
   Agent,
@@ -71,6 +80,7 @@ declare global {
 }
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +96,9 @@ import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.ts";
 import { memberRole } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { restrict } from "../helpers/iam-grants.ts";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
@@ -93,6 +106,82 @@ import { waitUntil } from "../helpers/wait-for.ts";
 
 // Shared with the API tests, which drive the same fixture without a browser.
 export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
+
+/**
+ * Real Console/Fastify/IAM/TokenService Source enrollment for browser tests. The selected
+ * Compute and its qualification callback are fixtures: this proves UI and admission interactions,
+ * not Worker export, Kubernetes delivery, or Gateway execution.
+ */
+export async function createSlackSourceConsoleFixture(
+  t: TestContext,
+  name: string,
+  options: NonNullable<Parameters<typeof createConsoleAppFixture>[1]> & {
+    secretDriver?: SecretDriver;
+    gatewayStartupSourceDelivery?: (compute: ComputeDriver, owner: TokenServiceDriver) => boolean;
+    wrapState?: (state: PlatformStateStore) => PlatformStateStore;
+  } = {},
+) {
+  const secretDriver =
+    options.secretDriver ?? createTestSecretDriver({ id: `source-${randomUUID()}` });
+  let state: PlatformStateStore | undefined;
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
+    channelRuntime: true,
+    filesystemConfiguration: true,
+    ...options,
+    secretDriver,
+    gatewayStartupSourceDelivery:
+      options.gatewayStartupSourceDelivery ??
+      ((compute: { id: string }, owner: unknown) =>
+        compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver),
+    wrapState(current: PlatformStateStore) {
+      state = options.wrapState?.(current) ?? current;
+      return state;
+    },
+  });
+  assert.ok(state);
+  await installDeviceTokenService(fixture.controller, state, secretDriver);
+  async function enroll(sourceName: string, prefix = "xoxb") {
+    const secret = `${prefix}-${randomUUID()}`;
+    const response = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      { body: { name: sourceName, type: "static", secret } },
+    );
+    assert.equal(response.status, 201);
+    assert.ok(Check(CredentialSourceSchema, response.data), "Credential Source response");
+    return { source: response.data as CredentialSourceWire, secret };
+  }
+  return { fixture, namespace, enroll };
+}
+
+/** Grant the Agent's exact Source references through the production IAM routes. */
+export async function grantAgentSourceOperate(
+  fixture: Fixture,
+  namespaceId: string,
+  principalId: string,
+  sourceIds: readonly string[],
+) {
+  const base = `/namespaces/${namespaceId}/iam`;
+  const role = await fixture.request("POST", `${base}/roles`, {
+    body: {
+      name: `Source operate ${randomUUID()}`,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201);
+  for (const id of sourceIds) {
+    const binding = await fixture.request("POST", `${base}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: principalId,
+        roleId: role.data.id,
+        resourceKind: "credential_source",
+        resourceId: id,
+      },
+    });
+    assert.equal(binding.status, 201);
+  }
+}
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read

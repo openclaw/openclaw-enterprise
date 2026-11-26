@@ -16,6 +16,7 @@ import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   AGENT_READ,
   apiRequests,
+  createSlackSourceConsoleFixture,
   denyRevisionRead,
   detailUrl,
   expireSessions,
@@ -28,8 +29,6 @@ import {
   newPage,
   nonAuthWriteRequests,
   recordFocusTrail,
-  secretOptionLabel,
-  selectSecret,
   settledView,
   stopFocusTrail,
   waitForEnabled,
@@ -48,7 +47,7 @@ import {
   viewTag,
   waitForFocusedLabel,
 } from "./console-refocus-helpers.ts";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
+import { slackAgentValues } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { waitForResult, within } from "../helpers/wait-for.ts";
@@ -2185,54 +2184,48 @@ test("switching Namespace during the refocus retry drops the stale Agent result"
 
 for (const revoked of ["configuration", "agent"] as const) {
   test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(
+    const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
       t,
       `Revoked ${revoked} preflight`,
     );
-    const appSecret = await fixture.createSecret(
-      namespace.id,
-      "Original app binding",
-      "xapp-original",
-    );
-    const botSecret = await fixture.createSecret(
-      namespace.id,
-      "Original bot binding",
-      "xoxb-original",
-    );
-    const replacement = await fixture.createSecret(
-      namespace.id,
-      "Replacement app binding",
-      "xapp-replacement",
-    );
+    const appSource = (await enroll("Original app binding", "xapp")).source;
+    const botSource = (await enroll("Original bot binding")).source;
+    const replacement = (await enroll("Replacement app binding", "xapp")).source;
     const agent = await fixture.createAgent(
       namespace.id,
       "Credential refocus Agent",
       slackAgentValues("binding-review"),
-      slackTokenBindings(appSecret, botSecret),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSource.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSource.ref, delivery: { type: "env" } },
+        },
+      },
     );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await waitForInputValue(page.getByLabel("Slack bot token"), botSource.id);
     await page.locator(settledView).waitFor();
 
     // A granted administrator keeps the readable form on refocus. Only the later exact
-    // read restriction changes admission; Configuration update and Secret operate stay granted.
+    // read restriction changes admission; Configuration update and Source operate stay granted.
     await refocusHeld(t, page);
-    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-    await selectSecret(page, "Slack app token", replacement);
+    await waitForInputValue(page.getByLabel("Slack bot token"), botSource.id);
+    await page.getByLabel("Slack app token", { exact: true }).selectOption(replacement.id);
     restrict(fixture.policy, "read", revoked, {
       namespaceId: namespace.id,
       resourceId: revoked === "agent" ? agent.id : agent.configurationId,
     });
-    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+    await page.getByRole("button", { name: "Save channel credentials", exact: true }).click();
     await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
     const assertScrubbed = async () => {
       assert.equal(await page.getByLabel("Slack bot token").count(), 0);
       const html = await page.content();
-      for (const secret of [appSecret, botSecret, replacement]) {
-        assert.equal(html.includes(secret.name), false, "no cached binding name remains");
-        assert.equal(html.includes(secret.id), false, "no cached binding reference remains");
+      for (const source of [appSource, botSource, replacement]) {
+        assert.equal(html.includes(source.name), false, "no cached binding name remains");
+        assert.equal(html.includes(source.id), false, "no cached binding reference remains");
       }
       assert.deepEqual(nonAuthWriteRequests(requests), [], "denied preflight sends no write");
     };
