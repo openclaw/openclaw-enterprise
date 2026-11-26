@@ -122,6 +122,7 @@ import {
   describeRevisionFailure,
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
+  recordFirstProvisioningFailure,
   withFirstPrepareRevisionFailureDiagnostic,
   writeWorkerCompletionDiagnostics,
 } from "./openshell-worker-diagnostics.ts";
@@ -1699,12 +1700,7 @@ function createIntegrationSandboxDriverFactory(
             provisioning,
           ).provisionHarness(provisioning);
         } catch (error) {
-          if (!provisioningFailures.has(context.revision.id)) {
-            process.stderr.write(
-              `OpenShell first provisioning failure for ${context.revision.id}: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}\n`,
-            );
-            provisioningFailures.set(context.revision.id, error);
-          }
+          recordFirstProvisioningFailure(provisioningFailures, context.revision.id, error);
           if (bridge !== undefined && !credentialBridges.has(context.revision.id)) {
             await deleteCredentialJob(operatorKubernetes, context, bridge.metadata.name).catch(
               () => undefined,

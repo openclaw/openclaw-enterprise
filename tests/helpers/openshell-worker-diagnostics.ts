@@ -74,7 +74,7 @@ type PrepareTokenSources = {
   teardownStarted: boolean;
 };
 
-function prepareErrorField(error: unknown, field: "code" | "message"): unknown {
+function errorField(error: unknown, field: "code" | "message"): unknown {
   try {
     if ((typeof error === "object" && error !== null) || typeof error === "function") {
       return Reflect.get(error, field);
@@ -85,9 +85,34 @@ function prepareErrorField(error: unknown, field: "code" | "message"): unknown {
   return undefined;
 }
 
-function prepareErrorMessage(error: unknown): string | undefined {
-  const message = prepareErrorField(error, "message");
+function errorMessage(error: unknown): string | undefined {
+  const message = errorField(error, "message");
   return typeof message === "string" ? message : undefined;
+}
+
+function writeFailureDiagnostic(prefix: string, message?: string): void {
+  try {
+    const detail =
+      message === undefined ? "" : redactLogLine(message, failureSecrets([process.env]), 800);
+    process.stderr.write(`${prefix}${detail}\n`);
+  } catch {
+    // Reporting must not interrupt cleanup or replace the original rejection.
+  }
+}
+
+export function recordFirstProvisioningFailure(
+  failures: Map<string, unknown>,
+  revisionId: string,
+  error: unknown,
+): void {
+  if (failures.has(revisionId)) {
+    return;
+  }
+  failures.set(revisionId, error);
+  writeFailureDiagnostic(
+    `OpenShell first provisioning failure for ${revisionId}: `,
+    errorMessage(error) ?? "error message unavailable",
+  );
 }
 
 export function withFirstPrepareRevisionFailureDiagnostic<
@@ -105,16 +130,19 @@ export function withFirstPrepareRevisionFailureDiagnostic<
     let message: string | undefined;
     if (preparing && !reportedFailure) {
       reportedFailure = true;
-      message = prepareErrorMessage(error) ?? "error message unavailable";
-      try {
-        const detail =
-          message ===
-          "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
-            ? "waiting for the Gateway node setup projection; Compute will retry."
-            : `initial Compute prepareRevision failed: ${redactLogLine(message, failureSecrets([process.env]), 800)}`;
-        process.stderr.write(`OpenShell integration: ${detail}\n`);
-      } catch {
-        // A diagnostic failure must preserve the original rejection and the 401 attempt.
+      message = errorMessage(error) ?? "error message unavailable";
+      if (
+        message ===
+        "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
+      ) {
+        writeFailureDiagnostic(
+          "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry.",
+        );
+      } else {
+        writeFailureDiagnostic(
+          "OpenShell integration: initial Compute prepareRevision failed: ",
+          message,
+        );
       }
     }
 
@@ -122,8 +150,8 @@ export function withFirstPrepareRevisionFailureDiagnostic<
     if (
       tokenSources &&
       !reportedUnauthorized &&
-      (prepareErrorField(error, "code") === 401 ||
-        /^HTTP-Code: 401$/m.test(message ?? prepareErrorMessage(error) ?? ""))
+      (errorField(error, "code") === 401 ||
+        /^HTTP-Code: 401$/m.test(message ?? errorMessage(error) ?? ""))
     ) {
       reportedUnauthorized = true;
       try {

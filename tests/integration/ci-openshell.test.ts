@@ -42,6 +42,7 @@ import {
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import { withFirstPrepareRevisionFailureDiagnostic } from "../helpers/openshell-sandbox-workflows.mjs";
+import { recordFirstProvisioningFailure } from "../helpers/openshell-worker-diagnostics.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
@@ -328,6 +329,35 @@ function capturePrepareDiagnostics(t: TestContext) {
   });
   return lines;
 }
+
+test("OpenShell keeps the first provisioning error per revision when diagnostics throw", (t) => {
+  const failures = new Map<string, unknown>();
+  let cachedBeforeRendering = false;
+  const first = {
+    get message(): never {
+      cachedBeforeRendering = failures.get("one") === first;
+      throw new Error("unreadable message");
+    },
+  };
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    lines.push(String(line));
+    throw new Error("output unavailable");
+  });
+
+  const next = new Error("provision refused");
+  recordFirstProvisioningFailure(failures, "one", first);
+  recordFirstProvisioningFailure(failures, "one", next);
+  recordFirstProvisioningFailure(failures, "two", next);
+
+  assert.ok(cachedBeforeRendering);
+  assert.equal(failures.get("one"), first);
+  assert.equal(failures.get("two"), next);
+  assert.deepEqual(lines, [
+    "OpenShell first provisioning failure for one: error message unavailable\n",
+    "OpenShell first provisioning failure for two: provision refused\n",
+  ]);
+});
 
 test("OpenShell Compute diagnostics preserve the first 401 when stderr throws", async (t) => {
   const original = Object.assign(new Error("prepare refused"), { code: 401 });
