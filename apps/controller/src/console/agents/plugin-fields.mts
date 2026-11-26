@@ -302,7 +302,12 @@ export function createPluginFields({
     setUnavailable(next, blocked || !catalog?.nextCursor, reason);
     setUnavailable(recheckAccess, disabled || catalog?.access === "checking", status);
   }
-  const available = button("Available plugins", () => showConfigured(false));
+  const available = button("Available plugins", () => {
+    showConfigured(false);
+    if (catalog?.canLoad && tabs[0].query.trim()) {
+      loadOrWaitForCatalog();
+    }
+  });
   const configured = button("Configured plugins", () => showConfigured(true));
   available.setAttribute("aria-label", "Available plugins");
   available.textContent = "Available";
@@ -333,11 +338,7 @@ export function createPluginFields({
     }
     dialog.showModal();
     search.focus();
-    if (catalog?.status === "idle" && catalog.canLoad) {
-      loadPage("refresh");
-    } else if (catalog?.status === "idle") {
-      waitingForCatalog = true;
-    }
+    loadOrWaitForCatalog();
   });
   const setupInstructions = element("div", { className: "plugin-access-instructions" });
   const accessHelp = element(
@@ -410,6 +411,17 @@ export function createPluginFields({
   function loadPage(direction: CatalogDirection) {
     clearDetails(tabs[0]);
     onLoadPlugins?.(direction, tabs[0].query);
+  }
+
+  function loadOrWaitForCatalog() {
+    if (catalog?.status !== "idle" || (configuredOnly && tabs[0].query.trim())) {
+      return;
+    }
+    if (catalog.canLoad) {
+      loadPage("refresh");
+    } else {
+      waitingForCatalog = true;
+    }
   }
 
   function showConfigured(value: boolean) {
@@ -1806,12 +1818,16 @@ export function createPluginFields({
       render();
     },
     setCatalog(value: PluginFieldCatalog, transition?: "refusal") {
-      const load = waitingForCatalog && dialog.open && value.canLoad && value.status === "idle";
+      const resumeSearch = !configuredOnly && !catalog?.canLoad && tabs[0].query.trim() !== "";
+      const load =
+        dialog.open &&
+        value.canLoad &&
+        value.status === "idle" &&
+        (waitingForCatalog || resumeSearch);
       catalog = value;
       if (load) {
-        waitingForCatalog = false;
         showConfigured(false);
-        loadPage("refresh");
+        loadOrWaitForCatalog();
       } else {
         render(transition === "refusal");
       }

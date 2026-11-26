@@ -33,6 +33,7 @@ import {
   newPage,
   nextFrames,
   pathRequests,
+  settlePageRequests,
   settledView,
   statusTone,
   waitForEnabled,
@@ -185,7 +186,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   catalog.release();
 });
 
-test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+async function defaultCatalogAgent(t: TestContext) {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createReadyConsoleNamespace(t, "Default plugin catalog");
   const namespace = entity(namespaceValue);
@@ -207,10 +208,13 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
       },
     ),
   );
-  const catalogUrl = new URL(
-    `/namespaces/${namespace.id}/agents/${agent.id}/plugins`,
-    fixture.origin,
-  ).href;
+  const catalogPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  const catalogUrl = new URL(catalogPath, fixture.origin).href;
+  return { fixture, namespace, agent, catalogPath, catalogUrl };
+}
+
+test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+  const { fixture, namespace, agent, catalogUrl } = await defaultCatalogAgent(t);
   const { page } = await newPage(t, fixture, { browser });
   await Promise.all([
     responseTo(page, "GET", `${catalogUrl}/capabilities`).then((response) =>
@@ -228,6 +232,88 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
     .getByRole("dialog", { name: "Configure plugins", exact: true })
     .getByRole("button", { name: "Google Workspace", exact: true })
     .waitFor({ state: "visible" });
+});
+
+const workspaceQuery = "Workspace";
+
+async function openPendingDefaultCatalog(t: TestContext) {
+  const { fixture, namespace, agent, catalogPath, catalogUrl } = await defaultCatalogAgent(t);
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const capabilitiesUrl = `${catalogUrl}/capabilities`;
+  const capabilities = await holdRequests(t, page, capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  assert.equal((await capabilities.requested)?.status(), 200, "saved Agent plugin capabilities");
+
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const search = dialog.getByRole("searchbox", { name: "Search plugins" });
+  // Keep observing the status when closing the dialog removes it from the accessibility tree.
+  const checkingCatalog = page
+    .locator("dialog.plugin-dialog .plugin-browser-status [role=status]")
+    .filter({ hasText: "Checking plugin catalog availability…" });
+  await configure.click();
+  await checkingCatalog.waitFor({ state: "visible" });
+
+  async function releaseCapabilities() {
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1000);
+    const response = responseTo(page, "GET", capabilitiesUrl);
+    capabilities.release();
+    assert.equal((await response).status(), 200, "browser received plugin capabilities");
+    await checkingCatalog.waitFor({ state: "detached" });
+    await page.clock.runFor(400);
+    await page.clock.resume();
+    await settlePageRequests(page);
+  }
+
+  const catalogQueries = () =>
+    pathRequests(requests, "POST", catalogPath).map(({ body }) => record(body).q);
+  return { page, configure, dialog, search, catalogUrl, releaseCapabilities, catalogQueries };
+}
+
+async function expectWorkspaceCatalog(dialog: Locator, search: Locator) {
+  assert.equal(await search.inputValue(), workspaceQuery);
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Slack", exact: true }).count(), 0);
+}
+
+test("A closed plugin picker defers its pending search until reopened", async (t) => {
+  const { page, configure, dialog, search, catalogUrl, releaseCapabilities, catalogQueries } =
+    await openPendingDefaultCatalog(t);
+  await search.fill(workspaceQuery);
+  await dialog.getByRole("button", { name: "Done", exact: true }).press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  await configure.and(page.locator(":focus")).waitFor();
+  await releaseCapabilities();
+  assert.deepEqual(catalogQueries(), [], "a closed picker does not request the catalog");
+
+  const response = responseTo(page, "POST", catalogUrl);
+  await configure.press("Enter");
+  assert.equal((await response).status(), 200, "reopened picker catalog");
+  await expectWorkspaceCatalog(dialog, search);
+  await settlePageRequests(page);
+  assert.deepEqual(catalogQueries(), [workspaceQuery], "the reopened picker searches once");
+});
+
+test("The plugin picker searches after switching back to Available while capabilities are pending", async (t) => {
+  const { dialog, search, releaseCapabilities, catalogQueries } =
+    await openPendingDefaultCatalog(t);
+  const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
+  const available = dialog.getByRole("button", { name: "Available plugins", exact: true });
+  await configured.click();
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await available.click();
+  assert.equal(await available.getAttribute("aria-pressed"), "true");
+  await search.fill(workspaceQuery);
+  await releaseCapabilities();
+  assert.deepEqual(catalogQueries(), [workspaceQuery], "the Available tab searches automatically");
+  await expectWorkspaceCatalog(dialog, search);
 });
 
 async function savedCodexPluginFixture(
