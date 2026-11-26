@@ -316,7 +316,13 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
     const entries = object(plugins.entries);
     const codex = object(entries.codex);
     const config = object(codex.config);
-    const { networkProxy: _networkProxy, ...appServer } = object(config.appServer);
+    // The Gateway authenticates directly to the Strands listener. Custom headers
+    // can change the TLS hostname or override its Authorization header.
+    const {
+      networkProxy: _networkProxy,
+      headers: _headers,
+      ...appServer
+    } = object(config.appServer);
     // Box owns process, filesystem and network isolation. A native proxy or
     // workspace-write profile would require a second, unavailable sandbox.
     // Preserve the admitted approval policy and keep its reviewer human-owned.
@@ -332,7 +338,14 @@ export class StrandsBoxSandboxDriver implements SandboxDriver {
             config: {
               ...config,
               appServer: {
+                // Match the Dedicated Codex preset when the caller omits its mode.
+                mode: "guardian",
                 ...appServer,
+                // Use the Agent’s transport token only with the listener and
+                // certificate that Compute supplies for this revision.
+                transport: "websocket",
+                url: "${APP_SERVER_URL}",
+                authToken: "${APP_SERVER_TOKEN}",
                 tlsPeerCertificate: "${OPENCLAW_HARNESS_TLS_PEER_CERTIFICATE}",
                 sandbox: "danger-full-access",
                 approvalsReviewer: "user",
