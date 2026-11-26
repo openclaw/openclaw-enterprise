@@ -76,6 +76,13 @@ import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 
 type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
+function desktopAndPhoneViewports() {
+  return [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ];
+}
+
 const versionChooser = (scope: Page | Locator) =>
   scope.getByLabel("Viewing version", { exact: true });
 const versionOption = (scope: Page | Locator, n: number) =>
@@ -2365,10 +2372,7 @@ for (const c of [
     primary: "Open v1 Logs",
   },
 ]) {
-  for (const viewport of [
-    { width: 1440, height: 900 },
-    { width: 390, height: 844 },
-  ]) {
+  for (const viewport of desktopAndPhoneViewports()) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's banner shows the ${c.code} next step in view at ${size}`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, `Next step ${c.code}`, runtimeLogs());
@@ -2405,6 +2409,8 @@ for (const c of [
       t.diagnostic(
         `${c.code} ${size}: text ${JSON.stringify(textBox)} action ${JSON.stringify(actionBox)}`,
       );
+      assert.ok(textBox.top >= 0, JSON.stringify(textBox));
+      assert.ok(actionBox.top >= 0, JSON.stringify(actionBox));
       assert.ok(textBox.top < textBox.innerHeight, `the message starts below the fold`);
       assert.ok(actionBox.top < actionBox.innerHeight, `${c.action} starts below the fold`);
       assert.ok(actionBox.bottom <= actionBox.innerHeight, `${c.action} ends below the fold`);
@@ -3185,10 +3191,7 @@ for (const c of [
     update: false,
   },
 ]) {
-  for (const viewport of [
-    { width: 1440, height: 900 },
-    { width: 390, height: 844 },
-  ]) {
+  for (const viewport of desktopAndPhoneViewports()) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's ${c.label} link brings ${c.name} into view at ${size}`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, `Recovery ${c.name} ${size}`);
@@ -3503,10 +3506,7 @@ test("Draft shows deployment in progress for the selected version until it compl
 // changed one only what changed, and the details keep their space until the deploy is over. Kept
 // after that, the space was an empty band under the outcome (finding 2369), so the settle gives
 // it back.
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of desktopAndPhoneViewports()) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -3877,10 +3877,7 @@ test("a deploy's details keep their queued height when its first claim starts", 
 // scroll position unchanged. The browser anchors on the first box crossing the top of the view:
 // here the details at 390 and their "Latest visible deployment" label at 1440. Neither is an
 // anchor any more, so the page scrolls by the change and the record stays where it is read.
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of desktopAndPhoneViewports()) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a settling deploy keeps the version's record in place on the Deployment tab at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -3947,10 +3944,7 @@ for (const viewport of [
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed
 // once more than after a reload, which put the card first (finding 2094). A watched failure now
 // renders as a reload of the same page does: the card leads the page and the details fold.
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of desktopAndPhoneViewports()) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a watched deploy that fails shows its recovery as a reload does at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -4266,10 +4260,7 @@ const GUARANTEES = [
   "Deployment records don’t verify live serving or model access.",
   "Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
 ];
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of desktopAndPhoneViewports()) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`The Agent's facts are a stat row with one disclosure at ${size}`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, `Stat row ${size}`);
@@ -4886,10 +4877,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
 // A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
 // say what is done, then Deploy on the first screen with its status beside it. The deploy
 // explanation moved into the page's disclosure, and the empty Deployment activity card left.
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of desktopAndPhoneViewports()) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`A draft's next-step card brings Deploy up at ${size}`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, `Next step ${size}`);
@@ -4964,6 +4952,7 @@ for (const viewport of [
       };
     });
     // On the first screen at 1440x900; on a phone, within 1,100 px of the top (spec P7).
+    assert.ok(layout.deployTop >= 0, JSON.stringify(layout));
     assert.ok(
       viewport.width > 1100 ? layout.deployBottom <= layout.innerHeight : layout.deployTop < 1100,
       JSON.stringify(layout),
