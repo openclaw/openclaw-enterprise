@@ -686,6 +686,31 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     ]);
   }
   const markers = "/actions/artifacts?name=full-integration-admitted-v1&per_page=100";
+  const coverage = `/actions/artifacts?name=full-integration-exercised-v1-${sha}&per_page=100`;
+  const markerHistory = previousRun({ startedAgo: 100, finishedAgo: 80, covered: true });
+  for (const [operation, markerPath] of [
+    ["admission-markers", markers],
+    ["coverage-markers", coverage],
+  ] as const) {
+    await t.test(`incomplete artifact list stops at ${operation}`, async () => {
+      const fixture = fixtures([sha]);
+      const calls: string[] = [];
+      const github: GithubReader = async (request) => {
+        calls.push(request.path);
+        if (request.path === markerPath) {
+          const page = await markerHistory(request);
+          assert.ok("artifacts" in page);
+          // The returned marker is valid, but an unseen marker could affect admission.
+          return { ...page, total_count: page.total_count + 1 };
+        }
+        return fixture.github(request);
+      };
+      await assert.rejects(validateFullIntegrationPreflight({ env, github }), {
+        message: `Full Integration schedule could not verify admission metadata (${operation}: incomplete-artifact-list).`,
+      });
+      assert.deepEqual(calls, clean.calls.slice(0, clean.calls.indexOf(markerPath) + 1));
+    });
+  }
   for (const [scenario, status] of [
     ["healthy", undefined],
     ["admit", 503],
