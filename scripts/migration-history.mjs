@@ -169,9 +169,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preOAuthEndpointAuthority";
   }
   if (count === 97 && completedCount > 97) {
-    return "preInstallationNetworkPolicyCeiling";
+    return "preSharedGitSourceRepositoryGrants";
   }
   if (count === 98 && completedCount > 98) {
+    return "preInstallationNetworkPolicyCeiling";
+  }
+  if (count === 99 && completedCount > 99) {
     return "preDynamicInstallationNetworkPolicyCeiling";
   }
   if (count === completedCount) {

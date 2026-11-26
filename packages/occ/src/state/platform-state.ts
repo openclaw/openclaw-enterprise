@@ -581,8 +581,7 @@ function matchesGitHubRepositoryGrants(
   if (
     (contents !== "read" && contents !== "write") ||
     repositoryBindings?.length !== selections.length ||
-    grants?.length !== selections.length ||
-    source.scope.repositories.length !== selections.length
+    grants?.length !== selections.length
   ) {
     return false;
   }

@@ -157,9 +157,11 @@ returns `409 RESOURCE_CONFLICT` if the Agent also has a separately saved
 policy update retains the saved list. Use an Agent draft without that list.
 [Native Git access levels](repository-credentials/access-levels.md#native-git-delivery)
 
-Native Git requires dedicated Codex with a supported TokenService model Source
-and the paired OpenShell Sandbox and Credential Proxy. Use the
-[inspected role images](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git).
+Native Git requires a supported TokenService model Source and the paired OpenShell
+Sandbox and Credential Proxy. Dedicated Codex requires inspected Gateway and Agent
+images. Dedicated OpenClaw requires service mode and an inspected Gateway image
+qualified in the worker role. An unset image pin disables that placement.
+[Controller build arguments](../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git)
 A dedicated Agent with only standalone TokenService model revisions can add
 native Git after Stop. An Agent with earlier unscoped Git needs a new Agent ID.
 Clear the Agent's repository selections to request withdrawal on its running
