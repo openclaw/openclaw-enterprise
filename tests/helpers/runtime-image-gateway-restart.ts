@@ -717,16 +717,22 @@ export function liveHolderKeepsStateTest(title: string): void {
       const { stdout } = await runDocker(["exec", live.containerName, "cat", gatewayStateLock]);
       const lock: unknown = JSON.parse(stdout);
       assert.ok(
-        isRecord(lock) && typeof lock.pid === "number",
+        isRecord(lock) && typeof lock.pid === "number" && typeof lock.ownerId === "string",
         "the live Gateway must hold its lock",
       );
       return { pid: lock.pid, ownerId: lock.ownerId };
     };
     const before = await readLock();
     const refused = /is not attributable to the terminated namespace/;
+    let stderrOffset = 0;
     const contender = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ output }: { output: string }) => waitingForGatewayOwner.test(output),
+      until: ({ phases, stderr }: StartupProbeSnapshot & { stderr: string }) => {
+        const complete = stderr.lastIndexOf("\n") + 1;
+        const lines = stderr.slice(stderrOffset, complete);
+        stderrOffset = complete;
+        return phaseAt(phases, "native-spawn") !== undefined && waitingForGatewayOwner.test(lines);
+      },
       act: async ({
         containerName,
         collect,
@@ -734,13 +740,17 @@ export function liveHolderKeepsStateTest(title: string): void {
         containerName: string;
         collect: () => Promise<{ output: string; running: boolean }>;
       }) => {
-        // The contender holds nothing while it waits; end it uncleanly there.
+        // The native child waits during config preflight under its CLI title. Only the
+        // later Gateway run loop sets openclaw-gateway. Signal the wrapper's child.
         await runDocker([
           "exec",
           containerName,
           "sh",
           "-ec",
-          "kill -KILL $(pgrep -of '^openclaw-gateway')",
+          `wrapper=$(pgrep -P 1 -x node)
+           set -- $(pgrep -P "$wrapper" -fx 'openclaw(-gateway)?')
+           if [ "$#" -ne 1 ]; then ps -eo pid,ppid,comm >&2; exit 1; fi
+           kill -KILL "$1"`,
         ]);
         const deadline = Date.now() + budgetMs;
         for (;;) {
@@ -765,7 +775,8 @@ export function liveHolderKeepsStateTest(title: string): void {
         live.containerName,
         "node",
         "-e",
-        'fetch("http://127.0.0.1:18791/readyz").then((r) => process.stdout.write(String(r.status)))',
+        'process.kill(Number(process.argv[1]), 0); fetch("http://127.0.0.1:18791/readyz").then((r) => process.stdout.write(String(r.status)))',
+        String(before.pid),
       ]);
       assert.equal(stdout, "200", "the live Gateway must keep serving");
     });
