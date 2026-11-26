@@ -25,6 +25,7 @@ import {
   settled,
 } from "../helpers/child-processes.mjs";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
+import { aggregateArgs, laneArgs } from "../helpers/ci-runner-fixture.ts";
 import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { checkArguments, classify, respond } from "../../scripts/ci/impact.ts";
 
@@ -759,12 +760,8 @@ const affected = {
 };
 const unavailable = (reason: string) => ({ status: "unavailable", reason, packages: [] });
 
-async function pnpmImpactOutput(
-  f: Fixture,
-  overrides: NodeJS.ProcessEnv = {},
-  args: string[] = [],
-) {
-  const result = await run(process.execPath, [pnpmImpact, ...args], {
+function runPnpmImpact(f: Fixture, overrides: NodeJS.ProcessEnv = {}, args: string[] = []) {
+  return run(process.execPath, [pnpmImpact, ...args], {
     cwd: f.repo,
     env: {
       ...process.env,
@@ -777,18 +774,16 @@ async function pnpmImpactOutput(
       ...overrides,
     },
   });
+}
+
+async function pnpmImpactOutput(...args: Parameters<typeof runPnpmImpact>) {
+  const result = await runPnpmImpact(...args);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
 }
 
 async function affectedPackages(f: Fixture, overrides: NodeJS.ProcessEnv = {}) {
-  const advisory = jsonRecord(await pnpmImpactOutput(f, overrides));
-  return {
-    ...advisory,
-    status: text(advisory.status),
-    reason: text(advisory.reason),
-    packages: textArray(advisory.packages),
-  };
+  return jsonRecord(await pnpmImpactOutput(f, overrides));
 }
 
 test("asset reader shadow uses the CI manifest and includes the standalone Storybook build", async (t) => {
@@ -969,17 +964,24 @@ test("pnpm impact reports a changed workspace package and its dependents", async
   }
 });
 
-test("pnpm impact reports affected packages from a depth-two merge checkout", async (t) => {
-  const f = await fixture(t, sharedChange, workspaceFiles());
-  const shallow = join(f.dir, "shallow");
+async function shallowClone(f: Fixture, branch?: string) {
+  const checkout = join(f.dir, "shallow");
   await command(f.dir, "git", [
     "clone",
-    "--quiet",
+    "-q",
     "--depth=2",
+    ...(branch === undefined ? [] : ["--branch", branch]),
     pathToFileURL(f.repo).href,
-    shallow,
+    checkout,
   ]);
-  assert.equal(await command(shallow, "git", ["rev-parse", "HEAD"]), f.tested);
+  assert.equal(await command(checkout, "git", ["rev-parse", "--is-shallow-repository"]), "true");
+  assert.equal(await command(checkout, "git", ["rev-parse", "HEAD"]), f.tested);
+  return checkout;
+}
+
+test("pnpm impact reports affected packages from a depth-two merge checkout", async (t) => {
+  const f = await fixture(t, sharedChange, workspaceFiles());
+  const shallow = await shallowClone(f);
   assert.deepEqual(await affectedPackages({ ...f, repo: shallow }), affected);
 });
 
@@ -1029,15 +1031,30 @@ test("pnpm impact does not classify workspace manifest or symlink changes", asyn
   );
 });
 
+function failingPnpm(f: Fixture) {
+  const dir = join(f.dir, "bin");
+  const env = shim(
+    dir,
+    "pnpm",
+    "#!/bin/sh\n: > \"$0.called\"\nprintf 'untrusted tool output\\n' >&2\nexit 1\n",
+  );
+  return { env, marker: join(dir, "pnpm.called") };
+}
+
 test("pnpm impact reports unavailable without exposing a failed tool's output", async (t) => {
   const f = await fixture(t, sharedChange, workspaceFiles());
-  for (const body of [
-    "#!/bin/sh\nprintf 'untrusted tool output\\n' >&2\nexit 1\n",
-    "#!/bin/sh\nprintf 'not valid json with private text\\n'\n",
-  ]) {
-    const path = shim(join(f.dir, "bin"), "pnpm", body);
-    assert.deepEqual(await affectedPackages(f, path), unavailable("inspection_failed"));
-  }
+  const expectUnavailable = async (overrides: NodeJS.ProcessEnv) => {
+    const { status, stderr, stdout } = await runPnpmImpact(f, overrides);
+    assert.equal(stderr.length, 0, "failed pnpm inspection should not write to stderr");
+    assert.equal(status, 0);
+    assert.deepEqual(jsonRecord(stdout), unavailable("inspection_failed"));
+  };
+  const { env, marker } = failingPnpm(f);
+  await expectUnavailable(env);
+  assert.ok(existsSync(marker), "expected pnpm to run on a clean checkout");
+  await expectUnavailable(
+    shim(join(f.dir, "bin"), "pnpm", "#!/bin/sh\nprintf 'not valid json with private text\\n'\n"),
+  );
 });
 
 test("pnpm impact safely handles non-record JSON values from the event and pnpm", async (t) => {
@@ -1082,8 +1099,9 @@ test("pnpm impact rejects dirty tracked and untracked checkout inputs before run
       mkdirSync(dir);
       writeFileSync(join(dir, "package.json"), "{}\n");
     }
-    const path = shim(join(f.dir, "unavailable-bin"), "pnpm", "#!/bin/sh\nexit 1\n");
-    assert.deepEqual(await affectedPackages(f, path), unavailable("dirty_checkout"), kind);
+    const { env, marker } = failingPnpm(f);
+    assert.deepEqual(await affectedPackages(f, env), unavailable("dirty_checkout"), kind);
+    assert.equal(existsSync(marker), false, kind);
   });
 });
 
@@ -1453,18 +1471,7 @@ const bootstrapSteps = {
 async function shallowBootstrap(f: Fixture) {
   // Model the merge checkout Actions obtains with fetch-depth 2, including both parents.
   await f.git("branch", "checkout-target", f.tested);
-  const checkout = join(f.dir, "shallow");
-  await command(f.dir, "git", [
-    "clone",
-    "-q",
-    "--depth",
-    "2",
-    "--branch",
-    "checkout-target",
-    `file://${f.repo}`,
-    checkout,
-  ]);
-  assert.equal(await command(checkout, "git", ["rev-parse", "--is-shallow-repository"]), "true");
+  const checkout = await shallowClone(f, "checkout-target");
   let outputs = 0;
   const runStep = async (
     action: keyof typeof bootstrapSteps,
@@ -2456,17 +2463,8 @@ function syntheticLanes(root: string, sha: string, group: string[], prefix: stri
   writeFileSync(join(root, "manifest.json"), JSON.stringify(manifest));
   const invoke = (args: string[], at = sha) =>
     run(process.execPath, [runner, ...args], { env: { ...process.env, GITHUB_SHA: at } });
-  const common = ["--manifest", "manifest.json", "--root", root];
   const runLane = (lane: string) =>
-    invoke([
-      "run",
-      lane,
-      ...common,
-      "--state",
-      join(root, `${lane}.state`),
-      "--results",
-      join(root, `results/${lane}.json`),
-    ]);
+    invoke(laneArgs(root, lane, join(root, `${lane}.state`), join(root, `results/${lane}.json`)));
   return {
     runLane,
     async runPassingLanes(lanes: readonly string[]) {
@@ -2481,11 +2479,7 @@ function syntheticLanes(root: string, sha: string, group: string[], prefix: stri
     }: { lanes?: string | undefined; sha?: string; issue?: ExpectedAggregateIssue } = {}) {
       const { status, signal, stdout, stderr } = await invoke(
         [
-          "aggregate",
-          "ci",
-          ...common,
-          "--results-dir",
-          "results",
+          ...aggregateArgs(root, "ci"),
           "--needs",
           "needs.json",
           ...(lanes === undefined ? [] : ["--lanes", lanes]),
@@ -2513,6 +2507,10 @@ function assertAggregateLanes(
   assert.deepEqual(
     summary.lanes.map(({ lane, status }) => [lane, status]),
     expectedLanes.map((lane) => [lane, lane === failedLane ? "failed" : "passed"]),
+  );
+  assert.deepEqual(
+    summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
+    failedLane === undefined ? [] : [failedLane],
   );
 }
 
@@ -2594,10 +2592,11 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     await runPassingLanes(fixtureLanes);
     assertAggregateLanes(await aggregate(), fixtureLanes);
     await command(root, "git", ["checkout", "-q", "--detach", f.head]);
-    await aggregate({
+    const stalePassing = await aggregate({
       sha: f.head,
       issue: { code: "source-sha-mismatch", lane: "checks-baseline-1" },
     });
+    assertAggregateLanes(stalePassing, []);
     await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
     // The gate writes the new job state even when it then rejects a failed job.
@@ -2634,10 +2633,6 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
           .map((entry) => entry.need),
         ["pr-safe"],
       );
-      assert.deepEqual(
-        summary.issues.filter((entry) => entry.code === "lane-failed").map((entry) => entry.lane),
-        [lane],
-      );
       assertAggregateLanes(summary, fixtureLanes, lane);
       if (lane === "postgres") {
         // Keep the runner-produced failure intact: an old revision's receipt
@@ -2647,11 +2642,7 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
           sha: f.head,
           issue: { code: "source-sha-mismatch", lane },
         });
-        assert.equal(
-          stale.issues.some((entry) => entry.code === "lane-failed"),
-          false,
-        );
-        assert.deepEqual(stale.lanes, []);
+        assertAggregateLanes(stale, []);
         await command(root, "git", ["checkout", "-q", "--detach", f.tested]);
 
         // A misplaced real receipt likewise cannot fail its passing sibling.
@@ -2661,12 +2652,6 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
         const misplaced = await aggregate({
           issue: { code: "lane-output-mismatch", lane: "checks-baseline-1" },
         });
-        assert.deepEqual(
-          misplaced.issues
-            .filter((entry) => entry.code === "lane-failed")
-            .map((entry) => entry.lane),
-          [lane],
-        );
         assertAggregateLanes(misplaced, ["checks-baseline-2", lane], lane);
         writeFileSync(sibling, siblingOriginal);
       }
