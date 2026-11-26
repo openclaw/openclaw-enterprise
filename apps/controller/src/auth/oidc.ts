@@ -9,6 +9,11 @@ import {
   type ProviderExchange,
 } from "./provider-transport.ts";
 import { verifyIdToken } from "./id-token.ts";
+import {
+  oidcEnrollmentPolicy,
+  type OidcEnrollmentPolicy,
+  type ResolvedOidcEnrollmentPolicy,
+} from "./oidc-enrollment.ts";
 
 // Generic OpenID Connect sign-in against one operator-configured issuer. The four URLs are
 // configuration copied from the IdP's discovery document; the controller never runs
@@ -17,6 +22,7 @@ import { verifyIdToken } from "./id-token.ts";
 export type OidcTokenAuth = "client_secret_post" | "client_secret_basic";
 
 export interface OidcLoginConfiguration {
+  readonly enrollment?: OidcEnrollmentPolicy | undefined;
   // The exact `iss` value, compared byte for byte.
   readonly issuer: string;
   readonly authorizationUrl: string;
@@ -35,6 +41,10 @@ export interface OidcSignInConfiguration extends OidcLoginConfiguration {
   readonly recoveryUserId: string;
 }
 
+export interface ResolvedOidcLoginConfiguration extends Omit<OidcLoginConfiguration, "enrollment"> {
+  readonly enrollment?: ResolvedOidcEnrollmentPolicy | undefined;
+}
+
 export const OIDC_DEFAULT_DISPLAY_NAME = "single sign-on";
 
 const requiredVariables = [
@@ -45,7 +55,11 @@ const requiredVariables = [
   "OCC_AUTH_OIDC_CLIENT_ID",
   "OCC_AUTH_OIDC_CLIENT_SECRET",
 ] as const;
-const optionalVariables = ["OCC_AUTH_OIDC_TOKEN_AUTH", "OCC_AUTH_OIDC_DISPLAY_NAME"] as const;
+const optionalVariables = [
+  "OCC_AUTH_OIDC_TOKEN_AUTH",
+  "OCC_AUTH_OIDC_DISPLAY_NAME",
+  "OCC_AUTH_OIDC_ENROLLMENT",
+] as const;
 
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -55,6 +69,17 @@ const displayNamePattern = /^[^\p{C}\p{Zl}\p{Zp}]{1,40}$/u;
 // An `https:` URL on the default port with a DNS host and no userinfo, query or fragment.
 // Returns the parsed URL, or undefined.
 function endpointURL(value: string): URL | undefined {
+  // WHATWG URL parsing repairs tabs, escapes, empty userinfo, and backslashes in an
+  // authority. Refuse those spellings before selecting a confidential destination.
+  const authority = /^https:\/\/([^/?#]+)(?:\/|$)/i.exec(value)?.[1];
+  const hostname = authority?.replace(/:443$/i, "");
+  if (
+    hostname === undefined ||
+    !/^[A-Za-z0-9.-]+$/.test(hostname) ||
+    !dnsName.test(hostname.toLowerCase())
+  ) {
+    return undefined;
+  }
   let url: URL;
   try {
     url = new URL(value);
@@ -109,9 +134,9 @@ export function oidcLoginConfiguration(
     ["jwks", "OCC_AUTH_OIDC_JWKS_URL"],
   ] as const) {
     const url = endpointURL(values[variable]);
-    if (url === undefined || url.hostname !== issuer.hostname) {
+    if (url === undefined) {
       throw new Error(
-        `${variable} must be an https URL on port 443 on the issuer's host, with no query or fragment.`,
+        `${variable} must be an https URL on port 443 with a DNS host name and no query or fragment.`,
       );
     }
     endpoints[name] = url.href;
@@ -125,10 +150,15 @@ export function oidcLoginConfiguration(
     throw new Error("OCC_AUTH_OIDC_DISPLAY_NAME must be 1 to 40 printable characters.");
   }
   return {
+    ...(environment.OCC_AUTH_OIDC_ENROLLMENT === undefined
+      ? {}
+      : {
+          enrollment: oidcEnrollmentPolicy(JSON.parse(environment.OCC_AUTH_OIDC_ENROLLMENT)),
+        }),
     // The configured string itself: `iss` must match it exactly, trailing slash included.
     issuer: values.OCC_AUTH_OIDC_ISSUER,
     authorizationUrl: endpoints.authorization,
-    // Checked above: HTTPS on 443 on the issuer's DNS host. This is the only place a
+    // Checked above: each selected endpoint is HTTPS on 443 with a DNS host. This is the only place a
     // PinnedEndpoint is constructed.
     tokenUrl: endpoints.token as PinnedEndpoint,
     jwksUrl: endpoints.jwks as PinnedEndpoint,
@@ -160,8 +190,11 @@ export async function oidcAuthorizationURL(
     id: "oidc",
     options: { clientId: config.clientId, clientSecret: config.clientSecret },
     authorizationEndpoint: config.authorizationUrl,
-    // Only the subject is used; email and profile are never requested or read.
-    scopes: ["openid"],
+    // Profile claims are requested only for the opt-in enrollment policy.
+    scopes:
+      config.enrollment === undefined
+        ? ["openid"]
+        : [...new Set(["openid", "email", "profile", ...config.enrollment.additionalScopes])],
     state,
     codeVerifier,
     redirectURI,
@@ -175,7 +208,7 @@ export function oidcNonce(secret: string, state: string): string {
 }
 
 export async function exchangeOidcSubject(
-  config: OidcLoginConfiguration,
+  config: ResolvedOidcLoginConfiguration,
   code: string,
   codeVerifier: string,
   redirectURI: string,
@@ -214,9 +247,31 @@ export async function exchangeOidcSubject(
       jwks,
       now: Date.now(),
     });
-    return claims === undefined
-      ? { denial: "EXTERNAL_IDENTITY_REJECTED" }
-      : { subject: claims.sub as string };
+    if (claims === undefined) {
+      return { denial: "EXTERNAL_IDENTITY_REJECTED" };
+    }
+    const policy = config.enrollment;
+    if (policy !== undefined) {
+      const claim = claims[policy.admission.groupsClaim];
+      const groups = typeof claim === "string" ? [claim] : claim;
+      if (
+        !Array.isArray(groups) ||
+        groups.some((group) => typeof group !== "string") ||
+        !policy.admission.anyOf.some((group) => groups.includes(group))
+      ) {
+        return { denial: "EXTERNAL_IDENTITY_REJECTED" };
+      }
+      return {
+        subject: claims.sub as string,
+        enrollment: {
+          groupIds: policy.groupIds,
+          createAccount: policy.createAccount,
+          policyId: policy.policyId,
+          profile: oidcEnrollmentProfile(claims, policy.createAccount.requireVerifiedEmail),
+        },
+      };
+    }
+    return { subject: claims.sub as string };
   } catch (error) {
     // Never expose provider response bodies, token values or request credentials.
     return providerExchangeFailure(error, controller.signal);
@@ -224,4 +279,34 @@ export async function exchangeOidcSubject(
     clearTimeout(timer);
     controller.abort();
   }
+}
+
+function oidcEnrollmentProfile(
+  claims: Record<string, unknown>,
+  requireVerifiedEmail: boolean,
+): { email: string; name: string; emailVerified: boolean } | undefined {
+  if (
+    (Object.hasOwn(claims, "email_verified") && typeof claims.email_verified !== "boolean") ||
+    (requireVerifiedEmail && claims.email_verified !== true) ||
+    typeof claims.email !== "string"
+  ) {
+    return undefined;
+  }
+  const email = claims.email.trim().toLowerCase();
+  const name =
+    typeof claims.name === "string" && claims.name.trim().length > 0 ? claims.name.trim() : email;
+  if (
+    !email.isWellFormed() ||
+    email.includes("\uFFFD") ||
+    email.length > 320 ||
+    email.includes("\0") ||
+    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ||
+    !name.isWellFormed() ||
+    name.includes("\uFFFD") ||
+    name.includes("\0") ||
+    name.length > 200
+  ) {
+    return undefined;
+  }
+  return { email, name, emailVerified: claims.email_verified === true };
 }

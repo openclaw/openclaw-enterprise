@@ -12,6 +12,10 @@ export const RuntimeImagesUnavailable = {
 export const FirstVisits = { ...story("navigationFirstVisit") };
 export const RetryOpeningAnAgent = { ...story("navigationAgentReadRetry") };
 export const ReturnToLoadedPages = { ...story("navigationRetained") };
+export const ReturnToAnInterruptedAgentLink = { ...story("navigationAgentHistory") };
+export const RecoverFromAMismatchedAgentLookup = {
+  ...story("navigationAgentLookupMismatch", { openInNewTab: true }),
+};
 export const SlowRechecks = { ...story("navigationSlowRecheck") };
 export const ReturnAccessDenied = { ...story("navigationDenied") };
 export const ReturnSessionExpired = { ...story("navigationExpired") };

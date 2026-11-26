@@ -1,3 +1,8 @@
+# Keep text files in LF format when staging and checking out.
+* text=auto eol=lf
+
 # Exclude archived implementations from release archives.
 /legacy export-ignore
 /legacy/** export-ignore
+# Preserve protocol CRLF bytes in this patch.
+/deploy/runtime/curl/CVE-2026-86414.patch -text

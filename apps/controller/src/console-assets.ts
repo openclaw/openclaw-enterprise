@@ -44,6 +44,11 @@ const CONSOLE_ASSETS = new Map([
       "api-client.mts",
       "sign-in-presentation.mts",
       "configuration-fields.mts",
+      "connection-templates.mts",
+      "credential-clients.mts",
+      "oauth-catalog.mts",
+      "oauth-deletion.mts",
+      "oauth-client-registration.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",
@@ -53,6 +58,8 @@ const CONSOLE_ASSETS = new Map([
       "namespace-deletion.mts",
       "resource-actions.mts",
       "secrets.mts",
+      "credential-sources.mts",
+      "credential-source-metadata.mts",
       "runtime-images.mts",
       "agents/list.mts",
       "agents/access-reasons.mts",
@@ -65,6 +72,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/presets.mts",
       "agents/create.mts",
       "agents/provisioning-job.mts",
+      "agents/plugin-connection.mts",
       "agents/plugin-discovery.mts",
       "agents/slack-directory.mts",
       "agents/slack-approvers.mts",
@@ -86,6 +94,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/device-login.mts",
       "agents/credential-access.mts",
       "agents/secret-picker.mts",
+      "agents/network-proxy.mts",
       "agents/credentials.mts",
       "channels/slack.mts",
       "channels/shared-ui.mts",
@@ -108,14 +117,14 @@ const CONSOLE_ASSETS = new Map([
   [
     "/console/workspace-defaults.mjs",
     {
-      path: new URL("../../../packages/contracts/src/workspace-defaults.mjs", import.meta.url),
+      path: new URL("../../../packages/contracts/src/workspace-defaults.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
   [
     "/console/preset-variables.mjs",
     {
-      path: new URL("../../../packages/contracts/src/preset-variables.mjs", import.meta.url),
+      path: new URL("../../../packages/contracts/src/preset-variables.mts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
@@ -124,6 +133,14 @@ const CONSOLE_ASSETS = new Map([
     "/console/environment-references.mjs",
     {
       path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // Source eligibility and Compute admission use the same model endpoint normalization.
+  [
+    "/console/openai-endpoint-url.mjs",
+    {
+      path: new URL("./drivers/openai-endpoint-url.ts", import.meta.url),
       contentType: "text/javascript; charset=utf-8",
     },
   ],
@@ -170,6 +187,8 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/backends",
   "/console/namespaces",
   "/console/secrets",
+  "/console/credentials/connection-templates",
+  "/console/credentials/credential-clients",
   "/console/settings",
 ]);
 

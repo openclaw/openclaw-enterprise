@@ -1,3 +1,4 @@
+import { focusedText } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -8,9 +9,8 @@ import {
   newPage,
   recordFocusTrail,
   stopFocusTrail,
-} from "./console-agents-browser-helpers.mjs";
-import { focusedText } from "./console-agents-test-support.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 // After an admitted deployment the held draft page's heading keeps focus, and the loading page's
 // heading takes it over only while the held heading still has it (finding 1626). A reader who

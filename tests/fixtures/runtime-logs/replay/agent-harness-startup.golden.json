@@ -115,7 +115,7 @@
       },
       "contentClass": "operational",
       "kind": "text",
-      "level": "unknown",
+      "level": "info",
       "message": "[node-host] advertised commands: dir.list, file.create, file.fetch, file.stat, file.write, workspace.memory, workspace.skills"
     },
     {
@@ -130,7 +130,7 @@
       },
       "contentClass": "operational",
       "kind": "text",
-      "level": "unknown",
+      "level": "info",
       "message": "node host gateway connected: wss://occ-gateway-000000000000.envoy-gateway-system.svc:443/namespaces/ns_00000000-0000-4000-8000-000000000000/agents/agt_00000000-0000-4000-8000-000000000000/node"
     },
     {

@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -15,8 +16,14 @@ REQUIRED = (
     "installation-secret-key", "before-values.yaml", "before-installation.yaml",
     "before-live-values.yaml", "before-live-installation.yaml",
     "before-live-installation-secret.json", "before-helm-status.json",
+    "inventory/restart-preflight.json",
+    "prepared-helm-attempt.json",
 )
-OPTIONAL = ("installation-changed", "installation-checksum")
+OPTIONAL = (
+    "before-candidate-installation-secret.json", "installation-changed",
+    "installation-checksum", "agent-continuity.json", "controller-compatibility-results.json",
+    "migration-secret-identities.json",
+)
 
 
 def digest(directory, name, optional=False):
@@ -33,7 +40,187 @@ def digest(directory, name, optional=False):
         return hashlib.sha256(source.read()).hexdigest()
 
 
+def compatibility_result(receipt):
+    file_path = "tests/integration/postgres-migration-compatibility.test.mjs"
+    required_cases = (
+        "Released controller remains usable across candidate database writes",
+        "Released controller remains usable after configured IAM activation",
+    )
+    if (not isinstance(receipt, dict) or type(receipt.get("version")) is not int or
+            receipt["version"] != 1 or receipt.get("command") != "run" or
+            receipt.get("lane") != "postgres" or receipt.get("scope") not in ("full", "focused") or
+            not re.fullmatch(r"[a-f0-9]{40}", receipt.get("sourceSha", "")) or
+            receipt.get("status") != "passed" or type(receipt.get("exitCode")) is not int or
+            receipt["exitCode"] != 0 or receipt.get("issues") != []):
+        raise ValueError("invalid PostgreSQL run receipt")
+    files = receipt.get("files")
+    if not isinstance(files, list) or not all(isinstance(item, dict) for item in files):
+        raise ValueError("invalid file results")
+    if receipt["scope"] == "focused" and len(files) != 1:
+        raise ValueError("focused run must contain one file")
+    # The producer counts test rows, then sums each file into the run summary.
+    totals = dict.fromkeys(("passed", "failed", "skipped", "todo", "total"), 0)
+    for item in files:
+        tests = item.get("tests")
+        if (not isinstance(tests, list) or not tests or
+                not all(isinstance(test, dict) and "skip" not in test and "todo" not in test and
+                        test.get("status") in
+                        ("passed", "failed", "skipped", "todo") for test in tests)):
+            raise ValueError("invalid test results")
+        counts = {key: sum(test["status"] == key for test in tests)
+                  for key in ("passed", "failed", "skipped", "todo")}
+        counts["total"] = len(tests)
+        recorded = item.get("counts", {})
+        if (recorded != counts or not all(type(value) is int for value in recorded.values()) or
+                item.get("status") != "passed" or type(item.get("nodeExitCode")) is not int or
+                item["nodeExitCode"] != 0 or item.get("signal", "missing") is not None or
+                item.get("issues") != [] or "fileFailure" in item or
+                any(counts[key] != 0 for key in ("failed", "skipped", "todo")) or
+                (item.get("cleanup") is not None and item["cleanup"].get("status") != "passed")):
+            raise ValueError("inconsistent file result")
+        for key in totals:
+            totals[key] += counts[key]
+    if (receipt.get("counts") != totals or
+            not all(type(value) is int for value in receipt["counts"].values())):
+        raise ValueError("inconsistent run counts")
+    matches = [item for item in files if item.get("path") == file_path]
+    if len(matches) != 1:
+        raise ValueError("expected one compatibility file result")
+    result = matches[0]
+    counts = result["counts"]
+    if (result.get("cleanup", {}).get("status") != "passed" or counts["passed"] == 0 or
+            counts["passed"] != counts["total"]):
+        raise ValueError("compatibility file or cleanup did not pass")
+    tests = result["tests"]
+    for name in required_cases:
+        selected = [item for item in tests if item.get("name") == name]
+        if (len(selected) != 1 or selected[0].get("status") != "passed" or
+                selected[0].get("file") != file_path):
+            raise ValueError("selected compatibility case did not pass")
+    return result
+
+
+def check_compatibility_image(result, role, reference):
+    # The runner records the reference suffix, not a platform manifest or config ID.
+    expected = reference.rsplit("@", 1)[-1]
+    if (not re.fullmatch(r"sha256:[a-f0-9]{64}", expected) or
+            result.get("imageDigests", {}).get(role) != expected):
+        raise ValueError("compatibility image selection does not match")
+
+
+def released_history_unsupported(result):
+    measurements = result.get("measurements")
+    return isinstance(measurements, list) and any(
+        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
+        item.get("status") == "unsupported" for item in measurements
+    )
+
+
+def validate_compatibility_preview(content, candidate):
+    result = compatibility_result(json.loads(content.decode("utf-8")))
+    check_compatibility_image(result, "candidateController", candidate)
+    released = result.get("imageDigests", {}).get("releasedController", "")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", released):
+        raise ValueError("invalid reported released controller digest")
+    return released_history_unsupported(result)
+
+
+def validate_compatibility(path, released, candidate):
+    with open(path, encoding="utf-8") as source:
+        result = compatibility_result(json.load(source))
+    check_compatibility_image(result, "releasedController", released)
+    check_compatibility_image(result, "candidateController", candidate)
+    if released_history_unsupported(result):
+        try:
+            os.write(
+                2, b"warning: The released controller rejected the candidate migration history. "
+                   b"Qualify another recovery controller before maintenance.\n"
+            )
+        except OSError:
+            # An unavailable diagnostic stream must not change validation.
+            pass
+
+
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def reject_json_constant(_):
+    raise ValueError("invalid JSON constant")
+
+
+def check_recovery_lifecycle(lifecycle):
+    if (not isinstance(lifecycle, dict) or lifecycle.get("status") != "passed" or
+            lifecycle.get("interrupted", "missing") is not None):
+        return False
+    phases = lifecycle.get("phases")
+    if not isinstance(phases, dict):
+        return False
+    for name in ("prepare", "run", "cleanup"):
+        phase = phases.get(name)
+        if (not isinstance(phase, dict) or phase.get("status") != "passed" or
+                type(phase.get("exitCode")) is not int or phase["exitCode"] != 0 or
+                phase.get("signal", "missing") is not None or phase.get("terminal") is not True or
+                "error" in phase or "reason" in phase):
+            return False
+    return True
+
+
+def recovery_history(arguments):
+    if len(arguments) != 4:
+        sys.exit("Usage: python3 scripts/upgrade-evidence.py recovery-history "
+                 "REPORT RECOVERY_DIGEST CANDIDATE_DIGEST RUNNER_SHA")
+    path, recovery, candidate, runner = arguments
+    if (recovery == candidate or
+            not all(re.fullmatch(r"sha256:[a-f0-9]{64}", value) for value in (recovery, candidate)) or
+            not re.fullmatch(r"[a-f0-9]{40}", runner)):
+        sys.exit("Supply two distinct lowercase sha256 digests and the full lowercase runner SHA.")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, encoding="utf-8") as source:
+            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                raise ValueError("expected a regular report file")
+            report = json.load(source, object_pairs_hook=unique_json_object,
+                               parse_constant=reject_json_constant)
+    except (OSError, ValueError, RecursionError):
+        sys.exit("Supply a readable regular PostgreSQL report with valid, unambiguous JSON.")
+
+    try:
+        result = compatibility_result(report)
+        if report["sourceSha"] != runner:
+            raise ValueError("runner SHA does not match")
+        check_compatibility_image(result, "releasedController", recovery)
+        check_compatibility_image(result, "candidateController", candidate)
+    except (AttributeError, TypeError, ValueError):
+        sys.exit("Supply a passing PostgreSQL compatibility report for the selected digests and runner SHA.")
+
+    if not check_recovery_lifecycle(report.get("lifecycle")):
+        sys.exit("Use a completed PostgreSQL runner report with successful prepare, run, and cleanup phases.")
+    measurements = result.get("measurements")
+    if not isinstance(measurements, list):
+        measurements = []
+    history = [item.get("status") for item in measurements
+               if isinstance(item, dict) and item.get("kind") == "released-controller-history"]
+    if history == ["unsupported"]:
+        sys.exit("The recovery controller migrator refused the upgraded history. "
+                 "Qualify a different recovery controller.")
+    if history != ["current"]:
+        sys.exit("Rerun compatibility with a runner that records exactly one current migration history measurement.")
+    print("Reported recovery controller history is current for the selected compatibility pair.")
+
+
 def main():
+    if sys.argv[1:2] == ["recovery-history"]:
+        recovery_history(sys.argv[2:])
+        return
+    if len(sys.argv) == 5 and sys.argv[1] == "compatibility":
+        validate_compatibility(*sys.argv[2:])
+        return
     if len(sys.argv) != 3 or sys.argv[1] not in ("capture", "verify"):
         raise ValueError("expected capture or verify and an evidence directory")
     action, directory = sys.argv[1:]
@@ -61,6 +248,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        print("prepared upgrade evidence verification failed", file=sys.stderr)
+    except (OSError, AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        print("controller compatibility receipt verification failed" if sys.argv[1:2] == ["compatibility"]
+              else "prepared upgrade evidence verification failed", file=sys.stderr)
         sys.exit(1)

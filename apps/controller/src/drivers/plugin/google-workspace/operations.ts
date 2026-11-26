@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { normalizeConnectionDestinations } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { CredentialSourceAttachment } from "@openclaw-enterprise/contracts";
 
@@ -54,6 +55,17 @@ if (createHash("sha256").update(bytes).digest("hex") !== googleRelease?.operatio
   throw new Error("The Google Workspace operation catalog does not match the reviewed release.");
 }
 export const googleCatalog: Catalog = JSON.parse(bytes.toString("utf8"));
+
+/** Service roots represented by the verified Google Workspace release, before account-specific grants. */
+export const googleWorkspaceDestinations = normalizeConnectionDestinations(
+  Object.values(googleCatalog.operations).map((operation) => {
+    const root = operation.path.split("/")[1];
+    if (!root || !/^[A-Za-z0-9_-]+$/.test(root)) {
+      throw new Error("Google operation lacks a literal service path.");
+    }
+    return { host: new URL(operation.origin).hostname, path: "/" + root + "/**" };
+  }),
+);
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -187,13 +199,8 @@ export function googleRequestScope(input: unknown): GoogleRequestScope | undefin
   return { host: value.host, port: value.port, path: value.path, scopes: value.scopes };
 }
 
-/** gog lists the public directory and fetches an API description before a dynamic call.
- * The service-hosted fallback applies only to service/version pairs in this source's map.
- * Never offer a public request that the source's provider would credential. */
-export function googleDiscoveryRequests(
-  scope: GoogleRequestScope,
-  entries = eligibleGoogleOperations(scope),
-) {
+/** The service-hosted fallback applies only to service/version pairs in the reviewed map. */
+export function googleDiscoveryRoutes(entries = Object.entries(googleCatalog.operations)) {
   const root = "www.googleapis.com";
   const directory = "/discovery/v1/apis";
   const publicRequests = [
@@ -210,7 +217,15 @@ export function googleDiscoveryRequests(
       { host: service + ".googleapis.com", path: "/$discovery/rest", query: "version=" + version },
     );
   }
-  return publicRequests.filter(
+  return publicRequests;
+}
+
+/** Never offer a public discovery request that the source's provider would credential. */
+export function googleDiscoveryRequests(
+  scope: GoogleRequestScope,
+  entries = eligibleGoogleOperations(scope),
+) {
+  return googleDiscoveryRoutes(entries).filter(
     ({ host, path }) => host !== scope.host || !googleSourcePathMatches(scope.path, path),
   );
 }

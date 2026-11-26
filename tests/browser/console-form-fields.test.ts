@@ -1,8 +1,13 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_CONFLICT,
@@ -10,7 +15,7 @@ import {
   SECRET_NAME_CONFLICT,
 } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -24,13 +29,8 @@ import {
   newPage,
   nonAuthWriteRequests,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.ts";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
 // The console checks required fields itself, so the browser's transient bubble never shows; it
@@ -343,6 +343,10 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const acknowledge = panel.getByRole("checkbox");
   const share = panel.getByRole("button", { name: "Share Agent", exact: true });
   await panel.locator("#share-principal-id:enabled").waitFor();
+  assert.match(
+    (await accessible(page, acknowledge)).name,
+    /full native administration of this Agent.*Removing the Agent grant leaves the Namespace discovery grant in place/,
+  );
   await share.click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
   assert.equal(await focusedId(page), "share-principal-id");

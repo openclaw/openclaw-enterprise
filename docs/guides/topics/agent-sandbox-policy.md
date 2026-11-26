@@ -1,5 +1,19 @@
 # Review policy denials and change one Agent's network access
 
+## Repository access
+
+For native OpenShell Git, open the Agent draft's **Repositories** settings.
+Select its GitHub App Client, repositories, and **Read-only Git** or
+**Read/write Git** for each. Save the draft, then stop any active managed
+revision before deploying. OCC derives the Git rules from those choices.
+Clear the repository selections to withdraw running Git access.
+
+Use an Agent draft without a separate repository network policy. A manually
+saved list, including an empty list, conflicts with Source-backed Git.
+[GitHub App setup and access levels](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+
+## Network denials
+
 Open an Agent in the OCE console, select its running version, and choose
 **Policy denials**. You need the Agent's existing Sandbox log permissions to see
 observed denials. A version that runs without a Sandbox records none, and the tab
@@ -39,11 +53,12 @@ instead, and policy changes, including turning editing on, are refused. Policy r
    directly. Check the rules to add, update, or remove. The preview shows field
    errors without saving or applying. **Back to editing** retains the proposal.
 6. Choose **Save for later** to persist the policy without changing the current
-   revision, or **Save and apply to current revision** to save and request live
-   application. Wait for **Applied** before retrying the original tool action.
+   revision, or **Save and apply to current revision** to save the reviewed rules and queue
+   their application together. Wait for **Applied** before retrying the original tool action.
    A successful tool result provides the final execution evidence.
-   If the Console cannot confirm which rules were saved, open **Manage rules**,
-   select **Refresh policy**, and inspect the saved version before applying it.
+   If the combined response is lost, the Console reads the policy again. If that
+   read fails, select **Refresh policy** in the editor to see the saved version
+   and application status before making another change.
 7. To apply a policy saved earlier, choose **Apply saved rules** on the card or
    in the **Manage rules** footer. This action is unavailable while the proposal
    has unsaved edits. **Applying…** waits for provider confirmation. If application
@@ -57,9 +72,10 @@ The schema supplies field descriptions and constraints. Shapes without a form
 use a schema-aware JSON editor. A preview for an older draft or policy version
 cannot replace newer edits. An addition outside the ceiling is rejected with a visible error. Correct the
 retained edit and review it again; the saved policy remains unchanged and no
-application is requested. If saving succeeds but application is rejected, the
-error identifies the saved version. Refresh and inspect the current revision
-before retrying application; the saved change has not been rolled back.
+application is requested. If the running revision changes before
+OCC accepts a combined save and apply, refresh the Agent and review the edit again.
+If the request outcome is uncertain, refresh the saved version and application
+status before submitting another change.
 
 An administrator must first enable editing for the Agent and separately grant
 exact-Agent `manage_policy` and exact-SandboxPolicy `update`. Viewing the policy
@@ -84,21 +100,77 @@ request; do not assume the provider rejected the change.
 
 ## CLI
 
-Use the same Namespace and authenticated OCC context as other Agent commands:
+Use the same Namespace and authenticated OCC context as other Agent commands.
+Get the current saved policy version and the ID of the active revision before
+preparing a change. The active revision is `activeRevisionId` in the Agent's
+JSON output, which needs only Agent read.
 
 ```sh
 occ agent policy get AGENT_ID --facet networking -o json
-occ agent policy editing AGENT_ID --enabled=true
-occ agent policy update AGENT_ID --facet networking --file additions.json
-occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version 2
-occ agent policy get AGENT_ID --facet networking -o json
+occ agent get AGENT_ID -o json
 ```
 
-The `occ agent policy` commands print JSON by default. Use `-o yaml` for YAML.
-These commands return the complete policy or application result rather than a table.
+To save a replacement and queue its application in one request, create
+`apply.json` as the [HTTP request body](../../reference/api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply).
+Set `revisionId` to the active running revision ID and `expectedVersion` to
+the current saved policy version. Include the complete desired `additions`
+array. An empty array clears Agent-specific grants. Omit `additions` to apply
+the saved version. This example clears the existing Agent-specific grants.
 
-`additions.json` contains `expectedVersion` and the complete desired `additions`
-array. Get the current version first; an empty array removes Agent-specific
-grants. The apply command returns an acknowledgement; poll `get` to observe
-confirmation. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
+```json
+{
+  "revisionId": "rev_33333333-3333-4333-8333-333333333333",
+  "expectedVersion": 2,
+  "additions": []
+}
+```
+
+```sh
+occ agent policy apply AGENT_ID --file apply.json
+```
+
+To save a replacement for later, use `update` with `additions.json`
+containing the current `expectedVersion` and the complete `additions` array.
+
+```sh
+occ agent policy update AGENT_ID --file additions.json
+```
+
+To apply a saved policy, read the current saved version again with
+`occ agent policy get AGENT_ID` and confirm the active revision. Pass that
+version and revision ID together without `--file`.
+
+```sh
+occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version VERSION
+```
+
+OCC returns HTTP 202 when it queues the application. From the CLI’s `apply`
+output, record `application.id`, `application.revisionId` and
+`application.policyVersion`. Run `occ agent policy get AGENT_ID` and match
+those three fields in `policy.application`.
+
+Poll only while the matching application is `pending`. Stop at `applied` or
+`failed`. After a failure, check `policy.application.reason` against the
+[reason codes](../../reference/sandbox-policies.md#desired-and-applied-versions).
+The provider may have applied the policy. If the outcome is unconfirmed, the
+response was lost, or the application is missing or no longer matches,
+reconcile the original request before submitting another change.
+
+An authorized administrator can enable editing with
+`occ agent policy editing AGENT_ID --enabled=true`. Policy commands print
+JSON by default. Use `-o yaml` for YAML. Policy reads show saved Agent rules
+and admitted or Driver defaults. Generated model and Git rules can still apply
+when the arrays are empty. See [Local Setup policy files](../deploy/local-sandbox-network-policy.md)
 for defaults and operator ceiling inputs.
+
+## Set GitHub access before the first deployment
+
+In **Create Agent → Repository access**, choose the registered GitHub App
+Client and the repositories the dedicated Codex Agent needs. Use **Read-only
+Git** for clone and fetch. Choose **Read/write Git** when the Agent needs push
+access. These grants cover Git transport.
+
+Choose **Save Agent draft**. Confirm the saved access before deploying. If the
+Console cannot confirm it, select **Recheck saved GitHub access** and review
+the draft again. Deployment rechecks current approval and refuses a stale
+policy version. [GitHub App setup](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)

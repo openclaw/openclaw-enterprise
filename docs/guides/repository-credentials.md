@@ -1,22 +1,40 @@
 # Give an Agent repository access
 
-Select approved repositories, deploy an Agent, then use ordinary `git` and the `oce-github` draft helper.
-The worker Token Service owns GitHub App credentials. Choose an
+For Dedicated Codex with an OpenShell Sandbox, use [native GitHub App access](repository-credentials/openshell-git-push.md).
+TokenService owns the Source. Sandbox installs each Agent's approved Repository
+network rules, and Credential Proxy prepares the token Provider. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-For a dedicated OpenShell Agent with managed GitHub App credentials, follow
-[Push a Git branch from an OpenShell Agent](repository-credentials/openshell-git-push.md).
+The prepared repository sender is a separate no-Sandbox path outside Credential
+Design 1.0. Its exact-ref and draft-PR features do not belong to Source-backed Git
+and do not require the legacy egress proxy.
+
+<a id="select-a-github-source-for-an-openshell-agent"></a>
+
+## Set GitHub App access for an OpenShell Agent
+
+Select TokenService, the paired OpenShell Sandbox and Credential Proxy, and the
+GitHub Backend with its approved repository registry. Register an eligible GitHub
+App Client, select repositories and access levels on the Agent, then deploy. Follow
+the [native Git walkthrough](repository-credentials/openshell-git-push.md) for setup,
+verification, and renewal. The admitted Repository grant stays valid until withdrawal
+or its explicit deadline; the GitHub installation token has a separate expiry.
+
+## Use the prepared repository sender
+
+<a id="prepare-the-platform-installation"></a>
+
+### Prepare the repository sender installation
+
+For the prepared repository sender, select `repository.nativeSender` with
+`repository.preparedGitHub`. Controller startup rejects the legacy Installation
+`drivers.repo` selection. Drain accepted
+work on its original owner before cutover; do not replay an unknown result. See
+[prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
 
 Keep the gateway private to approved clients, with enforced NetworkPolicies and
 HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
 check forwarding, Ingress, load balancers and effective policy enforcement.
-
-## Prepare the platform installation
-
-Select `repository.nativeSender` with `repository.preparedGitHub`. Controller
-startup rejects the legacy Installation `drivers.repo` selection. Drain accepted
-work on its original owner before cutover; do not replay an unknown result. See
-[prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
 
 Use Kubernetes Compute-owned **Dedicated Codex**, compatible Harness authentication
 and no Sandbox Driver. Enable the optional credential sidecar
@@ -46,9 +64,10 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
-## Keep Git access on the same running Agent
+### Keep Git access on the same running Agent
 
-An Agent administrator can approve one repository binding until they remove that approval.
+For session-based Repository access, an Agent administrator can approve one
+repository binding until they remove that approval.
 The worker can then open another short session for the same running Agent without an hourly
 approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
 token, change its repository or permissions, or grant access to a model.
@@ -56,15 +75,17 @@ token, change its repository or permissions, or grant access to a model.
 Enable `allowStandingApprovals` in the Installation's repository registry and
 `allowStandingApproval` for that repository in the Agent's Namespace. Upgrade the API, worker,
 receipt owner and credential service together before enabling this policy. A deployment admitted
-with a finite grant keeps its original deadline.
+with a finite grant keeps its original deadline. This includes `github-repository`:
+select one repository and review its explicit permission map before approving.
+Standing approval is unavailable when the Agent selects multiple repositories.
 
 1. Read `GET …/agents/{agentId}/repository-approval-scopes`. Review the resolved repository,
    permissions and allowed operations, and retain its `scopeFingerprint`.
 2. Update the Agent with its current `configurationId` and a `repositoryStandingApproval`
    containing `repositoryRef`, a new `approvalId`, `approved: true`, `duration: "until-removed"`,
    and `expectedScopeFingerprint`. If the scope changed, review it again. Deploy the Agent once.
-3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then send the approval's
-   `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
+3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then pass the approval's
+   returned `generation` as `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
    Fresh Git requests are denied even while cleanup is pending. A request with an issued one-use
    permit can still start before its original send deadline, even after removal is acknowledged.
    Do not replay a request whose outcome is unknown. See [prepared Git authorization](../reference/repository-credentials/prepared-native-git.md#what-a-request-authorizes).
@@ -73,15 +94,21 @@ with a finite grant keeps its original deadline.
 
 A refusal answers `409 RESOURCE_CONFLICT` and names the step: review the scope again, keep one
 binding, remove the approval before you change the binding, or ask an Installation administrator
-to allow standing approval. Deploy refuses an approval that no longer matches policy until you
-remove and approve it again.
+to allow standing approval. Redeploying a saved binding that no longer matches Namespace policy also returns `409`.
+
+On the same Agent and repository, switching from `git-write` on one exact ref to
+`github-repository` can allow pushes to more branches even when GitHub permissions match.
+Remove the old approval using its current generation, then save the new binding. You can
+deploy with a finite grant. To approve until removed, reread and review the scope, then
+use a fresh `approvalId` and the new fingerprint. Reverting registry policy does not
+restore the removed approval or change a previously admitted revision.
 
 The worker must recognize the same execution and account for its previous session and credential.
 If it returns after a known provider expiry, it waits out the clock allowance and records
 `expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
 still requires recovery. Do not repeat an operation whose outcome is unknown.
 
-## Create and deploy an Agent
+### Create and deploy an Agent
 
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit
 the Agent default; expand a selected repository’s card to customize its access.
@@ -119,7 +146,7 @@ body = {
             "id": os.environ["HARNESS_SECRET_ID"],
         },
     },
-    "repositoryBindings": [{"repositoryRef": "application", "profile": "git-write"}],
+    "repositoryAccess": {"defaultProfile": "git-write", "repositories": [{"repositoryRef": "application"}]},
 }
 with open("agent.json", "w") as output:
     json.dump(body, output)
@@ -154,7 +181,7 @@ alone does not prove a model task or GitHub operation. Failed policy checks,
 unsupported topology, missing material or expired authority must be corrected
 before proceeding; do not add a PAT as a fallback.
 
-## Ask the Agent to work in the repository
+### Ask the Agent to work in the repository
 
 Select the Ready active `GATEWAY_POD` using the
 [production TUI procedure](deploy/production-tui.md),

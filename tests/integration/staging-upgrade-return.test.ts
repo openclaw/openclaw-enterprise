@@ -1,16 +1,19 @@
+import { selectedImageMigrationEntry } from "../../scripts/lib/selected-image-migration.ts";
+import type { AgentRuntimePodStatus } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:https";
-import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.ts";
+import { listen } from "../helpers/listen.ts";
 import { createProductionTuiRequest } from "../helpers/production-tui-request.ts";
 import { delimiter, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { inspect } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
+  assertProtectedEqual,
   bindLocalRehearsalCluster,
   createRehearsalCustody,
   localRehearsalEnvironment,
@@ -22,11 +25,15 @@ import {
   assertDistinctControllers,
   assertReturnedAgents,
   assertRunningController,
+  measureUpgradeAvailability,
+  readGatewayContinuity,
+  rehearsalMigrationProbeArgs,
   returnedDatabaseConnections,
   returnedAgentSnapshot,
   selectRehearsalControllers,
   verifyCompletedMigrationHistory,
 } from "../helpers/staging-upgrade-return.ts";
+import { upgradeRehearsalDiagnostic } from "../helpers/upgrade-rehearsal-diagnostic.ts";
 
 const controller = (digest: string, config: string, commit: string) => ({
   reference: `localhost/oce-rehearsal/controller@sha256:${digest.repeat(64)}`,
@@ -71,6 +78,33 @@ test("return rehearsal refuses image selection in the credentialed TUI lane", as
   await assert.rejects(
     selectRehearsalControllers(noImageInspection, { OPENAI_API_KEY: "invented-fixture-value" }),
     /without model credentials/u,
+  );
+});
+
+test("return rehearsal requires explicit in-place selection and a complete recovery pair", async () => {
+  const noCommand = () => Promise.reject(new Error("unexpected command"));
+  const recovery = {
+    OCC_TEST_REHEARSAL_RECOVERY_IMAGE: controller("7", "8", "9").reference,
+    OCC_TEST_REHEARSAL_RECOVERY_SOURCE: "/absolute/fixture",
+  };
+  for (const mode of ["1", "ordinary"]) {
+    await assert.rejects(
+      selectRehearsalControllers(noCommand, {
+        ...recovery,
+        OCC_TEST_PRODUCTION_TUI_REHEARSAL: mode,
+      }),
+      /recovery image and source require/u,
+    );
+  }
+  const mode = { OCC_TEST_PRODUCTION_TUI_REHEARSAL: "in-place" };
+  await assert.rejects(selectRehearsalControllers(noCommand, mode), /immutable controller image/u);
+  await assert.rejects(
+    selectRehearsalControllers(noCommand, {
+      ...mode,
+      ...recovery,
+      OCC_TEST_REHEARSAL_RECOVERY_SOURCE: "relative",
+    }),
+    /absolute recovery source checkout/u,
   );
 });
 
@@ -150,6 +184,186 @@ async function scratch(t: TestContext) {
   return directory;
 }
 
+const continuityIdentity = {
+  namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+  agentId: "agt_00000000-0000-4000-8000-000000000002",
+  revisionId: "rev_00000000-0000-4000-8000-000000000003",
+};
+
+function workloadStatus(
+  role: AgentRuntimePodStatus["role"],
+  uid: string,
+  restartCount: number,
+): AgentRuntimePodStatus {
+  return {
+    uid,
+    name: `${role}-${uid}`,
+    role,
+    cluster: "control",
+    phase: "Running",
+    ready: true,
+    createdAt: null,
+    containers: [
+      {
+        name: role,
+        state: "running",
+        ready: true,
+        restartCount,
+        reason: null,
+        startedAt: null,
+        lastTermination: null,
+      },
+    ],
+    events: [],
+  };
+}
+
+function continuityReceipt(...pods: AgentRuntimePodStatus[]) {
+  return {
+    ...continuityIdentity,
+    runtime: { revisionId: continuityIdentity.revisionId, pods },
+  };
+}
+
+async function continuityEvidence(t: TestContext, ...otherPods: AgentRuntimePodStatus[]) {
+  const directory = await scratch(t);
+  const write = (filename: string, receipt: unknown) =>
+    writeFile(join(directory, filename), JSON.stringify(receipt), { mode: 0o600 });
+  const before = (receipt: unknown) => write("agent-continuity.json", receipt);
+  await before(continuityReceipt(...otherPods, workloadStatus("gateway", "original", 2)));
+  return {
+    read: () => readGatewayContinuity(directory, continuityIdentity),
+    before,
+    after: (receipt: unknown) => write("agent-continuity-after.json", receipt),
+  };
+}
+
+test("controller upgrade continuity reports gateway counts per Pod and permits replacement", async (t) => {
+  const agent = workloadStatus("agent", "harness", 9);
+  const evidence = await continuityEvidence(t, agent);
+  const original = workloadStatus("gateway", "original", 3);
+  await evidence.after(continuityReceipt(agent, original));
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: false,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: 3,
+  });
+
+  // A retired Gateway and a separate Harness workload cannot supply the live Gateway count.
+  const retired = { ...original, phase: "Failed", ready: false };
+  const replacement = workloadStatus("gateway", "replacement", 0);
+  await evidence.after(continuityReceipt(agent, retired, replacement));
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: true,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: 0,
+  });
+
+  const container = replacement.containers[0];
+  assert.ok(container);
+  await evidence.after(
+    continuityReceipt(agent, {
+      ...replacement,
+      containers: [{ ...container, state: "unknown", ready: false }],
+    }),
+  );
+  assert.deepEqual(await evidence.read(), {
+    podReplaced: true,
+    gatewayRestartCountBefore: 2,
+    gatewayRestartCountAfter: null,
+  });
+});
+
+test("controller upgrade continuity rejects stale Agent identity at either observation", async (t) => {
+  const evidence = await continuityEvidence(t);
+  const receipt = continuityReceipt(workloadStatus("gateway", "original", 2));
+  const staleRevision = "rev_00000000-0000-4000-8000-000000000004";
+  for (const stale of [
+    { ...receipt, namespaceId: "ns_00000000-0000-4000-8000-000000000005" },
+    { ...receipt, agentId: "agt_00000000-0000-4000-8000-000000000006" },
+    { ...receipt, revisionId: staleRevision },
+    { ...receipt, runtime: { ...receipt.runtime, revisionId: staleRevision } },
+  ]) {
+    await evidence.after(stale);
+    await assert.rejects(evidence.read(), {
+      message:
+        "Agent continuity after the controller upgrade: receipt identity does not match the selected Agent revision",
+    });
+  }
+  await evidence.after(receipt);
+  await evidence.before({ ...receipt, revisionId: staleRevision });
+  await assert.rejects(evidence.read(), {
+    message:
+      "Agent continuity before the controller upgrade: receipt identity does not match the selected Agent revision",
+  });
+});
+
+test("controller upgrade continuity requires an unambiguous live Gateway Pod", async (t) => {
+  const evidence = await continuityEvidence(t);
+  const first = workloadStatus("gateway", "first", 0);
+  for (const pods of [
+    [{ ...first, phase: "Succeeded", ready: false }],
+    [first, workloadStatus("gateway", "second", 0)],
+  ]) {
+    await evidence.after(continuityReceipt(...pods));
+    await assert.rejects(evidence.read(), /expected exactly one live Gateway Pod/u);
+  }
+});
+
+test("return migration probe replaces the exact historical loader with the guarded current loader", async (t) => {
+  // Unmodified loader from the c0b09b2e and 4835e8bf charts.
+  const legacyProgram = String.raw`const command = require("./package.json").scripts?.["db:migrate:production"];
+const entry = /^(?:NODE_ENV=production )?node (scripts\/migrate-production\.(?:mjs|ts))$/.exec(
+  command ?? "",
+)?.[1];
+if (!entry) {
+  throw new Error("The image does not declare a supported production migration command.");
+}
+process.argv.splice(1, 0, entry);
+import("./" + entry);
+`;
+  const legacyArgs = ["-e", legacyProgram, "--"];
+  const args = rehearsalMigrationProbeArgs(legacyArgs);
+  assert.deepEqual(args, [...selectedImageMigrationEntry, "--check"]);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty"]), args);
+  assert.deepEqual(rehearsalMigrationProbeArgs([...legacyArgs, "--require-current"]), args);
+  const requireCurrent = rehearsalMigrationProbeArgs(legacyArgs, "--require-current");
+  assert.deepEqual(requireCurrent, [...selectedImageMigrationEntry, "--require-current"]);
+  assert.deepEqual(rehearsalMigrationProbeArgs(["scripts/migrate-production.mjs"]), args);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram + "\n", "--"]), undefined);
+  assert.equal(
+    rehearsalMigrationProbeArgs([...legacyArgs, "--expect-empty", "--check"]),
+    undefined,
+  );
+  assert.equal(rehearsalMigrationProbeArgs([...legacyArgs, "--check"]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(["-e", legacyProgram]), undefined);
+  assert.equal(rehearsalMigrationProbeArgs(), undefined);
+
+  const directory = await scratch(t);
+  await mkdir(join(directory, "scripts"));
+  const packageFile = join(directory, "package.json");
+  const entryReceipt = join(directory, "migration-entered.json");
+  const command = "node scripts/migrate-production.ts";
+  await writeFile(
+    join(directory, "scripts", "migrate-production.ts"),
+    'import { writeFileSync } from "node:fs"; writeFileSync("migration-entered.json", JSON.stringify(process.argv.slice(2)));',
+  );
+  const declareMigration = (script: string) =>
+    writeFile(packageFile, JSON.stringify({ scripts: { "db:migrate:production": script } }));
+  await declareMigration(command);
+  await assert.rejects(
+    runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 }),
+    /does not declare support for production migration mode arguments/u,
+  );
+  await assert.rejects(readFile(entryReceipt), { code: "ENOENT" });
+  await declareMigration(`NODE_ENV=production ${command}`);
+  await runFixtureCommand(process.execPath, args, { cwd: directory, timeout: 10_000 });
+  assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--check"]);
+  assert.ok(requireCurrent);
+  await runFixtureCommand(process.execPath, requireCurrent, { cwd: directory, timeout: 10_000 });
+  assert.deepEqual(JSON.parse(await readFile(entryReceipt, "utf8")), ["--require-current"]);
+});
+
 test("release checkout admission rejects hidden edits and ignored execution inputs before Docker", async (t) => {
   const directory = await scratch(t);
   const candidate = join(directory, "candidate");
@@ -204,6 +418,24 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
     /manifest digests must differ/u,
   );
   assert.equal(dockerCalls, 0);
+  const inPlace = {
+    ...env,
+    OCC_TEST_PRODUCTION_TUI_REHEARSAL: "in-place",
+    OCC_TEST_REHEARSAL_RECOVERY_SOURCE: candidate,
+    OCC_TEST_REHEARSAL_RECOVERY_IMAGE: env.OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE,
+  };
+  await assert.rejects(
+    selectRehearsalControllers(run, inPlace),
+    /recovery and candidate controller manifest digests must differ/u,
+  );
+  await assert.rejects(
+    selectRehearsalControllers(run, {
+      ...inPlace,
+      OCC_TEST_REHEARSAL_RECOVERY_IMAGE: controller("7", "8", "9").reference,
+    }),
+    /recovery and candidate controller source commits must differ/u,
+  );
+  assert.equal(dockerCalls, 0);
   // These real Git index flags hide worktree edits from porcelain status.
   for (const flag of ["assume-unchanged", "skip-worktree"]) {
     await git(["update-index", `--${flag}`, "upgrade-script"]);
@@ -223,6 +455,23 @@ test("release checkout admission rejects hidden edits and ignored execution inpu
   assert.equal((await git(["status", "--porcelain"])).trim(), "");
   await assert.rejects(selectRehearsalControllers(run, env), /only unmodified committed files/u);
   assert.equal(dockerCalls, 0);
+});
+
+test("protected rehearsal comparisons retain equality without exposing mismatched operands", () => {
+  const sentinel = `private-${randomUUID()}`;
+  for (const actual of [sentinel, { data: { nested: [sentinel] } }]) {
+    assert.doesNotThrow(() =>
+      assertProtectedEqual(actual, structuredClone(actual), "receipt changed"),
+    );
+    assert.throws(
+      () => assertProtectedEqual(actual, null, "receipt changed"),
+      (error: Error) => {
+        assert.ok(!inspect(error).includes(sentinel), "assertion exposed a protected operand");
+        assert.equal(error.message, "receipt changed");
+        return true;
+      },
+    );
+  }
 });
 
 test("migration check reports protected log failures without printing fixture credentials", async (t) => {
@@ -847,6 +1096,800 @@ test(
 );
 
 test(
+  "upgrade availability observations retain failures and gaps without overlapping TLS requests",
+  { timeout: 20_000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const key = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    const requestId = `req_${randomUUID()}`;
+    const protectedMarker = "facefeed";
+    const protectedId = "req_facefeed-0000-4000-8000-000000000000";
+    const otherRequestId = `req_${randomUUID()}`;
+    const observedRequests: {
+      method: string | undefined;
+      path: string | undefined;
+      key: unknown;
+    }[] = [];
+    let active = 0;
+    let peakActive = 0;
+    const timedOut = Promise.withResolvers<void>();
+    const server = createServer(tls, (incoming, response) => {
+      observedRequests.push({
+        method: incoming.method,
+        path: incoming.url,
+        key: incoming.headers["x-api-key"],
+      });
+      active++;
+      peakActive = Math.max(peakActive, active);
+      response.once("close", () => {
+        active--;
+      });
+      response.setHeader("x-request-id", requestId);
+      response.setHeader("x-private-fixture", privateBytes);
+      response.setHeader("x-oce-rehearsal-upstream-reused", "1");
+      switch (observedRequests.length) {
+        case 1:
+          response.end(
+            JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }),
+          );
+          return;
+        case 2:
+          response.end(JSON.stringify({ data: { id: "other-installation" }, meta: { requestId } }));
+          return;
+        case 3:
+          response.end(JSON.stringify({ data: { name: privateBytes } }));
+          return;
+        case 4:
+          response.writeHead(503);
+          response.end(JSON.stringify({ error: privateBytes }));
+          return;
+        case 5:
+          // Match the rehearsal proxy's response when its upstream connection fails.
+          response.writeHead(502);
+          response.end("Bad Gateway\n");
+          return;
+        case 6:
+          incoming.socket.destroy();
+          return;
+        case 7:
+          // JSON escaping hides a protected substring until the request ID is decoded.
+          response.setHeader("x-request-id", protectedId);
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: protectedId },
+            }).replace(protectedMarker, "\\u0066acefeed"),
+          );
+          return;
+        case 8: {
+          // A response that keeps arriving must still hit the total request deadline.
+          response.writeHead(200);
+          response.write(" ");
+          const timer = setInterval(() => response.write(" "), 50);
+          response.once("close", () => {
+            clearInterval(timer);
+            timedOut.resolve();
+          });
+          return;
+        }
+        default:
+          response.end(
+            JSON.stringify({
+              data: { id: "original-installation" },
+              meta: { requestId: otherRequestId },
+            }),
+          );
+      }
+    });
+    const port = await listen(t, server);
+    const rawRequest = createProductionTuiRequest({
+      baseURL: `https://localhost:${port}`,
+      ca: tls.caBundle,
+      serviceKey: () => key,
+      secrets: [key, protectedMarker],
+    });
+    let actionStarted = false;
+    const actionStartedAtRequest: boolean[] = [];
+    // The action ends with the deadline request (case 8). That request returns to the
+    // helper only once the server has seen it close too, and the action settles right
+    // then, so the helper stops observing before it could start another request.
+    const deadlineEnded = Promise.withResolvers<void>();
+    const request = async (...args: Parameters<typeof rawRequest>) => {
+      actionStartedAtRequest.push(actionStarted);
+      if (actionStartedAtRequest.length !== 8) {
+        return await rawRequest(...args);
+      }
+      try {
+        return await rawRequest(...args);
+      } finally {
+        await timedOut.promise;
+        deadlineEnded.resolve();
+      }
+    };
+    let evidence:
+      | {
+          samples: {
+            phase: string;
+            startedAt: string;
+            finishedAt: string;
+            requestId?: string;
+            upstreamSocketReused?: boolean;
+            elapsedMs: number;
+            gapMs: number | null;
+            startGapMs: number | null;
+            scheduledSlot: number | null;
+            scheduleDelayMs: number | null;
+            outcome: string;
+            status: number | undefined;
+          }[];
+          upgradeSucceeded: boolean;
+          schemaVersion: number;
+          intervalAfterResponseMs: null;
+          nominalIntervalMs: number;
+          cadence: {
+            scheduledSlots: number;
+            probedSlots: number;
+            unprobedSlots: number;
+            complete: boolean;
+          };
+          maxStartGapMs: number;
+          tailGapMs: number;
+          complete: boolean;
+          responseSummary: { successful: number; unsuccessful: number };
+        }
+      | undefined;
+    let diagnostic: string | undefined;
+    // Exercise the real HTTPS helper while the action succeeds despite failed
+    // observations. Measurement must not introduce a new availability gate.
+    const directory = await mkdtemp(join(tmpdir(), "oce-availability-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const result = await measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => {
+        actionStarted = true;
+        await deadlineEnded.promise;
+        return "upgrade completed";
+      },
+      async (details) => {
+        evidence = details as typeof evidence;
+        diagnostic = upgradeRehearsalDiagnostic(
+          "Forward upgrade API availability observations",
+          details,
+        );
+      },
+    );
+    assert.equal(result, "upgrade completed");
+    assert.ok(evidence);
+    assert.equal(evidence.upgradeSucceeded, true);
+    const snapshot = await readFile(join(directory, "forward-api-availability.json"), "utf8");
+    assert.ok(!snapshot.includes(protectedMarker));
+    assert.ok(!JSON.stringify(evidence).includes(protectedMarker));
+    assert.deepEqual(JSON.parse(snapshot), JSON.parse(JSON.stringify(evidence)));
+    assert.deepEqual(
+      {
+        observations: evidence.samples.map(({ phase, outcome, status }) => [
+          phase,
+          outcome,
+          status,
+        ]),
+        actionStartedAtRequest,
+      },
+      {
+        observations: [
+          ["before", "ok", 200],
+          ["during", "wrong-installation", 200],
+          ["during", "invalid-response", 200],
+          ["during", "http-error", 503],
+          ["during", "http-error", 502],
+          ["during", "request-error", undefined],
+          ["during", "ok", 200],
+          ["during", "timeout", 200],
+          ["after", "ok", 200],
+        ],
+        actionStartedAtRequest: [false, true, true, true, true, true, true, true, true],
+      },
+    );
+    assert.equal(evidence.responseSummary.successful, 3);
+    assert.equal(evidence.responseSummary.unsuccessful, 6);
+    assert.equal(evidence.samples[0]?.requestId, requestId);
+    // The diagnostic publishes only aggregate measurements, even when the
+    // private receipt contains a validated request ID.
+    assert.ok(diagnostic);
+    assert.match(
+      diagnostic,
+      /^OBSERVED Forward upgrade API availability observations \(action \d+ ms, requests 3 successful \/ 6 unsuccessful, longest gap between successful samples \d+ ms, unprobed slots \d+\)$/u,
+    );
+    assert.ok(evidence.samples.slice(1).every((sample) => !("requestId" in sample)));
+    assert.equal(evidence.samples[0]?.upstreamSocketReused, true);
+    assert.ok(evidence.samples.slice(1).every((sample) => !("upstreamSocketReused" in sample)));
+    assert.equal(evidence.samples[0]?.gapMs, null);
+    for (const sample of evidence.samples) {
+      assert.ok(Number.isFinite(Date.parse(sample.startedAt)));
+      assert.ok(Date.parse(sample.finishedAt) >= Date.parse(sample.startedAt));
+      assert.ok(sample.elapsedMs >= 0);
+    }
+    assert.ok((evidence.samples[7]?.elapsedMs ?? 0) >= 4_900);
+    assert.equal(evidence.schemaVersion, 2, "receipt must identify the nominal-cadence contract");
+    assert.equal(evidence.intervalAfterResponseMs, null);
+    assert.equal(evidence.nominalIntervalMs, 1_000);
+    assert.equal(evidence.complete, true);
+    assert.equal(evidence.cadence.complete, true);
+    assert.equal(evidence.cadence.probedSlots, 7);
+    assert.ok(
+      evidence.cadence.unprobedSlots >= 4,
+      "the five-second request leaves nominal slots unprobed",
+    );
+    assert.equal(
+      evidence.cadence.scheduledSlots,
+      evidence.cadence.probedSlots + evidence.cadence.unprobedSlots,
+    );
+    assert.equal(evidence.samples[0]?.scheduledSlot, null);
+    assert.equal(evidence.samples[8]?.scheduledSlot, null);
+    const during = evidence.samples.slice(1, 8);
+    assert.ok(
+      during.every(
+        ({ scheduledSlot, scheduleDelayMs }) =>
+          scheduledSlot !== null &&
+          scheduleDelayMs !== null &&
+          scheduleDelayMs >= 0 &&
+          scheduleDelayMs < 1_000,
+      ),
+    );
+    assert.ok(
+      during.slice(1).every(({ startGapMs }) => startGapMs !== null && startGapMs >= 1_000),
+    );
+    assert.ok(
+      (evidence.samples[8]?.startGapMs ?? 0) >= 4_900,
+      "the final in-flight request must remain visible in the start-to-start gap",
+    );
+    assert.ok(evidence.maxStartGapMs >= 4_900);
+    assert.ok(evidence.tailGapMs >= 0);
+    assert.equal(peakActive, 1);
+    assert.equal(active, 0);
+    assert.ok(
+      observedRequests.every(
+        (item) => item.method === "GET" && item.path === "/installation" && item.key === key,
+      ),
+    );
+    assert.ok(!JSON.stringify(evidence).includes(key));
+    assert.ok(!JSON.stringify(evidence).includes(privateBytes));
+  },
+);
+
+test("upgrade rehearsal diagnostics include elapsed time and preserve phase dispositions", () => {
+  assert.equal(
+    upgradeRehearsalDiagnostic("Pending", {
+      cadence: null,
+      responseSummary: { successful: 1, unsuccessful: 0, maxSuccessfulResponseIntervalMs: null },
+    }),
+    "OBSERVED Pending (action unknown, requests 1 successful / 0 unsuccessful, longest gap between successful samples unknown, unprobed slots unknown)",
+  );
+  assert.equal(upgradeRehearsalDiagnostic("Untimed phase", {}), "PASS Untimed phase");
+  assert.equal(
+    upgradeRehearsalDiagnostic("Timed phase", { elapsedMs: 0 }),
+    "PASS Timed phase (0 ms)",
+  );
+  assert.equal(
+    upgradeRehearsalDiagnostic("Timed phase", { disposition: "FAIL", elapsedMs: 25 }),
+    "FAIL Timed phase (25 ms)",
+  );
+});
+
+test("upgrade availability accounts for stalled slots and final tails on a monotonic clock", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-availability-clock-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let now = 100;
+  t.mock.method(performance, "now", () => now);
+  t.mock.timers.enable({ apis: ["Date"], now: 30_000 });
+  const resumed = Promise.withResolvers<void>();
+  const settled = Promise.withResolvers<string>();
+  let diagnostic: string | undefined;
+  let requests = 0;
+  // Synthetic time is limited to scheduler arithmetic. The adjacent TLS test
+  // owns transport deadlines and serialization. No fake replaces that proof.
+  const result = await measureUpgradeAvailability(
+    async () => {
+      requests++;
+      switch (requests) {
+        case 1:
+          now = 110;
+          break;
+        case 2:
+          // Slots 2 and 3 pass while the first during request is in flight.
+          now = 4_610;
+          t.mock.timers.setTime(1_000);
+          resumed.resolve();
+          return { status: 503, body: { error: "Service unavailable" } };
+        case 3:
+          now = 5_610;
+          settled.resolve("complete");
+          break;
+        case 4:
+          now = 6_010;
+          break;
+        default:
+          assert.fail("missed slots must not trigger catch-up requests");
+      }
+      return { status: 200, body: { data: { id: "original-installation" } } };
+    },
+    "original-installation",
+    directory,
+    async (measureGuardedResume) => {
+      // Synchronous action work delays admission past slot 0.
+      now = 1_360;
+      await measureGuardedResume(() => resumed.promise);
+      return settled.promise;
+    },
+    async () => {},
+  );
+  assert.equal(result, "complete");
+  const controllerPath = join(directory, "forward-api-availability.json");
+  const controllerBytes = await readFile(controllerPath);
+  const evidence = JSON.parse(controllerBytes.toString("utf8"));
+  assert.deepEqual(evidence.cadence, {
+    startOffsetMs: 10,
+    endOffsetMs: 5_510,
+    complete: true,
+    scheduledSlots: 6,
+    probedSlots: 2,
+    unprobedSlots: 4,
+  });
+  assert.deepEqual(evidence.guardedResume, { startOffsetMs: 1_260, endOffsetMs: 4_510 });
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, 1, 4, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { scheduleDelayMs: number | null }) => sample.scheduleDelayMs),
+    [null, 250, 500, null],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { startGapMs: number | null }) => sample.startGapMs),
+    [null, 1_260, 3_250, 1_000],
+  );
+  assert.deepEqual(
+    evidence.samples.map((sample: { gapMs: number | null }) => sample.gapMs),
+    [null, 1_250, 0, 0],
+  );
+  assert.equal(evidence.maxStartGapMs, 3_250);
+  assert.equal(evidence.tailGapMs, 400);
+  assert.equal(evidence.throughOffsetMs, 5_910);
+  assert.equal(evidence.complete, true);
+  assert.ok(evidence.samples[1].finishedAt < evidence.samples[1].startedAt);
+  assert.equal(evidence.samples[1].elapsedMs, 3_250);
+  // The longest interval spans the 503 and a backward jump in wall-clock time.
+  assert.deepEqual(evidence.responseSummary, {
+    successful: 3,
+    unsuccessful: 1,
+    unsuccessfulBeforeFirstSuccess: 0,
+    unsuccessfulAfterLastSuccess: 0,
+    maxSuccessfulResponseIntervalMs: 5_500,
+  });
+
+  // Even zero elapsed time has the initial opportunity. The closed endpoint
+  // includes a slot exactly at settlement; neither may create a fake sample.
+  const failure = new Error("synchronous failure");
+  const runtimeReceiptName = "runtime-api-availability.json";
+  const runtimePath = join(directory, runtimeReceiptName);
+  for (const duration of [0, 1_000]) {
+    const statuses = duration === 0 ? [503, 503] : [503, 200];
+    await assert.rejects(
+      measureUpgradeAvailability(
+        async () => {
+          const status = statuses.shift();
+          assert.ok(status !== undefined);
+          return { status, body: { data: { id: "original-installation" } } };
+        },
+        "original-installation",
+        directory,
+        () => {
+          now += duration;
+          throw failure;
+        },
+        async (details) => {
+          diagnostic = upgradeRehearsalDiagnostic(
+            "Runtime interruption and resume API availability observations",
+            details,
+          );
+        },
+        runtimeReceiptName,
+      ),
+      (error: unknown) => error === failure,
+    );
+    assert.deepEqual(await readFile(controllerPath), controllerBytes);
+    const failed = JSON.parse(await readFile(runtimePath, "utf8"));
+    assert.ok(!("guardedResume" in failed));
+    assert.equal(failed.cadence.scheduledSlots, duration === 0 ? 1 : 2);
+    assert.equal(failed.cadence.unprobedSlots, failed.cadence.scheduledSlots);
+    assert.equal(failed.cadence.probedSlots, 0);
+    assert.deepEqual(
+      failed.samples.map((sample: { phase: string }) => sample.phase),
+      ["before", "after"],
+    );
+    assert.deepEqual(failed.responseSummary, {
+      successful: duration === 0 ? 0 : 1,
+      unsuccessful: duration === 0 ? 2 : 1,
+      unsuccessfulBeforeFirstSuccess: duration === 0 ? null : 1,
+      unsuccessfulAfterLastSuccess: duration === 0 ? null : 0,
+      maxSuccessfulResponseIntervalMs: null,
+    });
+    assert.equal(
+      diagnostic,
+      "OBSERVED Runtime interruption and resume API availability observations " +
+        (duration === 0
+          ? "(action 0 ms, requests 0 successful / 2 unsuccessful, " +
+            "longest gap between successful samples unknown, unprobed slots 1)"
+          : "(action 1000 ms, requests 1 successful / 1 unsuccessful, " +
+            "longest gap between successful samples unknown, unprobed slots 2)"),
+    );
+  }
+
+  // A failed return retains its outage observation and leaves both earlier
+  // receipts intact, even when the final authenticated read succeeds.
+  const runtimeBytes = await readFile(runtimePath);
+  const restoreFailure = new Error("archive restore failed");
+  const responses = [
+    { status: 200, durationMs: 100 },
+    { status: 503, durationMs: 199.75 },
+    { status: 200, durationMs: 300.5 },
+  ];
+  let returnPhaseRecord: object | undefined;
+  await assert.rejects(
+    measureUpgradeAvailability(
+      async () => {
+        const response = responses.shift();
+        assert.ok(response);
+        const { status, durationMs } = response;
+        now += durationMs;
+        return { status, body: { data: { id: "original-installation" } } };
+      },
+      "original-installation",
+      directory,
+      async () => {
+        throw restoreFailure;
+      },
+      async (details) => {
+        returnPhaseRecord = details;
+      },
+      "return-api-availability.json",
+    ),
+    (error: unknown) => error === restoreFailure,
+  );
+  const returnEvidence = JSON.parse(
+    await readFile(join(directory, "return-api-availability.json"), "utf8"),
+  );
+  assert.deepEqual(returnPhaseRecord, returnEvidence);
+  assert.equal(returnEvidence.complete, true);
+  assert.equal(returnEvidence.upgradeSucceeded, false);
+  assert.ok(!("guardedResume" in returnEvidence));
+  assert.deepEqual(
+    returnEvidence.samples.map(
+      ({ phase, status, outcome }: { phase: string; status: number; outcome: string }) => [
+        phase,
+        status,
+        outcome,
+      ],
+    ),
+    [
+      ["before", 200, "ok"],
+      ["during", 503, "http-error"],
+      ["after", 200, "ok"],
+    ],
+  );
+  // Using the recorded durations estimates finishes at 100 and 600.75 ms.
+  assert.deepEqual(returnEvidence.responseSummary, {
+    successful: 2,
+    unsuccessful: 1,
+    unsuccessfulBeforeFirstSuccess: 0,
+    unsuccessfulAfterLastSuccess: 0,
+    maxSuccessfulResponseIntervalMs: 501,
+  });
+
+  assert.deepEqual(await readFile(controllerPath), controllerBytes);
+  assert.deepEqual(await readFile(runtimePath), runtimeBytes);
+
+  const resumeFailure = new Error("guarded resume failed");
+  await assert.rejects(
+    measureUpgradeAvailability(
+      async () => ({ status: 200, body: { data: { id: "original-installation" } } }),
+      "original-installation",
+      directory,
+      async (measureGuardedResume) => {
+        now += 20;
+        try {
+          await measureGuardedResume(async () => {
+            now += 50;
+            throw resumeFailure;
+          });
+        } finally {
+          now += 10;
+        }
+      },
+      async () => {},
+    ),
+    (error: unknown) => error === resumeFailure,
+  );
+  const failedResumeEvidence = JSON.parse(await readFile(controllerPath, "utf8"));
+  assert.equal(failedResumeEvidence.upgradeSucceeded, false);
+  assert.deepEqual(failedResumeEvidence.guardedResume, { startOffsetMs: 20, endOffsetMs: 70 });
+  assert.equal(failedResumeEvidence.cadence.endOffsetMs, 80);
+});
+
+test(
+  "upgrade availability retains incomplete observations when its process is killed",
+  { timeout: 20_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-availability-interrupted-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const tls = await harnessTlsFixture(t);
+    const key = `fixture-service-key-${randomUUID()}`;
+    const privateBytes = `private-response-${randomUUID()}`;
+    let requests = 0;
+    const server = createServer(tls, (incoming, response) => {
+      assert.equal(incoming.method, "GET");
+      assert.equal(incoming.url, "/installation");
+      assert.equal(incoming.headers["x-api-key"], key);
+      requests++;
+      if (requests === 3) {
+        // Kill with a real TLS request in flight. The saved boundary must not
+        // imply that this request completed or that its later slots were observed.
+        response.writeHead(200);
+        response.write(" ");
+        return;
+      }
+      response.writeHead(requests === 1 ? 200 : 503);
+      response.end(
+        JSON.stringify(
+          requests === 1 ? { data: { id: "original-installation" } } : { error: privateBytes },
+        ),
+      );
+    });
+    const port = await listen(t, server);
+    const fixture = join(directory, "runner.mjs");
+    const snapshot = join(directory, "forward-api-availability.json");
+    const completed = join(directory, "completed");
+    await writeFile(
+      fixture,
+      `
+    import { writeFile } from "node:fs/promises";
+    import { createProductionTuiRequest } from ${JSON.stringify(new URL("../helpers/production-tui-request.ts", import.meta.url).href)};
+    import { measureUpgradeAvailability } from ${JSON.stringify(new URL("../helpers/staging-upgrade-return.ts", import.meta.url).href)};
+    const request = createProductionTuiRequest({
+      baseURL: ${JSON.stringify(`https://localhost:${port}`)},
+      ca: ${JSON.stringify(tls.caBundle)},
+      serviceKey: () => ${JSON.stringify(key)},
+      secrets: [${JSON.stringify(key)}],
+    });
+    await measureUpgradeAvailability(request, "original-installation", ${JSON.stringify(directory)},
+      (measureGuardedResume) => measureGuardedResume(() => new Promise(() => {})),
+      () => writeFile(${JSON.stringify(completed)}, "finished"));
+  `,
+    );
+    const { spawn } = await import("node:child_process");
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const runner = spawn(process.execPath, [fixture], { env, stdio: "ignore" });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve, reject) => {
+        runner.once("error", reject);
+        runner.once("close", (code, signal) => resolve({ code, signal }));
+      },
+    );
+    t.after(async () => {
+      runner.kill("SIGKILL");
+      await closed;
+    });
+    let persisted:
+      | {
+          upgradeSucceeded: boolean | null;
+          complete: boolean;
+          throughOffsetMs: number;
+          cadence: { complete: boolean; probedSlots: number };
+          guardedResume?: { startOffsetMs: number; endOffsetMs?: number };
+          responseSummary: unknown;
+          samples: { phase: string; outcome: string }[];
+        }
+      | undefined;
+    const deadline = Date.now() + 10_000;
+    // The pending action never returns; no finally block can rescue the evidence.
+    while (persisted?.samples.at(-1)?.phase !== "during" || requests < 3) {
+      assert.ok(Date.now() < deadline, "no during-upgrade observation was persisted");
+      try {
+        persisted = JSON.parse(await readFile(snapshot, "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    runner.kill("SIGKILL");
+    assert.deepEqual(await closed, { code: null, signal: "SIGKILL" });
+    const completedPrefix = persisted.samples;
+    const completedThrough = persisted.throughOffsetMs;
+    const retained = await readFile(snapshot, "utf8");
+    persisted = JSON.parse(retained);
+    assert.ok(persisted);
+    assert.equal(persisted.upgradeSucceeded, null);
+    assert.equal(persisted.complete, false);
+    assert.equal(persisted.cadence.complete, false);
+    assert.equal(persisted.cadence.probedSlots, 1);
+    assert.equal(persisted.throughOffsetMs, completedThrough);
+    assert.ok(persisted.guardedResume);
+    assert.ok(persisted.guardedResume.startOffsetMs >= 0);
+    assert.ok(persisted.guardedResume.startOffsetMs <= completedThrough);
+    assert.ok(!("endOffsetMs" in persisted.guardedResume));
+    assert.equal(persisted.samples.length, 2);
+    assert.deepEqual(persisted.responseSummary, {
+      successful: 1,
+      unsuccessful: 1,
+      unsuccessfulBeforeFirstSuccess: 0,
+      unsuccessfulAfterLastSuccess: 1,
+      maxSuccessfulResponseIntervalMs: null,
+    });
+    assert.deepEqual(persisted.samples.slice(0, completedPrefix.length), completedPrefix);
+    assert.equal(persisted.samples[0]?.phase, "before");
+    assert.equal(persisted.samples[0]?.outcome, "ok");
+    assert.ok(!("requestId" in persisted.samples[0]));
+    assert.ok(persisted.samples.length >= 2);
+    assert.ok(
+      persisted.samples
+        .slice(1)
+        .every(({ phase, outcome }) => phase === "during" && outcome === "http-error"),
+    );
+    assert.equal((await stat(snapshot)).mode & 0o777, 0o600);
+    await assert.rejects(stat(completed), { code: "ENOENT" });
+    assert.ok(!retained.includes(key));
+    assert.ok(!retained.includes(privateBytes));
+  },
+);
+
+test("upgrade availability preserves action and evidence-write failures", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const key = `fixture-service-key-${randomUUID()}`;
+  // Even matching IDs must have the controller-generated UUIDv4 shape.
+  const malformedId = "req_00000000-0000-1000-8000-000000000000";
+  const validId = `req_${randomUUID()}`;
+  let requestId = malformedId;
+  let reuseHeader = "1";
+  const server = createServer(tls, (_incoming, response) => {
+    response.setHeader("x-request-id", requestId);
+    response.setHeader("x-oce-rehearsal-upstream-reused", reuseHeader);
+    response.end(JSON.stringify({ data: { id: "original-installation" }, meta: { requestId } }));
+  });
+  const port = await listen(t, server);
+  const request = createProductionTuiRequest({
+    baseURL: `https://localhost:${port}`,
+    ca: tls.caBundle,
+    serviceKey: () => key,
+    secrets: [key],
+  });
+  const directory = await mkdtemp(join(tmpdir(), "oce-availability-errors-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const upgradeFailure = new Error("upgrade fixture failed");
+  const recordFailure = new Error("evidence write failed");
+  let recorded = false;
+  // A synchronous action failure must still get a final observation. If the
+  // recorder also fails, preserve the original failure as the primary cause.
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      () => {
+        throw upgradeFailure;
+      },
+      async (details) => {
+        recorded = true;
+        const evidence = details as {
+          upgradeSucceeded: boolean;
+          samples: { phase: string; outcome: string }[];
+        };
+        assert.equal(evidence.upgradeSucceeded, false);
+        assert.equal(evidence.samples.at(-1)?.phase, "after");
+        assert.equal(evidence.samples.at(-1)?.outcome, "ok");
+        throw recordFailure;
+      },
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.cause, upgradeFailure);
+      assert.deepEqual(error.errors, [upgradeFailure, recordFailure]);
+      return true;
+    },
+  );
+  assert.equal(recorded, true);
+  const snapshotPath = join(directory, "forward-api-availability.json");
+  const failedSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.ok(!("guardedResume" in failedSnapshot));
+  assert.ok(!JSON.stringify(failedSnapshot).includes(malformedId));
+  assert.ok(failedSnapshot.samples.every((sample: object) => !("upstreamSocketReused" in sample)));
+  assert.equal(failedSnapshot.upgradeSucceeded, false);
+  assert.equal(failedSnapshot.complete, true);
+  assert.equal(failedSnapshot.cadence.complete, true);
+  assert.equal(failedSnapshot.cadence.probedSlots, 0);
+  assert.equal(failedSnapshot.cadence.unprobedSlots, failedSnapshot.cadence.scheduledSlots);
+  assert.deepEqual(
+    failedSnapshot.samples.map((sample: { scheduledSlot: number | null }) => sample.scheduledSlot),
+    [null, null],
+  );
+  assert.equal(failedSnapshot.samples.at(-1)?.outcome, "ok");
+
+  // An unusable destination fails each checkpoint while the real asynchronous
+  // action is still pending. Preserve its failure and avoid an unhandled observer rejection.
+  const unavailableDirectory = join(directory, "not-a-directory");
+  await writeFile(unavailableDirectory, "occupied");
+  for (const succeeded of [false, true]) {
+    await assert.rejects(
+      measureUpgradeAvailability(
+        request,
+        "original-installation",
+        unavailableDirectory,
+        async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          if (!succeeded) {
+            throw upgradeFailure;
+          }
+        },
+        async () => {
+          throw recordFailure;
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        const evidenceErrors = succeeded ? error.errors : error.errors.slice(1);
+        if (!succeeded) {
+          assert.equal(error.cause, upgradeFailure);
+          assert.equal(error.errors[0], upgradeFailure);
+        }
+        // Retain one checkpoint failure and the distinct final proof failure.
+        assert.equal(evidenceErrors.length, 2);
+        assert.equal(evidenceErrors[0].code, "ENOTDIR");
+        assert.equal(evidenceErrors[1], recordFailure);
+        return true;
+      },
+    );
+  }
+  requestId = validId;
+  reuseHeader = "0";
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => {
+        throw upgradeFailure;
+      },
+      async () => {},
+    ),
+    (error: unknown) => error === upgradeFailure,
+  );
+  const freshSocketSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(freshSocketSnapshot.samples[0]?.requestId, validId);
+  assert.equal(freshSocketSnapshot.samples[0]?.upstreamSocketReused, false);
+
+  reuseHeader = "true";
+  await assert.rejects(
+    measureUpgradeAvailability(
+      request,
+      "original-installation",
+      directory,
+      async () => "complete",
+      async () => {
+        throw recordFailure;
+      },
+    ),
+    (error: unknown) => error === recordFailure,
+  );
+  const malformedHeaderSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+  assert.equal(malformedHeaderSnapshot.samples[0]?.requestId, validId);
+  assert.ok(!("upstreamSocketReused" in malformedHeaderSnapshot.samples[0]));
+});
+
+test(
   "timed-out fixture commands reject success and terminate their subprocesses without exposing output",
   { timeout: 15_000 },
   async (t) => {
@@ -1156,3 +2199,23 @@ test(
     assert.ok(Number(await readFile(heartbeat, "utf8")) > before);
   },
 );
+
+test("fixture command reports independently signalled child as unsettled", async () => {
+  await assert.rejects(
+    runFixtureCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")']),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const failure = error as Error & { settled?: boolean; outcome?: unknown };
+      assert.equal(failure.settled, false);
+      assert.deepEqual(failure.outcome, {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+        interrupted: false,
+        spawned: true,
+        terminationFailed: false,
+      });
+      return true;
+    },
+  );
+});

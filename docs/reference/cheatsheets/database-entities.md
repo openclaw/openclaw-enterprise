@@ -45,7 +45,10 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `backend_id`
 - `execution_mode`
 - `gateway_managed_mode`
+- `network_proxy_url`
+- `network_proxy_secret_id`
 - `plugins`
+- `plugin_driver` (registered ID and implementation that admitted the saved selections)
 - `plugin_approvers`
 - `repository_bindings`
 - `repository_access` (default and explicit per-repository overrides)
@@ -56,6 +59,9 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `harness_auth_credential_source_id`
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
+- `predecessor_replacement` (nullable JSONB with the predecessor and candidate
+  revision IDs and the `pre-stop` or `stopping` phase). See the
+  [common stop boundary](../agents/planned-replacement.md#common-stop-boundary).
 - `desired_runtime_state`
 - `sandbox_policy_editing`
 - `status`
@@ -84,11 +90,14 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `revision_number`
 - `backend_id`
 - `gateway_managed_mode`
+- `network_proxy_url`
+- `network_proxy_secret_id`
+- `network_proxy_admission`: immutable Compute admission for the selected endpoint.
 - `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
-  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  binds the Installation, actor, Namespace, Agent, key, reviewed Configuration tuple, and normalized Harness overrides.
   Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
   metadata, separate from `admitted_spec` and public revision responses.
-- `admitted_spec`
+- `admitted_spec` (includes requested `harness.overrides` and resolved `harness.configuration`)
 - `admitted_at`
 
 ### `workspace_setups`
@@ -139,9 +148,70 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `authentication_states`
+
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-lifecycle.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+
+- Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
+- `oauth_connection`: `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scopes, redirect, and issuer data. The immutable Template version identifies the OAuth client. No Source exists yet.
+- `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
+
+OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
+
+### `connection_templates`
+
+Stores the scope, authentication method, and current version of each Connection Template.
+
+- `id`
+- `namespace_id`
+- `display_name`
+- `current_version`, `static_key`
+- `current_oauth_version`, `current_static_version` (generated current-version references)
+- `created_at`
+
+### `static_key_template_versions`
+
+Stores each immutable static Bearer template version, including the exact HTTP method, host, and port, plus the exact path or subtree for each allowed destination.
+
+- `template_id`, `version`, `destinations`, `created_at`
+
+### `oauth_connection_template_versions`
+
+Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+
+- `template_id`, `version`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`, `issuer_verification`
+- `destinations` (exact host, port, and path for each allowed HTTPS destination)
+- `created_at`
+
+### `oauth_clients`
+
+Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected TokenService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
+
+- `id`, `kind`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_endpoint_auth_method`
+- `app_id`, `token_service_instance_id`, `cleanup_after`, `created_at`
+
+### `connection_token_custody`
+
+Tracks the Token Service secret reference, the published access token version and the next refresh time.
+
+- `namespace_id`
+- `credential_source_id`
+- `secret_ref`
+- `scheduled_version`
+- `next_refresh_at`
+
+### `token_service_instances`
+
+Binds an Installation to its selected TokenService Driver and private-store identity.
+
+- `installation_id`, `id`, `driver_id`, `store_identity`
+
 ### `credential_sources`
 
-Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
+Stores the canonical static and OAuth Sources created by the selected TokenService. The optional Template ID belongs to the Source. OAuth fields preserve the original consent and revocation state. Legacy owner rows use the separate existing storage path.
 
 - `id`
 - `namespace_id`
@@ -149,20 +219,28 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway` or `credential_proxy`)
-- `driver_id`
+- `owner_capability` (`credential_proxy` or `token_service`)
+- `driver_id` (Proxy Sources)
+- `token_service_instance_id` (selected TokenService owner)
+- `backend_ref` (optional private, nonsecret TokenService locator)
+- `connection_template_id` (optional immutable association)
+- `oauth_provenance`, `oauth_account` (Template consent or the fixed Codex preset)
+- `oauth_consent_version`, `oauth_client_id`, `oauth_owner_principal_id`
+- `oauth_requested_scopes`, `oauth_granted_scopes`
+- `oauth_revocation_requested_by`, `oauth_revoked_at`
 - `state`
 - `created_at`
 
 ### `egress_installations`
 
 Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
-instance/configuration fingerprint to the exact admitted revision plan.
+instance/configuration fingerprint to the exact admitted revision plan. Retains retired
+receipts while allowing one current enrollment per sender and Sandbox.
 See [protected inference](../credential-sources/protected-inference.md).
 
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
-- `installation`
+- `installation`, `retired`
 
 ### `credential_deliveries`
 
@@ -262,7 +340,7 @@ Links each credential source secret field to the Namespace Secret that supplied 
 
 ### `credential_withdrawals`
 
-Records one credential source withdrawn from one Agent revision, until the gateway confirms revocation.
+Records a Source withdrawal from one Agent revision until detachment is confirmed.
 
 - `namespace_id`
 - `agent_id`
@@ -342,7 +420,9 @@ Stores human Principals and service identities, including those owned by an Agen
 
 ### `iam_groups`
 
-Defines native IAM groups at Installation or Namespace scope.
+Defines native IAM groups at Installation or Namespace scope, including the
+[configured Groups](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`group_config_` IDs), which OCC can delete.
 
 - `id`
 - `namespace_id`
@@ -350,7 +430,8 @@ Defines native IAM groups at Installation or Namespace scope.
 
 ### `iam_group_memberships`
 
-Links human Principals to their native IAM groups.
+Links human Principals to their native IAM groups. Rows cannot be updated;
+memberships of a configured Group can be deleted.
 
 - `namespace_id`
 - `group_id`
@@ -358,7 +439,10 @@ Links human Principals to their native IAM groups.
 
 ### `iam_roles`
 
-Defines native IAM roles as sets of actions and resource kinds.
+Defines native IAM roles as sets of actions and resource kinds. Only
+[configured Roles](../authorization/default-users.md#how-occ-applies-the-configuration)
+(`role_config_` IDs) can change; a check constraint keeps them at Installation
+scope without `installation` permissions.
 
 - `id`
 - `namespace_id`
@@ -368,6 +452,9 @@ Defines native IAM roles as sets of actions and resource kinds.
 ### `iam_access_bindings`
 
 Grants a native IAM role to an identity or group, optionally for a specific resource.
+OCC also writes configured Group bindings and the
+[Owner bindings](../authorization/default-users.md#creators-own-what-they-create)
+of creators here.
 
 - `id`
 - `namespace_id`
@@ -393,6 +480,8 @@ Defines native IAM rules that deny actions on a resource kind or specific resour
 ### `audit_events`
 
 Keeps an append-only record of bootstrap, changes to resources, and authorization denials.
+When Control Plane audit is enabled, it also records covered API requests,
+worker activity, and disclosures of Agent audit records. See the [audit guide](../../guides/topics/audit-log.md).
 
 - `id`
 - `occurred_at`
@@ -421,6 +510,7 @@ Queues and tracks controller work for Namespace and Agent lifecycle changes, Age
 - `available_at`
 - `attempt_count`
 - `claim_token`
+- `audit_attempt_id`
 - `lease_expires_at`
 - `completed_at`
 - `reason_code`
@@ -480,7 +570,7 @@ Stores expiring browser sessions for signed-in users.
 
 Links a user to their sign-in method. Password methods store a password hash;
 identity-only external methods reject password and provider-token storage.
-See [GitHub sign-in](../authentication/external-sign-in.md#github-sign-in-for-existing-accounts).
+See [External sign-in](../authentication/external-sign-in.md#external-sign-in-profile).
 
 - `id`
 - `account_id`
@@ -520,6 +610,17 @@ Binds an ordinary browser session to its admitted account and method versions.
 - `version`
 - `method_version`
 
+### `human_authentication_results`
+
+Holds outstanding external sign-in results by Installation and attempt. Deleting the
+bound session removes its result. The application role can insert, read, and delete rows.
+
+- `installation_id`
+- `attempt_id`
+- `session_id`
+- `provider_id`
+- `expires_at`
+
 ### `human_authentication_recovery`
 
 Retains the fixed existing password recovery administrator for an Installation.
@@ -543,6 +644,24 @@ provider token. Consumed attempts are deleted before exchange.
 - `code_verifier`
 - `created_at`
 - `expires_at`
+
+### `native_browser_intents`
+
+Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Consumed atomically; deleted with the parent session or revision.
+
+- `id`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `challenge_hash`, `exchange_hash`
+- `created_at`, `expires_at`
+
+### `native_browser_handles`
+
+Hashed Agent access handles dependent on a live parent human session.
+
+- `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `created_at`, `expires_at`
 
 ### `verification`
 

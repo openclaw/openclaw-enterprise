@@ -232,7 +232,7 @@ test("shared preview inputs select the Storybook build only on pushes to main", 
   for (const path of [
     "apps/controller/src/console-theme.ts",
     "apps/controller/src/composition/console-theme.ts",
-    "packages/contracts/src/workspace-defaults.mjs",
+    "packages/contracts/src/workspace-defaults.ts",
     "packages/occ/src/environment-references.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "packages/occ/src/stored-configuration-rules.ts",
@@ -418,6 +418,58 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
     });
   const evidence = () => ({ requests: [], directoryResponses: [], unhandled: [], ready: false });
+  const readData = async (reply: Response, status: number) => {
+    assert.equal(reply.status, status);
+    const body: unknown = await reply.json();
+    assert.ok(body !== null && typeof body === "object" && "data" in body);
+    assert.ok(body.data !== null && typeof body.data === "object");
+    return body.data;
+  };
+  const assertRevisionSelection = (data: object, activeRevisionId?: string) => {
+    assert.equal(Object.hasOwn(data, "activeRevisionId"), activeRevisionId !== undefined);
+    if (activeRevisionId !== undefined) {
+      assert.partialDeepStrictEqual(data, { activeRevisionId });
+    }
+  };
+  const assertQueuedStop = async (
+    traffic: ReturnType<typeof evidence>,
+    agentId: string,
+    deploymentId: string,
+    activeRevisionId?: string,
+  ) => {
+    const offset = traffic.requests.length;
+    const agentPath = `agents/${agentId}`;
+    const deploymentPath = `${agentPath}/deployments/${deploymentId}`;
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      deploymentId,
+      namespaceId: namespace,
+      agentId,
+      status: "queued",
+    });
+    const assertAgent = async (
+      reply: Response,
+      status: number,
+      desiredRuntimeState: "running" | "stopped",
+    ) => {
+      const data = await readData(reply, status);
+      assert.partialDeepStrictEqual(data, {
+        id: agentId,
+        namespaceId: namespace,
+        status: "active",
+        desiredRuntimeState,
+      });
+      assertRevisionSelection(data, activeRevisionId);
+    };
+    await assertAgent(await request(agentPath), 200, "running");
+    await assertAgent(await request(`${agentPath}/stop`, "POST", {}), 202, "stopped");
+    await assertAgent(await request(agentPath), 200, "stopped");
+    assert.deepEqual(traffic.requests.slice(offset), [
+      { method: "GET", path: `${path}${deploymentPath}` },
+      { method: "GET", path: `${path}${agentPath}` },
+      { method: "POST", path: `${path}${agentPath}/stop` },
+      { method: "GET", path: `${path}${agentPath}` },
+    ]);
+  };
   const configuration = {
     kind: "agent",
     values: {
@@ -441,12 +493,12 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     );
     const registration = {
       name: "Registered model",
-      type: "openai",
-      config: { authorized_base_url: "https://models.example.test/v1" },
-      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: "SYNTHETIC-preview-key",
     };
-    // A lost answer must leave the registration available to the Create form's
-    // recovery read. This exercises the router through the native Request body.
+    // A lost answer leaves a committed Source visible to subsequent inspection,
+    // while its submitted credential material is never returned by the fixture.
     await assert.rejects(
       frame.fetch(
         new Request(`https://preview.example.test${path}credential-sources`, {
@@ -457,10 +509,18 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       ),
       { name: "TypeError", message: "Failed to fetch" },
     );
-    const sourcePath = `credential-sources/${id("csr", 100)}`;
-    assert.partialDeepStrictEqual(await (await request(sourcePath)).json(), {
-      data: { ...registration, id: id("csr", 100), state: "ready" },
+    const sourcePath = `credential-sources/${id("cs", 100)}`;
+    const exact = await (await request(sourcePath)).json();
+    assert.partialDeepStrictEqual(exact, {
+      data: {
+        name: registration.name,
+        type: "static",
+        config: registration.config,
+        id: id("cs", 100),
+        state: "ready",
+      },
     });
+    assert.equal(JSON.stringify(exact).includes(registration.secret), false);
     const listed: unknown = await (await request("credential-sources")).json();
     assert.ok(
       listed !== null &&
@@ -602,19 +662,26 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     installFixture({}, evidence());
     await invalidRequest("credential-sources", "POST", null);
     assert.partialDeepStrictEqual(await (await request("credential-sources")).json(), { data: [] });
-    // Config and Secret bindings are opaque here: the fixture must not normalize
-    // or disclose the referenced Secret while saving the ordinary Create request.
+    // A valid canonical registration saves metadata without returning the key.
     const registration = {
       name: "New model",
-      type: "openai",
-      config: { authorized_base_url: "https://models.example.test/v1" },
-      secrets: { api_key: { kind: "secret", namespaceId: namespace, id: "sec_demo_model" } },
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: "SYNTHETIC-preview-key",
     };
     const valid = await request("credential-sources", "POST", registration);
     assert.equal(valid.status, 201);
-    assert.partialDeepStrictEqual(await valid.json(), {
-      data: { ...registration, id: id("csr", 100), state: "ready" },
+    const saved = await valid.json();
+    assert.partialDeepStrictEqual(saved, {
+      data: {
+        name: registration.name,
+        type: "static",
+        config: registration.config,
+        id: id("cs", 100),
+        state: "ready",
+      },
     });
+    assert.equal(JSON.stringify(saved).includes(registration.secret), false);
   });
 
   await t.test("Opaque IAM replies retain payload order and binding identity", async () => {
@@ -625,7 +692,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     };
     const createdRole = await request("iam/roles", "POST", role);
     assert.equal(createdRole.status, 201);
-    const roleWire = { ...role, id: "role_100", namespaceId: namespace };
+    const roleWire = { ...role, id: id("role", 100), namespaceId: namespace };
     const meta = { requestId: id("req", 1) };
     assert.equal(await createdRole.text(), JSON.stringify({ data: roleWire, meta }));
     assert.equal(
@@ -635,22 +702,45 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     const binding = {
       subjectKind: "identity",
       subjectId: "identity_demo_agent",
-      roleId: "role_100",
+      roleId: roleWire.id,
       resourceKind: "secret",
       resourceId: "sec_demo_model",
     };
     const createdBinding = await request("iam/access-bindings", "POST", binding);
     assert.equal(createdBinding.status, 201);
-    const bindingWire = { ...binding, id: "binding_101", namespaceId: namespace };
+    const bindingWire = { ...binding, id: id("binding", 101), namespaceId: namespace };
     assert.equal(await createdBinding.text(), JSON.stringify({ data: bindingWire, meta }));
     assert.equal(
       await (await request("iam/access-bindings")).text(),
       JSON.stringify({ data: [bindingWire], meta }),
     );
-    assert.equal((await request("iam/access-bindings/binding_101", "DELETE")).status, 204);
+    assert.equal((await request(`iam/access-bindings/${bindingWire.id}`, "DELETE")).status, 204);
     assert.partialDeepStrictEqual(await (await request("iam/access-bindings")).json(), {
       data: [],
     });
+  });
+
+  await t.test("Repository collaborator stories serve the legacy network policy", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    for (const story of [
+      "repositoryCollaborator",
+      "repositoryCollaboratorSaved",
+      "repositoryCollaboratorReadOnly",
+    ]) {
+      const scenario = scenarios[story];
+      assert.ok(scenario && "repositoryAccess" in scenario, story);
+      installFixture(scenario, evidence());
+      const view = await readData(
+        await request(`agents/${id("agt", 1)}/sandbox-policy/networking`),
+        200,
+      );
+      assert.partialDeepStrictEqual(view, { editingEnabled: false, policy: { version: 1 } }, story);
+      assert.ok("policy" in view && view.policy && typeof view.policy === "object", story);
+      assert.ok("additions" in view.policy, story);
+      assert.deepEqual(view.policy.additions, [], story);
+      // An empty repositoryNetworkPolicy would deny all repositories.
+      assert.equal(Object.hasOwn(view.policy, "repositoryNetworkPolicy"), false, story);
+    }
   });
 
   await t.test("Malformed policy editing flags return 400 without changing the flag", async () => {
@@ -804,11 +894,24 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         await invalidRequest(`${policyPath}/apply`, "POST", body);
       }
       assert.equal(await (await request(policyPath)).text(), before);
+      const stale = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 1,
+        revisionId: id("rev", 8),
+        additions: [],
+      });
+      assert.equal(stale.status, 409);
+      assert.equal(await (await request(policyPath)).text(), before);
       const valid = await request(`${policyPath}/apply`, "POST", {
         expectedVersion: 1,
         revisionId: id("rev", 7),
       });
       assert.equal(valid.status, 202);
+      const pending = await request(`${policyPath}/apply`, "POST", {
+        expectedVersion: 1,
+        revisionId: id("rev", 7),
+        additions: [],
+      });
+      assert.equal(pending.status, 409);
       assert.partialDeepStrictEqual(await valid.json(), {
         data: { application: { revisionId: id("rev", 7), state: "pending" } },
       });
@@ -925,6 +1028,61 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
   });
 
   await t.test(
+    "queued first deployment omits an active revision before and after Stop",
+    async () => {
+      const traffic = evidence();
+      installFixture({ deployed: true, firstDeploymentQueued: true }, traffic);
+      await assertQueuedStop(traffic, id("agt", 1), id("rev", 1));
+    },
+  );
+
+  await t.test("queued successor preserves the selected revision through Stop", async () => {
+    const traffic = evidence();
+    installFixture({ deployed: true, candidateDeploymentStatus: "queued" }, traffic);
+    await assertQueuedStop(traffic, id("agt", 1), id("rev", 7), id("rev", 6));
+  });
+
+  await t.test("created Agent ignores forged selection through queued Stop", async () => {
+    const traffic = evidence();
+    installFixture({ deployed: true }, traffic);
+    const agentId = id("agt", 100);
+    const deploymentId = id("rev", 101);
+    const created = await request("agents", "POST", {
+      name: "New Agent",
+      configurationId: id("cfg", 1),
+      activeRevisionId: id("rev", 1),
+    });
+    const createdData = await readData(created, 201);
+    assert.partialDeepStrictEqual(createdData, {
+      id: agentId,
+      namespaceId: namespace,
+      status: "active",
+      desiredRuntimeState: "stopped",
+    });
+    assertRevisionSelection(createdData);
+    assert.partialDeepStrictEqual(
+      await readData(await request(`agents/${agentId}/deploy`, "POST", {}), 202),
+      { id: deploymentId, revision: 1, namespaceId: namespace, agentId },
+    );
+    await assertQueuedStop(traffic, agentId, deploymentId);
+  });
+
+  await t.test("Delete omits selection for a fresh queued first deployment", async () => {
+    installFixture({ deployed: true, firstDeploymentQueued: true }, evidence());
+    const agentId = id("agt", 1);
+    const agentPath = `agents/${agentId}`;
+    const deleted = await readData(await request(agentPath, "DELETE"), 202);
+    assert.partialDeepStrictEqual(deleted, {
+      id: agentId,
+      namespaceId: namespace,
+      status: "deleting",
+      desiredRuntimeState: "stopped",
+    });
+    assertRevisionSelection(deleted);
+    assert.equal((await request(agentPath)).status, 404);
+  });
+
+  await t.test(
     "deployment snapshots, one-time staging, stop readback and deferred deletion",
     async () => {
       installFixture({ clearRevisionOnStopReadback: true }, evidence());
@@ -986,12 +1144,15 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         },
       );
       // Stop acknowledges the old selection; only the following detail read clears it.
-      assert.partialDeepStrictEqual(await (await request(`${agentPath}/stop`, "POST", {})).json(), {
-        data: { desiredRuntimeState: "stopped", activeRevisionId: firstRevision },
+      const stopped = await readData(await request(`${agentPath}/stop`, "POST", {}), 202);
+      assert.partialDeepStrictEqual(stopped, { desiredRuntimeState: "stopped" });
+      assertRevisionSelection(stopped, firstRevision);
+      const cleared = await readData(await request(agentPath), 200);
+      assert.partialDeepStrictEqual(cleared, {
+        desiredRuntimeState: "stopped",
+        extraSetting: { retained: true },
       });
-      assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
-        data: { activeRevisionId: null, extraSetting: { retained: true } },
-      });
+      assertRevisionSelection(cleared);
       assert.equal((await request(agentPath, "DELETE")).status, 202);
       assert.equal((await request(agentPath)).status, 404);
     },
@@ -1085,9 +1246,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       [agentA, revisionA],
       [agentB, revisionB],
     ]) {
-      assert.partialDeepStrictEqual(await (await request(`agents/${agentId}`)).json(), {
-        data: { activeRevisionId: null },
-      });
+      assertRevisionSelection(await readData(await request(`agents/${agentId}`), 200));
       assert.partialDeepStrictEqual(
         await (await request(`agents/${agentId}/deployments/${revisionId}`)).json(),
         {
@@ -1104,9 +1263,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     assert.partialDeepStrictEqual(await (await request(`agents/${agentA}`)).json(), {
       data: { activeRevisionId: revisionA },
     });
-    assert.partialDeepStrictEqual(await (await request(`agents/${agentB}`)).json(), {
-      data: { activeRevisionId: null },
-    });
+    assertRevisionSelection(await readData(await request(`agents/${agentB}`), 200));
     assert.partialDeepStrictEqual(
       await (await request(`agents/${agentB}/deployments/${revisionB}`)).json(),
       {
@@ -1237,7 +1394,11 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
 
   await t.test("cancellation has no revision; deployment waits retain progress", async () => {
     installFixture({ provisioningCancelledByStop: true }, evidence());
-    await request("agents/provision", "POST", provisionBody);
+    const admitted = await request("agents/provision", "POST", {
+      ...provisionBody,
+      activeRevisionId: id("rev", 1),
+    });
+    assert.equal(admitted.status, 202);
     const job = `agents/provision/${id("work", 100)}`;
     await request(job);
     const cancelled: unknown = await (await request(job)).json();
@@ -1249,9 +1410,9 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     assert.ok(data !== null && typeof data === "object" && "provisioning" in data);
     assert.ok(data.provisioning !== null && typeof data.provisioning === "object");
     assert.equal("revisionId" in data.provisioning, false);
-    assert.partialDeepStrictEqual(await (await request(`agents/${id("agt", 102)}`)).json(), {
-      data: { desiredRuntimeState: "stopped", activeRevisionId: null },
-    });
+    const stopped = await readData(await request(`agents/${id("agt", 102)}`), 200);
+    assert.partialDeepStrictEqual(stopped, { desiredRuntimeState: "stopped" });
+    assertRevisionSelection(stopped);
 
     const attempt = { code: "DEPENDENCY_UNAVAILABLE", message: "Waiting for the dependency" };
     installFixture(

@@ -1,3 +1,8 @@
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -12,8 +17,9 @@ import type {
   NamespaceWire,
 } from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
+  routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
   detailUrl,
@@ -22,18 +28,14 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  createModelCredentialSecret,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  openAdvancedSettings,
   routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-test-support.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one
 // primary action, a secondary button's edge is visible against its surface, and a button waiting
@@ -394,7 +396,10 @@ test("Save repository access shows busy while its request runs", async (t) => {
     body: {
       name: "Repository busy",
       configurationId: configured.configurationId,
-      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "application", profile: "git-read" }],
+      },
     } satisfies CreateAgentBody,
   });
   assert.equal(created.status, 201);
@@ -546,123 +551,6 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   left.release();
 });
 
-// A Credential Gateway that registers model Secrets as Credential Sources. Only the browser sees
-// it: the Credential Source requests below are answered here.
-async function routeCredentialSourceInstallation(page: Page, fixture: ConsoleFixture) {
-  await page.route(`${fixture.origin}/installation`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          id: "ins_00000000-0000-4000-8000-000000000001",
-          name: "Console test installation",
-          createdAt: new Date().toISOString(),
-          capabilities: {
-            agentProvisioning: { executionModes: ["dedicated"] },
-            credentialSources: {
-              types: [
-                {
-                  type: "openai",
-                  config: [],
-                  secrets: [{ name: "api_key", required: true }],
-                  rotation: "none",
-                  harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
-                },
-              ],
-            },
-          },
-        },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-      }),
-    }),
-  );
-}
-
-// Create's busy state is its own: Check credential registration's request disables Create but
-// does not mark it busy, and an uncertain or refused registration ends the busy state.
-test("Create Agent is busy only for its own request, not a recovery control's", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Own busy state");
-  const { page } = await newPage(t, fixture, { browser });
-  await routeCredentialSourceInstallation(page, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
-  await page.getByLabel("Agent name").fill("Own busy Agent");
-  await createModelCredentialSecret(page, "own-busy-model-key");
-  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
-  await page.getByLabel("Model ID", { exact: true }).press("Tab");
-  await waitForCreateFormReads(page);
-  const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  const sourcesUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
-  const busy = { busy: "true", cursor: "progress", disabled: true, text: "Create Agent" };
-
-  // The registration's outcome is unknown: Create waits for a check, but is not busy.
-  const uncertain = await holdRequests(t, page, sourcesUrl, {
-    method: "POST",
-    once: true,
-    fulfill: refusal(503, "DEPENDENCY_UNAVAILABLE", "Synthetic lost registration."),
-  });
-  await create.click();
-  await uncertain.requested;
-  assert.deepEqual(await busyState(create), busy);
-  uncertain.release();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Credential Source registration could not be confirmed." })
-    .waitFor();
-  const check = page.getByRole("button", { name: "Check credential registration" });
-  await check.waitFor();
-  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
-
-  // Another control's request disables Create; Create is not the one working.
-  const read = await holdRequests(t, page, sourcesUrl, {
-    method: "GET",
-    once: true,
-    fulfill: {
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: [],
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
-      }),
-    },
-  });
-  await check.click();
-  await read.requested;
-  assert.equal(await check.isDisabled(), true);
-  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
-  assert.notEqual(
-    await create.evaluate((node) => globalThis.getComputedStyle(node).cursor),
-    "progress",
-  );
-  read.release();
-  await page
-    .getByText(
-      "No credential registration is visible. Select Create Agent to retry the same registration.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
-
-  // A refused registration: available again, and no longer busy.
-  const refused = await holdRequests(t, page, sourcesUrl, {
-    method: "POST",
-    once: true,
-    fulfill: refusal(400, "INVALID_REQUEST", "Refused registration for the busy test."),
-  });
-  await create.click();
-  await refused.requested;
-  assert.deepEqual(await busyState(create), busy);
-  refused.release();
-  await page
-    .getByRole("alert")
-    .filter({ hasText: "Credential Source registration could not be confirmed." })
-    .waitFor();
-  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
-});
-
 // A badge's words, tone and paint, and the gap to the element before it. `painted` is true when
 // its text has its tone's colour (muted when neutral).
 const badgeState = (locator: Locator) =>
@@ -771,7 +659,7 @@ test("The version picker names the service selection, and bindings and Namespace
         edge: table.borderTopWidth,
       };
     }),
-    { card: false, surface: "rgb(255, 255, 255)", radius: "14px", edge: "1px" },
+    { card: false, surface: "rgb(255, 255, 255)", radius: "10px", edge: "1px" },
   );
   const { badge, text, tone, painted } = await badgeState(row.locator(".badge"));
   assert.deepEqual(
@@ -812,7 +700,6 @@ test("Deleting and unreadable configuration badges take their tones on the list 
       const {
         plugins: _plugins,
         pluginApprovers: _approvers,
-        repositoryBindings: _bindings,
         repositoryAccess: _access,
         harnessAuth: _auth,
         credentialSources: _sources,
@@ -910,7 +797,7 @@ test("Links and disclosures use the link colour with an underline, not the accen
     accent: false,
     line: "underline",
     lineShows: false,
-    weight: "500",
+    weight: "600",
   });
   await name.hover();
   assert.equal((await tone(name)).lineShows, true, "name link underlines on hover");

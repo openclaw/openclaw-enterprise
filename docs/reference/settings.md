@@ -5,7 +5,7 @@ private-listener boundary, see [OCC metrics](metrics.md).
 
 Use this reference to configure the OpenClaw Enterprise controller and worker,
 local Compose stack, PostgreSQL and its migrations, and Drivers. Development
-uses local admission. The default Compose profile uses PostgreSQL and the
+uses local admission. The Docker Compute preview profile uses PostgreSQL and the
 bundled Docker Compute and filesystem
 Configuration Drivers; choose the Kubernetes profile in [Local Setup](../guides/quickstart.md)
 to deploy an Agent.
@@ -77,21 +77,15 @@ When a production or explicit Kubernetes startup YAML is used, the required
 same startup YAML, stores Namespace-owned Secret values in the backing
 Kubernetes namespace, and exposes only metadata through OCC. Secret value updates
 do not restart workloads; explicitly redeploy or restart each consuming Agent to
-consume the current value. The selected Secret Driver is not a Credential Gateway, SecretBroker,
-rotation service, or credential issuer.
+consume the current value. TokenService owns managed credential issuance and
+renewal. [Credential Source support](credential-sources.md#implementation-status)
 
-The optional `drivers.sandbox` selection currently supports the bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) with the bundled Kubernetes
-Compute Driver. It is loaded from the same startup YAML, injected into the
-Kubernetes Compute Driver before workers reconcile versions, and fails startup
-when paired with SSH or an installed Compute Driver. OpenShell-selected Agents must use
-dedicated Codex execution; embedded OpenClaw remains unsupported for this
-SandboxDriver. The bundled OpenShell Sandbox also requires an `openshell`
-[Backend](backends.md#openshell-gateway) and a matching
-`drivers.credential_gateway` selection of the
-[OpenShell Credential Gateway](drivers/openshell-credential-gateway.md). An optional
-`drivers.credential_refresh` selection on the same Backend adds the
-[Credential Refresh Driver](drivers/credential-refresh.md) for OAuth2 sources.
+The optional `drivers.sandbox` selection requires bundled Kubernetes Compute.
+The bundled [OpenShell Sandbox Driver](drivers/openshell-sandbox.md) also
+requires a matching [OpenShell Backend](backends.md#openshell-gateway) and
+dedicated Codex or supported dedicated OpenClaw. Select TokenService and the
+paired native Credential Proxy for managed Source delivery.
+[Driver selections](drivers/selection.md#supported-selections)
 
 For contributor test variables, fixtures, and commands, see the
 [testing guides](../testing/README.md).
@@ -107,7 +101,7 @@ defaults, precedence, and security requirements.
 ## Configuration owners
 
 - [Development controller settings](settings/development.md) owns development inputs, optional controller environment, and fixed development security settings.
-- [Production controller settings](settings/production.md) owns production API inputs, Installation bootstrap output, and Helm log collection.
+- [Production controller settings](settings/production.md) owns production API inputs, Installation bootstrap input files, and Helm log collection.
 - [OIDC controller settings](settings/oidc.md) owns generic provider configuration, API egress and private CA trust.
 - [Worker, Compose, and PostgreSQL settings](settings/operations.md) owns worker environment, local services, storage, and migration tooling.
 - [Programmatic settings](settings/programmatic.md) owns TypeScript constructor options for controller composition, Drivers, and the durable queue.

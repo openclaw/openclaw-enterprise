@@ -9,9 +9,9 @@ import {
   nativeValues,
   newPage,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { restrict } from "../helpers/iam-grants.ts";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact
 // 32 px control beside Refresh; an Agent's page and Create Agent lead with ← Agents and carry the
@@ -141,6 +141,8 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   for (const viewport of [
     { width: 1440, height: 900 },
+    { width: 1101, height: 768 },
+    { width: 1100, height: 768 },
     { width: 1024, height: 768 },
     { width: 390, height: 844 },
   ]) {
@@ -199,18 +201,29 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
       layout.selector.top >= layout.title.bottom,
       `${size}: the selector is under the title`,
     );
-    if (viewport.width === 390) {
-      // Phone: back row (with the actions), title, meta. A name this long takes two lines; the
-      // header still ends well before the old 8-row header did.
-      assert.ok(layout.bottom <= 240 + 34 * (layout.title.lines - 1), `${size}: ${layout.bottom}`);
+    const actions = layout.controls.filter((control) => control.region === "actions");
+    if (viewport.width <= 1100) {
+      // Tablet and phone actions share the back row, leaving the title its own full row.
+      for (const action of actions) {
+        assert.ok(action.bottom <= layout.title.top, `${size}: ${action.name} is above the title`);
+        assert.ok(action.left >= back.right, `${size}: ${action.name} is right of the back link`);
+        assert.ok(
+          Math.abs(action.top - back.top) < 1,
+          `${size}: ${action.name} shares the back row`,
+        );
+      }
     } else {
-      const actions = layout.controls.filter((control) => control.region === "actions");
       for (const action of actions) {
         assert.ok(
           action.left >= layout.title.right,
           `${size}: ${action.name} is right of the title`,
         );
       }
+    }
+
+    if (viewport.width === 390) {
+      // A long phone title may wrap, but the header still ends before the old 8-row header did.
+      assert.ok(layout.bottom <= 240 + 34 * (layout.title.lines - 1), `${size}: ${layout.bottom}`);
     }
 
     // Replacing the rail with a picker must not introduce horizontal overflow on phones.
@@ -226,7 +239,116 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
   }
 });
 
-test("a phone shows a short-named Agent's header in four rows, ending by 240 px", async (t) => {
+test("Copy Agent ID gives manual copy instructions when clipboard writes are unavailable", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header clipboard");
+  const agent = await fixture.createAgent(namespace.id, "Copy test", nativeValues("copy"));
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
+  await page.getByRole("button", { name: "Deploy new version" }).waitFor();
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const header = page.locator(".content .page-header");
+  const copy = header.getByRole("button", { name: "Copy Agent ID" });
+  const status = header.locator(".page-meta-id").getByRole("status", { includeHidden: true });
+  const guidance = "Copy selection";
+  const before = await headerLayout(page);
+  const clickCopy = async () => {
+    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
+    await copy.click();
+  };
+  const assertManualCopy = async () => {
+    assert.equal(
+      await page.evaluate(() => globalThis.document.getSelection()?.toString()),
+      agent.id,
+    );
+    assert.equal(await status.textContent(), guidance);
+    assert.ok(await status.isVisible(), "manual copy guidance is visible in the header");
+  };
+  // Control only clipboard availability and settlement. Use the real button and DOM selection.
+  const useClipboard = (mode: "write" | "deny" | "missing") =>
+    page.evaluate((mode) => {
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value:
+          mode === "missing"
+            ? undefined
+            : {
+                writeText: () =>
+                  mode === "deny"
+                    ? Promise.reject(new DOMException("", "NotAllowedError"))
+                    : Promise.resolve(),
+              },
+      });
+    }, mode);
+
+  // Keep the pointer over Namespace while Enter triggers the clipboard fallback.
+  await page.setViewportSize({ width: 920, height: 900 });
+  await page.locator(settledView).waitFor();
+  const selector = header.getByRole("combobox", { name: "Namespace", exact: true });
+  const isOpen = () => selector.evaluate((node) => node.matches(":open"));
+  await useClipboard("missing");
+  await copy.focus();
+  await selector.hover();
+  await page.keyboard.press("Enter");
+  await status.filter({ hasText: guidance }).waitFor();
+
+  await page.mouse.down();
+  await page.mouse.up();
+  const openedWithoutMoving = await isOpen();
+  await page.keyboard.press("Escape");
+  assert.equal(await isOpen(), false);
+
+  // A fresh click distinguishes a missed target from an unavailable menu.
+  await selector.click();
+  assert.equal(await isOpen(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await isOpen(), false);
+  assert.equal(await selector.inputValue(), namespace.id);
+  assert.equal(openedWithoutMoving, true, "the click still opens Namespace after copy fallback");
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await useClipboard("write");
+  await clickCopy();
+  await status.filter({ hasText: "Copied" }).waitFor();
+  // A denied copy must replace earlier success with the recovery action.
+  await useClipboard("deny");
+  await clickCopy();
+  await assertManualCopy();
+
+  await useClipboard("missing");
+  await clickCopy();
+  await assertManualCopy();
+  const fallback = await headerLayout(page);
+  assert.ok(fallback.bottom <= 240, `header bottom with recovery guidance ${fallback.bottom}`);
+  const copyWidth = (layout: Awaited<ReturnType<typeof headerLayout>>) => {
+    const control = layout.controls.find(({ name }) => name === "Copy Agent ID");
+    assert.ok(control);
+    return control.right - control.left;
+  };
+  assert.equal(copyWidth(fallback), copyWidth(before));
+
+  // An older write can finish after the next click. It must leave the latest feedback alone.
+  const olderWrite = await page.evaluateHandle(() => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    Object.defineProperty(globalThis.navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => promise },
+    });
+    return resolve;
+  });
+  await clickCopy();
+  assert.equal(await status.textContent(), "", "the pending copy clears previous feedback");
+  await useClipboard("deny");
+  await clickCopy();
+  await assertManualCopy();
+  await olderWrite.evaluate((resolve) => resolve());
+  await olderWrite.dispose();
+  await assertManualCopy();
+});
+
+test("a phone keeps the Agent header compact and the Namespace focus outline in view", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header phone");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -239,7 +361,8 @@ test("a phone shows a short-named Agent's header in four rows, ending by 240 px"
   });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href);
   await page.getByRole("button", { name: "Deploy new version" }).waitFor();
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const select = page.locator("#namespace-selector:not(:disabled)");
+  await select.waitFor();
   const layout = await headerLayout(page);
   t.diagnostic(JSON.stringify(layout));
   assert.equal(layout.title.lines, 1);
@@ -249,6 +372,45 @@ test("a phone shows a short-named Agent's header in four rows, ending by 240 px"
     .locator(".content .page-header")
     .evaluate((node) => node.getBoundingClientRect().width);
   assert.ok(layout.selector.right - layout.selector.left >= content - 1);
+
+  await page.locator(settledView).waitFor();
+  const focused = () => select.evaluate((node) => node.matches(":focus-visible"));
+  for (let step = 0; step < 20 && !(await focused()); step += 1) {
+    await page.keyboard.press("Tab");
+  }
+  assert.ok(await focused(), "Namespace is reachable with Tab");
+  await page.keyboard.press("Tab");
+  assert.ok(!(await focused()));
+
+  // Leave the select partly above the viewport so Shift+Tab must scroll it back into view.
+  const partiallyVisible = await select.evaluate((node) => {
+    globalThis.scrollBy({ top: node.getBoundingClientRect().top + 5, behavior: "instant" });
+    const rect = node.getBoundingClientRect();
+    return rect.top < 0 && rect.bottom > 0;
+  });
+  assert.ok(partiallyVisible);
+  await page.keyboard.press("Shift+Tab");
+  assert.ok(await focused(), "Shift+Tab returns to Namespace");
+
+  // The browser focuses the select, but the outline surrounds both the label and the select.
+  const outline = await page.locator(".page-header .namespace-selector").evaluate((wrapper) => {
+    const rect = wrapper.getBoundingClientRect();
+    const style = globalThis.getComputedStyle(wrapper);
+    const width = Number.parseFloat(style.outlineWidth);
+    const extent = width + Number.parseFloat(style.outlineOffset);
+    return {
+      visible: width > 0 && style.outlineStyle !== "none",
+      top: rect.top - extent,
+      left: rect.left - extent,
+      right: globalThis.innerWidth - rect.right - extent,
+      bottom: globalThis.innerHeight - rect.bottom - extent,
+    };
+  });
+  assert.ok(outline.visible, "Namespace has a keyboard focus outline");
+  assert.ok(
+    Math.min(outline.top, outline.left, outline.right, outline.bottom) >= 0,
+    `Namespace outline clearance: ${JSON.stringify(outline)}`,
+  );
 });
 
 test("Create Agent leads with ← Agents and puts the Namespace under its title", async (t) => {

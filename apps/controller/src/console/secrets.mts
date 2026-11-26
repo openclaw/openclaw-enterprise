@@ -7,7 +7,7 @@ import type {
 import type { Static } from "typebox";
 import {
   askAdministratorTo,
-  SECRET_CREATE_DENIED,
+  secretCreateDenied,
   SECRET_DELETE_DENIED,
   SECRET_LINK_UNLISTED,
   secretLinkUnlistedForAdministrator,
@@ -113,7 +113,7 @@ function clearSecretInputs(dialog: HTMLDialogElement) {
 }
 
 // The API's Secret value rule (SecretValue in packages/contracts/src/api/common.ts): nonempty
-// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.mjs
+// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.ts
 // keeps the two equal.
 export const SECRET_VALUE_MAX_BYTES = 65536;
 
@@ -189,6 +189,7 @@ export function renderSecrets(
     sorted(items: readonly SecretSummary[]): SecretSummary[];
     pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
     permissions?: Static<typeof NamespaceCallerPermissionsResponse>["data"] | null;
+    searchQuery: string;
     // A listed Secret to open, from the `secret` parameter an Agent page's link sets.
     openSecretId?: string | null;
   },
@@ -202,9 +203,11 @@ export function renderSecrets(
   const search = element("input", {
     type: "search",
     id: "secret-search",
+    "data-refocus-key": "secret-search",
     placeholder: "Search by name or ID",
     "aria-label": "Search Secrets",
   });
+  search.value = context.searchQuery;
   const list = element("div");
   const create = button("Create Secret", () => editValue(), { tone: "primary" });
   const ready = context.namespace?.status === "ready";
@@ -212,6 +215,7 @@ export function renderSecrets(
   // then refused after the dialog is filled in (finding 2365). Gating only: the API still
   // authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.secrets?.create === false;
+  const createDeniedReason = secretCreateDenied(context.permissions);
   const notReadyNote = ready
     ? null
     : statusBlock(
@@ -227,7 +231,7 @@ export function renderSecrets(
     ? element(
         "p",
         { className: "muted", role: "status", id: "secrets-create-denied" },
-        SECRET_CREATE_DENIED,
+        createDeniedReason,
       )
     : null;
   // An unavailable Create Secret stays in the Tab order with the note that says why (finding
@@ -243,7 +247,7 @@ export function renderSecrets(
     const note = element(
       "p",
       { className: "muted", role: "status", id: "secrets-create-refused" },
-      `${SECRET_CREATE_DENIED} Then select Refresh.`,
+      `${createDeniedReason} Then select Refresh.`,
     );
     toolbar.after(note);
     setUnavailable(create, true, note);
@@ -324,7 +328,11 @@ export function renderSecrets(
               element(
                 "p",
                 { className: "resource-name" },
-                button(item.name, () => void openDetail(item), { tone: "link" }),
+                button(item.name, () => void openDetail(item), {
+                  tone: "link",
+                  "data-refocus-key": item.id,
+                  "data-refocus-fallback": "secret-search",
+                }),
               ),
               element("span", { className: "resource-id" }, item.id),
             ),
@@ -355,20 +363,28 @@ export function renderSecrets(
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
     const body = element("div");
     const notice = element("div");
-    const close = button("Close", closeModal);
+    function dismiss() {
+      closeModal();
+      // Native close restores focus without scrolling. The list can reflow
+      // while the dialog is open, leaving the focused row below the viewport.
+      if (context.isCurrent() && !modal) {
+        list.querySelector(".secret-row:has(:focus-visible)")?.scrollIntoView({ block: "nearest" });
+      }
+    }
+    const close = button("Close", dismiss);
     const actions = element("div", { className: "dialog-actions" }, close);
     const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
     const header = element(
       "header",
       { className: "dialog-header" },
-      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Secrets`),
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
       heading,
     );
     dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      closeModal();
+      dismiss();
     });
     dismissOnBackdrop(dialog);
     dialog.addEventListener(
@@ -611,6 +627,22 @@ export function renderSecrets(
     const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    // Native focus can reveal the caret while clipping the lower part of a multiline field.
+    const scrollValueIntoView = () => value.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (value instanceof HTMLTextAreaElement) {
+      value.addEventListener("keyup", (event) => {
+        if (
+          event.isTrusted &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          document.activeElement === value
+        ) {
+          scrollValueIntoView();
+        }
+      });
+    }
     const valueField = field({
       label: "Value",
       control: value,
@@ -647,6 +679,9 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
+    if (replacing && value instanceof HTMLTextAreaElement) {
+      scrollValueIntoView();
+    }
     let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -721,9 +756,8 @@ export function renderSecrets(
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
         } else if (status === 403) {
-          // Create is checked on the Namespace, which no Namespace Role grants; replace is Secret
-          // update on this Secret.
-          description = replacing ? SECRET_UPDATE_DENIED : SECRET_CREATE_DENIED;
+          // This request carries a Secret value, so use local guidance for either write.
+          description = replacing ? SECRET_UPDATE_DENIED : createDeniedReason;
           if (!replacing) {
             showCreateRefused();
           }

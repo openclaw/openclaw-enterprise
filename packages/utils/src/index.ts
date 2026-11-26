@@ -14,3 +14,10 @@ export { cookieHeaderFromSetCookie, readCappedBody } from "./http.ts";
 export { hasControlCharacter } from "./text.ts";
 export { publicCaBundle } from "./tls.ts";
 export { MAX_TIMER_DELAY_MS } from "./timers.ts";
+export {
+  canonicalWorkspaceNodeTlsFingerprint,
+  isWorkspaceNodeDeviceId,
+  validateWorkspaceNodeSetupSecret,
+  WorkspaceNodeSetupValidationError,
+} from "./workspace-node-setup.ts";
+export type { WorkspaceNodeSetupEnvelope } from "./workspace-node-setup.ts";

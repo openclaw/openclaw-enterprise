@@ -1,12 +1,9 @@
 # Record the pre-upgrade baseline
 
-Record the starting state of a production installation before you run the
-[production image upgrade](production-upgrade.md). The
-[upgrade checklist](upgrade-checklist.md#record-the-starting-state) lists what to
-record; this page gives commands for its Helm, Kubernetes, OCC, PostgreSQL and
-workspace items. The upgrade helper keeps its own evidence of the release it
-changes. Use the baseline to compare state after the upgrade and to rehearse a
-database restore before maintenance.
+Before the [production image upgrade](production-upgrade.md), record the Helm,
+Kubernetes, OCC, PostgreSQL and workspace state listed in the
+[upgrade checklist](upgrade-checklist.md#record-the-starting-state). Use this baseline for
+comparison and restore rehearsal before maintenance. The upgrade helper records the release it changes.
 
 ## Set the inputs
 
@@ -21,10 +18,11 @@ control-plane data.
 
 ```bash
 umask 077
-export BASELINE="/secure/occ/upgrades/baseline-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p /secure/occ/upgrades || exit 1
+BASELINE="$(mktemp -d /secure/occ/upgrades/baseline-XXXXXXXX)" || exit 1
+export BASELINE
 export PGPASSFILE=/secure/occ/pgpass
 export OCC_MIGRATION_DATABASE_URL='postgresql://occ_migrator@<postgres-host>:5432/<database>?sslmode=verify-full&sslrootcert=/secure/occ/database-ca.pem'
-mkdir "$BASELINE"
 kube=(kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>')
 helm_args=(--kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' --namespace openclaw-system)
 occ_json=(/secure/occ/bin/occ --output json)
@@ -69,29 +67,42 @@ before the upgrade.
 ## Record images and Kubernetes state
 
 ```bash
-"${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
-  >"$BASELINE/pod-images.txt"
-"${kube[@]}" get namespaces -o json |
-  jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json"
-for kind in rolebindings networkpolicies services; do
-  "${kube[@]}" get "$kind" -A -o json |
-    jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
-      >"$BASELINE/$kind.json"
-done
-"${kube[@]}" get storageclasses -o json |
-  jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
-    allowVolumeExpansion, parameters,
-    default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
-    >"$BASELINE/storageclasses.json"
-"${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
-  >"$BASELINE/pvcs.txt"
-# Only with private Agent routing (Gateway API resources):
+(
+  set -uo pipefail
+  "${kube[@]}" get pods -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{range .status.initContainerStatuses[*]} {.name}={.imageID}{end}{range .status.containerStatuses[*]} {.name}={.imageID}{end}{"\n"}{end}' \
+    >"$BASELINE/pod-images.txt" || exit
+  "${kube[@]}" get namespaces -o json |
+    jq -S '[.items[] | {name: .metadata.name, labels: .metadata.labels}]' >"$BASELINE/namespaces.json" || exit
+  for kind in rolebindings networkpolicies services; do
+    "${kube[@]}" get "$kind" -A -o json |
+      jq -S '[.items[] | {namespace: .metadata.namespace, name: .metadata.name, roleRef, subjects, spec}]' \
+        >"$BASELINE/$kind.json" || exit
+  done
+  "${kube[@]}" get storageclasses -o json |
+    jq -S '[.items[] | {name: .metadata.name, provisioner, reclaimPolicy, volumeBindingMode,
+      allowVolumeExpansion, parameters,
+      default: .metadata.annotations["storageclass.kubernetes.io/is-default-class"]}]' \
+      >"$BASELINE/storageclasses.json" || exit
+  "${kube[@]}" get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+    | cat >"$BASELINE/pvcs.txt" || exit
+)
+```
+
+Check the exit status immediately. If it is nonzero, discard the incomplete
+capture. Resolve the failure, then repeat the setup and capture in a fresh
+baseline directory. Only for private Agent routing, also require the following
+read to succeed before using the baseline:
+
+```bash
 "${kube[@]}" get gateways,httproutes -A -o yaml >"$BASELINE/gateway-api.yaml"
 ```
 
 `pod-images.txt` records the digest each container actually runs, which the
-configured image reference alone does not prove. The PVC UIDs must be unchanged
-after the upgrade: a new UID means the volume and its Agent data were replaced.
+configured image reference alone does not prove. The PVC UIDs must remain unchanged
+after the upgrade. A changed UID identifies a different claim object; it does
+not by itself establish whether the backing volume or Agent data changed. Stop
+and reconcile the claim, volume identity and workspace checks against the
+baseline before continuing.
 
 ## Record the OCC inventory
 
@@ -102,7 +113,7 @@ On controllers that support it, record the installation-wide deployment inventor
 ```
 
 Require this read to succeed. It requires Installation `administer` and read
-access to each Namespace and Agent. For a running Agent with a selected revision
+access to each Namespace and Agent. For an active, desired-running Agent with a selected revision
 and no deployment in progress, it also checks Agent `deploy` and revision read
 access. An authorization or connection failure does not mean the endpoint is
 unavailable on that release.
@@ -112,7 +123,7 @@ IDs, desired states and selected revisions from an independent inventory held by
 the resource or database owner. Include stopped Agents. Compare those records
 with the lists below before changing production. If an ID or state is missing
 or the expected inventory is unknown, stop. This fallback does not replace the
-deployment inventory required by the image helper for a runtime upgrade.
+deployment inventory required by the image helper for every upgrade.
 
 For either release, collect the remaining records in Bash:
 
@@ -225,8 +236,8 @@ unexpected history, or different receipts.
   pg_dump --format=custom --file "$CANDIDATE_RETURN/candidate.pgdump" "$CANDIDATE_MIGRATION_DATABASE_URL"
   pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" -- \
     "$CANDIDATE_RETURN/candidate.pgdump"
-  NODE_ENV=production OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
-    node scripts/migrate-production.mjs --check >"$CANDIDATE_RETURN/restored-history.json"
+  OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" \
+    pnpm db:migrate:production --check >"$CANDIDATE_RETURN/restored-history.json"
   jq -se --arg expected "$EXPECTED_CANDIDATE_HISTORY" \
     'length == 1 and .[0].event == "migration.checked" and .[0].history == $expected' \
     "$CANDIDATE_RETURN/restored-history.json" >/dev/null
@@ -237,12 +248,18 @@ unexpected history, or different receipts.
 )
 ```
 
-Compare the restored Agent revisions, selected revisions, audit records and
-other required data with the retained candidate. Confirm that the restored
-database contains the records for each accepted operation. Keep writers stopped
-if any required record differs or an operation remains uncertain. Verify Gateway
-and workspace volumes and compatibility with any older image before switching
-writers.
+Confirm the restore includes records for every accepted operation. Compare Agent
+revisions and selections, audit records, queued work IDs and other required data
+with the retained candidate.
+
+Run the
+[read-only check](separate-database-upgrade.md#run-a-selected-image-migration) with
+`CONTROLLER_IMAGE` pinned to the return controller and `OCC_MIGRATION_DATABASE_URL`
+set to `"$RESTORED_MIGRATION_DATABASE_URL"`. Replace `--check` with
+`--require-current`. Require exit zero and `migration.checked` with history
+`completed`. Verify Gateway and workspace volumes and image compatibility. Keep
+writers stopped on discrepancies or uncertainty. After restarting, verify operation
+and queued work outcomes without replay.
 
 ## Verify a restored saved Configuration
 
@@ -365,16 +382,17 @@ can contain Secrets.
     --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
     --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
   test -s "$comparison/installed.yaml"
-  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
-  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
-    >"$comparison/manifest.diff" || test "$?" -eq 1
+  attempt="$UPGRADE_EVIDENCE/helm-attempts/$(jq -er .nonce "$UPGRADE_EVIDENCE/prepared-helm-attempt.json")"
+  test -s "$attempt/rendered.yaml"
+  { diff -u "$comparison/installed.yaml" "$attempt/rendered.yaml" || test "$?" -eq 1; } >"$comparison/manifest.diff"
   printf 'Review the private comparison in %s\n' "$comparison"
 )
 ```
 
 Stop if the comparison cannot run. Use the diff to locate changes, then check
 the required objects and fields in both files. Account for intended changes
-such as the selected image digests. Review `server-dry-run.txt` for Helm's
+such as image digests and the upgrade-attempt UUID. Review the attempt's
+`server-dry-run.txt` for Helm's
 upgrade-mode output and hooks. Helm history omits later live patches. Check
 affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
 as well. Read the live object for any required field that the baseline does

@@ -1,15 +1,22 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in e22f558c0.
+last_verified: "2026-11-02"
 ---
 
 # Set up OCE locally with OpenShell and Codex
 
-Install OpenClaw Enterprise (OCE) in a private k3d cluster.
+Install OpenClaw Enterprise (OCE) in a private k3d cluster. The OpenShell profile
+selects OCC TokenService and native Credential Proxy delivery for dedicated Codex.
 
 ## Before you start
 
 - [Prepare your Linux host](local-kubernetes-tools.md). Check that your operator account can use Docker, pnpm and the Kubernetes tools.
-- Use an operator account with permission to create Namespace Secrets, CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent.
+- Use an operator account with permission to create CredentialSources, Configurations, Agents, roles and bindings, and to update and operate the Agent. Channel setup separately requires Namespace Secret permissions.
+
+The local launcher prepares [managed channel egress](channel-egress.md), including
+the Envoy dependencies and matching network exclusions. After deploying a
+dedicated Codex Agent, you can [connect it to Slack](../integrations/channels.md).
 
 ## 1. Prepare the quickstart files and select a matching release
 
@@ -29,14 +36,9 @@ run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/openshell.XXXXXXXX")
 printf 'Private session directory: %s\n' "$RUN_DIR"
-
-# Stage the network policy for cluster startup and the configuration script for the Helm reload.
-install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
-install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$RUN_DIR/configure-installation.mjs"
-source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
-Choose one image path before starting the cluster.
+Use a checkout that includes managed credential delivery and choose a matching image pair.
 
 **Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 
@@ -44,11 +46,22 @@ Choose one image path before starting the cluster.
 unset OCC_DEVELOPMENT_CONTROLLER_IMAGE OCC_KUBERNETES_RUNTIME_IMAGE
 ```
 
-**Use published images.** Follow [published image selection](published-images.md) to verify the publication receipt and switch to its source commit. In the same shell, select the verified images:
+**Use published images.** Follow [published image selection](published-images.md) to verify the controller and runtime receipts and use the matching source commit. Select the verified images in the same shell:
 
 ```bash
 export OCC_DEVELOPMENT_CONTROLLER_IMAGE="${CONTROLLER_IMAGE:?Select the published controller}"
 export OCC_KUBERNETES_RUNTIME_IMAGE="${RUNTIME_IMAGE:?Select the published runtime}"
+```
+
+After selecting the images and matching checkout, stay in the same Bash shell
+and stage the quickstart files from that checkout. `RUN_DIR` still names the
+private directory created above, even after changing checkouts.
+
+```bash
+# Stage the network policy for cluster startup and the configuration script for the Helm reload.
+install -m 600 docs/snippets/openshell-quickstart/plugin-network-policy.yaml "${RUN_DIR:?}/artifacts.yaml"
+install -m 600 docs/snippets/openshell-quickstart/configure-installation.mts "$RUN_DIR/configure-installation.mts"
+source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
 ## 2. Start a new k3d installation
@@ -75,39 +88,29 @@ go build -trimpath -o bin/occ ./cmd/occ
 
 [pnpm reports a read-only store?](../operate/local-setup-troubleshooting.md#pnpm-reports-a-read-only-store)
 
-The launcher enables Gateway TLS, mTLS and authentication before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
+The launcher enables TLS, mutual TLS and authentication for the OpenShell Gateway before startup. Wait for `OpenClaw Enterprise development stack is ready`. Record the printed API URL, Kubernetes context and cleanup command. With the example ports the REST base is `http://127.0.0.1:3012`. Open the printed Console origin at `/console/`; its Agents page is `/console/agents`. [Trust the local Console CA](../operate/troubleshooting.md#the-local-console-reports-a-certificate-error). If your browser runs on another machine, [forward the Console port](../operate/troubleshooting.md#open-the-console-from-another-machine).
 
-## 3. Configure Credential Gateway
+<a id="3-configure-credential-gateway"></a>
 
-Run this from the matching release checkout. The configuration script removes the generated `source-control` rule that gives Git uninspected access to `github.com:443`. It keeps the other rules and selects the curated Codex plugin catalog. Git access requires an explicit repository binding and its authorized installation profile.
+## 3. Prepare model credential delivery
 
-The [configuration script](../../snippets/openshell-quickstart/configure-installation.mjs) checks that the generated rule matches the expected settings before changing it.
+The launcher selects OCC TokenService and the OpenShell Sandbox that supplies
+native Credential Proxy delivery. See [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
+before changing the generated configuration.
+
+Run the [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) from the matching checkout. It removes the
+generated rule that lets Git reach `github.com:443` without inspection and
+selects the curated Codex plugin catalog. Git access requires an explicit
+[repository grant](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).
 
 ```bash
-# Edit the fresh installation.yaml once, before provisioning Agents.
-node "$RUN_DIR/configure-installation.mjs"
+node "$RUN_DIR/configure-installation.mts"
 ```
 
-Reload the edited file through Helm. Use a new Secret name for each change. Helm rolls the API and worker when the referenced name changes. Wait for both deployments before provisioning the Agent.
-
-```bash
-# Verify the generated kubeconfig targets this run before changing the release.
-state=$OCC_DEVELOPMENT_STATE_DIRECTORY
-export KUBECONFIG="$state/kubeconfig"
-CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
-PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
-(
-  set -e
-  test "$(kubectl config current-context)" = "$CONTEXT"
-
-  # Point Helm at a new, versioned Secret so that the API and worker reload the changes.
-  secret="oce-openshell-codex-$(date +%s)"
-  kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create secret generic "$secret" \
-    --from-file="installation.yaml=$state/installation.yaml"
-  helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-enterprise \
-    -n "$PLATFORM_NS" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
-)
-```
+Step 4 reloads this edit through the authenticated operator session, preserving the
+startup Secret and its Installation identity. Exclude other release and initialization writers
+through rollout; see [update and recovery](quickstart-session.md#update-and-recover-the-installation).
+Finish that step before provisioning an Agent.
 
 [Helm warned that `api.trustedProxy` is unset?](../operate/local-setup-troubleshooting.md#helm-warns-that-apitrustedproxy-is-unset)
 
@@ -118,6 +121,11 @@ If your network intercepts HTTPS, [install its approved public CA in the OpenShe
 Use the service key that the launcher generated for REST requests. The helper sends requests through the selected API Pod. Keep the key in the private run directory.
 
 ```bash
+state=$OCC_DEVELOPMENT_STATE_DIRECTORY
+export KUBECONFIG="$state/kubeconfig"
+CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
+PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$CONTEXT"
 PLATFORM=local-k3d
 RELEASE=openclaw-enterprise
 OCE_CHART="$(pwd)/deploy/helm/openclaw-enterprise"
@@ -132,12 +140,14 @@ CONSOLE_ORIGIN=$(jq -er .browserOrigin "$state/state.json")
 NATIVE_ADMIN_DOMAIN=$(jq -er .nativeAdminDomain "$state/state.json")
 # The local launcher supplies the cluster policies. No extra CNI service rules are needed.
 cat > "$RUN_DIR/platform.sh" <<'SH'
-deployment_preflight() { :; }
+deployment_preflight() { ./bin/occ dev check; }
 deployment_network() { :; }
 repository_network() { :; }
 SH
 source "$RUN_DIR/operator-session.sh"
 source "$RUN_DIR/platform.sh"
+save_session
+upgrade_installation
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
 TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |

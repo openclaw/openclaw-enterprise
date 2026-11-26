@@ -1,13 +1,12 @@
 // The kind of next step each failed deployment's code leads to. The deployment status message
-// (`state/controller-work.ts`) states the step in words; clients choose their actions from this
+// (`deployment-work-status.ts`) states the step in words; clients choose their actions from this
 // table instead of parsing that text (finding 2537). The Console also serves this module
 // (`console-assets.ts`): keep it free of imports and of TypeScript syntax that type stripping
 // cannot erase.
 //
 // - "deploy-again": deploying the Agent again can clear the failure, so a client may offer it.
 // - "logs": the version's runtime ran, and its logs can show the cause.
-// - "change": a setting, grant or record must change first, and no runtime started, so its logs
-//   cannot help.
+// - "change": a setting, grant or record must change first; the status message names it.
 export type DeploymentFailureStep = "deploy-again" | "logs" | "change";
 
 export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailureStep>> =
@@ -29,6 +28,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_DRIVER_MISMATCH: "deploy-again",
     REPOSITORY_EXECUTION_CHANGED: "deploy-again",
     REPOSITORY_EXECUTION_CLOSED: "deploy-again",
+    REPOSITORY_EXECUTION_REDEPLOY_REQUIRED: "deploy-again",
     REPOSITORY_EXECUTION_REPLACED: "deploy-again",
     REPOSITORY_EXECUTION_UNVERIFIED: "deploy-again",
     REPOSITORY_GIT_ROUTE_BLOCKED: "deploy-again",
@@ -53,6 +53,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     RUNTIME_MODEL_PROBE_FAILED: "logs",
     RUNTIME_MODEL_PROBE_TIMEOUT: "logs",
     RUNTIME_STARTUP_FAILED: "logs",
+    RUNTIME_STATE_LOCK_UNVERIFIED: "logs",
     UNKNOWN_FAILURE: "logs",
 
     AUTHORIZATION_DENIED: "change",
@@ -75,16 +76,23 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     REPOSITORY_BINDING_UNAVAILABLE: "change",
     REPOSITORY_GIT_PROFILE_UNSUPPORTED: "change",
     REPOSITORY_GIT_SENDER_UNQUALIFIED: "change",
+    REPOSITORY_POLICY_HISTORY_INCOMPATIBLE: "change",
+    REPOSITORY_POLICY_PLACEMENT_UNSUPPORTED: "change",
     REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE: "change",
     REPOSITORY_RUNTIME_UNSUPPORTED: "change",
     REPOSITORY_STANDING_APPROVAL_REMOVED: "change",
     REPOSITORY_STANDING_POLICY_CHANGED: "change",
+    RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE: "change",
+    RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE: "change",
     SANDBOX_GATEWAY_UNAUTHORIZED: "change",
     SANDBOX_HARNESS_UNSUPPORTED: "change",
+    SANDBOX_RECREATION_REQUIRED: "change",
+    SANDBOX_WORKLOAD_IMMUTABLE: "change",
     SANDBOX_POD_LABELS_NOT_PERMITTED: "change",
     SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED: "change",
     SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED: "change",
     SECRET_BINDING_UNAVAILABLE: "change",
+    PLUGIN_DRIVER_MISMATCH: "change",
     SECRET_DRIVER_MISMATCH: "change",
     SERVICE_ACCOUNT_BACKEND_MISMATCH: "change",
     WORKSPACE_SETUP_REFUSED: "change",

@@ -13,6 +13,8 @@ import {
 import { randomUUID } from "node:crypto";
 import type { CoreV1Api, V1ObjectMeta, V1Secret } from "@kubernetes/client-node";
 import type {
+  PrivateSecretRef,
+  PrivateSecretStore,
   JSONSchema,
   Secret,
   SecretBackendRef,
@@ -45,6 +47,7 @@ export interface KubernetesSecretDriverOptions {
 }
 
 interface KubernetesSecretDriverSelection {
+  readonly installationSecretNamespace?: string | undefined;
   readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
   readonly id?: string;
   readonly implementation?: string;
@@ -198,6 +201,7 @@ export class KubernetesSecretDriver implements SecretDriver {
 
   readonly id: string;
   readonly capability = "secret" as const;
+  readonly privateSecrets: PrivateSecretStore;
   readonly implementation: string;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly options: KubernetesSecretDriverOptions;
@@ -214,7 +218,137 @@ export class KubernetesSecretDriver implements SecretDriver {
       throw new SecretValidationError("Unsupported Kubernetes Secret implementation.");
     }
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
+    this.privateSecrets = this.privateSecretStore(
+      selection.installationSecretNamespace ?? "oce-installation-secrets",
+    );
     this.options = Object.freeze({ authentication: Object.freeze({ ...options.authentication }) });
+  }
+
+  /** TokenService Secrets live outside tenant placement and are never inventoried as Namespace Secrets. */
+  private privateSecretStore(namespace: string): PrivateSecretStore {
+    const identity = (ref: PrivateSecretRef) => ({
+      name: `occ-private-${sha256Hex(JSON.stringify([ref.installationId, ref.id]), 40)}`,
+      namespace,
+    });
+    const ownership = (ref: PrivateSecretRef) => ({
+      "openclaw.dev/installation-id": ref.installationId,
+      "openclaw.dev/private-secret-id": ref.id,
+      [DRIVER_ANNOTATION]: this.id,
+    });
+    const verify = (secret: V1Secret, ref: PrivateSecretRef) => {
+      const metadata = secret.metadata;
+      if (
+        metadata?.namespace !== namespace ||
+        metadata.name !== identity(ref).name ||
+        !isNonEmptyString(metadata.uid) ||
+        !isNonEmptyString(metadata.resourceVersion) ||
+        secret.type !== "Opaque" ||
+        secret.immutable === true ||
+        metadata.labels?.["app.kubernetes.io/managed-by"] !== MANAGER ||
+        Object.entries(ownership(ref)).some(([key, value]) => metadata.annotations?.[key] !== value)
+      ) {
+        throw new SecretOwnershipError(
+          "Installation Secret does not match its private registration.",
+        );
+      }
+      return metadata;
+    };
+    const read = async (ref: PrivateSecretRef) => {
+      const client = await this.core();
+      const secret = await this.request(() => client.readNamespacedSecret(identity(ref)), "read");
+      const metadata = verify(secret, ref);
+      return { client, secret, metadata };
+    };
+    const replace = async (
+      ref: PrivateSecretRef,
+      { client, metadata }: Awaited<ReturnType<typeof read>>,
+      value: string,
+    ) => {
+      const secret = await this.request(
+        () =>
+          client.replaceNamespacedSecret({
+            ...identity(ref),
+            body: { metadata, type: "Opaque", stringData: { [SECRET_KEY]: value } },
+          }),
+        "update",
+        { mutating: true },
+      );
+      verify(secret, ref);
+    };
+    return {
+      create: async (ref, value) => {
+        validateValue(value);
+        const client = await this.core();
+        const requested = identity(ref);
+        const secret = await this.request(
+          () =>
+            client.createNamespacedSecret({
+              namespace,
+              body: {
+                metadata: {
+                  ...requested,
+                  labels: { "app.kubernetes.io/managed-by": MANAGER },
+                  annotations: ownership(ref),
+                },
+                type: "Opaque",
+                stringData: { [SECRET_KEY]: value },
+              },
+            }),
+          "create",
+          { mutating: true },
+        );
+        try {
+          verify(secret, ref);
+        } catch (error) {
+          await withoutMutationDeadline(() =>
+            this.discardRefusedCreate(client, requested.namespace, requested.name, secret),
+          );
+          throw error;
+        }
+      },
+      update: async (ref, value) => {
+        validateValue(value);
+        await replace(ref, await read(ref), value);
+      },
+      compareAndSwap: async (ref, expected, value) => {
+        validateValue(expected);
+        validateValue(value);
+        const current = await read(ref);
+        if (decodedValue(current.secret) !== expected) {
+          return false;
+        }
+        try {
+          await replace(ref, current, value);
+          return true;
+        } catch (error) {
+          if (error instanceof SecretConflictError) {
+            return false;
+          }
+          throw error;
+        }
+      },
+      withValue: async (ref, use) => use(decodedValue((await read(ref)).secret)),
+      delete: async (ref) => {
+        try {
+          const { client, metadata } = await read(ref);
+          await this.request(
+            () =>
+              client.deleteNamespacedSecret({
+                ...identity(ref),
+                body: {
+                  preconditions: { uid: metadata.uid!, resourceVersion: metadata.resourceVersion! },
+                },
+              }),
+            "delete",
+            { mutating: true },
+          );
+        } catch (error) {
+          if (!(error instanceof SecretBackendMissingError)) {
+            throw error;
+          }
+        }
+      },
+    };
   }
 
   async create(identity: SecretIdentity, value: string): Promise<SecretBackendRef> {

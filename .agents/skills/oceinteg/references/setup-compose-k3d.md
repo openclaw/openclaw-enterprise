@@ -4,7 +4,7 @@ Use this setup for the hybrid local target of [main](./main.md). Follow
 [Compose OCC with Kubernetes compute](../../../../docs/guides/deploy/local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute),
 then [connect Compose to Kubernetes Agents](../../../../docs/guides/deploy/local-compose-kubernetes.md).
 OCC, its Kubernetes worker, and PostgreSQL run in Compose; Agents run in k3d.
-This is not the default Compose-only preview, which cannot deploy Agents.
+This is not the Docker Compute preview, which cannot deploy Agents.
 
 ## Follow the guides in order
 

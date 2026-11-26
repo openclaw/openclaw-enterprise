@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
+import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/access/configuration.ts";
 import type {
   Clock,
   DriverCustody,
   RepositoryBackendFactory,
-} from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
-import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import type { ShutdownSummary } from "../../apps/controller/src/drivers/repo/access/service-contracts.ts";
+import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.ts";
 
 type Hooks = {
   resolve?: () => void;
@@ -18,8 +18,6 @@ type Hooks = {
   sessions?: number;
   credentialSlots?: number;
   clock?: Clock;
-  // A prepared factory may resolve by profile instead of by registry binding.
-  unbound?: boolean;
 };
 const unexpected = () => {
   throw new Error("unexpected credential operation");
@@ -31,18 +29,16 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     gatewayOrigin: "https://gateway.example.test",
     clock,
   });
-  // The JavaScript fixture widens its fixed backend discriminants to strings.
-  const base = alternate as RepositoryBackendFactory;
-  const selection = base.resolve("git-write");
+  const selection = alternate.resolve("git-write");
   const resolve = () => {
     hooks.resolve?.();
     return selection;
   };
   const factory: RepositoryBackendFactory = {
-    ...base,
+    ...alternate,
     resolve,
     create(options) {
-      const driver = base.create(options);
+      const driver = alternate.create(options);
       const finish = hooks.construct?.(options.custody);
       return finish
         ? {
@@ -67,8 +63,9 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     ),
     factory: prepared
       ? {
-          ...factory,
-          ...(hooks.unbound ? {} : { resolveBound: resolve }),
+          parseAuthentication: factory.parseAuthentication,
+          unauthenticated: factory.unauthenticated,
+          resolveBound: resolve,
           createPrepared(_authority, resolved) {
             assert.equal(resolved, selection);
             hooks.construct?.();
@@ -86,8 +83,7 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     deadlineWallMs: clock.wallNow() + 60000,
     preparedOnly: true as const,
   };
-  const input =
-    prepared && !hooks.unbound ? boundInput : { durationSeconds: 60, profile: "git-write" };
+  const input = prepared ? boundInput : { durationSeconds: 60, profile: "git-write" };
   return { service, input, boundInput, alternate };
 }
 
@@ -175,24 +171,36 @@ test("shutdown during resolution refuses publication and drains", async () => {
 });
 
 test("shutdown started by the expiry sweep refuses admission before resolution", async () => {
-  const clock = createControlledClock(1700000000000);
+  const controlled = createControlledClock(1700000000000);
+  let onCancel: (() => void) | undefined;
+  const clock: Clock = {
+    ...controlled,
+    schedule(delay, callback) {
+      const cancel = controlled.schedule(delay, callback);
+      return () => {
+        cancel();
+        const notify = onCancel;
+        onCancel = undefined;
+        notify?.();
+      };
+    },
+  };
   let resolutions = 0;
   let shutdown: Promise<ShutdownSummary> | undefined;
-  const f = fixture(true, {
+  const f = fixture(false, {
     clock,
-    unbound: true,
+    sessions: 2,
     resolve: () => {
       resolutions++;
     },
   });
   assert.equal(f.service.open(f.input).session.state, "OPEN");
-  f.service.observeDisposal(() => {
-    shutdown ??= f.service.shutdown(50);
-  });
-  // Only wall time passes, so the deadline timer has not fired. The next
-  // admission's expiry sweep closes and disposes the first session, and its
-  // disposal observer starts shutdown before the new grant is resolved.
-  await clock.advance(0, 60000);
+  onCancel = () => {
+    shutdown = f.service.shutdown(50);
+  };
+  // Only wall time passes. The next admission closes the expired session
+  // and cancels its pending timer, reentering shutdown before resolution.
+  await controlled.advance(0, 60000);
   assert.throws(() => f.service.open(f.input), /SERVICE_CLOSED/);
   assert.equal(resolutions, 1);
   assert.equal((await shutdown!).graceExpired, false);
@@ -280,10 +288,7 @@ test("development shutdown retains the original renewal callback until cleanup",
   const pending = await shutdown!;
   assert.equal(pending.graceExpired, true);
   assert.equal(pending.pendingAuxiliary, 1);
-  assert.equal(
-    f.alternate.events.filter((event: { kind: string }) => event.kind === "finalize").length,
-    0,
-  );
+  assert.equal(f.alternate.events.filter((event) => event.kind === "finalize").length, 0);
   const drain = f.service.shutdown(50);
   held.resolve();
   await read;
@@ -292,9 +297,6 @@ test("development shutdown retains the original renewal callback until cleanup",
   assert.equal(summary.disposedSessions, 1);
   assert.equal(summary.pendingAuxiliary, 0);
   assert.ok(bytes!.every((value) => value === 0));
-  assert.equal(
-    f.alternate.events.filter((event: { kind: string }) => event.kind === "finalize").length,
-    1,
-  );
+  assert.equal(f.alternate.events.filter((event) => event.kind === "finalize").length, 1);
   assert.equal(clock.pendingTimers(), 0);
 });

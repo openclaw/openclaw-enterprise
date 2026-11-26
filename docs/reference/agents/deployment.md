@@ -30,11 +30,9 @@ Harness. Both modes are supported in production. OCC token verification,
 identity exchange, and ServicePrincipal
 authentication through the controller API remain deferred.
 
-An Agent may also reference one same-Namespace, OCC-owned
-[service account](../service-accounts.md) through
-`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`; setting
-`harnessAuth` to `null` clears it. This credential binding does not
-replace its ServicePrincipal or Kubernetes ServiceAccount.
+To use a PAT issued for a same-Namespace [ServiceAccount](../service-accounts.md#version-snapshots-and-credential-delivery),
+bind its Credential Source through `harnessAuth`. Model authentication is
+separate from the Agent's ServicePrincipal and Kubernetes ServiceAccount.
 
 ## Execution mode
 
@@ -44,34 +42,29 @@ Each Agent explicitly records how its selected Harness runs:
   default when creation omits `executionMode` and is supported in development
   and production; the combined workload receives its own Agent identity and
   model key.
-- `dedicated` starts an Agent-owned gateway and a separate Codex app-server.
-  Production uses separate workload identities, authenticated gateway-to-Codex
-  transport, and either an operator-owned model API key or an associated
-  account's directly projected access token mounted only into Codex.
+- `dedicated` starts an Agent-owned gateway and a separate Harness. Codex uses
+  an authenticated app-server transport. Dedicated native OpenClaw enrolls a
+  worker with the gateway. Only the Harness can use the model credential.
 
 The Agent's native Configuration selects a Harness through model/provider
 `agentRuntime.id` policy. The [Harness execution reference](../harness-execution.md)
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with a reason that names the setting to change. A selected SandboxDriver currently requires
-`dedicated` Codex execution; it does not support embedded OpenClaw.
+with a reason that names the setting to change. A selected Sandbox Driver
+requires `dedicated` execution. Check the supported Harnesses for that Driver.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
 `harnessAuth: null` clears authentication and `backendId: null` clears the
 Backend. Existing versions retain their immutable placement, auth binding, and
 Backend association. For the current `harnessAuth` source, an update checks only
-the caller's grant (Secret or credential source `operate`, account `read`) and
-reads no record. After the Installation selects another Secret Driver or
-Credential Gateway, an update can still omit, clear, or replace the old binding;
-naming it again fails with `503`, and so does deploying with it. For a Secret,
-that `503`, like creating an Agent with one, says to bind a Secret stored
-through the selected driver. The named Configuration's Secret bindings get the
-full check on every update, even when `configurationId` is unchanged: until
-that Configuration's `secretBindings` name Secrets stored through the selected
-driver, updates and deploys fail with `503` and a message that says so.
-Updating that Configuration, or naming another one, resolves it. See the
+the caller's grant on the existing credential without reading its record.
+An update can omit, clear, or replace that binding after its owner becomes
+unavailable. Naming it again or deploying with it requires the correct owner.
+OCC checks the named Configuration's Secret bindings on every update. Updates
+and deploys return `503` until the Configuration binds Secrets stored through
+the selected Driver. Update the Configuration or select another one. See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for
 runtime selection, identity boundaries, and activation.
 
@@ -164,9 +157,10 @@ Deployment for that version reports a full Pod quota in `ReplicaFailure`,
 outstanding. Activation of a dedicated version reports
 `WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
 was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until it is ready,
-a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
-deadline passes. The worker rechecks an unready
+the code is `REVISION_INCOMPLETE`. The version stays pending until ready, a
+startup failure (such as `WORKSPACE_SETUP_REFUSED` or a Kubernetes
+[crash loop](../drivers/kubernetes-compute.md#troubleshooting)) ends it, or the
+convergence deadline passes. The worker rechecks an unready
 version after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
@@ -273,6 +267,12 @@ Agent. Each returned Agent revision requires its own authorized read; substituti
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
 
+## Harness settings
+
+Revisions save `harnessOverrides` and resolved settings.
+See the [provider contract](../drivers/kubernetes-compute/model-provider.md) and
+[deployment and recovery workflow](../../guides/topics/agent-revisions.md#choose-a-harness-destination).
+
 ## Guarded first deployment
 
 `POST /namespaces/:namespaceId/agents/:agentId/deploy-first` accepts `key`,
@@ -297,14 +297,15 @@ In the console, use **Stop Agent**, and resume with **Deploy new version**; see 
 
 `POST /namespaces/:namespaceId/agents/:agentId/stop` is bodyless and requires
 exact-Agent `operate`. A `202` response means OCC committed `desiredRuntimeState:
-"stopped"` and queued Agent-scoped work; it does not claim Compute has already
-finished. The worker reauthorizes the original actor, invokes the selected
+"stopped"` and queued Agent-scoped work; Compute may still be stopping. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
-Agent revision nor calls destructive version retirement. Repeated stop requests
-converge safely, and one Agent's stop does not affect siblings.
+Stop terminates inbound routing and execution. A later deployment may
+[continue eligible interrupted work](interrupted-turns.md). Stop retains the Agent revision, Agent
+credentials, gateway state, and workspace, creates no revision and calls no
+destructive version retirement. Repeated stops converge safely without
+affecting siblings.
 
 Deployment is the resume operation. It saves the next version in a new Agent revision and
 sets desired state to `running`; OCC never restarts an old version by mutating

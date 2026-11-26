@@ -1,3 +1,4 @@
+import { openCreateSecretDialog } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -16,9 +17,8 @@ import {
   nativeValues,
   newPage,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -253,7 +253,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
 
   // A short desktop page has an empty, stable scrollbar gutter outside the native backdrop.
   // Compare its actual paint to the adjacent canvas, without assuming a scrollbar width or colour.
-  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setViewportSize({ width: 1440, height: 1200 });
   await page.goto(`${fixture.origin}/console/secrets?namespace=${namespace.id}`);
   const create = page.getByRole("button", { name: "Create Secret", exact: true });
   await create.click();

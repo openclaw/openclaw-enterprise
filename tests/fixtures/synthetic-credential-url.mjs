@@ -1,3 +1,14 @@
+/**
+ * @param {{
+ *   protocol?: string | undefined,
+ *   username: string | undefined,
+ *   password: string,
+ *   host: string,
+ *   port?: string | number | undefined,
+ *   pathname?: string | undefined,
+ *   search?: string | undefined,
+ * }} options
+ */
 export function syntheticCredentialUrl({
   protocol = "https",
   username,

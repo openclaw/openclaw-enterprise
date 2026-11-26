@@ -15,7 +15,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(repository, "apps/controller/package.json"));
 const { loadYaml, dumpYaml } = require("@kubernetes/client-node");
-const script = join(repository, "docs/snippets/openshell-quickstart/configure-installation.mjs");
+const script = join(repository, "docs/snippets/openshell-quickstart/configure-installation.mts");
 const example = loadYaml(
   await readFile(
     join(repository, "docs/snippets/openshell-quickstart/plugin-network-policy.yaml"),
@@ -63,7 +63,7 @@ function installation(artifactRules: readonly OpenShellNetworkPolicyRule[]) {
           policy: { ...sandbox.configuration.policy, networkPolicies },
         },
       },
-      plugin: { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+      plugin: [{ id: "codex-plugin", configuration: { catalogSource: "openai-curated" } }],
     },
   };
 }

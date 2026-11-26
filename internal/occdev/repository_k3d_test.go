@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/openclaw/openclaw-enterprise/internal/devtls"
 )
 
 // preparedRepositoryRegistry is an input registry the worker can prepare: one
@@ -95,9 +97,6 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	if err := os.WriteFile(filepath.Join(directory, "private-key.pem"), testAppKeyPEM(t), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.10/32"]`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	registry := preparedRepositoryRegistry()
 	writeRegistry := func() {
 		t.Helper()
@@ -145,16 +144,6 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 		t.Fatalf("a draft PR grant was rejected: %v", err)
 	}
 	reset()
-	// Provider egress must name specific authorized destinations, not a broad range.
-	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.0/24"]`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
-		t.Fatal("broad repository egress range was accepted")
-	}
-	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.10/32"]`), 0600); err != nil {
-		t.Fatal(err)
-	}
 	policy["namespaceId"] = "another-namespace"
 	writeRegistry()
 	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
@@ -165,7 +154,7 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	runner.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = "0"
 	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] = "172.17.0.1"
 	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_PROVIDER_ORIGIN"] = "https://172.17.0.1:8443"
-	for name, value := range map[string]string{"upstream-cidrs.json": `["172.17.0.1/32"]`, "issuer-ca.crt": "test public CA"} {
+	for name, value := range map[string]string{"issuer-ca.crt": "test public CA"} {
 		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -194,7 +183,7 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 		t.Fatal("must not select OpenShell for Compute-owned qualification")
 	}
 	inputs, err := runner.loadDevelopmentRepositoryInputs("none")
-	if err != nil || inputs.preparedPort != 8443 {
+	if err != nil || inputs.preparedOrigin != "https://172.17.0.1:8443" {
 		t.Fatalf("expected exact private qualified Git origin: %v", err)
 	}
 	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] = "172.17.0.2"
@@ -203,8 +192,6 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	}
 }
 
-// occ dev up must generate a repository Installation that real startup and the
-// chart accept: native Git with worker-prepared custody, never drivers.repo.
 func TestDevelopmentRepositoryInstallationPassesStartup(t *testing.T) {
 	realNode, nodeErr := exec.LookPath("node")
 	helm, helmErr := exec.LookPath(cmp.Or(os.Getenv("OCC_HELM_BIN"), "helm"))
@@ -238,13 +225,13 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 	}, time.Minute); err != nil {
 		t.Fatalf("platform packaging failed: %v\n%s", err, strings.Join(commands(), "\n"))
 	}
-	inputs := &developmentRepositoryInputs{registry: preparedRepositoryRegistry(), backendID: "repository-backend", upstreamCIDRs: []string{"192.0.2.10/32"}, appKey: testAppKeyPEM(t)}
+	inputs := &developmentRepositoryInputs{registry: preparedRepositoryRegistry(), backendID: "repository-backend", appKey: testAppKeyPEM(t)}
 	if origin != "" {
-		issuer, _, err := generateDevelopmentTLS("issuer", "fixture CA", []string{"172.17.0.1"})
+		issuer, _, err := devtls.Generate("issuer", "fixture CA", []string{"172.17.0.1"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		inputs.preparedOrigin, inputs.preparedPort, inputs.issuerCA, inputs.upstreamCIDRs = origin, 8443, issuer["issuer-ca.crt"], []string{"172.17.0.1/32"}
+		inputs.preparedOrigin, inputs.issuerCA = origin, issuer["issuer-ca.crt"]
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"data":[{"repositoryRef":"project","allowedProfiles":["git-write"]}],"meta":{}}`)
@@ -338,7 +325,7 @@ import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadInstallationConfiguration } from './apps/controller/src/composition/installation-config.ts';
 import { prepareProjectedInputs } from './apps/controller/src/composition/repository-credentials/projected-inputs.ts';
-import { createSystemClock } from './apps/controller/src/drivers/repo/credentials/clock.ts';
+import { createSystemClock } from './apps/controller/src/drivers/repo/access/clock.ts';
 const [root, sockets, origin] = process.argv.slice(1);
 const loaded = await loadInstallationConfiguration({ mode: 'production', environment: { OCC_CONFIG_PATH: join(root, 'installation.yaml') } });
 assert.equal(loaded.repositoryGitDriver, undefined);

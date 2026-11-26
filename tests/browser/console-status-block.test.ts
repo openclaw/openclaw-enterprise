@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
@@ -6,9 +7,9 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   consoleViewports,
   detailUrl,
@@ -21,21 +22,20 @@ import {
   selectSecret,
   statusTone,
   grantStaleConfigurationUpdate,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   createRepositoryLaunchFixture,
-  openAdvancedSettings,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   notIncluded,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   REPOSITORY_EDITS_PENDING,
 } from "../helpers/refusal-text.mjs";
+import { DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 
 // Errors, warnings and notices share one status block (UX plan C1): a wash in the tone's
 // design-token colour, with the text in the body colour. Errors and warnings retain a stripe;
@@ -242,7 +242,7 @@ test("Share Agent refusals", async (t) => {
   // person.
   async function sharingPage(
     t: TestContext,
-    viewport: BrowserContextOptions["viewport"],
+    viewport: NonNullable<BrowserContextOptions["viewport"]>,
     target = namespace,
   ) {
     agents += 1;
@@ -506,7 +506,7 @@ test("Authentication source save outcomes", async (t) => {
       const { page, save, feedback } = await authenticationSourcePage(t, "auth-oauth", {
         harnessId: "codex",
       });
-      await page.getByLabel("Authentication source").selectOption("credential_source");
+      await page.getByLabel("Authentication source").selectOption("device_login");
       await save.click();
       const refusal = page
         .getByRole("alert")
@@ -754,6 +754,7 @@ test("Configuration save outcomes", async (t) => {
         await lineState(feedback),
         quietStatus("Reload this draft before leaving the editor."),
       );
+      await assertFocusedInView(t, feedback);
     },
   );
 

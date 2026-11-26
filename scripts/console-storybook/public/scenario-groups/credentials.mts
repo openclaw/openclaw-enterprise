@@ -8,7 +8,11 @@ import type { agentSaveGap } from "../../../../apps/controller/src/console/agent
 import type { StoryAction } from "../../story-action.mts";
 import type { configurationValues } from "../configuration-fixture.mts";
 import type { createFixtureFetch } from "../preview-rules.mts";
-import { click, deviceLoginSourceTypes, presetSecretsPath } from "../create-agent-form-data.mts";
+import {
+  click,
+  modelCredentialSourceTypes,
+  presetSecretsPath,
+} from "../create-agent-form-data.mts";
 
 type CredentialScenario = Pick<
   Parameters<typeof configurationValues>[0],
@@ -23,15 +27,17 @@ type CredentialScenario = Pick<
   actions?: readonly StoryAction[];
   rules?: Parameters<typeof createFixtureFetch>[0];
   credentialSourceTypes?: readonly CredentialSourceType[];
+  deviceAuthorization?: true;
   credentialSources?: readonly AgentCredentialSourceBinding[];
   extraSecrets?: readonly Pick<SecretMetadata, "id" | "name">[];
   // These authored permission snapshots omit readLogs; preserve the fixture response.
   agentPermissionSummary?: Omit<NonNullable<Parameters<typeof agentSaveGap>[0]>, "readLogs">;
-  auth?: "oauth" | "runtime" | "service" | null;
+  auth?: "api-source" | "oauth" | "runtime" | "service" | null;
   configurationChangedElsewhere?: boolean | { afterReads: number; values: Configuration["values"] };
   deployed?: boolean;
   harnessGrantMissing?: boolean;
   oauthPending?: boolean;
+  oauthPollCreateDenied?: boolean;
   observabilityDenied?: boolean;
   readOnlyPermissionSummary?: boolean;
   secretCreateNotPermitted?: boolean;
@@ -60,9 +66,11 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT replacement interrupted by navigation (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: deviceLoginSourceTypes,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       rules: [{ suffix: "/device-authorizations", method: "POST", hold: true }],
       description:
         "Start a replacement sign-in, navigate to Secrets, and return with Back. The saved authentication remains; the unconfirmed replacement cannot start twice.",
@@ -71,21 +79,38 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT sign-in answered on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: deviceLoginSourceTypes,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       oauthPending: true,
       rules: [{ suffix: "/device-authorizations", method: "POST", delayMs: 3000, once: true }],
       description:
         "Start a replacement sign-in and open Configuration within 3 s. The reply arrives while Configuration shows; Credentials keeps it, so returning shows the code and Cancel login. The fixture delays the reply; it does not prove provider persistence.",
     },
+    authOAuthPollDenied: {
+      group: "Components/Credentials",
+      name: "ChatGPT login poll denied (Experimental)",
+      path: `${draft}&tab=credentials`,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
+      deployed: true,
+      auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
+      oauthPollCreateDenied: true,
+      description:
+        "Choose Sign in with OAuth. The first poll refuses Source creation and cancels the attempt. Choose Cancel login, then start a new login after access is restored. The fixture simulates the restored grant.",
+    },
     authOAuthStartTabSwitchRefused: {
       group: "Components/Credentials",
       name: "ChatGPT sign-in refused on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: deviceLoginSourceTypes,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       rules: [
         {
           suffix: "/device-authorizations",
@@ -102,9 +127,11 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "ChatGPT sign-in restarted on another tab (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: deviceLoginSourceTypes,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       oauthPending: true,
       rules: [
         { suffix: "/device-authorizations", method: "POST", delayMs: 3000, skip: 1, once: true },
@@ -116,9 +143,11 @@ export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies
       group: "Components/Credentials",
       name: "Explicit ChatGPT credential replacement (Experimental)",
       path: `${draft}&tab=credentials`,
-      credentialSourceTypes: deviceLoginSourceTypes,
+      credentialSourceTypes: modelCredentialSourceTypes,
+      deviceAuthorization: true,
       deployed: true,
       auth: "oauth",
+      actions: [{ selector: "#harness-auth-method", value: "device_login" }],
       credentialSources: [
         { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
         { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
@@ -144,6 +173,17 @@ export function credentialsScenarios({
       path: `${draft}&tab=credentials`,
       description:
         "The saved harness authentication source can be reviewed or changed before deployment.",
+    },
+    credentialsExistingSource: {
+      group: "Components/Credentials",
+      name: "Existing Credential Source",
+      path: `${draft}&tab=credentials`,
+      auth: "api-source",
+      description:
+        "The Agent retains its saved static Credential Source. ChatGPT sign-in is a separate optional replacement, not the current Source's authentication type.",
+      steps: [
+        "Confirm Authentication source shows Credential Source and no device-login guidance appears. Select ChatGPT OAuth to review the separate replacement flow.",
+      ],
     },
     credentialsSecretCreateNotPermitted: {
       group: "Components/Credentials",
@@ -209,7 +249,7 @@ export function credentialsScenarios({
         sandboxPolicyRead: false,
       },
       description:
-        "The Agent uses a ChatGPT service account for Harness authentication, which each Agent update reads. The permission answer says a source grant is missing but not which one, so the note names operate on the bound Secrets and credential sources and read on the service account.",
+        "The Agent uses a Source enrolled from a ChatGPT service account. Agent updates require ordinary Source operate permission.",
       gap: "The permission answer is simulated; the API still authorizes every save.",
     },
     credentialsSlack: {
@@ -990,8 +1030,12 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       name: "ChatGPT service account",
       path: `${draft}&tab=credentials`,
       auth: "service",
+      actions: [
+        { selector: "#harness-auth-method", value: "service_account" },
+        { selector: "#service-account-id", value: "sa_demo" },
+      ],
       description:
-        "Select an issued service account, or switch to an imported Service Accounts token Secret. Both use the same PAT login method.",
+        "Select a freshly issued service account. Saving binds its canonical TokenService Source and uses ordinary Source permissions.",
       gap: "Service-account issuance is outside the console.",
     },
     authServiceEmpty: {
@@ -1009,9 +1053,10 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
       name: "Issued service accounts unavailable",
       path: `${draft}&tab=credentials`,
       auth: "service",
+      actions: [{ selector: "#harness-auth-method", value: "service_account" }],
       rules: [{ suffix: "/service-accounts", method: "GET", status: 403 }],
       description:
-        "A failed list request preserves the saved account and explains that accounts are unavailable only while issued-account authentication is selected.",
+        "A failed account list leaves the saved Source unchanged and explains the refusal only while issued-account selection is open.",
       steps: [
         "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
         "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",

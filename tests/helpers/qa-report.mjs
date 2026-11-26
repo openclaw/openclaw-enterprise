@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
-import { redactQaError } from "./qa-secrets.mjs";
+import { redactQaError } from "./qa-secrets.ts";
 
 export function createQaReport(path, metadata) {
   const outcomes = [];

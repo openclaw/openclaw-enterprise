@@ -1,15 +1,12 @@
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
-import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl } from "../helpers/postgres-database.mjs";
 
 export async function standingExecutionFixture(
   t: TestContext,
@@ -22,26 +19,16 @@ export async function standingExecutionFixture(
     controlSocket?: string;
     backendId: string;
     protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
-    credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
-    modelConfig?: { authorized_base_url: string };
-    modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration;
-    activePredecessor?: boolean;
     requestedBinding?: {
       repositoryRef: string;
       profile: "github-installation";
     };
   }>,
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+  firstAdmissionDurationMs = 120_000,
 ) {
   const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
-  if (external?.modelProvider) {
-    // Preserve production admission while the fixture supplies unrelated infrastructure.
-    const admission = createTestKubernetesComputeDriver(f.compute.id, {
-      modelProvider: external.modelProvider,
-    });
-    Object.assign(f.compute, { admitRevision: admission.admitRevision.bind(admission) });
-  }
   const registry =
     external?.registry ??
     ({
@@ -79,35 +66,8 @@ export async function standingExecutionFixture(
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: external && !external.protectedDriver ? "secret" : "credential_source",
-    modelConfig: external?.modelConfig,
+    auth: external?.protectedDriver ? "runtime" : "secret",
   });
-  // Start a real predecessor before admitting Git on its successor. The candidate must
-  // remain unable to receive repository material while this pointer is still active.
-  const predecessor = external?.activePredecessor ? await f.revision(owner, 1) : undefined;
-  if (predecessor) {
-    try {
-      await f.start(f.compute, {
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
-          ...d,
-          credentialGatewayDriver: external!.credentialGateway,
-          protectedDriver: external!.protectedDriver,
-          sandboxDriver: external!.protectedDriver?.require("sandbox"),
-          proxyDriver: external!.protectedDriver?.require("credential_proxy"),
-          installation: {
-            ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: external!.credentialGateway!.id },
-            },
-          },
-        }),
-      });
-      await f.work(predecessor, "succeeded");
-    } finally {
-      await f.stop();
-    }
-  }
   const bindings = [
     external?.requestedBinding ?? {
       repositoryRef: "source",
@@ -119,8 +79,8 @@ export async function standingExecutionFixture(
     bindings,
   }).bindings;
   const binding = selected!;
-  await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-    JSON.stringify(bindings),
+  await f.observerPool.query("UPDATE occ.agents SET repository_access=$1 WHERE id=$2", [
+    JSON.stringify({ defaultProfile: "git-write", repositories: bindings }),
     owner.id,
   ]);
   const scope = driver.standingApprovalScope({
@@ -148,7 +108,7 @@ export async function standingExecutionFixture(
   const credentials = {
     driver: { id: driver.id, implementation: driver.implementation },
     bindings: [binding],
-    deadlineWallMs: Date.now() + 120_000,
+    deadlineWallMs: Date.now() + firstAdmissionDurationMs,
     standingApprovalId: approval.id,
     standingApprovalGeneration: approval.generation,
     standingApprovalScopeFingerprint: fingerprint,
@@ -157,13 +117,10 @@ export async function standingExecutionFixture(
     actorId: f.actor.id,
     repositoryCredentials: credentials,
   };
-  if (external?.protectedDriver && external.credentialGateway) {
-    const gateway = external.credentialGateway;
+  if (external?.protectedDriver) {
     f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
-    f.controller.registerDriver(gateway);
-    f.controller.selectDriver("credential_gateway", gateway.id);
   }
-  const revision = (await f.revision(owner, predecessor ? 2 : 1, {
+  const revision = (await f.revision(owner, 1, {
     ...revisionOptions,
     ...(external?.protectedDriver && {
       protectedRepositoryDriver: external.protectedDriver,
@@ -187,7 +144,6 @@ export async function standingExecutionFixture(
     binding,
     owner,
     revision,
-    predecessor,
     revisionOptions,
     credentials,
     driver,
@@ -200,22 +156,7 @@ export async function standingExecutionPlatform(
   driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
   backends: import("../../packages/contracts/src/index.ts").BackendDefinition[] = [],
 ) {
-  await ensurePostgresAgentBootstrap(t, {
-    label: "standing-execution",
-    authSecret: "standing-execution-local-test-secret-32",
-  });
-  const database = {
-    url: databaseUrl!,
-    pools: new Set<Pool>(),
-    workers: new Set(),
-  };
-  t.after(async () => {
-    for (const pool of database.pools) {
-      if (!("ending" in pool && pool.ending)) {
-        await pool.end();
-      }
-    }
-  });
-  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections, backends };
-  return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
+  // Each fixture owns its database: another case's issuer may use the same Driver
+  // identity but a different custody key, so it cannot inherit encrypted retirements.
+  return createWorkerRevisionFixtures(testUrl).setup(t, { driverSelections, backends });
 }

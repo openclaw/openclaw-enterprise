@@ -49,8 +49,17 @@ at 390.
 15. Open **Pages / Agent detail / New version failed, deploy again** at 390.
     Deploy again (filled) and Open v7 Logs (edged) stack, each the block's
     full width and at least 44 px tall. Any status block's actions stack this
-    way under 520 px. In **New version failed, viewer cannot edit**, Open v7
-    Logs is the only action and the filled one.
+    way under 520 px. In **New version failed, viewer cannot edit**, the
+    viewer cannot read logs or runtime status. Check that recovery says whom
+    to ask about logs and offers no Logs link. In **New version failed, viewer
+    may deploy**, **Open draft** is the only recovery action. Press Tab to
+    reach it, then Enter to open the draft.
+    In **New version failed, viewer may inspect runtime status** at 1440 and
+    390, check that recovery says who can deploy after the fix and whom to
+    ask about logs. Use Tab and Enter to
+    open **View v7 runtime status in Logs**, go Back and open it again. Check
+    that v7’s simulated runtime status appears both times while log text
+    remains unavailable.
 16. Open **Pages / Agent detail / New version failed, protected admission
     changed** and **New version failed, stored records inconsistent**. Each
     message ends with its own step and no logs advice after it. The first
@@ -58,6 +67,17 @@ at 390.
 17. Open **Pages / Create Agent / A newer deployment took over** and click
     **Create Agent**. The form explains why the first deployment ended. Check
     that its feedback uses the informational stripe and offers no retry or link.
+
+18. Open **Pages / Agent detail / New version failed, incompatible Codex policy**
+    (`pages-agent-detail--deployment-failed-codex-policy`). At 1440 and 390,
+    confirm the failure code wraps and the remedy asks the policy owner to verify
+    compatibility before redeploying. The recovery block offers **Open v7 Logs**,
+    without **Deploy again** or generic logs advice. Open the logs and confirm
+    v7 stays selected; no deployment is submitted. This is simulated presentation
+    and navigation evidence, not native policy or deployment proof. Repeat with
+    **New version failed, oversized Codex requirements**
+    (`pages-agent-detail--deployment-failed-codex-requirements-size`): the remedy
+    names the 1 MiB limit and asks the policy owner to reduce the document.
 
 ## Check Console startup recovery
 

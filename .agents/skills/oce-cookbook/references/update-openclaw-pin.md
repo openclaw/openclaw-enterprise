@@ -20,7 +20,7 @@ pinned commit before selecting a release tag or commit.
 Run commands from the OCE repository root. Inspect the current selection:
 
 ```sh
-node ./scripts/lib/openclaw-source.mjs build-args
+node ./scripts/lib/openclaw-source.ts build-args
 ```
 
 The command prints the three validated Docker build arguments. Do not copy their
@@ -63,7 +63,7 @@ const pin = {
 writeFileSync("deploy/runtime/openclaw-source.json", `${JSON.stringify(pin, null, 2)}\n`);
 NODE
 
-node ./scripts/lib/openclaw-source.mjs build-args
+node ./scripts/lib/openclaw-source.ts build-args
 git diff -- deploy/runtime/openclaw-source.json
 )
 ```
@@ -84,11 +84,11 @@ Review these consumers with the upstream diff:
   [`deploy/runtime/Dockerfile`](../../../../deploy/runtime/Dockerfile) against the new
   source and lockfile. Rebase necessary patches, or remove a bridge only after
   confirming the upstream fix. Keep patch checksums and the `appliedPatches`
-  inventory in [runtime packaging](../../../../scripts/build-runtime-assets.mjs) together.
+  inventory in [runtime packaging](../../../../scripts/build-runtime-assets.ts) together.
   Follow the runtime recipe for Codex and architecture-specific Matrix crypto pins;
   change them only when the selected source requires it.
 - **Workspace defaults:** compare upstream templates with
-  [`workspace-defaults.mjs`](../../../../packages/contracts/src/workspace-defaults.mjs).
+  [`workspace-defaults.ts`](../../../../packages/contracts/src/workspace-defaults.ts).
   Update rendered content, version, content identity, and source provenance when
   those inputs change. The file documents its content-hash format. Keep unchanged
   historical provenance accurate rather than replacing every old commit citation.

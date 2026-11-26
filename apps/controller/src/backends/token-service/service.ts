@@ -3,8 +3,12 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
+  PreparedTokenRegistration,
+  PreparedTokenRef,
+  PreparedTokenSelection,
+  TokenResolveOptions,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  TokenService as TokenServiceContract,
 } from "@openclaw-enterprise/contracts";
 import type { TokenIssue } from "./preparation.ts";
 
@@ -17,39 +21,142 @@ type Preparation = {
   ): Promise<"ready" | "committed" | "blocked" | "fenced" | "quarantined">;
 };
 
+function resolutionDeadline(deadline: number) {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  // A relative timer can wake before the signed wall-clock deadline. Allow its one
+  // millisecond of wall-clock precision, while bounding a backwards clock step.
+  const latest = performance.now() + (deadline - Date.now()) + 1;
+  const remainingMs = () => Math.min(deadline - Date.now(), latest - performance.now());
+  const check = () => {
+    const remaining = remainingMs();
+    if (remaining <= 0) {
+      controller.abort();
+    } else {
+      timer = setTimeout(check, Math.min(Math.ceil(remaining), 2_147_483_647)).unref();
+    }
+  };
+  check();
+  return {
+    signal: controller.signal,
+    expired: () => remainingMs() <= 0,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+type IssuerRegistration = {
+  readonly issuer: PreparedTokenIssuer;
+  postgresProof?: PostgresProof;
+};
+
+/** The same issuance budget applies to scheduled and request-triggered work. */
+export function runPreparation(owner: Preparation, outer: AbortSignal) {
+  const budget = 25_000;
+  return owner.run(randomUUID(), {
+    signal: AbortSignal.any([outer, AbortSignal.timeout(budget)]),
+    deadlineMonoMs: performance.now() + budget,
+  });
+}
+
 /**
  * Installation-owned lifecycle service. Each admission owner supplies only its eligible families,
- * input authority and custody. Capture, readiness and use never wake a maintenance pass.
+ * input authority and custody. A request can prepare only its authorized registration.
  */
-export class TokenService implements PreparedTokenService {
-  private readonly issuers = new Map<string, PreparedTokenIssuer>();
-
-  private readonly proofs = new Map<string, PostgresProof>();
+export class TokenService implements TokenServiceContract {
+  private readonly issuers = new Map<string, IssuerRegistration>();
 
   /** Called inside the platform transaction that authorizes the send. No credential bytes are read. */
   readonly postgresCurrentProof: PostgresProof = (client) => ({
     current: async (source, evidence, authority, lifetime) => {
       const issuer = this.issuer(source.key.provider);
-      const proof =
-        issuer?.issuerAuthority === authority && this.proofs.get(issuer.provider.id)?.(client);
+      if (!issuer || issuer.issuerAuthority !== authority) {
+        return false;
+      }
+      const registration = this.issuers.get(`provider/${issuer.provider.id}`);
+      if (!registration || registration.issuer !== issuer) {
+        return false;
+      }
+      const { postgresProof } = registration;
+      const proof = postgresProof?.(client);
       return proof ? proof.current(source, evidence, authority, lifetime) : false;
     },
   });
 
-  register(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
-    const { id } = issuer.provider;
-    if (this.issuers.has(id)) {
-      throw new Error("A prepared provider must have exactly one lifecycle owner.");
+  registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
+    const key = `provider/${issuer.provider.id}`;
+    if (this.issuers.has(key)) {
+      throw new Error("A token issuer already owns this registration.");
     }
-    this.issuers.set(id, issuer);
-    if (postgresProof) {
-      this.proofs.set(id, postgresProof);
-    }
+    this.issuers.set(key, { issuer, ...(postgresProof === undefined ? {} : { postgresProof }) });
   }
 
   issuer(provider: EgressRef): PreparedTokenIssuer | undefined {
-    const issuer = this.issuers.get(provider.id);
+    const issuer = this.issuers.get(`provider/${provider.id}`)?.issuer;
     return issuer && isDeepStrictEqual(issuer.provider, provider) ? issuer : undefined;
+  }
+
+  async register(
+    registration: PreparedTokenRegistration,
+    signal: AbortSignal,
+  ): Promise<PreparedTokenRef> {
+    const { kind, source, secret } = registration;
+    if (!source?.key?.provider || !secret) {
+      throw new Error("Prepared token registration requires a source and issuer Secret.");
+    }
+    const issuer = this.issuer(source.key.provider);
+    if (!issuer || issuer.tokenKind !== kind) {
+      throw new Error("The registered provider does not support this token kind.");
+    }
+    await issuer.configure(source, secret, signal);
+    return { kind, key: source.key };
+  }
+
+  async resolve(
+    reference: PreparedTokenRef,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined> {
+    const { signal: caller, minimumValidityMs } = options;
+    const deadline = Date.parse(options.deadlineAt);
+    if (
+      !(deadline > Date.now()) ||
+      caller.aborted ||
+      !Number.isFinite(minimumValidityMs) ||
+      minimumValidityMs < 0
+    ) {
+      return undefined;
+    }
+    const issuer = reference.key?.provider && this.issuer(reference.key.provider);
+    if (!issuer || issuer.tokenKind !== reference.kind || issuer.shutdownSignal?.aborted) {
+      return undefined;
+    }
+    const timeout = resolutionDeadline(deadline);
+    const signal = AbortSignal.any([
+      caller,
+      timeout.signal,
+      ...(issuer.shutdownSignal ? [issuer.shutdownSignal] : []),
+    ]);
+    let cancel!: () => void;
+    const stopped = new Promise<undefined>((resolve) => {
+      cancel = () => resolve(undefined);
+    });
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      if (signal.aborted) {
+        return undefined;
+      }
+      const token = await Promise.race([
+        stopped,
+        issuer.resolve(reference.key, { ...options, signal }),
+      ]);
+      if (!token || signal.aborted) {
+        return undefined;
+      }
+      const usableUntil = Math.min(Date.parse(token.expiresAt), Date.parse(token.usableUntil));
+      return !timeout.expired() && usableUntil > Date.now() + minimumValidityMs ? token : undefined;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      timeout.clear();
+    }
   }
 
   /** One serialized discovery, retirement and preparation loop for an independently owned set. */
@@ -74,11 +181,7 @@ export class TokenService implements PreparedTokenService {
       await families.discover?.(outer);
       const retirement = await families.retire(outer);
       outer.throwIfAborted();
-      const result = await families.prepare(outer, (owner) => {
-        const budget = 25_000;
-        const signal = AbortSignal.any([outer, AbortSignal.timeout(budget)]);
-        return owner.run(randomUUID(), { signal, deadlineMonoMs: performance.now() + budget });
-      });
+      const result = await families.prepare(outer, (owner) => runPreparation(owner, outer));
       return result ?? (typeof retirement === "string" ? retirement : undefined);
     }
     function maintain(signal = stop.signal) {

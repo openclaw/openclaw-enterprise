@@ -1,22 +1,18 @@
 import type { PluginDesiredState } from "@openclaw-enterprise/contracts";
 import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
-import { supportsManagedPluginRuntime } from "../sandbox/openshell-plugin-runtime.ts";
-import { managedCredentialBinding, managedMcpCredentialBinding } from "./managed-catalog.ts";
+import { managedCliCredentialBindings, managedMcpCredentialBindings } from "./managed-catalog.ts";
 
-/** A package describes its tools; the selected runtime must implement their credential policy.
- * OpenShell is the currently qualified adapter pair. Generic network flags do not establish
- * request-level MCP or CLI authorization for another implementation. */
+/** Managed Plugin bindings must be admitted into the staged deployment. */
 export function requireManagedCredentialRuntime(
   selections: PluginDesiredState | undefined,
-  sandbox?: string,
-  gateway?: string,
+  stagedPluginIds?: ReadonlySet<string>,
 ): void {
-  if (
-    (managedCredentialBinding(selections) || managedMcpCredentialBinding(selections)) &&
-    !supportsManagedPluginRuntime(sandbox, gateway)
-  ) {
+  const cli = managedCliCredentialBindings(selections);
+  const mcp = managedMcpCredentialBindings(selections);
+  const unadmitted = [...cli, ...mcp].some(({ install }) => !stagedPluginIds?.has(install.id));
+  if (unadmitted) {
     throw new ConfigurationHarnessError(
-      "Bound plugin credentials require a runtime that implements credential injection and managed request policies. The currently supported pair is the OpenShell Sandbox and Credential Gateway.",
+      "Bound Plugin credentials require TokenService Sources and staged credential delivery.",
     );
   }
 }

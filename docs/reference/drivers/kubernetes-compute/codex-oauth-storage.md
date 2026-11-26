@@ -1,55 +1,45 @@
 # Experimental Codex OAuth credential storage
 
-Codex OAuth uses a [credential source](../../credential-sources.md) owned by the
-selected Credential Gateway. The external token service owns the provider
-connection and refresh tokens. The dedicated Codex Harness receives a placeholder
-and authenticated account metadata through
-[`chatgptAuthTokens`](../credential-gateway.md#external-chatgpt-authentication).
+Codex account sign-in creates a built-in OAuth [CredentialSource](../../credential-sources.md)
+through the selected TokenService only after the user authorizes the issuer grant.
+TokenService retains the access and refresh tokens. The selected native Credential
+Proxy delivers the access token to an OpenShell Provider; dedicated Codex receives
+only its placeholder and nonsecret account metadata. See the [fixed native
+request policy](../../credential-sources.md#codex-account-model-requests).
 
 ## Enable device login
 
-Select paired Credential Gateway and Refresh Drivers. The Refresh Driver owns
-Codex device authorization; the Gateway supplies usable access tokens for
-configuration and external-auth attachments.
-Its paired Sandbox must inject live credentials for inference and hosted-app
-requests. The experimental OpenShell `codex-oauth` source requires the
-[upstream gateway and supervisor support](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
-
-Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+Select a TokenService with the built-in Codex device-login capability and native
+OpenShell Credential Proxy and Sandbox delivery. Follow the [personal login
+procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
 The Console keeps the **Experimental** label and reports unavailable sign-in when
-the selected Gateway lacks the required capability. There is no installation
-opt-in flag.
+that capability is absent.
 
 ## Private credential directory
 
 The launcher writes ephemeral `auth.json` with `auth_mode: "chatgptAuthTokens"`,
-the exact placeholder, account metadata, and an empty refresh token. Native Codex
-does not own OAuth refresh. Restarts reconstruct this state from the admitted
-source attachment. Session and workspace persistence remain independent of auth.
+the Proxy placeholder, account metadata, and an empty refresh token. Native Codex
+does not own OAuth refresh. The locally constructed JWT metadata is unsigned; it
+does not prove issuer identity, and native checks that require signed claims remain
+unqualified. Restarts reconstruct this state from the admitted Source binding. Session and workspace persistence remain independent of auth.
 
-OCC's login-session Secret contains an opaque Refresh Driver handle and source identity,
-never the access/refresh-token pair. The credential source survives closing or
-expiry of that session. Plugin configuration requests a usable access token from the source; the token
-service may refresh before returning it. This does not consume the deployed
-credential or require another login.
+OCC derives its device-login encryption key from `OCC_AUTH_SECRET`. In PostgreSQL,
+it encrypts the issuer's private handle separately from the user code and
+verification URL. Completion clears the handle; cancellation or expiry clears
+both encrypted values. Closing a session does not revoke a completed Source.
+Authorized hosted Apps discovery resolves access through TokenService and does not
+send a token to the Harness.
 
 ## OAuth launch limits
 
-OAuth remains **Experimental**. It requires a dedicated Codex Harness, Credential
-Gateway and paired Sandbox supporting the external-auth contract. Unsupported
-installations fail explicitly; there is no runtime-owned OAuth fallback.
+OAuth requires a dedicated Codex Harness. Unsupported installations fail
+explicitly. The native OpenShell [policy limits](../../credential-sources.md#implementation-status)
+apply to placeholder substitution. Dedicated Codex can combine OAuth and
+[Source-backed Git](../../repository-credentials.md) with the required inspected
+images, managed Workspace route, and approved repository grants. Active Source
+references block deletion.
 
-The old `oauth` binding and persistent refresh bundle are unsupported. Existing
-development Agents using that shape need recreation with a new source. The
-platform does not read old runtime credential files back into the service.
-Account metadata changes require a new deployment version. Native checks that depend on
-real access-token claims remain unqualified with an opaque placeholder.
-
-Connection recovery and refresh are the external token service's responsibility.
-Deleting a login-session Secret does not revoke its credential source; remove an
-unused source through credential-source management. Active references block deletion.
-
-## Device-login verification
-
-See [external ChatGPT verification](../../../testing/openshell.md#external-chatgpt-authentication-boundary)
-for integration coverage and the remaining live-provider and injection proof.
+TokenService commits renewed material before notifying the selected Proxy. A
+failed delivery retains custody for retry. A new deployment version is needed to
+change account metadata. Genuine signed-in model execution and native token
+injection still require the [TokenService runtime qualification](../../../testing/openshell-oauth.md#tokenservice-codex-account-verification).

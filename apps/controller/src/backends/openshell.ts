@@ -4,16 +4,21 @@ import type {
   OpenShellBackendDefinition,
   OpenShellBackendConfiguration,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   GrpcOpenShellGatewayClient,
   type OpenShellGatewayClient,
   type OpenShellGatewayClientOptions,
+  type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
+  type OpenShellStoredProviderProfile,
 } from "../drivers/sandbox/openshell-gateway-client.ts";
 
+const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const DEFAULT_GATEWAY_PORT = 8080;
 const OPENSHELL_MAX_WORKSPACE_NAME_LENGTH = 19;
 /** Provider names OCC creates; the paired Sandbox Driver accepts only this shape. */
@@ -221,11 +226,129 @@ export function openShellWorkspaceName(namespace: Readonly<Namespace>): string {
   return name;
 }
 
+export const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
+export const MANAGED_BY = "openclaw-enterprise";
+export const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
+
 /** One OpenShell provider per OCC credential source, named without exposing the source ID. */
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
 
+/** The native credential environment belongs to the Source, independent of its consumers. */
+export function openShellSourceCredentialEnvironment(sourceId: string): string {
+  return `OCE_SOURCE_${sha256Hex(sourceId, 24).toUpperCase()}`;
+}
+
+export function openShellOwnedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
+  return (
+    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
+    provider.labels[SOURCE_ID_LABEL] === sourceId &&
+    provider.type === openShellProviderName(sourceId)
+  );
+}
+
 export function isOpenShellProviderName(value: string): boolean {
   return OCC_PROVIDER_NAME.test(value);
+}
+
+export function openShellStaticBearerProfile({
+  id,
+  displayName,
+  environment,
+  annotations,
+}: {
+  readonly id: string;
+  readonly displayName: string;
+  readonly environment: string;
+  readonly annotations: Readonly<Record<string, string>>;
+}): OpenShellProviderProfile {
+  return {
+    id,
+    displayName,
+    category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+    credentials: [
+      {
+        name: environment,
+        envVars: [environment],
+        required: true,
+        authStyle: "bearer",
+        headerName: "authorization",
+        stablePlaceholder: true,
+      },
+    ],
+    endpoints: [],
+    binaries: [],
+    inferenceCapable: false,
+    annotations,
+  };
+}
+
+/** Read the version if the Gateway stored the expected stable-placeholder Bearer profile. */
+export function openShellStaticBearerProfileVersion(
+  stored: OpenShellStoredProviderProfile | undefined,
+  expected: OpenShellProviderProfile,
+): string | undefined {
+  const definition = stored?.definition;
+  const credentials = Array.isArray(definition?.credentials) ? definition.credentials : [];
+  const credential = asRecord(credentials[0]);
+  const expectedCredential = expected.credentials[0];
+  if (
+    !stored ||
+    stored.id !== expected.id ||
+    !/^[1-9]\d*$/.test(stored.resourceVersion) ||
+    !isDeepStrictEqual(stored.annotations, expected.annotations) ||
+    !definition ||
+    definition.inference_capable === true ||
+    (Array.isArray(definition.endpoints) && definition.endpoints.length !== 0) ||
+    (Array.isArray(definition.binaries) && definition.binaries.length !== 0) ||
+    (Array.isArray(definition.files) && definition.files.length !== 0) ||
+    credentials.length !== 1 ||
+    !credential ||
+    !expectedCredential ||
+    credential.name !== expectedCredential.name ||
+    !isDeepStrictEqual(credential.env_vars, expectedCredential.envVars) ||
+    credential.required !== true ||
+    credential.auth_style !== expectedCredential.authStyle ||
+    credential.header_name !== expectedCredential.headerName ||
+    credential.stable_placeholder !== true ||
+    credential.refresh !== undefined
+  ) {
+    return undefined;
+  }
+  return stored.resourceVersion;
+}
+
+/** Reconcile an already-built profile using the caller's selected client and Workspace. */
+export async function ensureOpenShellProviderProfile(
+  client: OpenShellGatewayClient,
+  workspace: string,
+  base: Omit<OpenShellProviderProfile, "annotations">,
+  signal: AbortSignal,
+): Promise<void> {
+  const digest = sha256Hex(JSON.stringify(base));
+  const profile: OpenShellProviderProfile = {
+    ...base,
+    annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
+  };
+  const existing = await client.getProviderProfile(workspace, base.id, signal);
+  if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
+    return;
+  }
+  try {
+    if (existing === undefined) {
+      await client.importProviderProfile(workspace, profile, signal);
+    } else {
+      await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
+    }
+  } catch (error) {
+    // A concurrent writer with the same configuration (another deployment, or a replay)
+    // already stored this exact profile.
+    const current = await client
+      .getProviderProfile(workspace, base.id, signal)
+      .catch(() => undefined);
+    if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
+      throw error;
+    }
+  }
 }

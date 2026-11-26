@@ -105,3 +105,5 @@ operations passed; unsupported paths remain unavailable.
 [Upstream request hook](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/extensibility/supervisor-middleware/operations.mdx)
 · [Failure and update behavior](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/extensibility/supervisor-middleware/configure.mdx)
 · [Extension authentication](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/extensibility/overview.mdx)
+
+For a proposed alternative to installing the token at startup, see the [Git credential pull design discussion](git-credential-pull.md).

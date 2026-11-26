@@ -15,12 +15,18 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 - **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
-  Desktop pages scroll as one document: the sidebar stretches to the page bottom,
-  with the account control at its end. The phone drawer retains its own viewport.
+  Desktop page content scrolls as one document. The sidebar stays in the viewport,
+  with the account control at its bottom. Diagnostics scroll within the sidebar;
+  short viewports can scroll the sidebar itself. The phone drawer retains its own viewport.
 - **Collections.** Agents and Secrets put search and the primary action in a
   `.collection-toolbar`. Give the search input an accessible name. It comes
   first in markup and in tab order, even when the action wraps below it.
-  Use `.resource-id` for an identifier people may need to read or copy.
+  Use `.resource-list` and `.resource-list-header` for grouped rows. Table
+  headings share `--color-collection-header` and `--color-collection-label`
+  with list headings. Emphasize the resource name, set identifiers in
+  `.resource-id`, and use the body font for status messages. Keep the full ID
+  selectable. Highlight the row around a focused control and retain the
+  control's own focus indicator.
 - **Actions.** Use `button(label, action, { tone: "primary" })` for the main
   action, a plain button for a secondary action, and a link for a destination.
 - **Forms and dialogs.** `field({ label, control, help })` connects a label
@@ -34,6 +40,11 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   the intended resource and confirms the expected saved state. If the write may have
   committed but you cannot confirm it, say the outcome is unknown and read that same
   resource again. Do not repeat the write to find out.
+- **Background updates.** Preserve focus, text selection, and reading position when
+  a poll updates the page. Use `setText` for plain text and `setHidden` for visibility
+  to skip unchanged DOM writes. If an update hides or removes a control, move focus
+  to a useful alternative only if the control still has focus when the response arrives.
+  Clear any content the user can no longer read.
 - **Disabled controls.** Show the reason next to a disabled control. For a button,
   checkbox, select or text field, call `setUnavailable(control, unavailable, reason)`
   wherever its state or reason changes. While the reason shows, the control stays in the
@@ -47,8 +58,10 @@ Use the named roles in `:root`: `--color-link` for links, `--color-accent` for
 the primary action, and `--focus-ring` for keyboard focus. Inherit the body
 font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
-The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
-cover these scales and the supported breakpoints.
+The [token checks](../../tests/conformance/console-design-tokens.test.ts)
+cover these scales and the supported 520, 760 and 1100 px viewport breakpoints.
+Run `node --test tests/conformance/console-design-tokens.test.ts` locally before
+pushing CSS changes.
 
 Navigation pairs the wordmark with a
 [mascot for dark surfaces](../../apps/controller/src/console/oce-mascot-inverse.png).
@@ -76,6 +89,11 @@ Check that new assets load and the interaction works with the actual API. Follow
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
 Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
 so reviewers can read the starting state, follow the action, and see the result.
+
+For a page that polls, delay a response and select text, move keyboard focus, or scroll
+deliberately while it is pending. Return unchanged data, then data that shrinks the layout
+or hides or removes the focused control. Check the selection, reading position, and visible
+focus after each response. Check that revoking read access clears the affected content.
 
 Use [`responseTo`](../../tests/browser/console-action-helpers.ts) to wait for a response
 to the exact request method and URL. Start listening before triggering the action,

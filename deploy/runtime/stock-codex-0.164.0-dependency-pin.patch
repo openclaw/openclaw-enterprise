@@ -1,0 +1,173 @@
+diff --git a/extensions/codex/package.json b/extensions/codex/package.json
+index 532483c4567..68788c055f4 100644
+--- a/extensions/codex/package.json
++++ b/extensions/codex/package.json
+@@ -8,7 +8,7 @@
+   },
+   "type": "module",
+   "dependencies": {
+-    "@openai/codex": "0.172.0",
++    "@openai/codex": "0.164.0",
+     "@openclaw/fs-safe": "0.28.2",
+     "acorn": "8.19.0",
+     "semver": "7.8.5",
+diff --git a/extensions/codex/src/app-server/version.ts b/extensions/codex/src/app-server/version.ts
+index b5c9015f71d..801e8507a67 100644
+--- a/extensions/codex/src/app-server/version.ts
++++ b/extensions/codex/src/app-server/version.ts
+@@ -1,5 +1,5 @@
+ /** Exact Codex app-server version shipped by the OpenClaw Codex bridge. */
+-export const CODEX_APP_SERVER_VERSION = "0.172.0";
++export const CODEX_APP_SERVER_VERSION = "0.164.0";
+ /** Inclusive runtime compatibility floor for external app-server binaries. */
+ export const MIN_SUPPORTED_CODEX_APP_SERVER_VERSION = "0.149.0";
+ export const MANAGED_CODEX_APP_SERVER_PACKAGE = "@openai/codex";
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 0553f3a3d3d..d17e6952e39 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -169,7 +169,7 @@ overrides:
+   chevrotain>lodash-es: 4.18.1
+   '@chevrotain/cst-dts-gen>lodash-es': 4.18.1
+   '@chevrotain/gast>lodash-es': 4.18.1
+-  '@agentclientprotocol/codex-acp@2.3.0>@openai/codex': 0.172.0
++  '@agentclientprotocol/codex-acp@2.3.0>@openai/codex': 0.164.0
+   '@codemirror/commands@6.11.1>@codemirror/view': 6.43.15
+   '@codemirror/view@6.43.15>@codemirror/state': 6.7.6
+   '@anthropic-ai/sdk': 0.137.0
+@@ -1017,8 +1017,8 @@ importers:
+   extensions/codex:
+     dependencies:
+       '@openai/codex':
+-        specifier: 0.172.0
+-        version: 0.172.0
++        specifier: 0.164.0
++        version: 0.164.0
+       '@openclaw/fs-safe':
+         specifier: 0.28.2
+         version: 0.28.2
+@@ -5115,43 +5115,43 @@ packages:
+     resolution: {integrity: sha512-3zcN5Q3yEmeyxXBzqB6fXPQFzYa2ROsGFSr69W0ArXIAGJqxl/aFECOVPD2kbkYPm0U/EHxFKgclK3UA9WQg5A==}
+     engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
+ 
+-  '@openai/codex@0.172.0':
+-    resolution: {integrity: sha512-yHf/6wbw4Zvha2M2ylDhDrU9FgfKLYgV6xSzSjlz3gxQNsiVLkXo+fPGwBqvP0A5geLtZs9wAbq+1v7+ZVWJ0g==}
++  '@openai/codex@0.164.0':
++    resolution: {integrity: sha512-TWj7UGyPRe3Pj/A3ddNAxs1te3a/W/xAd+J0LHrrFTmsSfahGMOLF/vn88D3QCIgAT3B1rm1y/Z3NYE0rx6cZQ==}
+     engines: {node: '>=16'}
+     hasBin: true
+ 
+-  '@openai/codex@0.172.0-darwin-arm64':
+-    resolution: {integrity: sha512-B239wE7pGeOmjylfqLymDIwuL4QgQR7pQZc5phHpZ3t8UVkno9AS3dNPEprm7AzZHw3kf2I6Uf+uOFfjGegELQ==}
++  '@openai/codex@0.164.0-darwin-arm64':
++    resolution: {integrity: sha512-pDizgOUAtq3/k3AbUFHbaU19WpYKCja+oFpNSTLKrDQj4lTUNSDuTPJip4uQVn2/1EipQdpQrGMOQBVuI1znAA==}
+     engines: {node: '>=16'}
+     cpu: [arm64]
+     os: [darwin]
+ 
+-  '@openai/codex@0.172.0-darwin-x64':
+-    resolution: {integrity: sha512-hrL9NQwH9E0WqK8Yofqe6fipE1XDSXx/C2fwSOagXdTRcjYXOrfQ9fSCKaKZXr/xm43ATdsRSjGGAn8IJhGmhA==}
++  '@openai/codex@0.164.0-darwin-x64':
++    resolution: {integrity: sha512-lIe+udnguPGzBezkgbkj2Eaz0YqOhNXT7jja136Fj0sXfI+UKNS2icmaK14GcoRAgeVEpDTtC1ftamWBPmD1zg==}
+     engines: {node: '>=16'}
+     cpu: [x64]
+     os: [darwin]
+ 
+-  '@openai/codex@0.172.0-linux-arm64':
+-    resolution: {integrity: sha512-qLH5VdeTkPlknWgKkU11IlGMyyxKXp9vcj65libT3Zp4P3Kt7gEbK4YDXlDBqWtA09+fGnIUpWERs6BaNo86DA==}
++  '@openai/codex@0.164.0-linux-arm64':
++    resolution: {integrity: sha512-LL5iTQjyDL4YRX44EWqhIfEQ5uGnmgxkQBJSxjZSeJ8L1Og83pdlzUJW/PRJ76oaVwOVgh6HXwuPEiBNEHU4lg==}
+     engines: {node: '>=16'}
+     cpu: [arm64]
+     os: [linux]
+ 
+-  '@openai/codex@0.172.0-linux-x64':
+-    resolution: {integrity: sha512-YJq6Wz3PFXV5LZ0OQc3/o+gpM3pLmQ/8n8uM2zF/m0O/8zED+uSPT8Ln1KGRrqR8Q6eon9YdWlhueAunVTZ+eg==}
++  '@openai/codex@0.164.0-linux-x64':
++    resolution: {integrity: sha512-XLAoaWsGOT2khzl+P4FYDPTkzAr9W0VFXFaVkqlFdkM0soa1gH/4S0wSD57Ek3HHwkirAEGz2/Mwehseh+l5Mg==}
+     engines: {node: '>=16'}
+     cpu: [x64]
+     os: [linux]
+ 
+-  '@openai/codex@0.172.0-win32-arm64':
+-    resolution: {integrity: sha512-lO+hS8rLV3xS5ZZZCBVfPTAqpI1VENId12qhzZ1jNPUBSzKQBOGKs+GHNplak1RHXXXpgK9UHkPQ3A2IvQ8lJg==}
++  '@openai/codex@0.164.0-win32-arm64':
++    resolution: {integrity: sha512-Zkzt8HNmB/vOnlDo5D7IOlrt5rHaxYQB7iGbNP7bHcXZtrk6gaD7UriwaieGYJpcf8DqAT/0tqzY4xbs8ZwbmQ==}
+     engines: {node: '>=16'}
+     cpu: [arm64]
+     os: [win32]
+ 
+-  '@openai/codex@0.172.0-win32-x64':
+-    resolution: {integrity: sha512-48pULjlTwpBZ/TfbOnpnmloHaTQAYELbaiKHEX7qmrtLFIcnPigaNN3omyetPdAuvrRXrmNFRlKfvQme19ZmRA==}
++  '@openai/codex@0.164.0-win32-x64':
++    resolution: {integrity: sha512-urWPhwh9YavuoAPIkmVYKBTtd5OtGVL4Ki0Fb28dhK/Mz6Pt4LSy+gbRrZFz5+RXrw9ubvXuXDCcd8beYcWhDg==}
+     engines: {node: '>=16'}
+     cpu: [x64]
+     os: [win32]
+@@ -11233,7 +11233,7 @@ snapshots:
+   '@agentclientprotocol/codex-acp@2.3.0':
+     dependencies:
+       '@agentclientprotocol/sdk': 2.0.2(zod@4.6.7)
+-      '@openai/codex': 0.172.0
++      '@openai/codex': 0.164.0
+       cross-spawn: 7.0.6
+       diff: 9.0.0
+       open: 11.0.4
+@@ -13345,31 +13345,31 @@ snapshots:
+ 
+   '@npmcli/redact@5.0.0': {}
+ 
+-  '@openai/codex@0.172.0':
++  '@openai/codex@0.164.0':
+     optionalDependencies:
+-      '@openai/codex-darwin-arm64': '@openai/codex@0.172.0-darwin-arm64'
+-      '@openai/codex-darwin-x64': '@openai/codex@0.172.0-darwin-x64'
+-      '@openai/codex-linux-arm64': '@openai/codex@0.172.0-linux-arm64'
+-      '@openai/codex-linux-x64': '@openai/codex@0.172.0-linux-x64'
+-      '@openai/codex-win32-arm64': '@openai/codex@0.172.0-win32-arm64'
+-      '@openai/codex-win32-x64': '@openai/codex@0.172.0-win32-x64'
++      '@openai/codex-darwin-arm64': '@openai/codex@0.164.0-darwin-arm64'
++      '@openai/codex-darwin-x64': '@openai/codex@0.164.0-darwin-x64'
++      '@openai/codex-linux-arm64': '@openai/codex@0.164.0-linux-arm64'
++      '@openai/codex-linux-x64': '@openai/codex@0.164.0-linux-x64'
++      '@openai/codex-win32-arm64': '@openai/codex@0.164.0-win32-arm64'
++      '@openai/codex-win32-x64': '@openai/codex@0.164.0-win32-x64'
+ 
+-  '@openai/codex@0.172.0-darwin-arm64':
++  '@openai/codex@0.164.0-darwin-arm64':
+     optional: true
+ 
+-  '@openai/codex@0.172.0-darwin-x64':
++  '@openai/codex@0.164.0-darwin-x64':
+     optional: true
+ 
+-  '@openai/codex@0.172.0-linux-arm64':
++  '@openai/codex@0.164.0-linux-arm64':
+     optional: true
+ 
+-  '@openai/codex@0.172.0-linux-x64':
++  '@openai/codex@0.164.0-linux-x64':
+     optional: true
+ 
+-  '@openai/codex@0.172.0-win32-arm64':
++  '@openai/codex@0.164.0-win32-arm64':
+     optional: true
+ 
+-  '@openai/codex@0.172.0-win32-x64':
++  '@openai/codex@0.164.0-win32-x64':
+     optional: true
+ 
+   '@openclaw/crabline@0.2.0(patch_hash=87093d75728e71110a39bd4729df86642a7974ebbbd2155fec2e074ce9a90f3d)':
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index a775d713949..b7314206c51 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -52,7 +52,7 @@ overrides:
+   "chevrotain>lodash-es": 4.18.1
+   "@chevrotain/cst-dts-gen>lodash-es": 4.18.1
+   "@chevrotain/gast>lodash-es": 4.18.1
+-  "@agentclientprotocol/codex-acp@2.3.0>@openai/codex": 0.172.0
++  "@agentclientprotocol/codex-acp@2.3.0>@openai/codex": 0.164.0
+   "@codemirror/commands@6.11.1>@codemirror/view": 6.43.15
+   "@codemirror/view@6.43.15>@codemirror/state": 6.7.6
+   "@anthropic-ai/sdk": 0.137.0

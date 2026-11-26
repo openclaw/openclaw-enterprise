@@ -3,8 +3,12 @@
 Rebuild Storybook before inspecting these stories. They render production console
 components with simulated API state; they do not prove persistence or enforcement.
 
-- **Pages/Settings → Account:** inspect the selected Installation Driver schema.
-  No startup value or API mutation control is exposed.
+- **Pages/Settings → Account** and **Pages/Settings → Nested Driver values:**
+  Before expanding a Driver, check that its collapsed summary shows the Driver
+  ID, contribution key and a separate **Implementation** label. Switch from
+  **Fields** to **JSON** and back. Confirm the same labels stay visible and the
+  group stays collapsed. Expand it to inspect the values and switch views again
+  to confirm it stays open.
 - **Pages/Agent detail → Policy denials and reviewed network additions:** use
   **Add Network rules**, fill the schema fields, add a port range, then select
   **Review changes**. Preview does not change the saved version. Compare **Save**
@@ -30,6 +34,9 @@ components with simulated API state; they do not prove persistence or enforcemen
   denial logs available while policy and suggestion reads show permission refusals
   without retry controls. **Sandbox policy capability unavailable** shows one
   unsupported message without fetching logs or recommendations.
+- **Reconcile concurrent repository grant changes:** after the simulated save
+  conflict, refresh the policy. Check that the panel shows the newer grants and
+  only offers discard. Discard, narrow the remaining grant, and save.
 - Inspect the existing empty, unsupported, loading, missing-credential, denied,
   and apply-rejected policy stories. After a saved change whose apply fails, the
   alert must identify the saved version.
@@ -59,3 +66,76 @@ Correct the field to `[]` or `["keep-plugin"]`, or remove it. Retry the switch
 and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and confirm
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
+
+## Return to an offscreen Configuration selection
+
+Open **Pages → Agent detail → Edit Configuration** in its own preview tab.
+Replace **Configuration JSON** with a long unsaved JSON draft whose last
+setting, just above the closing brace, is `"review": "Review A"`. Press
+Ctrl+End, Up, End, and Left, then Shift+Left to select just the final A.
+
+Wheel to the top inside **Configuration JSON**. Press Shift+Tab, then wheel
+the page up until the editor is below the window. Press Tab. The editor and
+its focus outline should come into view, while the selected line may still
+be below the editor's visible text. Type B and check that the draft now says
+`"review": "Review B"` with the rest unchanged. Leave the draft unsaved.
+
+## Correct an offscreen Configuration syntax error
+
+In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
+enter a long draft with an extra `x` between valid lines. Use a short desktop
+window and repeat at 200% zoom. Move to the end, then press Tab and Enter to
+activate **Save Configuration**. When the editor and error fit, check that both
+are visible and the caret is before `x`. Enlarge the editor manually
+and try saving again. If both no longer fit, check that the editor keeps its
+size and the caret stays visible. Press Delete and save the corrected draft.
+
+## Correct an out-of-range Configuration number
+
+Open **Pages → Agent detail → Invalid Configuration JSON**
+(`invalidConfiguration`) and **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Check their initial syntax errors first. Follow
+each story's review steps to restore the complete document, then set
+`plugins.entries.knowledge` to
+`{"enabled":true,"config":{"thresholds":[1,1e400,3]}}`, preserving the other settings.
+
+The nested array has valid JSON syntax, but `1e400` is outside the supported
+number range. Select **Save Configuration** or **Create Agent**. The error under
+the editor must read: “A number is too large or too small to save. Use a number
+closer to zero.” Check editor focus, exact draft retention, and no write. In
+Create Agent, select **Enter model ID manually** if a model list is shown.
+Change **Model ID** and leave the field: the rejected JSON must remain unchanged.
+Restore the original Model ID before retrying.
+
+Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
+`[1,2,3]`. Capture the rejection and successful correction. These stories use
+simulated saves; they do not prove Controller persistence or runtime behavior.
+
+## Inspect, save, and withdraw repository grants
+
+Open **Inspect Namespace repository limits** in **Pages / Agent detail**. Open
+**View network limits** and check both repository entries. Open **Manage rules**
+to verify that the Agent has no saved repository policy. Its earlier deployment
+requires creating a new Agent for scoped access.
+
+Open **Save Agent repository access and narrow a grant**. In **Manage rules**,
+set `example/application` to **Read** and `example/tooling` to **Write**. Save
+the repository policy. Reopen **Manage rules**, change tooling to **Read**,
+and select **Refresh policy**. Verify that tooling still shows **Read**, then
+save. The notice gives deployment requirements and explains when a new Agent is
+required. Reopen **Manage rules** and set application to **No access**. The
+story rejects this partial list. Check that the selection remains, then select
+**Discard repository changes** to restore the saved choices.
+Reload the story to reset it. Choose **Deny all repositories** and confirm the
+save. Verify that a saved deny-all list replaces the legacy access summary.
+
+In the protected execution story, remove and save the ordinary network rules
+first. Reopen **Manage rules** and select **Withdraw saved repository grants**.
+Use **Back to editing** to return to the saved grants, then open the review
+again. Select **Save deny-all policy** and verify the saved deny-all state. This
+story simulates the Console and API exchange.
+
+Open **Withdraw grants with an unreadable active revision**. Verify that the
+Console reports the active policy as unavailable. In **Manage rules**, review
+withdrawal and check the compatible controller and Worker instructions before
+saving.

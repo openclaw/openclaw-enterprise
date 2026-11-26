@@ -11,59 +11,21 @@ import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import type {
-  Agent,
   AuditEvent,
   Namespace,
   IAMDriver,
   AuthorizationRequest,
   AuthorizationDecision,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
 } from "../../packages/contracts/src/index.ts";
 import {
   EgressSendReceipts,
   type SendAttempt,
   type StoredSendReceipt,
 } from "../../packages/occ/src/egress-send-receipts.ts";
-import { staticEgressFixture, syntheticDispatchFixture } from "../helpers/static-egress.mjs";
-import { waitUntil, within } from "../helpers/wait-for.mjs";
-
-const admitMetadata = async ({
-  app,
-  agent,
-  namespace,
-  path,
-  origin,
-}: {
-  app: Awaited<ReturnType<typeof createConsoleAppFixture>>;
-  agent: Agent;
-  namespace: Namespace;
-  path: string;
-  origin: string;
-}) => {
-  const created = await app.request("POST", path, {
-    body: {
-      name: "metadata-transaction",
-      type: "credential-free-repository-metadata",
-      config: {
-        origin,
-        repository_id: "7311",
-        repository: "fixture/credential-free",
-        agent_id: agent.id,
-        authority: "execution",
-      },
-    },
-  });
-  assert.equal(created.status, 201);
-  const bound = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
-    body: {
-      configurationId: agent.configurationId,
-      harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: created.data.id }],
-    },
-  });
-  assert.equal(bound.status, 200);
-  return { agent: bound.data, source: created.data };
-};
+import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
+import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
+import { waitUntil, within } from "../helpers/wait-for.ts";
 
 function policyApp(
   storage: "memory" | "postgres",
@@ -123,7 +85,7 @@ function assertRefusedReceipt(
 }
 
 async function assertDenialAudit(
-  f: Awaited<ReturnType<typeof staticEgressFixture>>,
+  f: Awaited<ReturnType<typeof protectedMetadataFixture>>,
   code?: string,
 ) {
   assert.ok("revision" in f);
@@ -143,6 +105,7 @@ async function assertDenialAudit(
       namespaceId: f.namespace.id,
       id: f.source.id,
     });
+    assert.ok(event.details);
     assert.equal(event.details.phase, "before_send");
     assert.equal(event.details.code, code);
     assert.equal(event.details.revisionId, f.revision.id);
@@ -153,154 +116,142 @@ async function assertDenialAudit(
 // Schedule only at the genuine store's transaction boundaries. Policy evaluation,
 // receipt writes, authentication and DELETE all remain application operations.
 for (const storage of ["memory", "postgres"] as const) {
-  for (const noMaterial of [false, true]) {
-    for (const ordering of ["revoke first", "permit first", "lost commit reply"] as const) {
-      test(
-        `${storage}: ${noMaterial ? "no material" : "static"} policy transaction - ${ordering}`,
-        {
-          ...(storage === "postgres" ? requiresPostgres : {}),
-          timeout: 30_000,
-        },
-        async (t) => {
-          let armed = false;
-          let attempt: SendAttempt | undefined;
-          const events: string[] = [];
-          const wrap = (store: PlatformStateStore): PlatformStateStore => {
-            const transact = store.transact.bind(store);
-            return {
-              read: store.read.bind(store),
-              async transact(work) {
-                let policy = false;
-                let inserted = false;
-                let authorized = false;
-                const result = await transact((unit: PlatformUnitOfWork) =>
-                  work({
-                    ...unit,
-                    credentialSources: {
-                      ...unit.credentialSources,
-                      async lockCredentialSource(...args) {
-                        const value = await unit.credentialSources.lockCredentialSource(...args);
-                        policy = true;
-                        return value;
-                      },
+  for (const ordering of ["revoke first", "permit first", "lost commit reply"] as const) {
+    test(
+      `${storage}: no material policy transaction - ${ordering}`,
+      {
+        ...(storage === "postgres" ? requiresPostgres : {}),
+        timeout: 30_000,
+      },
+      async (t) => {
+        let armed = false;
+        let attempt: SendAttempt | undefined;
+        const events: string[] = [];
+        const wrap = (store: PlatformStateStore): PlatformStateStore => {
+          const transact = store.transact.bind(store);
+          return {
+            read: store.read.bind(store),
+            async transact(work) {
+              let policy = false;
+              let inserted = false;
+              let authorized = false;
+              const result = await transact((unit: PlatformUnitOfWork) =>
+                work({
+                  ...unit,
+                  credentialSources: {
+                    ...unit.credentialSources,
+                    async lockCredentialSource(...args) {
+                      const value = await unit.credentialSources.lockCredentialSource(...args);
+                      policy = true;
+                      return value;
                     },
-                    egressSendReceipts: {
-                      ...unit.egressSendReceipts,
-                      async insert(...args) {
-                        inserted = true;
-                        attempt = args[0];
-                        return unit.egressSendReceipts.insert(...args);
-                      },
-                      async authorize(...args) {
-                        events.push("receipt write");
-                        const value = await unit.egressSendReceipts.authorize(...args);
-                        authorized = value;
-                        return value;
-                      },
+                  },
+                  egressSendReceipts: {
+                    ...unit.egressSendReceipts,
+                    async insert(...args) {
+                      inserted = true;
+                      attempt = args[0];
+                      return unit.egressSendReceipts.insert(...args);
                     },
-                  }),
-                );
-                if (armed && authorized) {
-                  events.push("permit committed");
+                    async authorize(...args) {
+                      events.push("receipt write");
+                      const value = await unit.egressSendReceipts.authorize(...args);
+                      authorized = value;
+                      return value;
+                    },
+                  },
+                }),
+              );
+              if (armed && authorized) {
+                events.push("permit committed");
+              }
+              if (
+                armed &&
+                ((ordering === "revoke first" && inserted) ||
+                  (ordering !== "revoke first" && policy))
+              ) {
+                armed = false;
+                if (ordering === "lost commit reply") {
+                  assert.ok(authorized, "policy and receipt must commit in the same unit");
+                  throw new Error("Lost transaction acknowledgment after commit");
                 }
-                if (
-                  armed &&
-                  ((ordering === "revoke first" && inserted) ||
-                    (ordering !== "revoke first" && policy))
-                ) {
-                  armed = false;
-                  if (ordering === "lost commit reply") {
-                    assert.ok(authorized, "policy and receipt must commit in the same unit");
-                    throw new Error("Lost transaction acknowledgment after commit");
-                  }
-                  // In the permit-first case, delay response delivery until DELETE has
-                  // committed. A response timestamp is not a transaction timestamp.
-                  await revoke();
-                  events.push("DELETE 204");
-                }
-                return result;
-              },
-            };
+                // In the permit-first case, delay response delivery until DELETE has
+                // committed. A response timestamp is not a transaction timestamp.
+                await revoke();
+                events.push("DELETE 204");
+              }
+              return result;
+            },
           };
-          const f = await staticEgressFixture(t, {
-            ...(noMaterial
-              ? {
-                  admitSource: admitMetadata,
-                }
-              : {}),
-            appFactory: policyApp(storage, wrap),
-          });
-          assert.ok("egress" in f);
-          const revoke = () => f.revoke();
-          const capture = () => (noMaterial ? captureMetadata(f) : f.capture());
-          const resolve = async (captured: ReturnType<typeof f.capture>) => {
-            const result = await f.resolve(captured);
-            if (noMaterial) {
-              assert.equal(result.ready, undefined);
-            }
-            return noMaterial ? result.ready_without_material : result.ready;
-          };
-          const positive = capture();
-          const positiveReady = await resolve(positive);
-          assert.ok(positiveReady);
+        };
+        const f = await protectedMetadataFixture(t, {
+          appFactory: policyApp(storage, wrap),
+        });
+        assert.ok("egress" in f);
+        const revoke = () => f.revoke();
+        const capture = () => captureMetadata(f);
+        const resolve = async (captured: ReturnType<typeof capture>) => {
+          const result = await f.resolve(captured);
+          assert.equal(result.ready, undefined);
+          return result.ready_without_material;
+        };
+        const positive = capture();
+        const positiveReady = await resolve(positive);
+        assert.ok(positiveReady);
+        assert.ok(
+          (await f.authorize(f.permitRequest(positive, positiveReady, { noMaterial: true })))
+            .allowed,
+        );
+        events.length = 0;
+        const captured = capture();
+        const beforeResolve = f.secretReads;
+        const ready = await resolve(captured);
+        assert.ok(ready);
+        const reads = f.secretReads;
+        assert.equal(reads - beforeResolve, 0, "credential-free resolution does not read a Secret");
+        armed = true;
+        const result = await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
+        if (ordering === "permit first") {
+          assert.ok(result.allowed);
+          assert.deepEqual(events, ["receipt write", "permit committed", "DELETE 204"]);
+        } else {
+          assert.ok(result.refused, "no permit after an earlier revoke or unknown commit");
+          if (ordering === "revoke first") {
+            assert.deepEqual(events, ["DELETE 204"]);
+          }
+        }
+        assert.equal(f.secretReads, reads, "authorization must not read external material again");
+        if (ordering === "lost commit reply") {
+          assert.ok(attempt);
+          const originalAttempt = attempt;
+          const receipt = await f.controller.transact((unit: PlatformUnitOfWork) =>
+            unit.egressSendReceipts.find(originalAttempt),
+          );
+          assert.ok(receipt?.authorization, "the lost acknowledgement follows an actual commit");
+          assert.equal(receipt.settled, false);
+          assert.deepEqual(receipt.outcome, { kind: "uncertain", dispatch: "possible" });
+          await f.restartAuthority();
+          const retry = await resolve(captured);
+          assert.ok(retry);
           assert.ok(
-            (await f.authorize(f.permitRequest(positive, positiveReady, { noMaterial }))).allowed,
+            (await f.authorize(f.permitRequest(captured, retry, { noMaterial: true }))).refused,
           );
-          events.length = 0;
-          const captured = capture();
-          const beforeResolve = f.secretReads;
-          const ready = await resolve(captured);
-          assert.ok(ready);
-          const reads = f.secretReads;
-          assert.equal(
-            reads - beforeResolve,
-            noMaterial ? 0 : 1,
-            "resolution reads material exactly once only when required",
-          );
-          armed = true;
-          const result = await f.authorize(f.permitRequest(captured, ready, { noMaterial }));
-          if (ordering === "permit first") {
-            assert.ok(result.allowed);
-            assert.deepEqual(events, ["receipt write", "permit committed", "DELETE 204"]);
-          } else {
-            assert.ok(result.refused, "no permit after an earlier revoke or unknown commit");
-            if (ordering === "revoke first") {
-              assert.deepEqual(events, ["DELETE 204"]);
-            }
-          }
-          assert.equal(f.secretReads, reads, "authorization must not read external material again");
-          if (ordering === "lost commit reply") {
-            assert.ok(attempt);
-            const originalAttempt = attempt;
-            const receipt = await f.controller.transact((unit: PlatformUnitOfWork) =>
+          assert.deepEqual(
+            await f.controller.transact((unit: PlatformUnitOfWork) =>
               unit.egressSendReceipts.find(originalAttempt),
-            );
-            assert.ok(receipt?.authorization, "the lost acknowledgement follows an actual commit");
-            assert.equal(receipt.settled, false);
-            assert.deepEqual(receipt.outcome, { kind: "uncertain", dispatch: "possible" });
-            await f.restartAuthority();
-            const retry = await resolve(captured);
-            assert.ok(retry);
-            assert.ok(
-              (await f.authorize(f.permitRequest(captured, retry, { noMaterial }))).refused,
-            );
-            assert.deepEqual(
-              await f.controller.transact((unit: PlatformUnitOfWork) =>
-                unit.egressSendReceipts.find(originalAttempt),
-              ),
-              receipt,
-              "restart and retry preserve the original receipt",
-            );
-          } else {
-            assert.ok(
-              (await f.resolve(capture())).refused,
-              "cold work observes the committed revoke",
-            );
-          }
-          assert.equal(f.providerRequests.length, 0);
-        },
-      );
-    }
+            ),
+            receipt,
+            "restart and retry preserve the original receipt",
+          );
+        } else {
+          assert.ok(
+            (await f.resolve(capture())).refused,
+            "cold work observes the committed revoke",
+          );
+        }
+        assert.equal(f.providerRequests.length, 0);
+      },
+    );
   }
 }
 
@@ -313,10 +264,10 @@ test(
     timeout: 30_000,
   },
   async (t) => {
-    const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    const f = await protectedMetadataFixture(t, { appFactory: postgresApp });
     assert.ok("egress" in f && "pool" in f && "state" in f);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     const state = f.state as PlatformStateStore;
     const transact = state.transact.bind(state);
@@ -428,7 +379,7 @@ test(
     };
     let observed: { decision: Awaited<ReturnType<typeof f.authorize>>; at: number };
     try {
-      const decision = await f.authorize(f.permitRequest(captured, ready));
+      const decision = await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
       observed = { decision, at: Date.now() };
     } finally {
       startRevoke();
@@ -443,7 +394,7 @@ test(
         (observed.decision.refused?.code === f.refusalCode("DENIED") && observed.at >= sendStartBy),
       "a committed receipt can be refused only after its send deadline",
     );
-    assert.ok((await f.resolve(f.capture())).refused);
+    assert.ok((await f.resolve(captureMetadata(f))).refused);
     assert.equal(f.providerRequests.length, 0);
   },
 );
@@ -452,10 +403,10 @@ test(
   "postgres: native send reads policy after a pending withdrawal commits",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
-    const f = await staticEgressFixture(t, { appFactory: postgresApp });
+    const f = await protectedMetadataFixture(t, { appFactory: postgresApp });
     assert.ok("egress" in f && "pool" in f && "state" in f);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     const state = f.state as PlatformStateStore;
     const original = state.transact;
@@ -521,7 +472,7 @@ test(
     try {
       await within(deleted.promise, "supported DELETE did not remove its grant", 3_000);
       withdrawalStarted = false;
-      send = f.authorize(f.permitRequest(captured, ready));
+      send = f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
       await waitUntil(
         "the sender to wait on the withdrawing transaction's Namespace lock",
         async () => {
@@ -610,7 +561,7 @@ for (const authority of ["directory", "callback"] as const) {
       async (t) => {
         let directory: ReturnType<typeof directoryAuthority>;
         const receipts = receiptProbe();
-        const f = await staticEgressFixture(t, {
+        const f = await protectedMetadataFixture(t, {
           appFactory: (context, options) =>
             createConsoleAppFixture(context, {
               ...options,
@@ -636,8 +587,8 @@ for (const authority of ["directory", "callback"] as const) {
         }
         assert.ok(directory!, "selected authority is installed before resolution");
         const resolutionCalls = directory.requests.length;
-        const captured = f.capture();
-        const ready = (await f.resolve(captured)).ready;
+        const captured = captureMetadata(f);
+        const ready = (await f.resolve(captured)).ready_without_material;
         assert.ok(ready, "selected authority admits resolution");
         assert.ok(
           directory.requests.length > resolutionCalls,
@@ -655,7 +606,7 @@ for (const authority of ["directory", "callback"] as const) {
             },
           });
         }
-        const result = await f.authorize(f.permitRequest(captured, ready));
+        const result = await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
         assert.equal(shadowCalls, 0, "authorization never invokes the function's own call");
         assert.equal(f.secretReads, reads, "final authorization does not reread material");
         assert.equal(f.providerRequests.length, 0);
@@ -686,10 +637,10 @@ for (const authority of ["directory", "callback"] as const) {
           await assertDenialAudit(f, final === "deny" ? "unauthorized" : undefined);
           directory.set("allow");
           await f.restartAuthority();
-          const retry = (await f.resolve(captured)).ready;
+          const retry = (await f.resolve(captured)).ready_without_material;
           assert.ok(retry);
           assert.ok(
-            (await f.authorize(f.permitRequest(captured, retry))).refused,
+            (await f.authorize(f.permitRequest(captured, retry, { noMaterial: true }))).refused,
             "a definitely refused attempt cannot be retried after restart",
           );
           assert.deepEqual(await receipts.read(f.controller), receipt);
@@ -699,13 +650,10 @@ for (const authority of ["directory", "callback"] as const) {
   }
 }
 
-for (const [storage, noMaterial] of [
-  ["memory", true],
-  ["postgres", false],
-] as const) {
+for (const storage of ["memory", "postgres"] as const) {
   for (const revoke of [false, true]) {
     test(
-      `${storage}: ${noMaterial ? "no material" : "static"} slow final runtime verification ${revoke ? "does not block DELETE" : "precedes the short send window"}`,
+      `${storage}: no material slow final runtime verification ${revoke ? "does not block DELETE" : "precedes the short send window"}`,
       {
         ...(storage === "postgres" ? requiresPostgres : {}),
         timeout: 20_000,
@@ -734,21 +682,20 @@ for (const [storage, noMaterial] of [
               }),
             ),
         });
-        const f = await staticEgressFixture(t, {
+        const f = await protectedMetadataFixture(t, {
           now,
           physicalPlacement: true,
-          ...(noMaterial ? { admitSource: admitMetadata } : {}),
           appFactory: policyApp(storage, wrap),
         });
         assert.ok("egress" in f);
-        const captured = noMaterial ? captureMetadata(f) : f.capture();
+        const captured = captureMetadata(f);
         const resolved = await f.resolve(captured);
-        const ready = noMaterial ? resolved.ready_without_material : resolved.ready;
+        const ready = resolved.ready_without_material;
         assert.ok(ready);
         const reads = f.secretReads;
         const gate = f.pauseNamespaceVerification();
         t.after(gate.release);
-        const pending = f.authorize(f.permitRequest(captured, ready, { noMaterial }));
+        const pending = f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
         // This continuation is registered outside any controller transaction.
         // A blocked DELETE is released in finally, so the negative control drains.
         let deletion: Promise<void> | undefined;
@@ -790,7 +737,7 @@ for (const [storage, noMaterial] of [
         if (revoke) {
           assert.ok(result.refused, "completed last-grant DELETE denies this permit");
           assert.ok(
-            (await f.resolve(noMaterial ? captureMetadata(f) : f.capture())).refused,
+            (await f.resolve(captureMetadata(f))).refused,
             "next exchange sees the committed DELETE",
           );
         } else {
@@ -853,20 +800,20 @@ test(
           }),
         ),
     });
-    const f = await staticEgressFixture(t, {
+    const f = await protectedMetadataFixture(t, {
       appFactory: policyApp("postgres", wrap),
     });
     assert.ok("egress" in f);
     const directory = directoryAuthority(f.controller.selectedDriver("iam"), true);
     f.controller.registerDriver(directory.driver);
     f.controller.selectDriver("iam", directory.driver.id);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     const reads = f.secretReads;
     const calls = directory.requests.length;
     armed = true;
-    const pending = f.authorize(f.permitRequest(captured, ready));
+    const pending = f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
     try {
       await within(reached.promise, "receipt boundary not reached", 3_000);
       assert.equal(
@@ -883,7 +830,10 @@ test(
       result.allowed,
       "local write participation does not serialize an external withdrawal",
     );
-    assert.ok((await f.resolve(f.capture())).refused, "next invocation observes external deny");
+    assert.ok(
+      (await f.resolve(captureMetadata(f))).refused,
+      "next invocation observes external deny",
+    );
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
     await f.revoke();
@@ -897,7 +847,7 @@ test(
     let elapsed = 0;
     let armed = false;
     let committed = false;
-    const f = await staticEgressFixture(t, {
+    const f = await protectedMetadataFixture(t, {
       now: () => new Date(Date.now() + elapsed),
       appFactory: (context, options) =>
         createConsoleAppFixture(context, {
@@ -930,17 +880,17 @@ test(
         }),
     });
     assert.ok("egress" in f);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     armed = true;
-    assert.ok((await f.authorize(f.permitRequest(captured, ready))).refused);
+    assert.ok((await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }))).refused);
     assert.ok(committed, "the actual authorized receipt committed before the clock advanced");
     await f.restartAuthority();
-    const retry = (await f.resolve(captured)).ready;
+    const retry = (await f.resolve(captured)).ready_without_material;
     assert.ok(retry);
     const reads = f.secretReads;
-    assert.ok((await f.authorize(f.permitRequest(captured, retry))).refused);
+    assert.ok((await f.authorize(f.permitRequest(captured, retry, { noMaterial: true }))).refused);
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
   },
@@ -949,21 +899,21 @@ test(
 for (const failure of ["false", "unavailable", "unknown"] as const) {
   test(`final runtime verification ${failure} preserves refusal and audit meaning`, async (t) => {
     const receipts = receiptProbe();
-    const f = await staticEgressFixture(t, {
+    const f = await protectedMetadataFixture(t, {
       physicalPlacement: true,
       appFactory: policyApp("memory", receipts.wrap),
     });
     assert.ok("egress" in f);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     const reads = f.secretReads;
     let calls = 0;
     let shadowCalls = 0;
     // Control only the selected runtime observation, after real authenticated resolution.
     const verify = async function (
-      this: CredentialProxyDriver,
-      ..._args: Parameters<CredentialProxyDriver["verifyInstallation"]>
+      this: LegacyEgressProxyDriver,
+      ..._args: Parameters<LegacyEgressProxyDriver["verifyInstallation"]>
     ) {
       calls++;
       assert.equal(this, f.egress, "verification retains its selected receiver");
@@ -979,7 +929,7 @@ for (const failure of ["false", "unavailable", "unknown"] as const) {
       },
     });
     Reflect.set(f.egress, "verifyInstallation", verify);
-    const result = await f.authorize(f.permitRequest(captured, ready));
+    const result = await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
     assert.equal(
       result.refused?.code,
       f.refusalCode(failure === "false" ? "DENIED" : "UNAVAILABLE"),
@@ -1000,7 +950,7 @@ for (const failure of ["false", "unavailable", "unknown"] as const) {
 }
 
 test("Compute placement ignores a resolver's own call through authenticated exchange", async (t) => {
-  const f = await staticEgressFixture(t, { physicalPlacement: true });
+  const f = await protectedMetadataFixture(t, { physicalPlacement: true });
   assert.ok("egress" in f);
   const compute = f.controller.selectedDriver("compute");
   const resolve = compute.resolveSandboxNamespace;
@@ -1020,13 +970,13 @@ test("Compute placement ignores a resolver's own call through authenticated exch
       },
     },
   );
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
+  const captured = captureMetadata(f);
+  const ready = (await f.resolve(captured)).ready_without_material;
   assert.ok(ready, "access uses the actual resolver");
   assert.ok(calls > 0);
   const accessCalls = calls;
   const reads = f.secretReads;
-  const result = await f.authorize(f.permitRequest(captured, ready));
+  const result = await f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
   assert.ok(result.allowed, "final verification uses the actual resolver");
   assert.equal(calls - accessCalls, 1);
   assert.equal(shadowCalls, 0);
@@ -1041,13 +991,13 @@ for (const replacement of [
 ] as const) {
   test(`final placement binds the original ${replacement}`, async (t) => {
     const receipts = receiptProbe();
-    const f = await staticEgressFixture(t, {
+    const f = await protectedMetadataFixture(t, {
       physicalPlacement: true,
       appFactory: policyApp("memory", receipts.wrap),
     });
     assert.ok("egress" in f);
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
+    const captured = captureMetadata(f);
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     const reads = f.secretReads;
     const compute = f.controller.selectedDriver("compute");
@@ -1061,8 +1011,8 @@ for (const replacement of [
     let verificationCalls = 0;
     const verify = f.egress.verifyInstallation;
     f.egress.verifyInstallation = function (
-      this: CredentialProxyDriver,
-      ...args: Parameters<CredentialProxyDriver["verifyInstallation"]>
+      this: LegacyEgressProxyDriver,
+      ...args: Parameters<LegacyEgressProxyDriver["verifyInstallation"]>
     ) {
       verificationCalls++;
       assert.equal(this, f.egress, "verification retains its selected receiver");
@@ -1070,7 +1020,7 @@ for (const replacement of [
     };
     const gate = f.pauseNamespaceVerification();
     t.after(gate.release);
-    const pending = f.authorize(f.permitRequest(captured, ready));
+    const pending = f.authorize(f.permitRequest(captured, ready, { noMaterial: true }));
     try {
       await within(gate.reached, "original placement was not verified", 3_000);
       if (replacement === "Compute receiver") {
@@ -1105,7 +1055,7 @@ for (const replacement of [
     assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
     if (replacement === "Credential Proxy method") {
-      assert.equal((await f.resolve(f.capture())).refused?.code, f.refusalCode("DENIED"));
+      assert.equal((await f.resolve(captureMetadata(f))).refused?.code, f.refusalCode("DENIED"));
       assert.equal(replacementCalls, 1, "only a fresh operation reaches the replacement verifier");
       assert.equal(f.secretReads, reads);
       assert.equal(f.providerRequests.length, 0);
@@ -1113,14 +1063,14 @@ for (const replacement of [
     }
     f.controller.selectDriver("compute", compute.id);
     compute.resolveSandboxNamespace = resolve;
-    const next = f.capture();
-    const nextReady = (await f.resolve(next)).ready;
+    const next = captureMetadata(f);
+    const nextReady = (await f.resolve(next)).ready_without_material;
     assert.ok(nextReady);
     assert.ok(
-      (await f.authorize(f.permitRequest(next, nextReady))).allowed,
+      (await f.authorize(f.permitRequest(next, nextReady, { noMaterial: true }))).allowed,
       "restoring the original placement still authorizes independent work",
     );
-    assert.equal(f.secretReads, reads + 1);
+    assert.equal(f.secretReads, reads);
     assert.equal(f.providerRequests.length, 0);
   });
 }

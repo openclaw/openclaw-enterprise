@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "backendId": "github-qa",
+  "providerInstanceId": "github-oce-test-qa",
+  "appId": "5258029",
+  "githubInstallationId": "170000975",
+  "maximumDurationSeconds": 3600,
+  "repositories": [
+    {
+      "repositoryRef": "qa-repository",
+      "repositoryId": "1412618387",
+      "repository": "oce-test/oce-app-test",
+      "namespaces": [
+        {
+          "namespaceId": "${OCC_INITIAL_NAMESPACE_ID}",
+          "profiles": ["git-write"]
+        }
+      ]
+    }
+  ]
+}

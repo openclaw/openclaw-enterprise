@@ -1,18 +1,21 @@
+import { createConnectionTemplateFixture } from "./connection-template-fixture.mts";
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
+  AgentDeviceAuthorizationResponse,
   AgentPluginCredentialSlot,
-  CredentialSourceMetadata,
-  CredentialSourceReference,
+  CredentialSourceResponse,
   SecretMetadata,
   AgentRuntimeContainerStatus,
   AgentRuntimePodStatus,
+  AgentRuntimeHarnessStatus,
   AgentRuntimeEvent,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
-  RepositoryOption,
+  RepositoryOptionListResponse,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
+import type { Static } from "typebox";
 import type { StoredConfiguration } from "./configuration-store.mts";
 import { createConfigurationStore } from "./configuration-store.mts";
 import { candidateDeploymentError } from "./deployment-fixture.mts";
@@ -27,6 +30,8 @@ import {
   fixtureResponse as response,
 } from "./preview-rules.mts";
 
+type RepositoryOption = RepositoryOptionListResponse["data"][number];
+
 type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
   Parameters<typeof createAgentLifecycle>[0] &
   Parameters<typeof configurationValues>[0] &
@@ -37,8 +42,12 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     "pluginCapabilities" | "pluginDiscoveryCredential"
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
+    oauthCatalog?: string;
+    initialCredentialSources?: readonly CredentialSourceResponse["data"][];
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
+    navigationAgentHistory?: true;
+    navigationAgentLookupMismatch?: true;
     namespaceStatus?: string;
     sessionUser?: unknown;
     extraSecrets?: readonly { id: string; name: string }[];
@@ -46,9 +55,12 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
+    namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
+    oauthExpired?: boolean;
+    oauthPending?: boolean;
+    oauthPollCreateDenied?: boolean;
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
-    credentialRegistrationOutcome?: string;
     pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
     pluginCapabilities?: Omit<
       NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]>,
@@ -62,8 +74,12 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     pluginDiscoveryCredential?: string;
     agentPermissionSummary?: unknown;
     nativeAdmin?: string;
+    nativeAdminSessionMode?: "host-only-exchange";
+    nativeAdminMode?: "admin" | "chat";
+    nativeAdminReason?: "not-enabled" | "configuration" | "compute";
     nativeAdminUrl?: string;
     harness?: unknown;
+    harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
     runtimeImages?: unknown;
     runtimePod?: string;
     diagnosticsState?: string;
@@ -80,20 +96,19 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     };
     rules?: Parameters<typeof createFixtureFetch>[0];
     signedOut?: boolean;
-    pendingGithubAttempt?: boolean;
+    pendingOidcAttempt?: boolean;
     expiredSession?: boolean;
     pendingGoogleAttempt?: boolean;
     emptyNamespaces?: boolean;
+    additionalNamespaceNames?: readonly string[];
     emptyBackends?: boolean;
     harnessGrantMissing?: boolean;
-    githubEnabled?: boolean;
+    oidcEnabled?: boolean;
     googleEnabled?: boolean;
     passwordRecoveryOnly?: boolean;
     namespaceDeleteDenied?: boolean;
     namespaceDeleteRestricted?: boolean;
     observabilityDenied?: boolean;
-    oauthExpired?: boolean;
-    oauthPending?: boolean;
     serviceAccountsEmpty?: boolean;
     repositoryDescriptionsPending?: boolean;
     repositoryNotConfigured?: boolean;
@@ -116,25 +131,8 @@ type FixtureEvidence = Parameters<typeof serveChannelDirectory>[2] & {
 // Only the fields this fixture consumes have concrete types. POST bodies and
 // intentionally partial replies are not asserted to be complete API records.
 type StoredIdentity = { id: string; response: object };
-// Only identity and lifecycle fields are consumed. Extra request fields survive
-// in the response object without becoming a dynamic mutable storage contract.
-type StoredCredentialSource = Pick<
-  CredentialSourceMetadata,
-  "id" | "namespaceId" | "ref" | "state"
-> & {
-  config: unknown;
-  driverId: string;
-  createdAt: string;
-};
-type DeviceLogin = {
-  session: SecretReference;
-  status: "pending" | "ready";
-  verificationUrl: string;
-  userCode: string;
-  expiresAt: string;
-  intervalSeconds: number;
-  source?: CredentialSourceReference;
-};
+type DeviceLogin = Static<typeof AgentDeviceAuthorizationResponse>["data"];
+type StoredCredentialSource = CredentialSourceResponse["data"];
 function storedIdentity<T extends { id: string }>(response: T): StoredIdentity {
   return { id: response.id, response };
 }
@@ -149,7 +147,9 @@ function installationCapabilities(
 ): value is NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]> {
   return (
     (value.policyScopeByPlugin === undefined ||
-      Object.values(value.policyScopeByPlugin).every((scope) => scope === "enablement_only")) &&
+      Object.values(value.policyScopeByPlugin).every(
+        (scope) => scope === "enablement_only" || scope === "tool_human_approval",
+      )) &&
     (value.credentialSlots === undefined ||
       value.credentialSlots.every(
         (slot) => slot.toolDiscovery === undefined || slot.toolDiscovery === true,
@@ -179,6 +179,7 @@ function installationScenario(
 
 const createdAt = "2026-09-01T12:00:00.000Z";
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
+const lookupSiblingNamespaceId = "ns_00000000-0000-4000-8000-000000000003";
 const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const secretRef = (id: string): SecretReference => ({ kind: "secret", namespaceId, id });
 const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_demo_model") };
@@ -188,11 +189,12 @@ const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_dem
 export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
+  let harnessStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
-  if (scenario.pendingGithubAttempt) {
-    // Simulates returning from a GitHub callback started in this tab.
-    sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
+  if (scenario.pendingOidcAttempt) {
+    // Simulates returning from an OIDC callback started in this tab.
+    sessionStorage.setItem("occ.console.oidcAttempt", "a".repeat(43));
   }
   // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
   // one whose tab had a session before it expired keeps it; a first visit has none.
@@ -211,9 +213,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const configurationStore = createConfigurationStore(scenario, namespaceId, createdAt, nextId);
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
-  const credentialSources = new Map<string, StoredCredentialSource>();
-  let credentialRegistrationFailed = false;
+  const credentialSources = new Map<string, StoredCredentialSource>(
+    (scenario.initialCredentialSources ?? []).map((source) => [source.id, source]),
+  );
   const deviceLogins = new Map<string, DeviceLogin>();
+  const cancelledDeviceLogins = new Set<string>();
+  let deniedDeviceSourceCreate = false;
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
   const roles: StoredIdentity[] = [];
   const bindings: StoredIdentity[] = [];
@@ -226,6 +231,8 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       email: "operator@example.com",
     },
   };
+  const navigationAgentLookup =
+    scenario.navigationAgentHistory || scenario.navigationAgentLookupMismatch;
   const namespaces: { id: string; name: string; status: string; createdAt: string }[] =
     scenario.emptyNamespaces
       ? []
@@ -238,12 +245,24 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
           {
             id: "ns_00000000-0000-4000-8000-000000000002",
-            name: "Research",
-            status: "provisioning",
+            name: navigationAgentLookup ? "A history default" : "Research",
+            status: navigationAgentLookup ? "ready" : "provisioning",
             createdAt,
           },
         ];
+  for (const name of scenario.additionalNamespaceNames ?? []) {
+    namespaces.push({ id: nextId("ns"), name, status: "ready", createdAt });
+  }
+  if (scenario.navigationAgentLookupMismatch) {
+    namespaces.push({
+      id: lookupSiblingNamespaceId,
+      name: "C sibling",
+      status: "ready",
+      createdAt,
+    });
+  }
   const namespaceDeletionReads = new Map<string, number>();
+  let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -267,7 +286,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     {
       id: "sa_demo",
       name: "Research service",
-      credential: { kind: "access_token" },
+      credential: {
+        kind: "access_token",
+        sourceId: "cs_00000000-0000-4000-8000-000000000010",
+      },
       backendId: "chatgpt-demo",
       status: "active",
       createdAt,
@@ -333,12 +355,27 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       : scenario.auth === "runtime"
         ? { method: "runtime" }
         : scenario.auth === "service"
-          ? { method: "codex_pat", source: { kind: "service_account", namespaceId, id: "sa_demo" } }
+          ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
-            : scenario.auth === "oauth"
+            : scenario.auth === "oauth" || scenario.auth === "api-source"
               ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
+  if (
+    (scenario.auth === "api-source" || scenario.auth === "service") &&
+    selectedAuth?.method === "credential_source"
+  ) {
+    credentialSources.set(selectedAuth.sourceId, {
+      id: selectedAuth.sourceId,
+      namespaceId,
+      name: scenario.auth === "service" ? "Research service managed token" : "Evaluation API key",
+      type: "static",
+      config: { provider_preset: scenario.auth === "service" ? "codex-pat" : "openai" },
+      ref: { kind: "credential_source", namespaceId, id: selectedAuth.sourceId },
+      state: "ready",
+      createdAt,
+    });
+  }
   // The demo Agent was granted its harness authentication Secret or credential source, unless the
   // scenario left it out: an administrator's Credentials tab reads this grant (finding 2260).
   const harnessCredential =
@@ -384,6 +421,14 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
+  let delayHistoryLookup = scenario.navigationAgentHistory === true;
+  let misrouteLookup = scenario.navigationAgentLookupMismatch === true;
+  const templates = createConnectionTemplateFixture(
+    scenario.oauthCatalog,
+    createdAt,
+    namespaceId,
+    nextId,
+  );
   const presets = createPresetFixtures(scenario, namespaceId, auth);
   const networkPolicy = createNetworkPolicyFixture(scenario, {
     namespaceId,
@@ -395,22 +440,29 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const path = url.pathname;
     if (path === "/api/auth/providers" && method === "GET") {
       return response({
-        github: scenario.githubEnabled === true,
+        oidc: scenario.oidcEnabled === true,
+        ...(scenario.oidcEnabled
+          ? {
+              oidcSignIn: {
+                label: "single sign-on",
+                authorizationUrl: "https://idp.example.test/authorize",
+              },
+            }
+          : {}),
         google: scenario.googleEnabled === true,
         password: scenario.passwordRecoveryOnly !== true,
-        sessionBinding: scenario.githubEnabled === true || scenario.googleEnabled === true,
+        sessionBinding: scenario.oidcEnabled === true || scenario.googleEnabled === true,
       });
     }
     if (
-      (path === "/api/auth/providers/github/start" ||
-        path === "/api/auth/providers/google/start") &&
+      (path === "/api/auth/providers/oidc/start" || path === "/api/auth/providers/google/start") &&
       method === "POST"
     ) {
       // Keep the preview local; provider navigation needs real backend verification.
       return error(503);
     }
     if (
-      (path === "/api/auth/providers/github/result" ||
+      (path === "/api/auth/providers/oidc/result" ||
         path === "/api/auth/providers/google/result") &&
       method === "POST"
     ) {
@@ -426,6 +478,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    const templateResponse = templates(path, method, body, url.searchParams);
+    if (templateResponse) {
+      return templateResponse;
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response(installationDriverConfigurations(scenario));
@@ -520,6 +576,23 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
+        // The invalid-value preview fails the first read after the unconfirmed write;
+        // the unavailable preview waits for the ordinary retry prompt to open.
+        if (
+          scenario.namespaceDeleteRetryStatusFailure &&
+          item.id === namespaceId &&
+          !namespaceDeleteRetryStatusFailed &&
+          (scenario.namespaceDeleteRetryStatusFailure === "invalid"
+            ? item.status === "deleting"
+            : document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+                ?.textContent === `Retry deletion of ${item.name}?`)
+        ) {
+          namespaceDeleteRetryStatusFailed = true;
+          if (scenario.namespaceDeleteRetryStatusFailure === "invalid") {
+            return response({ ...item, status: [item.status] });
+          }
+          return new Response("Service unavailable", { status: 503 });
+        }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
           const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
           namespaceDeletionReads.set(item.id, reads);
@@ -542,14 +615,26 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     const match = path.match(/^\/namespaces\/([^/]+)\/(.*)$/);
     if (match) {
       const [, ns, resource = ""] = match;
+      if (
+        scenario.navigationAgentLookupMismatch &&
+        ns === lookupSiblingNamespaceId &&
+        method === "GET" &&
+        resource === "agents/agt_00000000-0000-4000-8000-000000000001"
+      ) {
+        if (!misrouteLookup) {
+          return error(404, "NOT_FOUND");
+        }
+        misrouteLookup = false;
+        // The sibling returns the holder’s Agent once, with its original Namespace ID.
+        return response(lifecycle.seedAgent());
+      }
       if (ns !== namespaceId) {
         if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
           return response({
             delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
             agents: { create: true },
             secrets: { create: true },
-            // A member refused delete is no Installation administrator; an administrator is
-            // refused it only by a Restriction.
+            // The fixtures model a member or administrator with an advisory delete refusal.
             installation: {
               administer: !scenario.observabilityDenied && !scenario.namespaceDeleteDenied,
             },
@@ -563,16 +648,15 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const session = secretRef(nextId("sec"));
           const login: DeviceLogin = {
-            session,
+            session: { id: nextId("sec"), namespaceId },
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(session.id, login);
+          deviceLogins.set(login.session.id, login);
           return response(login);
         }
         const login = deviceLogins.get(id ?? "");
@@ -580,6 +664,22 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return error(404);
         }
         if (poll && method === "POST") {
+          if (cancelledDeviceLogins.has(id ?? "")) {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "Device login expired or was cancelled. Connect again.",
+            );
+          }
+          if (scenario.oauthPollCreateDenied && !deniedDeviceSourceCreate) {
+            deniedDeviceSourceCreate = true;
+            cancelledDeviceLogins.add(id ?? "");
+            return error(
+              403,
+              "FORBIDDEN",
+              "Not authorized: this needs CredentialSource create in this Namespace. Ask an Installation administrator to grant it.",
+            );
+          }
           if (!scenario.oauthPending) {
             login.status = "ready";
             login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };
@@ -588,7 +688,6 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (!poll && method === "DELETE") {
           deviceLogins.delete(id ?? "");
-          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }
@@ -614,6 +713,9 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             allowedProfiles: ["git-read"],
           },
         ];
+        if (scenario.repositoryDescriptionsPending === false) {
+          return response(options);
+        }
         const requestedDescriptions = new Set(
           url.searchParams.get("descriptionRefs")?.split(",") ?? [],
         );
@@ -663,20 +765,14 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       }
       if (resource === "credential-sources") {
         if (method === "GET") {
-          return response([...credentialSources.values()]);
+          return response(
+            [...credentialSources.values()].filter(
+              (source) =>
+                !("ownerCapability" in source && source.ownerCapability === "credential_gateway"),
+            ),
+          );
         }
         if (method === "POST") {
-          if (
-            scenario.credentialRegistrationOutcome === "invalid-config" &&
-            !credentialRegistrationFailed
-          ) {
-            credentialRegistrationFailed = true;
-            return error(
-              400,
-              "INVALID_REQUEST",
-              "Credential destination authorization must match the Installation model provider.",
-            );
-          }
           if (body === null || body === undefined) {
             return error(
               400,
@@ -684,42 +780,64 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               "The preview requires a Credential Source registration body.",
             );
           }
-          // Preserve the legacy opaque spread, including partial registrations.
-          // Only config's existing nullish default is interpreted here.
-          const input: object = Object(body);
-          const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
-          const id = nextId("csr");
+          const input = Object(body) as Record<string, unknown>;
+          if (
+            input.type === "openai" &&
+            scenario.credentialSourceTypes?.some(({ type }) => type === input.type)
+          ) {
+            const refs = Object(input.secrets) as Record<string, unknown>;
+            const key = Object(refs.api_key) as Partial<SecretReference>;
+            const secret = typeof key.id === "string" ? secrets.get(key.id) : undefined;
+            if (
+              typeof input.name !== "string" ||
+              "secret" in input ||
+              key.kind !== "secret" ||
+              key.namespaceId !== namespaceId ||
+              !secret
+            ) {
+              return error(400, "INVALID_REQUEST", "Choose a model Secret in this Namespace.");
+            }
+            const id = nextId("cs");
+            const saved: StoredCredentialSource = {
+              id,
+              namespaceId,
+              name: input.name,
+              type: input.type,
+              ownerCapability: "credential_gateway",
+              config: {},
+              secrets: { api_key: secret.ref },
+              state: "ready",
+              ref: { kind: "credential_source", namespaceId, id },
+            };
+            credentialSources.set(id, saved);
+            return response(saved, 201);
+          }
+          const material = input.secret;
+          if (
+            input.type !== "static" ||
+            typeof input.name !== "string" ||
+            typeof material !== "string" ||
+            material.trim() === "" ||
+            "secrets" in input ||
+            "driverId" in input
+          ) {
+            return error(400, "INVALID_REQUEST", "Choose one static credential value.");
+          }
+          const id = nextId("cs");
           const saved: StoredCredentialSource = {
-            ...input,
             id,
-            config: "config" in input ? (input.config ?? {}) : {},
+            name: input.name,
+            type: "static",
+            config: (input.config ?? {}) as Record<string, string>,
+            ...(typeof input.connectionTemplateId === "string"
+              ? { connectionTemplateId: input.connectionTemplateId }
+              : {}),
             ref: { kind: "credential_source", namespaceId, id },
             namespaceId,
-            driverId: "credential-gateway-storybook",
-            state:
-              uncertain && scenario.credentialRegistrationOutcome === "deleting"
-                ? "deleting"
-                : "ready",
+            state: "ready",
             createdAt,
           };
           credentialSources.set(saved.id, saved);
-          if (uncertain) {
-            // Preserve the server-owned registration after an uncertain response;
-            // recovery operates on the saved source, never another model Secret.
-            credentialRegistrationFailed = true;
-            if (scenario.credentialRegistrationOutcome === "different-source") {
-              const otherId = nextId("csr");
-              const other = {
-                ...saved,
-                id: otherId,
-                name: "Another model registration",
-                ref: { ...saved.ref, id: otherId },
-              };
-              credentialSources.set(other.id, other);
-              return response(other, 201);
-            }
-            return error(503, "DEPENDENCY_UNAVAILABLE");
-          }
           return response(saved, 201);
         }
       }
@@ -761,6 +879,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (resource === "permissions/secrets" && method === "GET") {
         return response({ operateDenied: scenario.secretOperateDenied ?? [] });
       }
+      // Members can configure browser access; guided provisioning remains administrator-only.
+      if (resource === "agent-capabilities" && method === "GET") {
+        const { agentProvisioning: _administratorOnly, ...capabilities } =
+          installationFixture(installationScenario(scenario), createdAt).capabilities ?? {};
+        return response({ capabilities });
+      }
       if (
         resource === "agents" ||
         resource === "agents/validate" ||
@@ -786,6 +910,13 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return response({
             ...scenario.pluginCapabilities,
             discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
+            ...(scenario.pluginDiscoveryCredential === "none"
+              ? {}
+              : scenario.auth === "oauth"
+                ? { hostedCredential: "codex_account" }
+                : scenario.auth === "api-source"
+                  ? { hostedCredential: "api_key" }
+                  : {}),
           });
         }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {
@@ -816,9 +947,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         if (suffix === "/permissions/secrets" && method === "GET") {
           return response({ operateDenied: scenario.secretOperateDenied ?? [] });
         }
+        if (
+          suffix === "/native-admin/launch" &&
+          method === "POST" &&
+          scenario.nativeAdminSessionMode === "host-only-exchange"
+        ) {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
+            ...(scenario.nativeAdminSessionMode
+              ? { sessionMode: scenario.nativeAdminSessionMode }
+              : {}),
+            mode: scenario.nativeAdminMode ?? "admin",
+            ...(scenario.nativeAdminReason ? { reason: scenario.nativeAdminReason } : {}),
             url:
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
@@ -826,13 +969,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.
+          const harness =
+            harnessStatusReads++ > 0
+              ? (scenario.harnessAfterFirstRead ?? scenario.harness)
+              : scenario.harness;
           return response(
-            scenario.harness === undefined || !saved.activeRevisionId
+            harness === undefined || !saved.activeRevisionId
               ? { status: "unobserved" }
               : {
                   status: "observed",
                   revisionId: saved.activeRevisionId,
-                  harness: scenario.harness,
+                  harness,
                 },
           );
         }
@@ -1007,7 +1154,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             // "replaced" only the version selected for service still runs.
             pods.length = 0;
           }
-          if (scenario.runtimePod === "rollover") {
+          if (
+            scenario.runtimePod === "rollover" ||
+            (scenario.runtimePod === "scaleDown" && podRolloverStatusReads === 0)
+          ) {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
               ...pod,
@@ -1272,6 +1422,17 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         const reply = await lifecycle.serve(resource, method, body, url);
         if (reply !== undefined) {
+          if (
+            delayHistoryLookup &&
+            method === "GET" &&
+            suffix === "" &&
+            id === lifecycle.seedAgent().id &&
+            reply.status === 200
+          ) {
+            // Let the completed reply arrive after the user leaves the lookup.
+            delayHistoryLookup = false;
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+          }
           return reply;
         }
       }
@@ -1281,7 +1442,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (method === "POST") {
           const input: object = Object(body);
-          const role = { ...input, id: `role_${serial++}`, namespaceId };
+          const role = { ...input, id: nextId("role"), namespaceId };
           roles.push(storedIdentity(role));
           return response(role, 201);
         }
@@ -1292,7 +1453,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         if (method === "POST") {
           const input: object = Object(body);
-          const binding = { ...input, id: `binding_${serial++}`, namespaceId };
+          const binding = { ...input, id: nextId("binding"), namespaceId };
           bindings.push(storedIdentity(binding));
           return response(binding, 201);
         }

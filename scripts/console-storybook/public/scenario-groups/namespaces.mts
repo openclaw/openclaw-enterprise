@@ -8,6 +8,8 @@ type NamespaceRule = { path: "/namespaces" } & (
       method?: "GET";
       status: number;
       code?: ErrorCode;
+      skip?: number;
+      once?: true;
       hold?: never;
       data?: never;
     }
@@ -44,10 +46,13 @@ type NamespaceScenario = {
   mobile?: true;
   emptyAgents?: true;
   emptyNamespaces?: true;
+  additionalNamespaceNames?: readonly string[];
+  namespaceRechecks?: readonly NamespaceStatus[];
   observabilityDenied?: true;
   namespaceStatus?: NamespaceStatus;
   namespaceDeleteDenied?: true;
   namespaceDeleteRestricted?: true;
+  namespaceDeleteRetryStatusFailure?: "unavailable" | "invalid";
   namespaceDeleteOutcome?: "complete" | "blocked" | "forbidden" | "pending" | "unknown" | "stalled";
   actions?: readonly StoryAction[];
   rules?: readonly NamespaceRule[];
@@ -63,6 +68,25 @@ export const namespacesScenarios = {
     steps: [
       "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
       "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
+    ],
+  },
+  namespaceSearch: {
+    group: "Pages/Namespaces",
+    name: "Search by name or ID",
+    path: "/console/namespaces",
+    additionalNamespaceNames: Array.from(
+      { length: 24 },
+      (_, index) => `Team ${String(index + 1).padStart(2, "0")}`,
+    ),
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["ready"],
+    description: "Find a readable Namespace in a long list and return to it from Agents.",
+    steps: [
+      "Enter TEAM 22 in Search Namespaces. Check that only Team 22 is visible. Clear search, then paste an ID from a row to find it.",
+      "Enter a name that has no match. Check the no-match message, then use Clear search to show all rows.",
+      "Focus Team 22 and press Enter. Go Back and check that Team 22 is focused and visible.",
+      "At phone width, repeat the search and use Clear search. Scroll to check the Ready and Provisioning badges.",
     ],
   },
   namespaceDelete: {
@@ -113,7 +137,7 @@ export const namespacesScenarios = {
     path: "/console/namespaces",
     namespaceDeleteDenied: true,
     description:
-      "A member's advisory permission answer refuses deletion. The trash icon looks disabled and its reason says only an Installation administrator can delete a Namespace.",
+      "A member's advisory permission answer refuses deletion. The trash icon is disabled. Its reason says Namespace delete is required and asks the member to have an Installation administrator check their access.",
   },
   namespaceDeleteRestricted: {
     group: "Pages/Namespaces",
@@ -121,7 +145,7 @@ export const namespacesScenarios = {
     path: "/console/namespaces",
     namespaceDeleteRestricted: true,
     description:
-      "An Installation administrator whom a deny Restriction keeps from deleting the Namespace. The reason names the Restriction and who can lift it, not an administrator to ask.",
+      "A simulated Restriction blocks an Installation administrator from deleting the Namespace. The advisory result names Namespace delete and asks them to check their access and whether an IAM Restriction applies.",
     gap: "The permission answer is advisory. The controller still authorizes each delete.",
   },
   namespaceDeleteRefused: {
@@ -134,7 +158,7 @@ export const namespacesScenarios = {
       { click: "Delete Namespace" },
     ],
     description:
-      "A write can still be refused after the advisory read. The row shows the reason and request ID.",
+      "A write can still be refused after the advisory read. The row shows the access guidance and request ID.",
   },
   namespaceDeletePending: {
     group: "Pages/Namespaces",
@@ -160,6 +184,24 @@ export const namespacesScenarios = {
     description:
       "An unconfirmed write requires Refresh status. The Console does not replay deletion or assume it started.",
   },
+  namespaceDeleteInvalidStatus: {
+    group: "Pages/Namespaces",
+    name: "Delete invalid status",
+    path: "/console/namespaces",
+    namespaceDeleteOutcome: "unknown",
+    namespaceDeleteRetryStatusFailure: "invalid",
+    actions: [
+      { selector: '[aria-label="Delete Engineering"]', click: true },
+      { click: "Delete Namespace" },
+    ],
+    description:
+      "An unconfirmed write shows Status unknown. The first status check returns an invalid array once; a valid check restores the confirmed badge and deliberate retry.",
+    steps: [
+      "Check Engineering's warning Status unknown badge after the unconfirmed write. Select Refresh status: the badge remains Status unknown, with a status warning and neither deletion action available.",
+      "Select Refresh status again. Engineering shows Deleting and Request deletion again returns. Open the confirmation, then cancel; no extra DELETE is sent.",
+      "Reset to repeat. The invalid array is simulated wire corruption, not a supported Controller status. Check at desktop and phone widths.",
+    ],
+  },
   namespaceDeleteRetry: {
     group: "Pages/Namespaces",
     name: "Delete cleanup recovery",
@@ -168,6 +210,23 @@ export const namespacesScenarios = {
     namespaceDeleteOutcome: "stalled",
     description:
       "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
+  },
+  namespaceDeleteRetryStatusFailure: {
+    group: "Pages/Namespaces",
+    name: "Delete retry status unavailable",
+    path: "/console/namespaces",
+    namespaceStatus: "deleting",
+    namespaceDeleteOutcome: "stalled",
+    namespaceDeleteRetryStatusFailure: "unavailable",
+    description:
+      "A status check fails once while the retry confirmation is open. The confirmation closes and Refresh status receives focus. Rechecking restores deliberate retry.",
+    steps: [
+      "Select Request deletion again for Engineering. Leave the confirmation open until the next background status check fails.",
+      "Check that the confirmation closes, Refresh status has focus, and Request deletion again is hidden. No deletion request is sent.",
+      "Activate Refresh status. The Namespace shows Deleting and Request deletion again returns without sending a deletion request.",
+      "Open Request deletion again. The new confirmation stays usable through later status checks. Cancel it, or confirm a deliberate retry.",
+      "Reset the story to repeat the one-time failure. Responses are simulated; this preview does not prove Controller behavior.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -341,7 +400,7 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+      "Creation succeeded in the simulated fixture. The dialog offers Open Agents after the created Namespace appears in the list.",
   },
   namespaceCreateUnreadable: {
     group: "Pages/Namespaces",
@@ -356,7 +415,21 @@ export const namespacesScenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
+      "This create-only caller's list omits the new Namespace. The dialog confirms creation, says the Namespace is unavailable to view, and offers Done.",
+  },
+  namespaceCreateAccessUnconfirmed: {
+    group: "Pages/Namespaces",
+    name: "Created with access unconfirmed",
+    path: "/console/namespaces",
+    rules: [
+      { path: "/namespaces", status: 503, code: "DEPENDENCY_UNAVAILABLE", skip: 1, once: true },
+    ],
+    description:
+      "Creation succeeded. The first access check failed, so the full name stays visible and Check access again repeats only the read.",
+    steps: [
+      "Create customer_support_north_america_service_reliability_and_escalations_production. The confirmation shows the full name and says access could not be confirmed.",
+      "Select Check access again. The next read finds the created Namespace and offers Open Agents.",
+    ],
   },
   namespacesDenied: {
     group: "Pages/Namespaces",

@@ -62,6 +62,9 @@ New contributors wait for maintainer feedback.
 
 Follow these rules when developing or changing code.
 
+Do not maintain forks or patched builds of core dependencies in OCE. Report bugs
+and submit fixes upstream only after human approval (record locally).
+
 ### Build platform capabilities
 
 Every new capability must belong to a platform primitive. Identify its existing
@@ -188,8 +191,9 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - `docs/contributing/` owns onboarding and workflows for people changing the
   platform. Link the root `CONTRIBUTING.md` for contribution policy and the
   relevant reference, flow, or testing page for detailed behavior.
-- The site has six menu sections: **Getting Started**, **Topics**, **Integrations**,
+- The site has seven menu sections: **Getting Started**, **Topics**, **Integrations**,
   **Deploy & Operate**, and **Reference** serve people using or administering the product;
+  **Testing & CI** serves contributors running and interpreting checks;
   **Contribute** serves people changing the platform. Each menu switches sidebars.
   Register each Markdown page once in `docs/docs.json`; put deep implementation
   and testing pages in the owning tab's `hidden` list when an index links them.
@@ -283,11 +287,6 @@ Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
 The user approved keeping CI configuration and test coverage in one guide. The
 checker still reports its word count. This exception applies only to that page.
 
-Approved exception: `docs/guides/deploy/production-installation.md` is exempt
-from the length thresholds. The user approved keeping the production installation
-procedure and its embedded prerequisites in one page. The checker still reports
-its word count. This exception applies only to that page.
-
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
 counts. Exemptions follow the resolved file: an `AGENTS.md` symlink pointing to
@@ -331,12 +330,12 @@ boundaries or intentional architecture as temporary.
 ## Implementation specifications
 
 Follow the [specification process](docs/contributing/specifications.md) for
-document choice, numbering, status, and preservation. Write architectural RFCs
+document choice, naming, status, and preservation. Write architectural RFCs
 under `specs/rfcs/` and all implementation plans directly under `specs/plans/`.
 Link a relevant RFC through the plan's `rfc` frontmatter field, using a path
-relative to the plan file. Preserve RFC-linked and independent task numbering.
+relative to the plan file. Preserve existing RFC and plan names and independent task numbering.
 Use one Markdown file by default. When companions are needed, use
-`<number>-<topic>/index.md` for the main document and keep supporting
+`<stem>/index.md` for the main document and keep supporting
 files in that folder, without a separate top-level Markdown file.
 A larger feature with an RFC needs a separate implementation plan;
 an independent plan can build on the existing architecture without a new RFC.
@@ -355,8 +354,9 @@ retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
 Use stable feature names in `docs/reference/` and preserve grandfathered
-plan names when grouping companions under `index.md`. RFCs require unique numeric
-IDs of at least four digits; keep the old-to-new lookup current when renumbering.
+RFC and plan names when grouping companions under `index.md`. New RFCs use
+`yyyymmdd-title`, as defined in the specification process. Existing numeric RFCs
+retain their IDs and links; preserve the old-to-new lookup.
 This first organization phase preserves `specs/.archive/` content and placement;
 only the removed console-image links change to a preserved Git revision. Do not
 add new records to it. A behavior-changing implementation PR
@@ -491,8 +491,8 @@ controls:
   the relevant phone state; a second recording is useful only when the interaction differs.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video to GitHub, as native attachments or as
-  files in a gist, and show them in the PR's Verification section. Before and
+  Upload screenshots and a short video as native GitHub attachments. Do not use
+  gists for PR evidence. Show the attachments in the PR's Verification section. Before and
   after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the
@@ -519,7 +519,7 @@ controls:
   per declaration, and use braces for control-flow bodies. Apply these rules with
   `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.
 - Run `pnpm lint` for JavaScript and TypeScript changes; `pnpm lint:fix` applies
-  supported automatic fixes. Follow `eslint.config.mjs` and the
+  supported automatic fixes. Follow `eslint.config.ts` and the
   [linting guide](docs/testing/local.md#linting-and-formatting). Do not expand
   `eslint-suppressions.json` to admit new findings; prune entries as they are fixed.
 

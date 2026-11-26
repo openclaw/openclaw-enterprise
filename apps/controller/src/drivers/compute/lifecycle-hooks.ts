@@ -2,14 +2,13 @@ import type {
   AgentRevision,
   ComputeLifecycleHooks,
   Driver,
-  Namespace,
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { currentComputeAbortSignal } from "./operation-context.ts";
 
 type HookPhase = keyof ComputeLifecycleHooks;
-type CleanupPhase = "beforeWorkloadStop" | "beforeNamespaceDelete";
+type CleanupPhase = "beforeWorkloadStop";
 
 interface SelectedDriver {
   readonly capability: Driver["capability"];
@@ -56,10 +55,8 @@ export class ComputeLifecycleDispatcher {
       capability,
       id,
       callbacks: {
-        afterNamespacePrepared: hooks?.afterNamespacePrepared?.bind(hooks),
         beforeWorkloadStart: hooks?.beforeWorkloadStart?.bind(hooks),
         beforeWorkloadStop: hooks?.beforeWorkloadStop?.bind(hooks),
-        beforeNamespaceDelete: hooks?.beforeNamespaceDelete?.bind(hooks),
       },
     }));
   }
@@ -67,29 +64,6 @@ export class ComputeLifecycleDispatcher {
   /** Whether a selected Driver may add variables to a workload's launch environment. */
   get contributesLaunchEnvironment(): boolean {
     return this.#drivers.some(({ callbacks }) => callbacks.beforeWorkloadStart !== undefined);
-  }
-
-  async afterNamespacePrepared(namespace: Readonly<Namespace>): Promise<void> {
-    const preparedNamespace = immutableCopy(namespace);
-    const signal = currentComputeAbortSignal() ?? FALLBACK_SIGNAL;
-    const completed: SelectedDriver[] = [];
-
-    for (const owner of this.#drivers) {
-      const hook = owner.callbacks.afterNamespacePrepared;
-      if (hook === undefined) {
-        continue;
-      }
-
-      try {
-        signal.throwIfAborted();
-        await hook(preparedNamespace, signal);
-        completed.push(owner);
-        signal.throwIfAborted();
-      } catch {
-        await this.#cleanup("beforeNamespaceDelete", preparedNamespace, completed, signal, true);
-        throw hookFailure("afterNamespacePrepared", owner);
-      }
-    }
   }
 
   async beforeWorkloadStart(
@@ -139,18 +113,9 @@ export class ComputeLifecycleDispatcher {
     );
   }
 
-  async beforeNamespaceDelete(namespace: Readonly<Namespace>): Promise<void> {
-    await this.#cleanup(
-      "beforeNamespaceDelete",
-      immutableCopy(namespace),
-      this.#drivers,
-      currentComputeAbortSignal() ?? FALLBACK_SIGNAL,
-    );
-  }
-
   async #cleanup(
     phase: CleanupPhase,
-    resource: Readonly<AgentRevision> | Readonly<Namespace>,
+    resource: Readonly<AgentRevision>,
     drivers: readonly SelectedDriver[],
     signal: AbortSignal,
     recoverCancelled = false,
@@ -160,11 +125,7 @@ export class ComputeLifecycleDispatcher {
     for (let index = drivers.length - 1; index >= 0; index -= 1) {
       const owner = drivers[index]!;
       const hook = owner.callbacks[phase] as
-        | ((
-            resource: Readonly<AgentRevision> | Readonly<Namespace>,
-            signal: AbortSignal,
-          ) => Promise<void>)
-        | undefined;
+        ((resource: Readonly<AgentRevision>, signal: AbortSignal) => Promise<void>) | undefined;
       if (hook === undefined) {
         continue;
       }

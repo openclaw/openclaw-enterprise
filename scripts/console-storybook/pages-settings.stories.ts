@@ -43,3 +43,9 @@ export const SharedModelProvider = {
   ...story("settingsModelProvider"),
   name: "Shared model provider",
 };
+
+export const DebugEnabled = { ...story("settingsDebugEnabled"), name: "Debug mode enabled" };
+export const StorageUnavailable = {
+  ...story("settingsStorageUnavailable"),
+  name: "Browser storage unavailable",
+};

@@ -587,7 +587,6 @@ export class SshComputeDriver implements ComputeDriver {
     try {
       await this.execute(this.host(namespace), { operation: "ensure-namespace", namespace });
       this.bindNamespace(namespace);
-      await this.lifecycle.afterNamespacePrepared(namespace);
       return { ...result, namespaceReady: true };
     } catch (error) {
       return { ...result, failure: failure(error) };
@@ -599,7 +598,6 @@ export class SshComputeDriver implements ComputeDriver {
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
     try {
       const host = this.host(namespace);
-      await this.lifecycle.beforeNamespaceDelete(namespace);
       await this.execute(host, { operation: "delete-namespace", namespace });
       this.namespaces.delete(namespace.id);
       for (const [id, binding] of this.agents) {

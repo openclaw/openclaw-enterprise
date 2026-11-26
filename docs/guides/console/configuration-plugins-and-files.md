@@ -6,6 +6,12 @@ after **Deploy new version**; a workspace file save applies at once.
 
 ## Configuration tab
 
+The tab shows one card for each part of the Configuration: the **Configuration
+draft** or **Configuration snapshot** summary, then **Settings**, which holds the
+native document, and **Gateway channel proxy**. The draft adds **Collaboration
+and safety** and **Gateway managed mode**. The help under each control states
+what the control does and what it risks.
+
 | Field                                  | Meaning                                                                                                          |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Model**                              | Primary model configured for the Agent.                                                                          |
@@ -57,11 +63,16 @@ Configuration binds, it reads **Open draft** and opens the draft read-only. Savi
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
 
+If a number such as `1e400` exceeds JavaScript's finite range, the Console stops
+the save, keeps your draft, and shows the error under **Configuration JSON**.
+Replace the value with a number closer to zero, then select **Save Configuration**
+again.
+
 If a draft contains `security.preset`, remove that field in **Edit Configuration**.
 If you used `corporate`, set the restrictions you relied on explicitly before
 saving. For example, set `tools.fs.workspaceOnly` to
-`true` to confine file tools to the workspace, or set `session.dmScope` to
-`"per-account-channel-peer"` to separate direct-message sessions. Strict mode
+`true` to confine file tools to the workspace. When a channel is enabled, OCE
+already separates direct-message sessions by default (`session.dmScope`). Strict mode
 leaves those settings alone. Also review any restrictions you relied on for
 command approvals, elevated execution, session visibility, and messaging between
 Agents or conversations. OCE isolates each Agent and requires OpenClaw's own
@@ -72,7 +83,9 @@ Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and
 generation, and the API refuses later races. Reload stale drafts; after an
 unknown outcome, successfully reload saved state before retrying. Invalid JSON
-and failed saves retain text for correction.
+and failed saves retain text for correction. A save conflict keeps focus and text
+selection if you moved to another control while saving. If you stayed on
+**Checking Configuration…**, focus moves to **Reload draft**.
 Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
@@ -91,6 +104,11 @@ from the running version's; neither catalog proves installation or runtime
 access. Existing
 selections and **Plugin selections JSON** remain editable when browsing is
 unavailable.
+
+If **Plugin selections JSON** contains a number too large in magnitude to save,
+such as `1e400`, the Console keeps the draft and asks you to correct it before
+saving or editing it in the picker. You can still browse the catalog if it is
+available. The Plugin Driver still validates its own policy fields when you save.
 
 An open Slack approver search keeps its query and results when you return to the
 browser tab and still have Agent access. Moving to another Console control closes
@@ -126,9 +144,14 @@ plugin allowlist and is separate from these Agent-owned selections.
 
 ## Workspace files tab
 
-**Workspace access is unavailable** leaves
-the editor and Save disabled. The empty box does not mean the file is empty.
-Check gateway access, then use Reload.
+If the gateway or the API does not answer, each affected file shows the reason
+under its editor, and one notice above the files names those files. The empty box
+does not mean the file is empty. Check that the Agent is running, then select
+**Retry**.
+
+**Retry** does not read a file that has unsaved edits or an unknown save outcome.
+Select **Reload** for that file. **Reload** replaces your unsaved edits with the
+current file.
 
 These are live files belonging to the Agent, even when you browse an older
 version. They are not historical copies or Configuration fields.
@@ -144,9 +167,9 @@ Choose a file with its desktop tab or the phone **Workspace file** dropdown.
 The description explains its role. Switching files keeps unsaved text and each
 file's indicator shows Unsaved, Loading, Missing, Read-only, or Needs attention.
 Each editor loads independently. Its status reports loading, success, or failure.
-**Reload** replaces unsaved edits with current contents. **Save** immediately
-creates or replaces that one file; it does not deploy a version. Save is disabled
-until appropriate loaded, changed state is available.
+If the editor warns that the file changed while you were away, review your draft
+before choosing **Save** to replace the file or **Reload** to discard your edits.
+Save creates or replaces only the selected file and does not deploy a version.
 
 Each file allows up to 16 KiB of valid UTF-8 text. Concurrent saves use the last
 writer's contents. Reading requires Agent `read`, saving requires `operate`, and

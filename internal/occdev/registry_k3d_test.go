@@ -252,20 +252,22 @@ func TestDevelopmentImageRegistryDetachesAfterTheLastSelectedImage(t *testing.T)
 	}
 }
 
+func newRegistryTestRunner(repository string) *runner {
+	r := newRunner(Options{Repository: repository})
+	r.engine = "docker"
+	r.imageRegistry = &developmentImageRegistry{container: registryTestContainer, ports: map[string]string{"127.0.0.1:15001": "5000"}, pending: 1}
+	return r
+}
+
 func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 	state := kubernetesOnlyOpenShellState(t)
 	network := "k3d-" + state.Cluster
 	inspect := `"container inspect --format {{with index .NetworkSettings.Networks \"` + network + `\"}}{{.IPAddress}}{{end}} ` + registryTestContainer + `")`
-	newRegistry := func() *runner {
-		r := newRunner(Options{Repository: state.Repository})
-		r.engine = "docker"
-		r.imageRegistry = &developmentImageRegistry{container: registryTestContainer, ports: map[string]string{"127.0.0.1:15001": "5000"}, pending: 1}
-		return r
-	}
+	disconnect := `"network disconnect ` + network + ` ` + registryTestContainer + `")`
 	t.Run("an existing connection is reused", func(t *testing.T) {
 		commands := fakeProfileCommands(t, map[string]string{"docker": inspect + ` echo ` + registryTestAddress + ` ;;
-"network disconnect ` + network + ` ` + registryTestContainer + `") ;;`})
-		r := newRegistry()
+` + disconnect + ` ;;`})
+		r := newRegistryTestRunner(state.Repository)
 		if err := r.attachDevelopmentImageRegistry(context.Background(), state); err != nil || r.imageRegistry.address != registryTestAddress {
 			t.Fatalf("%v %v", err, commands())
 		}
@@ -280,8 +282,8 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 		marker := filepath.Join(t.TempDir(), "connected")
 		commands := fakeProfileCommands(t, map[string]string{"docker": `"network connect ` + network + ` ` + registryTestContainer + `") : > ` + shellQuote(marker) + ` ;;
 ` + inspect + ` if [ -f ` + shellQuote(marker) + ` ]; then echo fd00::5; fi ;;
-"network disconnect ` + network + ` ` + registryTestContainer + `") /bin/rm ` + shellQuote(marker) + ` ;;`})
-		r := newRegistry()
+` + disconnect + ` /bin/rm ` + shellQuote(marker) + ` ;;`})
+		r := newRegistryTestRunner(state.Repository)
 		err := r.attachDevelopmentImageRegistry(context.Background(), state)
 		if err == nil || !strings.Contains(err.Error(), "no IPv4 address") {
 			t.Fatalf("want the address refusal, got %v", err)
@@ -294,7 +296,7 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 		// An interrupted start cancels the context before the deferred detach
 		// runs; the detach must still remove the registry from the network.
 		commands := fakeProfileCommands(t, map[string]string{"docker": registryPullCases(state.Cluster, filepath.Join(t.TempDir(), "connected"), "")})
-		r := newRegistry()
+		r := newRegistryTestRunner(state.Repository)
 		if err := r.attachDevelopmentImageRegistry(context.Background(), state); err != nil {
 			t.Fatal(err)
 		}
@@ -307,7 +309,7 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 	t.Run("a connect that fails without connecting", func(t *testing.T) {
 		commands := fakeProfileCommands(t, map[string]string{"docker": `"network connect ` + network + ` ` + registryTestContainer + `") exit 1 ;;
 ` + inspect + ` ;;`})
-		r := newRegistry()
+		r := newRegistryTestRunner(state.Repository)
 		if err := r.attachDevelopmentImageRegistry(context.Background(), state); err == nil {
 			t.Fatal("a failed connect was reported as attached")
 		}
@@ -317,7 +319,7 @@ func TestDevelopmentImageRegistryAttachEdgeCases(t *testing.T) {
 	})
 	t.Run("a non-Linux image", func(t *testing.T) {
 		commands := fakeProfileCommands(t, map[string]string{"docker": `"image inspect --format {{.Os}}/{{.Architecture}} ` + registryTestRuntime + `") echo windows/amd64 ;;`})
-		r := newRegistry()
+		r := newRegistryTestRunner(state.Repository)
 		r.imageRegistry.network, r.imageRegistry.address = network, registryTestAddress
 		_, err := r.importDevelopmentImage(context.Background(), state, registryTestRuntime)
 		if err == nil || !strings.Contains(err.Error(), "must contain a Linux platform") || countCalls(commands(), "docker exec ") != 0 {
@@ -346,9 +348,8 @@ func TestDevelopmentImageImportKeepsTheArchivePathForOtherImages(t *testing.T) {
 "image rm ` + staging + `") ;;`,
 		"k3d": `"image import --mode direct "*" -c ` + state.Cluster + `") ;;`,
 	})
-	r := newRunner(Options{Repository: state.Repository})
-	r.engine = "docker"
-	r.imageRegistry = &developmentImageRegistry{container: registryTestContainer, ports: map[string]string{"127.0.0.1:15001": "5000"}, network: "k3d-" + state.Cluster, address: registryTestAddress, pending: 1}
+	r := newRegistryTestRunner(state.Repository)
+	r.imageRegistry.network, r.imageRegistry.address = "k3d-"+state.Cluster, registryTestAddress
 	got, err := r.importDevelopmentImage(context.Background(), state, image)
 	if err != nil || got != reference {
 		t.Fatalf("got %q, %v\n%s", got, err, strings.Join(commands(), "\n"))
@@ -403,9 +404,9 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 	previousTransport := http.DefaultTransport
 	http.DefaultTransport = &k3dOrderingTransport{}
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	previousRetry := developmentRoutingManifestRetry
-	developmentRoutingManifestRetry.attempts = 1
-	t.Cleanup(func() { developmentRoutingManifestRetry = previousRetry })
+	previousRetry := developmentManifestRetry
+	developmentManifestRetry.attempts = 1
+	t.Cleanup(func() { developmentManifestRetry = previousRetry })
 	t.Setenv("PATH", t.TempDir())
 	commands := fakeProfileCommands(t, map[string]string{
 		"git": `"rev-parse --verify HEAD") echo 0123456789abcdef0123456789abcdef01234567 ;;`,
@@ -427,7 +428,7 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		"kubectl": `"--kubeconfig "*" --context k3d-` + cluster + ` get --raw=/version") ;;
 "create -f "*) while :; do :; done ;;`,
 		"helm": `"show chart "*) exit 45 ;;`,
-		"node": `"scripts/prepare-development-codex-seccomp.mjs "*) echo 'sandbox fixture refused' >&2; exit 42 ;;`,
+		"node": `"scripts/prepare-development-codex-seccomp.ts "*) echo 'sandbox fixture refused' >&2; exit 42 ;;`,
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -454,7 +455,6 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		"k3d cluster create " + cluster + " ",
 		"docker network connect k3d-" + cluster + " " + registryTestContainer,
 		"docker exec k3d-" + cluster + "-server-0 ctr -n k8s.io images pull --plain-http --platform linux/amd64 " + registryTestAddress + ":5000/oce-smoke/runtime@" + profileTestDigest,
-		"node scripts/prepare-development-codex-seccomp.mjs ",
 		"docker network disconnect k3d-" + cluster + " " + registryTestContainer,
 		"k3d cluster delete " + cluster,
 	} {
@@ -464,7 +464,15 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 		}
 		previous = i
 	}
-	for _, call := range calls {
+	// The probe and controller import overlap; a probe failure can cancel that pull.
+	if probe := index("node scripts/prepare-development-codex-seccomp.ts "); probe < 0 || probe >= index("k3d cluster delete "+cluster) {
+		t.Fatal("the Codex sandbox probe was not attempted before rollback")
+	}
+	disconnect := index("docker network disconnect k3d-" + cluster + " " + registryTestContainer)
+	for i, call := range calls {
+		if strings.HasPrefix(call, "docker exec k3d-"+cluster+"-server-0 ctr -n k8s.io images pull ") && i >= disconnect {
+			t.Fatalf("registry pull after disconnect: %s", call)
+		}
 		if strings.Contains(call, "image save") && !strings.Contains(call, staging) {
 			t.Fatalf("a registry image was exported: %s", call)
 		}

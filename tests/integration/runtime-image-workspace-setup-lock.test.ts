@@ -11,14 +11,9 @@ import {
   createHarnessConfiguration,
   withStubbedProviderEndpoint,
 } from "../helpers/harness-configuration.mjs";
-import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.mjs";
-import {
-  docker,
-  image,
-  imageTestOptions,
-  runDocker,
-  runtimeImageModel,
-} from "../helpers/runtime-image-startup.mjs";
+import { cpuScaledImageTimeoutMs } from "../helpers/image-smoke-timeout.ts";
+import { docker, runDocker } from "../helpers/runtime-image-docker.ts";
+import { image, imageTestOptions, runtimeImageModel } from "../helpers/runtime-image-startup.ts";
 
 // A short setup wait for the Driver under test (the internal workspaceSetupWaitMs; the
 // default is 120 s). The test holds the setup's start response until native setup is paused

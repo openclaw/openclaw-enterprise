@@ -118,6 +118,8 @@ export async function startupConfiguration(
       "observability",
       "runtime",
       "sandboxNetworkPolicyCeiling",
+      "repositoryNetworkPolicyCeiling",
+      "iam",
     ],
     "Installation startup configuration",
   );

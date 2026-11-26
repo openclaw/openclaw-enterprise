@@ -8,6 +8,7 @@ import {
 import { stampConsoleBuildRevision } from "../build-console-metadata.mjs";
 
 export const ASSET_PATH = "/console/console.css";
+export const ENTRY_PATH = "/console/console.mjs";
 export const MAX_HTML_BYTES = 256 * 1024;
 export const MAX_ASSET_BYTES = 2 * 1024 * 1024;
 const SOURCE_PATH = "apps/controller/src/console/";
@@ -189,4 +190,15 @@ export function matchesReleaseShell(bytes: Buffer, shell: string): boolean {
   } catch {
     return false;
   }
+}
+
+// The caller has already matched the served HTML to the reviewed stock or themed shell.
+export function declaresStockEntry(shell: string): boolean {
+  const head = section(shell, "<head>", "</head>")?.replace(/<!--[\s\S]*?(?:-->|$)/g, " ");
+  return (
+    head !== undefined &&
+    !/<(?:template|noscript)\b/i.test(head) &&
+    appearsOnce(shell, "console-entry") &&
+    head.includes(`<script id="console-entry" type="module" src="${ENTRY_PATH}"></script>`)
+  );
 }

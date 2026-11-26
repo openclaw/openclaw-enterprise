@@ -1,27 +1,39 @@
+import type {
+  NamespaceEnsureResult,
+  NamespaceDeleteResult,
+  NamespaceDeletionEligibility,
+} from "../namespace-lifecycle.ts";
 import type { ConfigurationValidationOptions } from "../configuration/index.ts";
 import type { CredentialAttachmentStatus } from "../credential-gateway/index.ts";
+import type {
+  CredentialDeploymentConfiguration,
+  CredentialProjection,
+} from "../../credential-deployment.ts";
 import type {
   CredentialPolicyWithdrawalOptions,
   EgressInstallation,
 } from "../credential-proxy/index.ts";
-import type { Driver, SelectedDriverRegistration } from "../index.ts";
+import type { Driver, DriverRegistrationRef, SelectedDriverRegistration } from "../index.ts";
 import type {
   Agent,
+  AgentNetworkProxy,
   AgentRevision,
-  CredentialSource,
+  StoredCredentialSource,
   CredentialSourceType,
   HarnessAuthSnapshot,
   HarnessExecutionMode,
   Namespace,
+  ModelProvider,
   OpenClawConfigurationDocument,
   ResolvedHarnessAuth,
   RevisionHarnessDescriptor,
   Scope,
+  SourceProviderPresetId,
   SecretBindings,
   SecretEnvironmentProjection,
-  ServiceAccountCredential,
 } from "../../index.ts";
 import type {
+  AdmittedRepositoryBinding,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryExecutionIdentity,
@@ -32,10 +44,42 @@ import type {
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
 } from "../../runtime-logs.ts";
-import type { SandboxHarnessObservation } from "../sandbox/index.ts";
+import type {
+  ProtectedRepositoryNetworkPolicyContext,
+  SandboxNamespaceContext,
+  SandboxHarnessObservation,
+} from "../sandbox/index.ts";
+import type { RepositoryNetworkPolicy } from "../../repository-network-policy.ts";
 import type { WorkspaceSetup } from "../../workspace-setup.ts";
 
+export interface AgentChatCompletionsEndpoint {
+  readonly url: string;
+  readonly model: string;
+}
+
+export type AgentChatCompletionsResolution =
+  | ({ readonly status: "available" } & AgentChatCompletionsEndpoint)
+  | { readonly status: "disabled" }
+  | { readonly status: "unavailable" }
+  | { readonly status: "unsupported" };
+
 export interface ComputeRevisionContext {
+  /** Worker-owned authorization and resolution for exported Gateway startup credentials. */
+  readonly gatewayStartupCredentials?: {
+    authorize(signal: AbortSignal): Promise<void>;
+    resolve(
+      signal: AbortSignal,
+    ): Promise<
+      Readonly<Record<string, { readonly value: string; readonly sourceVersion?: string }>>
+    >;
+  };
+  /** Worker configures the exact staged target without exposing source resolution to Compute. */
+  readonly configureCredentialDeployment?: (
+    expected: CredentialDeploymentConfiguration,
+    signal: AbortSignal,
+  ) => Promise<{ readonly credentialProjections: readonly CredentialProjection[] }>;
+  /** An active provider's maintenance pass may update its existing Harness only. */
+  readonly existingHarnessOnly?: true;
   /** Worker persists only an authenticated receipt for this admitted plan. */
   readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
   /** A fresh read of the still-authorized revision and its exact committed installation. */
@@ -47,8 +91,13 @@ export interface ComputeRevisionContext {
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */
-  readonly credentialSources?: readonly Readonly<CredentialSource>[];
+  readonly credentialSources?: readonly Readonly<StoredCredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
+  /** Exact authorized Secret identity for the Gateway channel proxy; never projected to Gateway. */
+  readonly networkProxyCredential?: Pick<
+    SecretEnvironmentProjection,
+    "secretId" | "namespaceId" | "agentId" | "backendRef"
+  >;
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
 
@@ -57,35 +106,12 @@ export interface WorkloadLaunchContext {
 }
 
 export interface ComputeLifecycleHooks {
-  afterNamespacePrepared?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
   beforeWorkloadStart?(
     revision: Readonly<AgentRevision>,
     launch: WorkloadLaunchContext,
     signal: AbortSignal,
   ): Promise<void>;
   beforeWorkloadStop?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
-  beforeNamespaceDelete?(namespace: Readonly<Namespace>, signal: AbortSignal): Promise<void>;
-}
-
-export type NamespaceLifecycleFailure = "retryable" | "permanent";
-
-export interface NamespaceEnsureResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceReady: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
-  /**
-   * Optional bounded, non-secret operator explanation of `failure`, at most 256 printable
-   * characters. It names only this Namespace's own placement, never another tenant's
-   * identifiers or marker values. The worker logs it; status and audit keep only `failure`.
-   * The log keeps only letters, digits, spaces and `. _ : / @ -`; other text is dropped.
-   */
-  readonly reason?: string;
-}
-
-export interface NamespaceDeleteResult extends Scope {
-  readonly namespaceId: string;
-  readonly namespaceDeleted: boolean;
-  readonly failure?: NamespaceLifecycleFailure;
 }
 
 export interface PluginDeploymentWarning {
@@ -125,6 +151,8 @@ export type ComputePendingReason =
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** Staged credential activation is prepared, pending, or awaiting a confirmed startup outcome. */
+  | "CREDENTIAL_ACTIVATION_PENDING"
   /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
   | "REPOSITORY_GIT_ROUTE_PENDING";
 
@@ -133,7 +161,9 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
-  /** Only v6: select this execution for material while its launcher and user work remain held. */
+  /** Standalone v8 has staged credentials and verified launch inputs and the effective network policy. */
+  readonly preparedForCredentialActivation?: true;
+  /** Protected v6 and native Git v9 hold the launcher and user work until Git material is installed. */
   readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
   readonly runtimeFailure?: RuntimeFailureEvidence;
@@ -216,7 +246,39 @@ export interface ComputePreflightResult {
   readonly warnings: readonly ComputePreflightWarning[];
 }
 
+/** Prospective repository-only assessment; never authority to retain or release an execution. */
+export type RepositoryWorkerRestartDisposition =
+  "original-worker-required" | "reverification-supported" | "not-applicable" | "unknown";
+
+/** Current desired topology and exact proposed policy, when saving. */
+export interface ProtectedRepositoryNetworkPolicySaveContext {
+  readonly nativeGit?: "v1";
+  /** Saved Agent placement and its authorized Configuration, for local topology checks. */
+  readonly placement?: Pick<
+    AgentRevision,
+    "agentId" | "namespaceId" | "gatewayManagedMode" | "configuration"
+  >;
+  readonly harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "version" | "mode">>;
+  readonly sandboxDriverId: string;
+  /** The selected registration that owns both Sandbox and Credential Proxy. */
+  readonly protectedDriver: DriverRegistrationRef;
+  readonly repositoryBindings: readonly AdmittedRepositoryBinding[];
+  /** The complete proposed policy, including an explicit empty list when applicable. */
+  readonly repositoryNetworkPolicy?: RepositoryNetworkPolicy;
+  readonly harnessCredentialSource: Readonly<{
+    type: string;
+    ownerCapability: "credential_gateway" | "credential_proxy";
+    driverId: string;
+  }>;
+}
+
 export interface ComputeDriver extends Driver {
+  /** Read existing owner evidence without adopting, refreshing, or verifying a live execution. */
+  repositoryWorkerRestartDisposition?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkerRestartDisposition>;
+
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.
@@ -228,10 +290,32 @@ export interface ComputeDriver extends Driver {
   ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
-    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan" | "credentialDeployment">,
     /** Only the release of a revision already in durable custody can use its historical contract. */
     source?: SelectedDriverRegistration | "stored",
   ): void;
+  /**
+   * Optionally qualify the selected topology for editing when several policy lists are possible.
+   * Use only local Driver state. This hint is independent of any particular list.
+   */
+  supportsProtectedRepositoryNetworkPolicyPlacement?(
+    context: Omit<ProtectedRepositoryNetworkPolicySaveContext, "repositoryNetworkPolicy">,
+  ): true | false;
+  /**
+   * Admit the exact proposed policy using local Driver state. Only an affirmative result admits
+   * a save. Release still requires frozen revision admission.
+   */
+  admitsProtectedRepositoryNetworkPolicySave?(
+    context: ProtectedRepositoryNetworkPolicySaveContext,
+  ): true | false;
+  /**
+   * Side-effect-free placement check on a frozen revision, including protected runtime inputs.
+   * During deployment admission OCC also invokes the selected Sandbox's independent frozen
+   * policy validator. Throw or reject for an unsupported topology.
+   */
+  validateProtectedRepositoryNetworkPolicy?(
+    context: ProtectedRepositoryNetworkPolicyContext,
+  ): void | Promise<void>;
   /**
    * After release is refused, select a withdrawal only for a grant this Compute previously
    * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
@@ -244,8 +328,13 @@ export interface ComputeDriver extends Driver {
   readonly supportsWorkspaceSetup?: true;
   /** Enforces Gateway administration restrictions for managed Agent revisions. */
   readonly supportsGatewayManagedMode?: true;
+  /** Admit a Gateway-channel-only upstream selection and return private immutable routing intent. */
+  admitGatewayChannelProxy?(
+    selection: Readonly<AgentNetworkProxy>,
+    context: { readonly executionMode: HarnessExecutionMode; readonly channelsEnabled: boolean },
+  ): Promise<string>;
   readonly capability: "compute";
-  /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
+  /** Deployment must observe and provision Agent-owned runtime credentials before saving a revision. */
   readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
@@ -254,6 +343,8 @@ export interface ComputeDriver extends Driver {
   readonly maintenanceIntervalMs?: number;
   /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
   admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
+  /** Optional immutable launch inputs, separate from execution authority. No side effects. */
+  snapshotRuntimeInputs?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
@@ -312,8 +403,35 @@ export interface ComputeDriver extends Driver {
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
   ): void;
+  /** Validate and normalize the Driver-owned deployment request without side effects. */
+  normalizeHarnessOverrides?(
+    overrides: Readonly<Record<string, unknown>>,
+  ): Readonly<Record<string, unknown>>;
+  /** Translate a saved provider and its selected catalog rows into immutable deployment values. */
+  resolveModelProvider?(
+    provider: Readonly<ModelProvider>,
+    harness: RevisionHarnessDescriptor,
+    configuration: OpenClawConfigurationDocument,
+  ): {
+    readonly values: OpenClawConfigurationDocument;
+    readonly settings: Readonly<Record<string, unknown>>;
+  };
+  /** Resolve immutable Harness settings before credential and egress admission. */
+  resolveHarnessConfiguration?(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    modelPreset?: SourceProviderPresetId,
+  ): Readonly<Record<string, unknown>>;
+  /** Check source consent against the resolved settings before any credential delivery. */
+  validateHarnessCredentialSources?(
+    harness: RevisionHarnessDescriptor,
+    sources: readonly Readonly<import("../../index.ts").StoredCredentialSource>[],
+  ): void;
   /**
-   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Withdraw expired Git access or a durably withdrawn standing or finite grant.
+   * Finite withdrawal requires committed removal from the original admitted set, not merely
+   * changed configuration or unavailable Git evidence.
    * Observe that withdrawal again after a restart. Never grant
    * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
    * verifying Git is revoked and the same independently authorized inference runtime is ready.
@@ -355,18 +473,42 @@ export interface ComputeDriver extends Driver {
     request: AgentRuntimeLogRequest,
   ): Promise<AgentRuntimeLogChunk>;
   deleteAgentRuntimeCredentials?(binding: ComputeAgentBinding): Promise<void>;
-  /**
-   * Removes a ServiceAccount's account-owned access-token Secret. A force-delete with no
-   * ServiceAccount Driver left calls it so no copy of the unrevoked token stays behind.
-   */
-  deleteServiceAccountCredential?(input: {
-    readonly namespaceId: string;
-    readonly serviceAccountId: string;
-    readonly secretRef: ServiceAccountCredential["secretRef"];
-  }): Promise<void>;
   getGatewayEndpoint?(revision: AgentRevision): string | undefined;
+  /**
+   * Resolve a private browser transport for an already-authorized, exact AgentRevision.
+   * Installation and Principal IDs are server-owned. Returned headers are credentials:
+   * never serialize them to a browser or fall back to a shared machine endpoint.
+   * Subject is the non-secret native identity for connection attribution; never derive it from headers.
+   * Reads existing revision credentials only; absence is a dependency failure.
+   */
+  getGatewayBrowserRequest?(
+    revision: AgentRevision,
+    input: {
+      readonly installationId: string;
+      readonly principalId: string;
+      readonly mode: "admin" | "chat";
+    },
+    signal: AbortSignal,
+  ): Promise<
+    | {
+        readonly endpoint: string;
+        readonly subject: string;
+        readonly headers: Readonly<Record<string, string>>;
+      }
+    | undefined
+  >;
+  /** Resolve only the private HTTP completion route for this exact revision. */
+  getChatCompletionsEndpoint?(revision: AgentRevision): AgentChatCompletionsResolution;
   ensureNamespace(namespace: Namespace): Promise<NamespaceEnsureResult>;
   deleteNamespace(namespace: Namespace): Promise<NamespaceDeleteResult>;
+  checkNamespaceDeletion?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<NamespaceDeletionEligibility>;
+  resolveSandboxNamespaceContext?(
+    namespace: Readonly<Namespace>,
+    signal: AbortSignal,
+  ): Promise<SandboxNamespaceContext>;
   /**
    * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
    * Compute Driver's runtime placement. Required to register Credential Gateway sources.
@@ -382,7 +524,7 @@ export interface ComputeDriver extends Driver {
    */
   withdrawCredentialSource?(
     revision: Readonly<AgentRevision>,
-    source: Readonly<CredentialSource>,
+    source: Readonly<StoredCredentialSource>,
     signal: AbortSignal,
     options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
@@ -397,6 +539,8 @@ export interface ComputeDriver extends Driver {
    */
   withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
   /** Verify the existing execution without creating, replacing or repairing it. */
+  /** Throws OCC's RepositoryExecutionRequiresRedeployError only when durable evidence
+   * proves repository access cannot resume on this execution. Missing evidence remains undefined. */
   verifyRepositoryExecution?(
     revision: Readonly<AgentRevision>,
     signal: AbortSignal,

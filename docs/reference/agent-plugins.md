@@ -1,23 +1,21 @@
 # Agent plugins
 
-Plugins add Agent tools or integrations. Selections belong to that Agent,
-separately from its reusable [Configuration](configuration.md). Changes apply on
-the next successful deployment; other Agents and selected versions stay unchanged.
-New Agents start without user-selected plugins.
-
-[Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
-deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
-none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
-and supported controls before saving nonempty selections. Startup runs
-[remaining checks](#failures-and-boundaries).
+An Agent starts without plugins. Its selections are independent of its reusable
+[Configuration](configuration.md) and apply on the next successful deployment.
+Selections require a [Plugin Driver](drivers/plugin.md) for the Harness. OCC
+checks policy before saving and [at startup](#failures-and-boundaries).
 
 ## Current support
 
-On dedicated OpenClaw with Kubernetes, enable one managed package with `plugins[id].enabled`.
+Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
-MCP releases pin endpoints and credential slots. `tools/list` discovers tools.
-Agent selections govern worker, Gateway and OpenShell access.
-[Slack](../guides/topics/plugins-configure.md#configure-slack-search)
+[Slack](../guides/topics/plugins-configure.md#configure-a-hosted-mcp-plugin) discovers tools through `tools/list`.
+Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
+Gateway approval names the selected MCP server and tool, without arguments. Direct scripts bypass approval.
+Live [Slack OAuth qualification](https://github.com/openclaw/openclaw-enterprise/pull/4673)
+covered a selected search through an Agent and an OpenShell denial for an
+unselected direct tool request. Static Slack MCP and Google OAuth live execution
+remain separate proof boundaries.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -40,10 +38,9 @@ The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
 
-**Experimental** OAuth discovery uses the saved credential source after
+Codex app discovery resolves a TokenService Source after
 [device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
-The Credential Gateway supplies a usable access token; closing the login session
-does not remove plugin-editing access.
+Closing the session preserves Plugin-editing access.
 
 ## Lifecycle
 
@@ -93,6 +90,8 @@ default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
 ## HTTP operations
+
+See [Plugin Source selection and delivery limits](credential-sources.md#bind-a-source-to-an-agent).
 
 Plugin selections and default approvers use Agent create/update. There are no
 separate plugin resources or install, delete, policy-mutation or tool-invocation
@@ -167,9 +166,9 @@ Approval cannot re-enable a disabled tool.
 
 ### Discover policy controls
 
-Authorized `GET /installation` responses expose the selected Driver's controls
-at `data.capabilities.pluginPolicies`. The field is absent when no PluginDriver
-is selected. It contains:
+Read `data.capabilities.pluginCatalogs` from an authorized `GET /installation`.
+Each entry identifies the `harnessId` and gives its `pluginPolicies` and available
+`pluginDiscovery` settings. Each policy object includes:
 
 - `driver`: the selected `id` and `implementation`.
 - `toolDefaults` and `tools`: each has an `enabled` support Boolean, an `approval`
@@ -227,11 +226,8 @@ runtime compatibility needs the opt-in Kubernetes proof in
 [Agent plugin testing](../testing/plugins.md): a real Agent turn, then a later
 deployment that disables or removes the selection and leaves another Agent unchanged.
 
-This page owns the nested plugin wire contract. The
-[generated API reference](api.md) summarizes routes and top-level schemas;
-[request schemas](../../packages/contracts/src/api/common.ts) and
-[response schemas](../../packages/contracts/src/api/resources.ts) are the
-executable definitions.
+The executable schemas define [requests](../../packages/contracts/src/api/common.ts)
+and [responses](../../packages/contracts/src/api/resources.ts).
 
 ## Approval policy
 

@@ -1,3 +1,5 @@
+import { completeOpenShellGatewayClient } from "./openshell-gateway-client.ts";
+import { openShellWorkspaceProtocol } from "./openshell-workspace-protocol.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 
@@ -5,7 +7,6 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
  * undefined value removes the setting), with extra `gateway` settings. */
 export function openShellSandbox(t, overrides = {}, gateway = {}) {
   const kubernetes = {
-    runtimeClassName: "openshell-sandbox",
     // Native OpenClaw workspace preparation requires it.
     userNamespaces: false,
     serviceAccount: { mode: "gatewayConfigured" },
@@ -27,11 +28,14 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
       credential_gateway: "workspace-openshell-credentials",
     },
   };
-  const backend = createOpenShellBackend(definition);
+  const backend = createOpenShellBackend(definition, {
+    gatewayClient: completeOpenShellGatewayClient(openShellWorkspaceProtocol()),
+  });
   t.after(() => backend.client.close());
   const sandboxDriver = new OpenShellSandboxDriver(
     {
-      gateway: { workspaceMode: "operator", ...gateway },
+      integrationMode: "legacy",
+      gateway: { ...gateway },
       kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },
@@ -47,6 +51,7 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
     { id: "workspace-openshell-sandbox", backend },
   );
   return {
+    backend,
     sandboxDriver,
     driverConfigurations: [
       {

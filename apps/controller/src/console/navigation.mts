@@ -1,6 +1,12 @@
+export const connectionTemplatesPage = "credentials/connection-templates";
+
+export const credentialClientsPage = "credentials/credential-clients";
+
 export const pages = Object.freeze({
   agents: "Agents",
-  secrets: "Secrets",
+  secrets: "Credentials",
+  [connectionTemplatesPage]: "Credentials",
+  [credentialClientsPage]: "Credentials",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",
@@ -16,13 +22,18 @@ interface LoginIntent {
   secret?: string | null;
 }
 
+export type AgentsLanding = "deletion-status-unavailable";
+
+export type RestoreHistory = (url: string, onReturn?: () => void) => void;
+
 interface NavigationOptions {
   getNamespaceId(): string | null;
   isLoggingOut(): boolean;
   loadPage(options: {
     fromNavigation: boolean;
     openingAgent?: boolean;
-    restoreHistory?(url: string): void;
+    agentsLanding?: AgentsLanding | null;
+    restoreHistory?: RestoreHistory;
   }): void;
 }
 
@@ -30,6 +41,7 @@ interface NavigationOptions {
 // are; `/console/` itself stays. The server answers both alike (console-assets.ts).
 function canonicalUrl(href: string) {
   const url = new URL(href);
+  url.searchParams.delete("debug");
   if (url.pathname.startsWith("/console/")) {
     url.pathname = `/console/${url.pathname.slice("/console/".length).replace(/\/+$/, "")}`;
   }
@@ -40,7 +52,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
-  let restoring: number | null = null;
+  let restoring: { position: number | null; onReturn: (() => void) | undefined } | null = null;
   replaceUrl(canonicalUrl(location.href));
 
   function route() {
@@ -61,12 +73,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
 
   function pageUrl(feature: string, selection = getNamespaceId()) {
     const url = new URL(`/console/${feature}`, location.origin);
-    if (
-      !url.searchParams.has("debug") &&
-      new URL(location.href).searchParams.get("debug") === "true"
-    ) {
-      url.searchParams.set("debug", "true");
-    }
+    url.searchParams.delete("debug");
     if (selection !== null) {
       url.searchParams.set("namespace", selection);
     }
@@ -165,7 +172,11 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   }
 
   function entryPosition() {
-    const index: unknown = history.state?.consolePosition;
+    const state: unknown = history.state;
+    if (typeof state !== "object" || state === null || !("consolePosition" in state)) {
+      return null;
+    }
+    const index = state.consolePosition;
     return typeof index === "number" && Number.isSafeInteger(index) ? index : null;
   }
 
@@ -174,11 +185,17 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   }
 
   function pushUrl(url: string) {
-    position = (position ?? 0) + 1;
+    const next = (position ?? 0) + 1;
+    position = Number.isSafeInteger(next) ? next : null;
     history.pushState({ consolePosition: position }, "", url);
   }
 
-  function navigate(feature: string, selection = getNamespaceId(), replace = false) {
+  function navigate(
+    feature: string,
+    selection = getNamespaceId(),
+    replace = false,
+    agentsLanding: AgentsLanding | null = null,
+  ) {
     if (isLoggingOut()) {
       return;
     }
@@ -192,7 +209,14 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
       !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
-    void loadPage({ fromNavigation: true, openingAgent });
+    void loadPage({
+      fromNavigation: true,
+      openingAgent,
+      agentsLanding:
+        feature === "agents" && current.agentId && current.namespace === selection
+          ? agentsLanding
+          : null,
+    });
   }
 
   function traverse({
@@ -206,22 +230,32 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     // same distance, then consume that popstate without reloading the page we kept mounted.
     const previous = position;
     position = entryPosition();
-    const returned = restoring !== null && position === restoring;
+    const returned = position === restoring?.position ? restoring : null;
     restoring = null;
     // Never skip the admission recheck of an inert or no longer mounted page.
     if (returned && fromNavigation && mountedUrl === location.pathname + location.search) {
+      returned.onReturn?.();
       return;
     }
     void loadPage({
       fromNavigation,
-      restoreHistory(url) {
-        if (position === null || previous === null || position === previous) {
-          // An older or untracked entry has no reliable direction. Keep it available to Back
-          // without risking history.go(0), which would reload the page during its write.
+      restoreHistory(url, onReturn) {
+        const delta = position === null || previous === null ? null : previous - position;
+        if (
+          delta === null ||
+          delta === 0 ||
+          Math.abs(delta) >= history.length ||
+          delta < -2147483648 ||
+          delta > 2147483647
+        ) {
+          // History.go converts to a signed 32-bit Web IDL long; overflow can become zero
+          // and reload during the write. Impossible steps do nothing. Keep the editor's URL
+          // with an available Back entry when the step is untracked, zero or unrestorable.
           pushUrl(url);
+          onReturn?.();
         } else {
-          restoring = previous;
-          history.go(previous - position);
+          restoring = { position: previous, onReturn };
+          history.go(delta);
         }
       },
     });

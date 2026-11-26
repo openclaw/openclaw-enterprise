@@ -119,7 +119,7 @@ to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
 `repository.nativeSender` and `repository.preparedGitHub`, with the matching
 Backend `drivers.repo` policy member. The worker alone mounts the App key and
-32-byte custody key. Protected Git instead selects an installed Credential Proxy
+32-byte custody key. Deprecated protected Git instead selects a qualified legacy credential-egress Proxy
 and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
@@ -153,8 +153,8 @@ needed by Compute. The Agent never mounts the control socket or App key.
 From the repository root, run `pnpm install --frozen-lockfile`. Then build the
 service with `pnpm credentials:build` and `pnpm credentials:image`, then publish and select its immutable image reference. Also build the full
 Agent runtime using the [repository-root Docker context](../repository-credentials.md#prepare-the-platform-installation).
-Add the following to your existing Helm values, replacing image and network
-placeholders before rendering:
+Add the following to your existing Helm values, replacing the image placeholder
+before rendering:
 
 ```yaml
 repositoryCredentials:
@@ -170,8 +170,6 @@ repositoryCredentials:
   appKeySecretName: occ-repository-app
   tlsSecretName: occ-repository-tls
   publicCaSecretName: occ-repository-ca
-  upstreamCidrs:
-    - "<approved GitHub upstream CIDR>"
 ```
 
 `backendId` must follow the Backend ID rule: 1 to 200 characters, with no
@@ -179,10 +177,13 @@ leading or trailing whitespace and no control characters or line or paragraph
 separators. It must also fit in 200 UTF-16 code units, because repository
 bindings store a GitHub Backend ID under that bound: 100 emoji fit and 101 do
 not. The chart refuses any other spelling, the same checks Installation
-startup applies before it saves the GitHub Backend. Supply current
-operator-approved ranges for GitHub HTTPS destinations. The chart
-adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
-dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
+startup applies before it saves the GitHub Backend. Supply the same literal ID
+in chart values, service configuration, and the registry. The chart handles
+Kubernetes dollar escaping; do not pre-escape values such as `github-$$` or
+`github-$(BACKEND)`. The origin helper reports the original logical ID.
+The chart permits unrestricted Worker egress and grants ingress from tenant
+embedded gateways and dedicated Agent Pods on port 8443. Compute grants
+corresponding egress only to
 the repository consumer; see the
 [network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
 rules still apply. For repository-bound dedicated Codex, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
@@ -193,12 +194,12 @@ in effect. Unbound Agents receive no generated policy change. Because worker and
 sidecar share a Pod network namespace, these rules do not isolate containers
 within that Pod.
 
-Render the chart and use the rendered broker origin as the source of truth for
-the certificate. The helper reads the worker sidecar argument from the rendered
-manifests; it does not construct a second hostname.
+Use the release checkout's pinned Node.js version (24.22.1) to run the helper.
+Use the broker hostname from the rendered worker sidecar argument as the
+certificate's DNS SAN.
 
 ```bash
-node scripts/render-repository-credentials-origin.mjs \
+node scripts/render-repository-credentials-origin.ts \
   --release oce --namespace openclaw-system \
   --values "$OCC_INPUT_DIRECTORY/values.yaml" \
   > "$OCC_INPUT_DIRECTORY/repository-broker.json"
@@ -247,16 +248,26 @@ name or the deliberate cutover name.
 
 ## Install and verify
 
-Render the proposed upgrade before changing the startup Secret:
+Compute the SHA-256 digest of the edited Installation YAML and save it in the
+existing Helm values. This changes the API and worker Pod templates so both
+deployments load the updated startup Secret. Then render the proposed upgrade:
 
 ```bash
+OCC_INSTALLATION_CHECKSUM="$(python3 -c \
+  'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+  "$OCC_INPUT_DIRECTORY/installation.yaml")" || exit 1
+export OCC_INSTALLATION_CHECKSUM
+yq -i '.controlPlane.installationChecksum = strenv(OCC_INSTALLATION_CHECKSUM)' \
+  "$OCC_INPUT_DIRECTORY/values.yaml" || exit 1
 helm template oce deploy/helm/openclaw-enterprise --is-upgrade --namespace openclaw-system \
   -f "$OCC_INPUT_DIRECTORY/values.yaml" > /tmp/oce-rendered.yaml
 ```
 
 If rendering fails, stop and correct the values. Review the complete rendered
-manifests before continuing. Upgrade mode includes the installation check and
-requires an explicit repository credential Service name.
+manifests before continuing. If the Installation YAML changes, regenerate the
+checksum, render the upgrade, and review the manifests again. Upgrade mode
+includes the installation check and requires an explicit repository credential
+Service name.
 
 After successful rendering and review, update the operator-owned startup Secret
 from the edited Installation YAML and upgrade the existing release. The patch
@@ -274,6 +285,8 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  rollout status deployment/openclaw-enterprise-api
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   rollout status deployment/openclaw-enterprise-worker
 ```

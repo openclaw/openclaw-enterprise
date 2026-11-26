@@ -21,6 +21,7 @@ import {
 } from "../dom.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import {
+  confirmationAgentId,
   DELETE_CONFIRMATION,
   grantRefusal,
   keptResources,
@@ -215,6 +216,19 @@ function agentNameLink(item: AgentRead, context: AgentNavigation) {
   return node;
 }
 
+// Leave text composition (including the final IME keydown) and browser shortcuts alone.
+function plainKey(event: KeyboardEvent) {
+  return !(
+    event.defaultPrevented ||
+    event.isComposing ||
+    event.keyCode === 229 ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey
+  );
+}
+
 export function renderAgentList(context: AgentListContext) {
   const { view } = context;
   // Row actions replace an Agent with the API's response, so the table shows its new state.
@@ -222,12 +236,34 @@ export function renderAgentList(context: AgentListContext) {
   const search = element("input", {
     type: "search",
     "aria-label": "Search Agents",
+    "aria-description":
+      "Down Arrow to browse results. Enter opens a single match. Escape clears search.",
+    "data-refocus-key": "agent-search",
     placeholder: "Search Agents by name or ID",
   });
   const savedSearch = context.drafts.get("agent-search");
   search.value = typeof savedSearch === "string" ? savedSearch : "";
   context.drafts.track("agent-search", () => search.value || undefined);
   context.drafts.unsavedWhen("agent-search", () => false);
+  const keyHint = (key: string, label: string) =>
+    element("span", {}, element("kbd", {}, key), " ", label);
+  const browseHint = keyHint("↓", "Browse");
+  const openHint = keyHint("Enter", "Open");
+  const clearHint = keyHint("Esc", "Clear");
+  const hints = element(
+    "div",
+    { className: "agent-search-keys", "aria-hidden": "true" },
+    browseHint,
+    openHint,
+    clearHint,
+  );
+  const nameHints = element(
+    "div",
+    { className: "agent-name-keys", "aria-hidden": "true" },
+    keyHint("↑ ↓", "Browse"),
+    keyHint("Enter", "Open"),
+    keyHint("Esc", "Search"),
+  );
   const rows = element("div");
   const feedback = element("div", { className: "agent-list-feedback" });
   const deployments = new Map<string, ReturnType<typeof readDeployment>>();
@@ -273,8 +309,6 @@ export function renderAgentList(context: AgentListContext) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
-  // An administrator a Restriction keeps from creating still reads every Agent here (finding D759).
-  const sharedOnly = createDenied && context.permissions?.installation?.administer !== true;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   let notReady = namespaceCreation(context.namespace);
@@ -322,7 +356,14 @@ export function renderAgentList(context: AgentListContext) {
   const notReadyNoteShown = notReadyNote !== null;
   describeCreate();
   view.replaceChildren(
-    element("div", { className: "collection-toolbar" }, search, create),
+    element(
+      "div",
+      { className: "collection-toolbar agent-list-toolbar" },
+      search,
+      hints,
+      nameHints,
+      create,
+    ),
     ...(notReadyNote ? [notReadyNote] : []),
     ...(createDenied ? [createDeniedNote] : []),
     feedback,
@@ -504,8 +545,8 @@ export function renderAgentList(context: AgentListContext) {
           element(
             "span",
             {
-              className: "resource-id agent-deployment-note",
-              ...(failure ? { title: failure } : {}),
+              className: "agent-deployment-note",
+              ...(failure ? { title: failure, "data-tone": "danger" } : {}),
             },
             failure ??
               (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
@@ -748,16 +789,18 @@ export function renderAgentList(context: AgentListContext) {
 
   function confirmAction(item: AgentRead, kind: RowAction, invoker: HTMLButtonElement) {
     const stopping = kind === "stop";
+    const targetId = confirmationAgentId("agent-row-confirm-id", item.id);
     const description = element(
       "p",
       { id: "agent-row-confirm-description", "aria-live": "polite" },
       stopping ? stopConfirmation(item, latestDeployments.get(item.id)) : DELETE_CONFIRMATION,
     );
     const kept = stopping ? null : keptResources(item);
+    const descriptionIds = `${targetId.id} ${description.id}`;
     const dialog = element("dialog", {
       className: stopping ? "dialog agent-stop-dialog" : "dialog agent-delete-dialog",
       "aria-labelledby": "agent-row-confirm-title",
-      "aria-describedby": kept ? `${description.id} ${kept.summary.id}` : description.id,
+      "aria-describedby": kept ? `${descriptionIds} ${kept.summary.id}` : descriptionIds,
     });
     let pending = false;
     let submitted = false;
@@ -802,6 +845,7 @@ export function renderAgentList(context: AgentListContext) {
         { id: "agent-row-confirm-title" },
         `${stopping ? "Stop" : "Delete"} ${item.name}?`,
       ),
+      targetId,
       description,
       ...(kept ? [kept.summary, kept.commands] : []),
       element("div", { className: "dialog-actions" }, cancel, confirm),
@@ -996,6 +1040,7 @@ export function renderAgentList(context: AgentListContext) {
   function render() {
     cells.clear();
     rowControls.clear();
+    hints.hidden = !!notReady?.missing;
     if (notReady?.missing) {
       rows.replaceChildren();
       return;
@@ -1004,6 +1049,9 @@ export function renderAgentList(context: AgentListContext) {
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
       .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+    openHint.hidden = !query || matches.length !== 1;
+    browseHint.hidden = !openHint.hidden || !matches.length;
+    clearHint.hidden = !search.value;
     const shown = new Set(matches.map((item) => item.id));
     retireHidden(deployments, shown, (reads) => reads.row);
     retireHidden(permissionReads, shown, (row) => row);
@@ -1012,16 +1060,10 @@ export function renderAgentList(context: AgentListContext) {
         element(
           "section",
           { className: "state-panel" },
-          // A reader without create sees only Agents shared with them, not every Agent here
-          // (finding 2548).
           element(
             "h2",
             {},
-            query
-              ? "No matching Agents"
-              : sharedOnly
-                ? "No Agents are shared with you"
-                : "No Agents yet",
+            query ? "No matching Agents" : createDenied ? "No Agents to show" : "No Agents yet",
           ),
           element(
             "p",
@@ -1029,11 +1071,7 @@ export function renderAgentList(context: AgentListContext) {
             query
               ? "Try another name or ID."
               : createDenied
-                ? // Under the note above: say what the reader can expect, not invite creating
-                  // (finding 1521).
-                  sharedOnly
-                  ? "Agents in this Namespace that are shared with you appear here."
-                  : "Agents in this Namespace appear here."
+                ? "Agents you can read in this Namespace appear here."
                 : notReady?.blocked
                   ? context.namespace?.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."
@@ -1066,9 +1104,28 @@ export function renderAgentList(context: AgentListContext) {
       ),
     );
     const body = element("tbody");
-    for (const item of matches) {
+    for (const [index, item] of matches.entries()) {
       readPermissions(item);
       const name = agentNameLink(item, context);
+      name.setAttribute(
+        "aria-description",
+        "Up or Down Arrow to browse. Escape returns to search.",
+      );
+      name.addEventListener("keydown", (event) => {
+        if (!plainKey(event)) {
+          return;
+        }
+        if (event.key === "Escape" || (event.key === "ArrowUp" && index === 0)) {
+          event.preventDefault();
+          search.focus();
+        } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          const next = matches[index + (event.key === "ArrowUp" ? -1 : 1)];
+          if (next) {
+            rowControls.get(next.id)?.name.focus();
+          }
+        }
+      });
       // A refocus that rebuilds the list returns focus to the same row's control (finding D814).
       name.dataset.refocusKey = `${item.id} name`;
       const actions = rowActions(item);
@@ -1130,7 +1187,7 @@ export function renderAgentList(context: AgentListContext) {
         // On a phone each cell shows its column's name (console.css, `data-label`).
         element(
           "td",
-          { "data-label": "Execution mode" },
+          { className: "agent-execution-mode", "data-label": "Execution mode" },
           item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
         ),
         current,
@@ -1204,6 +1261,33 @@ export function renderAgentList(context: AgentListContext) {
     }
   });
   search.addEventListener("input", render);
+  search.addEventListener("keydown", (event) => {
+    if (!plainKey(event)) {
+      return;
+    }
+    if (event.key === "Escape" && search.value) {
+      event.preventDefault();
+      search.value = "";
+      render();
+      return;
+    }
+    const first = rowControls.values().next().value?.name;
+    if (event.key === "ArrowDown" && first) {
+      event.preventDefault();
+      first.focus();
+    } else if (
+      event.key === "Enter" &&
+      !event.repeat &&
+      search.value.trim() &&
+      first &&
+      rowControls.size === 1
+    ) {
+      // Follow the same link as a row click so Back restores focus to its name.
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+      first.click();
+    }
+  });
   const carried =
     context.resumed &&
     keptRefusal?.namespaceId === context.namespaceId &&

@@ -27,10 +27,15 @@ type Control = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 type FieldValue = { value: string; checked?: boolean };
 type AppliedField = { id: string; detail: string; skipped?: boolean };
 type Drafts = ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+const channelSecretSource = (source: SecretBindings[string]["source"] | undefined) =>
+  source?.kind === "secret" ? source : undefined;
 
 interface ChannelDraft {
   provider: string;
-  baseline: string | undefined;
+  baseline: {
+    fingerprint: string | undefined;
+    configurationId: string | undefined;
+  };
   initial: Record<string, FieldValue>;
   initialSecretBindings: SecretBindings | undefined;
   fields: Record<string, FieldValue>;
@@ -296,7 +301,8 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
     !disabledByMode &&
     (provider.secretBindings.length === 0 ||
       provider.secretBindings.some(
-        (binding) => !state.drawerContext.secretBindings?.[binding.key]?.source,
+        (binding) =>
+          !channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
       ));
   // A disabled action is described by the reason shown on the card (findings 2495, D749), and
   // stays in the Tab order while it shows (class of finding 2899).
@@ -374,7 +380,7 @@ function renderCard(section: HTMLElement, state: ChannelState, provider: Channel
         {},
         renderSecretReference(
           state.drawerContext,
-          state.drawerContext.secretBindings?.[binding.key]?.source,
+          channelSecretSource(state.drawerContext.secretBindings?.[binding.key]?.source),
         ),
       ),
     );
@@ -589,13 +595,6 @@ export function input(id: string, value: string, attrs: Record<string, string | 
 const listValues = (value: string) => uniqueList(value.split(","));
 const sameSource = (left: SecretReference | undefined, right: SecretReference | undefined) =>
   left === undefined ? right === undefined : refsEqual(left, right ?? {});
-const configurationOf = (baseline: string | undefined): unknown => {
-  try {
-    return JSON.parse(baseline ?? "")?.[0];
-  } catch {
-    return undefined;
-  }
-};
 
 function fieldValue(control: Control): FieldValue {
   return "checked" in control
@@ -703,7 +702,14 @@ function openDrawer(
   // A draft carried through a save conflict applies over the settings Reload draft rereads
   // (finding 1504). Reached any other way, it reopens like any retained draft.
   const carried = retained?.carried && retained.reloaded ? draftChanges(retained) : null;
-  const stale = retained && !carried && retained.baseline !== state.drawerContext.baseline;
+  const baseline =
+    retained && !carried
+      ? retained.baseline
+      : {
+          fingerprint: state.drawerContext.baseline,
+          configurationId: state.drawerContext.configurationId,
+        };
+  const stale = retained && !carried && baseline.fingerprint !== state.drawerContext.baseline;
   const unresolved = retained?.unresolved;
   if (carried && retained) {
     if (carried.secrets.length) {
@@ -838,10 +844,12 @@ function openDrawer(
       ...applied.filter((entry) => !entry.skipped).map(fieldName),
       ...carried.secrets.map((key) => {
         const label = provider.secretBindings?.find((binding) => binding.key === key)?.label ?? key;
-        const saved = state.drawerContext.secretBindings?.[key]?.source;
+        const saved = channelSecretSource(state.drawerContext.secretBindings?.[key]?.source);
         // Another browser bound a different Secret here too; the reader's choice is shown.
-        return !sameSource(saved, retained.initialSecretBindings?.[key]?.source) &&
-          !sameSource(saved, retained.secretBindings?.[key]?.source)
+        return !sameSource(
+          saved,
+          channelSecretSource(retained.initialSecretBindings?.[key]?.source),
+        ) && !sameSource(saved, channelSecretSource(retained.secretBindings?.[key]?.source))
           ? `${label} (also changed in another browser)`
           : label;
       }),
@@ -864,7 +872,7 @@ function openDrawer(
   }
   const captureDraft = (): ChannelDraft => ({
     provider: provider.id,
-    baseline: (!carried && retained?.baseline) || state.drawerContext.baseline,
+    baseline,
     initial,
     initialSecretBindings,
     edited: [...edited],
@@ -1052,7 +1060,9 @@ export function renderChannelSection(
       // Carried edits apply only to the Configuration they were made on: another browser may
       // have moved this Agent to one other Agents share (finding 1510).
       const moved =
-        carried && configurationOf(retained.baseline) !== configurationOf(drawerContext.baseline);
+        carried &&
+        (!retained.baseline.configurationId ||
+          retained.baseline.configurationId !== drawerContext.configurationId);
       const opened = provider && !moved && openDrawer(section, state, provider, retained);
       if (carried && !opened) {
         // A declined carried draft would otherwise reopen on a later visit.

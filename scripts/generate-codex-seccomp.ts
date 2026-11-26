@@ -15,7 +15,7 @@ function isValueOption(name: string): name is ValueOption {
 }
 
 function usage() {
-  return `Usage: node scripts/generate-codex-seccomp.mjs --baseline <runtime-default.json> --codex-version <version> --out <profile.json> [--provenance-out <metadata.json>]
+  return `Usage: node scripts/generate-codex-seccomp.ts --baseline <runtime-default.json> --codex-version <version> --out <profile.json> [--provenance-out <metadata.json>]
 
 Generates the reviewed Codex bubblewrap localhost seccomp profile from an operator-captured
 RuntimeDefault OCI seccomp baseline. Output files are immutable: existing paths are refused.`;
@@ -49,17 +49,19 @@ function parseArgs(argv: string[]) {
   return options;
 }
 
-// Captures can be direct profiles or one of the supported OCI inspection envelopes.
-function property(value: unknown, key: string): unknown {
-  return value !== null && typeof value === "object" && key in value
-    ? Reflect.get(value, key)
-    : undefined;
+function hasProperty<Key extends string>(value: unknown, key: Key): value is Record<Key, unknown> {
+  return value !== null && typeof value === "object" && key in value;
+}
+
+function property<Key extends string>(value: unknown, key: Key): unknown {
+  return hasProperty(value, key) ? value[key] : undefined;
 }
 
 function seccompFromRuntimeSpec(value: unknown): unknown {
   return property(property(value, "linux"), "seccomp");
 }
 
+// Captures can be direct profiles or one of the supported OCI inspection envelopes.
 function extractSeccompProfile(captured: unknown): unknown {
   const profile =
     property(captured, "defaultAction") !== undefined
@@ -112,7 +114,8 @@ async function main(argv = process.argv.slice(2)) {
     "--out and --provenance-out must be different paths.",
   );
 
-  const baseline = extractSeccompProfile(JSON.parse(await readFile(resolve(baselinePath), "utf8")));
+  const captured: unknown = JSON.parse(await readFile(resolve(baselinePath), "utf8"));
+  const baseline = extractSeccompProfile(captured);
   const artifact = buildCodexBwrapProfileArtifact({ baseline, codexVersion });
 
   await assertNewFile(profilePath, "Codex seccomp profile output");
@@ -136,7 +139,7 @@ async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  main().catch((error: unknown) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
   });

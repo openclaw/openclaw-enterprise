@@ -1,0 +1,68 @@
+# Dedicated private-file receiver. Merge only the protected otlp_http exporter.
+extensions:
+  file_storage:
+    directory: ${env:OCE_WORKER_STATE_DIR}
+    create_directory: false
+receivers:
+  filelog/worker_observer:
+    include: ["${env:OCE_WORKER_OBSERVATIONS_FILE}"]
+    start_at: beginning
+    storage: file_storage
+    max_log_size: 16KiB
+    max_log_size_behavior: truncate
+    operators:
+      - type: json_parser
+        parse_to: body
+        on_error: drop_quiet
+processors:
+  filter/worker_envelope:
+    error_mode: silent
+    logs:
+      log_record:
+        - "not IsMap(body)"
+        - "Len(body) != 3"
+        - 'body["stream"] != "oce.worker-terminations.v1"'
+        - 'body["event"] != "worker.termination.observed" and body["event"] != "worker.observation.coverage"'
+        - 'not IsMap(body["fields"])'
+  transform/worker_projection:
+    error_mode: silent
+    log_statements:
+      - context: log
+        statements:
+          - "keep_keys(attributes, [])"
+          - "keep_keys(resource.attributes, [])"
+          - "keep_keys(instrumentation_scope.attributes, [])"
+          - 'set(instrumentation_scope.name, "oce.worker-terminations")'
+          - 'set(instrumentation_scope.version, "1")'
+          - 'set(resource.attributes["service.name"], "oce-worker-observer")'
+          - 'set(attributes["event.name"], body["event"])'
+          - 'set(attributes["k8s.namespace.name"], body["fields"]["k8s.namespace.name"]) where IsString(body["fields"]["k8s.namespace.name"]) and IsMatch(body["fields"]["k8s.namespace.name"], "^[a-z0-9][a-z0-9.-]{0,252}$$")'
+          - 'set(attributes["k8s.pod.name"], body["fields"]["k8s.pod.name"]) where IsString(body["fields"]["k8s.pod.name"]) and IsMatch(body["fields"]["k8s.pod.name"], "^[a-z0-9][a-z0-9.-]{0,252}$$")'
+          - 'set(attributes["k8s.pod.uid"], body["fields"]["k8s.pod.uid"]) where IsString(body["fields"]["k8s.pod.uid"]) and IsMatch(body["fields"]["k8s.pod.uid"], "^[a-f0-9]{8}-[a-f0-9-]{27}$$")'
+          - 'set(attributes["k8s.container.name"], body["fields"]["k8s.container.name"]) where body["fields"]["k8s.container.name"] == "worker"'
+          - 'set(attributes["oce.container.kind"], body["fields"]["oce.container.kind"]) where body["fields"]["oce.container.kind"] == "container" or body["fields"]["oce.container.kind"] == "restartable-init"'
+          - 'set(attributes["oce.restart.incarnation"], Int(body["fields"]["oce.restart.incarnation"])) where body["event"] == "worker.termination.observed" and ((IsInt(body["fields"]["oce.restart.incarnation"]) or IsDouble(body["fields"]["oce.restart.incarnation"])) and Int(body["fields"]["oce.restart.incarnation"]) == body["fields"]["oce.restart.incarnation"] and body["fields"]["oce.restart.incarnation"] <= 9007199254740991 and body["fields"]["oce.restart.incarnation"] >= 0)'
+          - 'set(attributes["oce.termination.exit_code"], Int(body["fields"]["oce.termination.exit_code"])) where body["event"] == "worker.termination.observed" and ((IsInt(body["fields"]["oce.termination.exit_code"]) or IsDouble(body["fields"]["oce.termination.exit_code"])) and Int(body["fields"]["oce.termination.exit_code"]) == body["fields"]["oce.termination.exit_code"] and body["fields"]["oce.termination.exit_code"] <= 9007199254740991 and body["fields"]["oce.termination.exit_code"] >= -2147483648 and body["fields"]["oce.termination.exit_code"] <= 2147483647)'
+          - 'set(attributes["oce.termination.finished_at"], body["fields"]["oce.termination.finished_at"]) where body["event"] == "worker.termination.observed" and (IsString(body["fields"]["oce.termination.finished_at"]) and IsMatch(body["fields"]["oce.termination.finished_at"], "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$$"))'
+          - 'set(attributes["oce.termination.container_id"], body["fields"]["oce.termination.container_id"]) where body["event"] == "worker.termination.observed" and (IsString(body["fields"]["oce.termination.container_id"]) and IsMatch(body["fields"]["oce.termination.container_id"], "^(containerd|cri-o|docker)://[a-f0-9]{64}$$"))'
+          - 'set(attributes["oce.termination.reason"], body["fields"]["oce.termination.reason"]) where body["event"] == "worker.termination.observed" and (body["fields"]["oce.termination.reason"] == "Completed" or body["fields"]["oce.termination.reason"] == "Error" or body["fields"]["oce.termination.reason"] == "OOMKilled" or body["fields"]["oce.termination.reason"] == "ContainerCannotRun" or body["fields"]["oce.termination.reason"] == "StartError" or body["fields"]["oce.termination.reason"] == "ContainerStatusUnknown")'
+          - 'set(attributes["oce.termination.signal"], Int(body["fields"]["oce.termination.signal"])) where body["event"] == "worker.termination.observed" and ((IsInt(body["fields"]["oce.termination.signal"]) or IsDouble(body["fields"]["oce.termination.signal"])) and Int(body["fields"]["oce.termination.signal"]) == body["fields"]["oce.termination.signal"] and body["fields"]["oce.termination.signal"] <= 9007199254740991 and body["fields"]["oce.termination.signal"] > 0 and body["fields"]["oce.termination.signal"] <= 127)'
+          - 'set(attributes["oce.observation.id"], body["fields"]["oce.observation.id"]) where body["event"] == "worker.termination.observed" and (IsString(body["fields"]["oce.observation.id"]) and IsMatch(body["fields"]["oce.observation.id"], "^[a-f0-9]{64}$$"))'
+          - 'set(attributes["oce.observation.state"], body["fields"]["oce.observation.state"]) where body["event"] == "worker.observation.coverage" and (body["fields"]["oce.observation.state"] == "baseline" or body["fields"]["oce.observation.state"] == "changed" or body["fields"]["oce.observation.state"] == "unavailable" or body["fields"]["oce.observation.state"] == "counter-reset")'
+          - 'set(attributes["k8s.container.restart_count"], Int(body["fields"]["k8s.container.restart_count"])) where body["event"] == "worker.observation.coverage" and ((IsInt(body["fields"]["k8s.container.restart_count"]) or IsDouble(body["fields"]["k8s.container.restart_count"])) and Int(body["fields"]["k8s.container.restart_count"]) == body["fields"]["k8s.container.restart_count"] and body["fields"]["k8s.container.restart_count"] <= 9007199254740991 and body["fields"]["k8s.container.restart_count"] >= 0)'
+          - 'set(attributes["oce.observation.missing_terminations_min"], Int(body["fields"]["oce.observation.missing_terminations_min"])) where body["event"] == "worker.observation.coverage" and ((IsInt(body["fields"]["oce.observation.missing_terminations_min"]) or IsDouble(body["fields"]["oce.observation.missing_terminations_min"])) and Int(body["fields"]["oce.observation.missing_terminations_min"]) == body["fields"]["oce.observation.missing_terminations_min"] and body["fields"]["oce.observation.missing_terminations_min"] <= 9007199254740991 and body["fields"]["oce.observation.missing_terminations_min"] >= 0)'
+          - 'set(body, attributes["event.name"])'
+  filter/worker_required:
+    error_mode: silent
+    logs:
+      log_record:
+        - 'attributes["k8s.namespace.name"] == nil or attributes["k8s.pod.uid"] == nil or attributes["k8s.pod.name"] == nil or attributes["k8s.container.name"] == nil or attributes["oce.container.kind"] == nil'
+        - 'body == "worker.termination.observed" and (attributes["oce.observation.id"] == nil or attributes["oce.restart.incarnation"] == nil or attributes["oce.termination.exit_code"] == nil or attributes["oce.termination.finished_at"] == nil)'
+        - 'body == "worker.observation.coverage" and attributes["oce.observation.state"] == nil'
+service:
+  extensions: [file_storage]
+  pipelines:
+    logs/worker_observer:
+      receivers: [filelog/worker_observer]
+      processors: [filter/worker_envelope, transform/worker_projection, filter/worker_required]
+      exporters: [otlp_http]

@@ -1,44 +1,18 @@
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomUUID, createHash } from "node:crypto";
-import {
-  CREDENTIAL_GATEWAY_FIXTURE_ID,
-  createWorkerRevisionFixtures,
-} from "./postgres-worker-revision-fixture.mjs";
+import { createWorkerRevisionFixtures } from "./postgres-worker-revision-fixture.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "./postgres-agent-app.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
-import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import type { CredentialGatewayDriver } from "../../packages/contracts/src/index.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/access/clock.ts";
+import type { PluginRevisionState } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
-
-// The worker reaches model withdrawal through Compute. This registration supplies only
-// the paired gateway identity; the test does not claim real provider attachment or chat.
-export function observationGateway(): CredentialGatewayDriver {
-  const unused = async (): Promise<never> => {
-    throw new Error("Unexpected direct gateway effect");
-  };
-  return {
-    id: CREDENTIAL_GATEWAY_FIXTURE_ID,
-    implementation: "credential-gateway-worker-fixture",
-    capability: "credential_gateway",
-    validateSourceConfig() {},
-    listSourceTypes: async () => [],
-    registerSource: unused,
-    updateSource: unused,
-    sourceStatus: unused,
-    removeSource: unused,
-    attachForRevision: unused,
-    attachmentStatus: unused,
-    withdraw: unused,
-  };
-}
 
 export async function setupStandingWorkerDatabase(
   t: TestContext,
@@ -75,7 +49,7 @@ export async function setupStandingWorkerDatabase(
 export async function setupStandingWorkerAuthority(
   t: TestContext,
   f: Awaited<ReturnType<typeof setupStandingWorkerDatabase>>,
-  options: { nonModelSources?: number } = {},
+  { plugins }: { plugins?: PluginRevisionState } = {},
 ) {
   const credentials = await startRegistryCredentialServiceFixture(t, {
     namespaceId: f.namespace.id,
@@ -84,14 +58,17 @@ export async function setupStandingWorkerAuthority(
     limits: { exchangeMs: 5_000, credentialMarginMs: 1_000 },
     gateway: { listen: "127.0.0.1:0" },
   });
-  assert.ok(credentials);
-  const registry = structuredClone(credentials.registry);
-  registry.allowStandingApprovals = true;
-  for (const r of registry.repositories) {
-    for (const p of r.namespaces) {
-      p.allowStandingApproval = true;
-    }
-  }
+  const registry = {
+    ...credentials.registry,
+    allowStandingApprovals: true as const,
+    repositories: credentials.registry.repositories.map((repository) => ({
+      ...repository,
+      namespaces: repository.namespaces.map((policy) => ({
+        ...policy,
+        allowStandingApproval: true as const,
+      })),
+    })),
+  };
   const backend = {
     id: credentials.backendId,
     client: new UnixRepositoryCredentialControlClient({
@@ -113,16 +90,17 @@ export async function setupStandingWorkerAuthority(
     backendId: credentials.backendId,
   });
   t.after(() => receipt.close());
-  const owner = await f.agent("standing-runtime", { auth: "credential_source", ...options });
-  const modelSourceId =
-    owner.harnessAuth?.method === "credential_source" ? owner.harnessAuth.sourceId : undefined;
+  const owner = await f.agent("standing-runtime");
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
     bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
   }).bindings;
   const binding = selected!;
-  await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-    JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
+  await f.observerPool.query("UPDATE occ.agents SET repository_access=$1 WHERE id=$2", [
+    JSON.stringify({
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+    }),
     owner.id,
   ]);
   const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;
@@ -146,6 +124,7 @@ export async function setupStandingWorkerAuthority(
   );
   const originalBoundary = Date.now() + 90_000;
   const revisionOptions = {
+    ...(plugins === undefined ? {} : { plugins }),
     actorId: f.actor.id,
     repositoryCredentials: {
       driver: { id: driver.id, implementation: driver.implementation },
@@ -166,7 +145,6 @@ export async function setupStandingWorkerAuthority(
     driver,
     sender,
     owner,
-    modelSourceId,
     approval,
     revision,
     revisionOptions,

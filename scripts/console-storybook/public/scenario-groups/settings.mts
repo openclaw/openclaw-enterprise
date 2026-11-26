@@ -1,3 +1,4 @@
+import type { StoryAction } from "../../story-action.mts";
 import type { DriverConfigurationDescriptor } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 
@@ -10,17 +11,19 @@ type SettingsRule =
   | { path: "/api/auth/sign-out"; method: "POST"; status: number };
 
 type SettingsScenario = {
+  actions?: StoryAction[];
   group: "Pages/Settings";
   name: string;
   path: "/console/settings";
   description: string;
+  debugEnabled?: boolean;
+  storageUnavailable?: boolean;
   steps?: readonly string[];
   installationModelProvider?: true;
   installationNestedValues?: true;
   installationValuesUnavailable?: true;
   readOnlyPermissionSummary?: true;
   sessionUser?: { id: string; name: string; email: string };
-  actions?: readonly { selector: string; click: true }[];
   rules?: readonly SettingsRule[];
 };
 
@@ -30,13 +33,32 @@ export const settingsScenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect accepted startup fields or the same values as JSON, including redacted sections and an empty object. Browser preferences includes Debug mode, which saves locally.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Turn Debug mode on and off. The sidebar diagnostics follow the switch without adding a URL parameter.",
+      "Before expanding any Installation Driver, check that each collapsed summary shows the Driver ID, contribution key and a separate Implementation label. Switch from Fields to JSON and back and confirm the same labels remain visible while the groups stay collapsed.",
       "Expand each Installation Driver below the cards. Read the human labels and raw keys; Credential Gateway shows binary paths, Sandbox shows nested fields and hidden resources, and IAM has no visible fields. Switch Fields / JSON and confirm the expanded groups stay open.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
-      "On a long page, scroll to the bottom and check that the sidebar background and operator profile reach it. At phone width, values fit and the existing navigation drawer still opens.",
+      "Scroll the long page from top to bottom. The account control must stay at the viewport bottom; open it and select Settings without scrolling back. Repeat with Debug mode enabled. At phone width, values fit and the navigation drawer still opens.",
     ],
+  },
+  settingsDebugEnabled: {
+    group: "Pages/Settings",
+    name: "Debug mode enabled",
+    path: "/console/settings",
+    debugEnabled: true,
+    description:
+      "The saved browser preference enables sidebar diagnostics. Turn Debug mode off to hide them.",
+  },
+  settingsStorageUnavailable: {
+    group: "Pages/Settings",
+    name: "Browser storage unavailable",
+    path: "/console/settings",
+    storageUnavailable: true,
+    actions: [{ selector: "#settings-debug", click: true }],
+    description:
+      "A browser that blocks site storage refuses the save. Debug mode stays off and the control shows a recovery message.",
   },
   settingsModelProvider: {
     group: "Pages/Settings",
@@ -59,6 +81,7 @@ export const settingsScenarios = {
     description:
       "A simulated package Driver has nested records, arrays, empty values and a writeOnly field. The API fixture returns its redaction marker, and the production renderer handles the safe JSON without a bundled schema-specific form. The expanded page exercises the shared sidebar beyond one viewport.",
     steps: [
+      "Check that the collapsed Configuration summary shows the Driver ID, contribution key and a separate Implementation label. Switch from Fields to JSON and back before expanding it; the labels stay visible and the group stays collapsed.",
       "Expand Configuration. Inspect groups, nested records, false, zero, null, empty arrays and objects, literal markup text, and the hidden value.",
       "Switch to JSON and back to Fields. The values and expanded state remain unchanged.",
       "Scroll to the bottom: the navigation background and profile reach the page bottom. At phone width, open and close the navigation drawer and check that fields fit the viewport.",

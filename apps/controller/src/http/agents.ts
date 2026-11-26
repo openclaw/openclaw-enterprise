@@ -1,19 +1,28 @@
+import { Check } from "typebox/value";
+
 import {
   WORKSPACE_DEFAULTS_ID,
   harnessAuthBindingFromSnapshot,
   normalizeInitialWorkspaceFiles,
+  type Agent,
+  type OpenClawConfigurationDocument,
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type AgentStopQuery,
   type FirstDeploymentIntent,
+  type RepositoryNetworkGrant,
+  RepositoryOptionSchema,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
+  AuditAppendUnavailableError,
   NamespaceNotReadyError,
   RepositoryOptionsUnavailableError,
   restrictionsRemovedWithAgent,
   type AgentProvisioningProgress,
   type CreateAgentInput,
+  type DeployAgentInput,
   type HarnessResolver,
   type ProvisionAgentInput,
   type UpdateAgentInput,
@@ -21,10 +30,11 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
 import {
+  normalizeNativeAdminDomain,
   prepareNativeAdminConfiguration,
   type NativeAdminAccessConfig,
 } from "../gateway/native-admin.ts";
-import { dependencyUnavailable, failure } from "./errors.ts";
+import { failure } from "./errors.ts";
 import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 interface AgentHandlerOptions {
@@ -50,9 +60,9 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     backendId: agent.backendId,
     executionMode: agent.executionMode,
     gatewayManagedMode: agent.gatewayManagedMode,
+    networkProxy: agent.networkProxy,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
-    repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     harnessAuth: agent.harnessAuth,
     ...(agent.credentialSources === undefined || agent.credentialSources.length === 0
@@ -103,6 +113,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
     gatewayManagedMode: revision.gatewayManagedMode,
+    networkProxy: revision.networkProxy,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
@@ -116,7 +127,9 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
       : {
           repositoryCredentials: {
             driver: revision.repositoryCredentials.driver,
-            deadlineWallMs: revision.repositoryCredentials.deadlineWallMs,
+            ...(revision.repositoryCredentials.deadlineWallMs === undefined
+              ? {}
+              : { deadlineWallMs: revision.repositoryCredentials.deadlineWallMs }),
             bindings: revision.repositoryCredentials.bindings.map(({ repositoryRef, profile }) => ({
               repositoryRef,
               profile,
@@ -152,12 +165,18 @@ async function listRepositoryOptions({
       throw error;
     });
   reply.send({
-    data: result.options.map(({ repositoryRef, displayName, allowedProfiles, description }) => ({
-      repositoryRef,
-      displayName,
-      allowedProfiles,
-      ...(description === undefined ? {} : { description }),
-    })),
+    data: result.options.map(
+      ({ repositoryRef, displayName, allowedProfiles, description, ...catalog }) => ({
+        ...("githubAccess" in catalog &&
+        Check(RepositoryOptionSchema.properties.githubAccess, catalog.githubAccess)
+          ? { githubAccess: catalog.githubAccess }
+          : {}),
+        repositoryRef,
+        displayName,
+        allowedProfiles,
+        ...(description === undefined ? {} : { description }),
+      }),
+    ),
     meta: { requestId: request.id, ...(result.notConfigured ? { notConfigured: true } : {}) },
   });
 }
@@ -189,6 +208,31 @@ function validateWorkspaceSetup(
 // Closed Fastify body schemas admit these input fields. Handlers supply route scope
 // after spreading the body; omitted fields and explicit null stay distinct.
 export function createAgentHandlers(options: AgentHandlerOptions) {
+  function prepareBrowserAccess(
+    agent: Pick<Agent, "id" | "namespaceId">,
+    values: Readonly<OpenClawConfigurationDocument>,
+  ): Readonly<OpenClawConfigurationDocument> {
+    if (!options.nativeAdmin?.enabled || !options.nativeAdmin.domain || !options.publicOrigin) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "Agent browser access is not enabled on this Installation.",
+      );
+    }
+    if ((normalizeNativeAdminDomain(options.nativeAdmin.domain)?.length ?? 0) > 214) {
+      throw failure(
+        400,
+        "INVALID_REQUEST",
+        "Native admin Agent domain must not exceed 214 characters.",
+      );
+    }
+    return prepareNativeAdminConfiguration(values, {
+      agent,
+      installationId: options.installationId,
+      publicOrigin: options.publicOrigin,
+      domain: options.nativeAdmin.domain,
+    });
+  }
   return {
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
@@ -261,25 +305,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         nativeAdmin === true
           ? {
               key: "native-admin",
-              prepare: (agent, values) => {
-                if (
-                  !options.nativeAdmin?.enabled ||
-                  !options.nativeAdmin.domain ||
-                  !options.publicOrigin
-                ) {
-                  throw failure(
-                    400,
-                    "INVALID_REQUEST",
-                    "Native admin UI access is not enabled on this Installation.",
-                  );
-                }
-                return prepareNativeAdminConfiguration(values, {
-                  agent,
-                  installationId: options.installationId,
-                  publicOrigin: options.publicOrigin,
-                  domain: options.nativeAdmin.domain,
-                });
-              },
+              prepare: prepareBrowserAccess,
             }
           : undefined,
       );
@@ -289,17 +315,88 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       reply.status(202).send({ data: result, meta: { requestId: request.id } });
     },
     async createAgent({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-      const input = body as Omit<CreateAgentInput, "namespaceId">;
-      validateWorkspaceSetup(input);
-      const agent = await controller.transact(async (unit) => {
-        const created = await controller.createAgent(
-          context.actorId,
-          { ...input, namespaceId },
-          options.resolveHarness,
+      const { nativeAdmin, expectedConfigurationGeneration, repositoryNetworkPolicy, ...input } =
+        body as Omit<CreateAgentInput, "namespaceId"> & {
+          repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[];
+          nativeAdmin?: boolean;
+          expectedConfigurationGeneration?: number;
+        };
+      if (nativeAdmin === true && expectedConfigurationGeneration === undefined) {
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          "Browser access setup requires expectedConfigurationGeneration.",
         );
-        await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
-        return clientAgent(created);
-      });
+      }
+      validateWorkspaceSetup(input);
+      const agent = await controller.transact(
+        async (unit) => {
+          const created = await controller.createAgent(
+            context.actorId,
+            { ...input, namespaceId },
+            options.resolveHarness,
+            nativeAdmin === true
+              ? {
+                  expectedGeneration: expectedConfigurationGeneration!,
+                  prepare: prepareBrowserAccess,
+                }
+              : undefined,
+          );
+          await unit.audit.append(
+            mutationEvent(
+              { kind: "agent", id: created.id, namespaceId },
+              nativeAdmin === true
+                ? {
+                    browserAccess: true,
+                    preparedConfiguration: {
+                      id: input.configurationId,
+                      previousGeneration: expectedConfigurationGeneration,
+                    },
+                  }
+                : undefined,
+            ),
+          );
+          if (repositoryNetworkPolicy === undefined) {
+            return clientAgent(created);
+          }
+          // Use the same editing, admission and policy-read authority as an existing Agent.
+          // No draft becomes deployable before its restrictions and audit commit.
+          const target = [context.actorId, namespaceId, created.id, "networking"] as const;
+          await controller.TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing(
+            ...target,
+            true,
+          );
+          const { policy } = await controller.getAgentSandboxPolicy(
+            ...target,
+            options.resolveHarness,
+          );
+          const saved = await controller.updateAgentSandboxPolicy(
+            ...target,
+            policy.version,
+            policy.additions,
+            repositoryNetworkPolicy,
+            options.resolveHarness,
+          );
+          await unit.audit.append(
+            mutationEvent(
+              { kind: "sandbox_policy", id: saved.id, namespaceId },
+              {
+                agentId: created.id,
+                policyVersion: saved.version,
+                repositoryGrantCount: repositoryNetworkPolicy.length,
+              },
+            ),
+          );
+          // Restore the default editing gate. This request authorizes only the initial save.
+          return clientAgent(
+            await controller.TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing(
+              ...target,
+              false,
+            ),
+          );
+        },
+        { readCommitted: repositoryNetworkPolicy !== undefined },
+      );
       reply.status(201).send({ data: agent, meta: { requestId: request.id } });
     },
     // Writes nothing and records no mutation: a refusal names the same rule createAgent would.
@@ -366,12 +463,20 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         meta: { requestId: request.id },
       });
     },
-    async getAgent({ controller, context, request, reply, params, namespaceId }) {
+    async getAgent({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
+      const agent = await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      setAuditReadTarget({ kind: "agent", id: agent.id, namespaceId: agent.namespaceId });
       reply.send({
-        data: clientAgent(
-          await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId),
-        ),
+        data: clientAgent(agent),
         meta: { requestId: request.id },
       });
     },
@@ -475,8 +580,10 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         );
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
-        } catch {
-          throw dependencyUnavailable();
+        } catch (error) {
+          throw error instanceof AuditAppendUnavailableError
+            ? error
+            : new AuditAppendUnavailableError();
         }
         return provisioned;
       });
@@ -494,7 +601,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       try {
         const receipt = await controller.deployAgentFirst(
           context.actorId,
-          { namespaceId, agentId: params.agentId! },
+          {
+            namespaceId,
+            agentId: params.agentId!,
+            harnessOverrides: (request.body as FirstDeploymentIntent).harnessOverrides,
+          },
           request.body as FirstDeploymentIntent,
           options.resolveHarness,
           (admitted) =>
@@ -520,10 +631,19 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       params,
       namespaceId,
     }) {
+      let harnessOverrides: DeployAgentInput["harnessOverrides"];
+      const query = request.query as { harnessOverrides?: string };
+      if (query.harnessOverrides !== undefined) {
+        try {
+          harnessOverrides = JSON.parse(query.harnessOverrides);
+        } catch {
+          throw failure(400, "INVALID_REQUEST", "Harness overrides must be JSON.");
+        }
+      }
       reply.header("cache-control", "no-store");
       const receipt = await controller.recoverAgentFirstDeployment(
         context.actorId,
-        { namespaceId, agentId: params.agentId! },
+        { namespaceId, agentId: params.agentId!, harnessOverrides },
         {
           key: params.key!,
           expectedConfigurationId: params.expectedConfigurationId!,
@@ -535,9 +655,15 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
       try {
+        const body = request.body as DeployAgentInput | undefined;
         const admitted = await controller.deployAgentWithAuthorization(
           context.actorId,
-          { namespaceId, agentId },
+          {
+            namespaceId,
+            agentId,
+            harnessOverrides: body?.harnessOverrides,
+            expectedRepositoryPolicyVersion: body?.expectedRepositoryPolicyVersion,
+          },
           options.resolveHarness,
           (admitted) =>
             mutationEvent(
@@ -557,12 +683,20 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async stopAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
+      const { expectedActiveRevisionId } = request.query as AgentStopQuery;
       const stopped = await controller.transact(async (unit) => {
-        const agent = await controller.stopAgent(context.actorId, namespaceId, agentId);
+        const agent = await controller.stopAgent(
+          context.actorId,
+          namespaceId,
+          agentId,
+          expectedActiveRevisionId,
+        );
         try {
           await unit.audit.append(mutationEvent({ kind: "agent", id: agentId, namespaceId }));
-        } catch {
-          throw dependencyUnavailable();
+        } catch (error) {
+          throw error instanceof AuditAppendUnavailableError
+            ? error
+            : new AuditAppendUnavailableError();
         }
         return clientAgent(agent);
       });
@@ -586,6 +720,7 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
           backendId: summary.backendId,
           configurationId: summary.configurationId,
           configurationGeneration: summary.configurationGeneration,
+          networkProxy: summary.networkProxy,
           harness: summary.harness,
           createdAt: summary.createdAt,
           deploymentStatus: summary.deploymentStatus,
@@ -597,7 +732,15 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         },
       });
     },
-    async getAgentRevision({ controller, context, request, reply, params, namespaceId }) {
+    async getAgentRevision({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
       const revision = await controller.getRevisionForBrowsing(
         context.actorId,
@@ -605,9 +748,22 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         agentId,
         params.revisionId as string,
       );
+      setAuditReadTarget({
+        kind: "agent_revision",
+        id: revision.id,
+        namespaceId: revision.namespaceId,
+      });
       reply.send({ data: clientRevision(revision), meta: { requestId: request.id } });
     },
-    async getAgentDeployment({ controller, context, request, reply, params, namespaceId }) {
+    async getAgentDeployment({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      setAuditReadTarget,
+    }) {
       const agentId = params.agentId!;
       const status = await controller.getDeploymentStatus(
         context.actorId,
@@ -615,6 +771,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         agentId,
         params.deploymentId as string,
       );
+      setAuditReadTarget({
+        kind: "agent_revision",
+        id: status.deploymentId,
+        namespaceId: status.namespaceId,
+      });
       reply.send({ data: status, meta: { requestId: request.id } });
     },
     async diagnoseAgentDeployment({ controller, context, request, reply, params, namespaceId }) {

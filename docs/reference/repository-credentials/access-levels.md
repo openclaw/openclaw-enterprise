@@ -1,13 +1,16 @@
 # GitHub access levels
 
-Choose the least access the Agent needs. Each binding selects one level for one
-repository; Namespace policy determines which levels are available.
+For Credential Design 1.0, choose repository **Read** or **Read/write**.
+TokenService supplies credentials for admitted Git operations. GitHub enforces
+branch rules. OpenShell can also admit a separate public metadata request for
+the same repository. The prepared broker and deprecated protected profiles
+documented below are outside 1.0.
 
 ## Registry profiles
 
 The registry's `namespaces[].profiles` lists the access modes that Agents in that
 OCE Namespace may select for the repository. An Agent's
-`repositoryBindings[].profile` selects one allowed mode. OCE rejects a binding
+`repositoryAccess.repositories[].profile` selects one allowed mode. OCE rejects a binding
 whose profile is not allowed by the Namespace policy.
 
 | Profile             | Permission selection                                                          |
@@ -18,11 +21,16 @@ whose profile is not allowed by the Namespace policy.
 | `git-full`          | Requests the predefined contribution profile with issue management.           |
 
 For `github-repository`, `profiles` must contain only that value and the Namespace
-policy must include `permissions`. For example, `contents: write` and
-`metadata: read` permit content writes and metadata reads within the supported
-[protected repository route](protected-openshell-git.md#use-the-admitted-repository).
-GitHub App permissions and repository rules still apply. This profile does not
-accept an OCE branch allowlist; GitHub governs branch restrictions.
+policy must include the GitHub App token `permissions`, such as `contents: write`
+and `metadata: read`. These permissions set the scope of the App's installation
+token. GitHub applies its repository and branch rules.
+
+For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
+[standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+The approved scope includes the exact repository identity and permission map.
+Legacy sessions for multiple selected repositories remain finite.
+
+A TokenService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
@@ -32,7 +40,111 @@ Installation-wide access uses a separate
 [`installationAccess` entry](protected-openshell-git.md#grant-access-to-a-github-app-installation);
 `github-installation` is not a value in a repository's `profiles` list.
 
+### TokenService registry example
+
+This registry permits read-only Git access to `project` in one Namespace.
+Replace the example Namespace, App, and installation IDs. Set `backendId` to
+the selected GitHub Backend ID.
+
+```json
+{
+  "version": 1,
+  "backendId": "repository-backend",
+  "providerInstanceId": "github-production",
+  "appId": "123456",
+  "githubInstallationId": "789012",
+  "maximumDurationSeconds": 900,
+  "repositories": [
+    {
+      "repositoryRef": "project",
+      "repository": "project",
+      "namespaces": [
+        {
+          "namespaceId": "ns_00000000-0000-4000-8000-000000000001",
+          "profiles": ["github-repository"],
+          "nativeGit": "v1",
+          "permissions": { "contents": "read", "metadata": "read" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Use the same short repository name in the Installation's ceiling. The registry
+grants access to the Namespace. The ceiling limits the grants its Agents can save.
+
+```yaml
+repositoryNetworkPolicyCeiling:
+  - repository: project
+    access: read
+```
+
+### Native Git delivery
+
+Use a Dedicated Agent with a supported TokenService model Source, Kubernetes
+Compute, and the paired OpenShell Sandbox and Credential Proxy.
+[Installation and Agent setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+
+Dedicated Codex requires inspected Gateway and Agent images. Dedicated OpenClaw
+requires service mode and an inspected Gateway image qualified for model turns
+and scoped Git in the worker role. An unset image pin disables that placement.
+[Controller image qualification](../../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git)
+
+In the Namespace registry, select `nativeGit: "v1"` with the
+`github-repository` profile for each selected repository. Register the GitHub
+App Client and choose it on the Agent. Set each repository to **Read-only Git**
+or **Read/write Git**. OCC derives the revision's grants from those selections,
+the current registry and Installation ceiling, and the repository identities
+verified by GitHub. A separately saved `repositoryNetworkPolicy`, even an empty
+list, conflicts with the selection and blocks deployment. Use an Agent draft
+without that list. [Repository network policy](../sandbox-policies.md#repository-network-policy)
+
+TokenService holds the installation token. Credential Proxy injects it only
+on each Agent's admitted Git requests. Read-only permits Git discovery, clone,
+and fetch. Read/write also permits push.
+
+Stop a running Agent before deploying changed grants. Removing repositories
+can [withdraw running Git access](../../guides/credential-proxy.md#withdraw-repository-access) without
+replacing its model credential. [Git token renewal](../../guides/repository-credentials/openshell-git-renewal.md)
+does not change the Agent's grants.
+
+### Public repository metadata
+
+For either access level, OpenShell adds a public metadata rule for each admitted
+repository when the Installation's `sandboxNetworkPolicyCeiling` permits
+`/usr/bin/curl` to reach `api.github.com:443`. Without this ceiling entry, the
+Agent can still deploy with its Git grants.
+
+The derived rule allows `/usr/bin/curl` to send `GET` to the exact
+`/repos/{owner}/{repository}` path. It grants no `HEAD`, other methods,
+subpaths, or routes for other repositories. OpenClaw Enterprise supplies no
+credential and leaves request headers intact. GitHub returns its full response
+and decides whether the repository is public for an unauthenticated request.
+
+If an existing Sandbox rule overlaps this request, OpenShell refuses to prepare
+the deployment. Remove the overlapping rule and keep the Installation ceiling
+entry to use the derived rule.
+
+The rule uses the Repository grants saved with the Agent revision. Withdrawing
+the Git Source leaves this public rule in place. Deploy a revision without the
+grant to remove the rule.
+
+<a id="api-limits"></a>
+<a id="preview-namespace-limits"></a>
+<a id="issue-creation"></a>
+<a id="cut-over-existing-registrations"></a>
+<a id="pull-request-creation"></a>
+<a id="known-limits"></a>
+
+Earlier OpenShell REST routes, API limits, and issue and pull request behavior
+are documented in the [historical REST reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery).
+The separate [prepared native Git broker](prepared-native-git.md) is outside 1.0;
+its draft-PR feature is not equivalent to a Source-backed Git grant.
+
 ## Console access levels
+
+These profile choices apply to the separate **Access profiles** path.
 
 | Console choice          | Configuration value | Meaning                                                                       |
 | ----------------------- | ------------------- | ----------------------------------------------------------------------------- |
@@ -65,17 +177,12 @@ Agent create, provision, and update requests can use `repositoryAccess`:
 ```
 
 An omitted entry profile inherits `defaultProfile`. An explicit profile remains
-custom even when equal to the default. Responses retain this intent alongside
-resolved `repositoryBindings`; saved versions contain concrete profiles.
-Changing desired access affects future deployments only. An empty repositories
-array removes attachments while retaining the default.
+custom even when equal to the default. The Agent response returns the saved
+`repositoryAccess`, and deployment resolves those selections against Namespace
+policy before freezing the grants in the Agent revision.
 
-`repositoryAccess` and `repositoryBindings` are mutually exclusive request fields.
-For direct `repositoryBindings`, omitting `profile` selects `github-repository`
-when that is the registry policy's sole profile; otherwise it selects `git-write`.
-Agents without saved intent open with their existing profiles marked custom.
-Omitting both fields during update preserves existing settings; updating direct
-bindings clears inheritance intent. Profiles remain subject to Namespace policy.
+Omitting `repositoryAccess` preserves the saved selections. An empty
+`repositories` array removes the selections while retaining the default profile.
 
 ## API and branch boundaries
 
@@ -90,7 +197,9 @@ A lost response does not authorize repeating a push or draft creation.
 
 ## Supported commands
 
-Use ordinary `git clone`, `git fetch` and `git push` to the approved ref. With a draft grant, use
+Use ordinary `git clone` and `git fetch` on approved repositories. Write
+grants permit `git push`. The prepared native sender limits pushes to its
+approved ref. With a prepared draft grant, use
 `oce-github pr-create --draft` with the approved head and base. The explicit development-token
 profile can also use `gh api` for permitted REST routes; it does not establish production GitHub
 App behavior.

@@ -3,11 +3,9 @@ import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
-
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { listen } from "../helpers/listen.mjs";
+import { listen } from "../helpers/listen.ts";
 import {
   detailUrl,
   hasFocus,
@@ -19,7 +17,7 @@ import {
   settledView,
   stopFocusTrail,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   heldView,
@@ -28,8 +26,9 @@ import {
   tagView,
   taggedView,
   viewTag,
-} from "./console-refocus-helpers.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+} from "./console-refocus-helpers.ts";
+import { restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
 type Namespace = Pick<NamespaceWire, "id">;
@@ -106,6 +105,42 @@ async function showNamespaces(page: Page) {
   await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
 }
+
+test("Namespaces Back keeps the opened row in view on retained and rebuilt lists", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (let index = 0; index < 22; index += 1) {
+    await fixture.createNamespace(`Team ${String(index).padStart(2, "0")}`);
+  }
+
+  for (const width of [1440, 390]) {
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 }, ignoreHTTPSErrors: false },
+    });
+    await login(page, fixture, "/console/namespaces");
+    const view = page.locator(settledView);
+    const row = view.getByRole("link", { name: "Team 20", exact: true });
+    for (const changed of [false, true]) {
+      await row.waitFor();
+      // Start with a real admitted snapshot, then distinguish reuse from replacement.
+      await page.waitForLoadState("networkidle");
+      await tagView(page);
+      await row.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForURL((url) => url.pathname === "/console/agents");
+      await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
+      if (changed) {
+        await fixture.createNamespace(`Added ${width}`);
+      }
+      await page.goBack();
+      await row.waitFor();
+      assert.equal(await viewTag(page), changed ? null : "kept");
+      assert.equal(await hasFocus(row), true, `same row at ${width}px`);
+      const box = await row.boundingBox();
+      assert.ok(box && box.y >= 0 && box.y + box.height <= 844, `visible at ${width}px`);
+    }
+  }
+});
 
 async function openAgent(page: Page, name: string) {
   await page.getByRole("link", { name }).click();
@@ -793,7 +828,7 @@ for (const { elapsed, held } of [
     await agentShown(page);
     assert.deepEqual(await shownFrames(page), [
       "none | none | no selector | none",
-      ...(pastDelay ? ["agents | Agents | selector | Loading…Reading this Agent."] : []),
+      ...(pastDelay ? ["agents | Agent details | selector | Loading…Reading this Agent."] : []),
       "agents | Fresh Agent | selector | Agent",
     ]);
     assert.equal(await page.locator('[aria-live="polite"][hidden]').count(), 0);
@@ -833,8 +868,8 @@ test("A fresh load whose session check outlasts the startup delay holds the load
   await agentShown(page);
   assert.deepEqual(await shownFrames(page), [
     "none | none | no selector | none",
-    "agents | Agents | selector | Loading…Checking Namespace access.",
-    "agents | Agents | selector | Loading…Reading this Agent.",
+    "agents | Agent details | selector | Loading…Checking Namespace access.",
+    "agents | Agent details | selector | Loading…Reading this Agent.",
     "agents | Session Agent | selector | Agent",
   ]);
 });
@@ -945,6 +980,7 @@ test("Opening an Agent focuses each heading once", async (t) => {
 // body, and its heading took focus only once the tab's reads settled, 0.5-0.9 s later at 400 ms
 // (finding 1483). It now takes focus as the title renders.
 test("Opening an Agent focuses its heading before the tab's reads settle", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { namespace, agent, page } = await openList(t, "Opening focus", "Opening Focus");
   const link = page.locator(settledView).getByRole("link", { name: "Opening Focus" });
   // The Configuration tab's read is slow.
@@ -1162,7 +1198,7 @@ for (const how of ["Enter", "a click"]) {
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
       trail.map((entry) => entry.replace(/#\d+/, "")),
-      ["A: ◇Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
+      ["A: Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
       trail.join(" | "),
     );
   });
@@ -1744,6 +1780,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
 });
 
 test("Leaving a new Agent page before its reveal does not leave it hidden on return", async (t) => {
+  const { FIRST_ACTIVITY_WAIT_MS } = await importConsoleModule("agents/detail.mjs");
   const { namespace, agent, page } = await openList(t, "Early leave", "Revealed Agent", {
     deploy: true,
   });

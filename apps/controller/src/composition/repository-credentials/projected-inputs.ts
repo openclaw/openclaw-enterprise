@@ -3,18 +3,15 @@ import { lstat, mkdir, open, readdir, readlink, realpath, unlink } from "node:fs
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { X509Certificate } from "node:crypto";
-import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
+import type { Clock } from "../../drivers/repo/access/backend-contracts.ts";
 import type { LoadedConfiguration } from "./contracts.ts";
-import { record } from "../../drivers/repo/credentials/configuration.ts";
-import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
-import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
+import { record } from "../../drivers/repo/access/configuration.ts";
+import { createSystemClock } from "../../drivers/repo/access/clock.ts";
+import { GITHUB_REPOSITORY_REGISTRY_MAX_BYTES } from "../../drivers/repo/github/access/registry.ts";
+import { inputLimits, loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
 import { runService } from "./service.ts";
+import { readStableDescriptor } from "./stable-file-descriptor.ts";
 
-const inputLimits = {
-  "config.json": 262144,
-  "tls.crt": 131072,
-  "tls.key": 65536,
-} as const;
 const privateNames = [...Object.keys(inputLimits), "registry.json"];
 const controlSocket = "/run/openclaw/repository-control/private/control.sock";
 
@@ -70,47 +67,13 @@ async function projectionGeneration(directory: string): Promise<string> {
 }
 
 async function readProjected(path: string, maximum: number): Promise<Buffer> {
+  const uid = process.getuid?.() ?? 0;
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let data: Buffer | undefined;
-  try {
-    const before = await handle.stat();
-    if (
-      !before.isFile() ||
-      before.nlink !== 1 ||
-      before.size < 1 ||
-      before.size > maximum ||
-      (before.mode & 0o022) !== 0 ||
-      (before.uid !== 0 && before.uid !== process.getuid?.())
-    ) {
-      throw new Error("invalid-projected-inputs");
-    }
-    data = Buffer.alloc(before.size + 1);
-    let position = 0;
-    while (position < data.length) {
-      const result = await handle.read(data, position, data.length - position, position);
-      if (!result.bytesRead) {
-        break;
-      }
-      position += result.bytesRead;
-    }
-    const after = await handle.stat();
-    const named = await lstat(path);
-    if (
-      position !== before.size ||
-      after.size !== before.size ||
-      after.mtimeMs !== before.mtimeMs ||
-      after.ctimeMs !== before.ctimeMs ||
-      named.isSymbolicLink() ||
-      named.dev !== before.dev ||
-      named.ino !== before.ino
-    ) {
-      throw new Error("invalid-projected-inputs");
-    }
-    return Buffer.from(data.subarray(0, position));
-  } finally {
-    data?.fill(0);
-    await handle.close();
-  }
+  return readStableDescriptor(handle, maximum, {
+    uid,
+    privateFile: false,
+    statName: () => lstat(path),
+  });
 }
 
 async function clearPreviousInputs(directory: string): Promise<void> {
@@ -185,7 +148,10 @@ export async function prepareProjectedInputs(
     const registryGeneration = await projectionGeneration(dirname(options.registryFile));
     contents.set(
       "registry.json",
-      await readProjected(join(registryGeneration, basename(options.registryFile)), 262144),
+      await readProjected(
+        join(registryGeneration, basename(options.registryFile)),
+        GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
+      ),
     );
     const root = record(JSON.parse(contents.get("config.json")!.toString("utf8")));
     const gateway = record(root.gateway);

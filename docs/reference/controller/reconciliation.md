@@ -79,7 +79,7 @@ ownership. It also checks the owning ready Namespace, stable Agent service
 principal, and approved Harness, version, mode, and Compute implementation.
 These checks use the immutable version, not a later Agent draft. Revoked source
 access fails permanently with `AUTHORIZATION_DENIED`, records attributable
-deployment-denial audit evidence, and prevents Compute calls and activation.
+deployment-denial audit evidence, and blocks activation.
 The [harness credential flow](../../flows/native-service-account-credential-delivery.md)
 owns the complete source-resolution sequence. Production accepts dedicated
 Codex and embedded OpenClaw. Dedicated Codex prepares the workload for its
@@ -237,7 +237,7 @@ A runtime reporting a deterministic credential rejection fails deployment earlie
 CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
+`RUNTIME_STATE_LOCK_UNVERIFIED`, and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
 private Secret write fails preparation or activation at once with
 [`KUBERNETES_SECRET_WRITE_FORBIDDEN`](../../guides/operate/troubleshooting.md#a-deployment-fails-because-kubernetes-refused-a-secret). A Sandbox Driver that cannot run
@@ -250,15 +250,11 @@ the Harness credential source was withdrawn from the version
 (`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
 listed credential source, is missing or changed since admission
 (`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), when the
-protected egress provider the Harness source was admitted with is no longer
-available (`EGRESS_PROVIDER_UNAVAILABLE`), or when the
-Installation no longer selects the version's Credential Gateway
-(`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
-version pinned to a Compute Driver the controller no longer selects, or to a
-Harness version it no longer approves, fails with `COMPUTE_DRIVER_MISMATCH` or
-`HARNESS_DESCRIPTOR_MISMATCH`. A version whose ServiceAccount Backend binding
-no longer matches the Agent's Backend, or whose credential is no longer issued,
-fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
+selected credential delivery owner no longer matches the revision
+(`CREDENTIAL_SOURCE_UNAVAILABLE`), or when the selected Secret Driver does not
+match (`SECRET_DRIVER_MISMATCH`). A version pinned to a Compute Driver the
+controller no longer selects, or to a Harness version it no longer approves,
+fails with `COMPUTE_DRIVER_MISMATCH` or `HARNESS_DESCRIPTOR_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
 
@@ -300,8 +296,9 @@ do not change Namespace status through this recovery path.
   path with pinned Harness and Compute metadata, then processed asynchronously.
 - Work is isolated by `namespaceId`. Namespace lifecycle operations serialize
   per Namespace, while the underlying queue preserves independent Agent lanes.
-- Current IAM policy is reloaded before each effect. Revoked access fails
-  permanently without calling Compute; temporary dependency failures retry.
+- Current IAM policy is reloaded before each effect. Denial can require
+  Compute to stop a serving candidate before permanent failure. Temporary
+  dependency failures retry.
 - Expiring claim leases recover interrupted work. A stale worker cannot commit
   Namespace changes, version activation, audit evidence, or completion after
   losing its claim.

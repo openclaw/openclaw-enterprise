@@ -1,22 +1,29 @@
+import {
+  expectCreateAccess,
+  expectCreateRefused,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
 
-import type {
+import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import {
+  AgentListResponse,
   AgentResponse,
+  type ConfigurationResponse,
   NamespaceListResponse,
-  NamespaceWire,
-  SecretWire,
+  type NamespaceWire,
+  type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { grantConfiguredNamespaceRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   deniedCreateSecretOption,
   focusedId,
-  fulfillPatchedJson,
   grantMember,
   grantSecretOperate,
   hasFocus,
@@ -32,25 +39,23 @@ import {
   shippedPreset,
   waitForCondition,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
+import { refocus } from "./console-refocus-helpers.ts";
 import {
-  expectCreateAccess,
-  expectCreateRefused,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
+  GENERIC_DENIAL,
+  SECRET_CREATE_DENIED,
+  SECRET_OPERATE_DENIED,
+} from "../helpers/refusal-text.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
   CONFIGURATION_CREATE_REFUSED,
-  GENERIC_DENIAL,
-  SECRET_CREATE_DENIED,
   NEW_SECRET_OPERATE_DENIED,
   NEW_SECRET_OPERATE_REMEDY,
-  SECRET_OPERATE_DENIED,
   AGENT_CREATE_PERMISSIONS_UNREAD,
-} from "../helpers/refusal-text.mjs";
+} from "../helpers/refusal-access.ts";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
 // Native IAM Driver answers every read and write: the member's GET /installation is refused, and
@@ -61,9 +66,9 @@ const defaultCodexPreset = await shippedPreset("default-codex");
 const ACCESS_FROM_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.";
 const MEMBER_CREDENTIAL_ACCESS =
-  "An Installation administrator then gives the new Agent access to its Secrets.";
+  "Deploying the new Agent gives it access to the Secrets and credential sources it uses.";
 const MEMBER_GRANT_REFUSED =
-  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration. Ask an Installation administrator to open the saved Agent and grant it.";
+  "The Agent was created as a draft. Deploy it from its page: deploying gives it access to its model and channel Secrets.";
 
 // Every console API answer, as "METHOD path status".
 function apiResponses(page: Page, origin: string) {
@@ -106,6 +111,10 @@ async function setup(t: TestContext) {
 // Start from the default Preset with the Namespace's model Secret and a manual model ID.
 async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await fillDefaultPresetFields(page, secret, name);
+}
+
+async function fillDefaultPresetFields(page: Page, secret: SecretWire, name: string) {
   await page.getByLabel("Agent name", { exact: true }).fill(name);
   await selectSecret(page, "API key Secret", secret);
   const model = page.getByLabel("Model ID", { exact: true });
@@ -128,10 +137,15 @@ test("a member with Agent create completes the default Preset path without Insta
   await open.click();
   await fillDefaultPreset(page, secret, "Member Agent");
 
-  // The real API refused the Installation read; the form goes on and says why, above the form.
+  // The real API refused the Installation read; the form reads the Namespace's Agent
+  // capabilities instead (RFC-0026), goes on, and says why, above the form.
   assert.deepEqual(
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     ["GET /installation 403"],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => answer.includes("/agent-capabilities ")),
+    [`GET /namespaces/${namespace.id}/agent-capabilities 200`],
   );
   // A known grant reads the repository choices once; the refused Installation read adds none.
   assert.deepEqual(repositoryReads(answers), [
@@ -142,7 +156,7 @@ test("a member with Agent create completes the default Preset path without Insta
     tone: "info",
     body: `${ACCESS_FROM_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
   });
-  // Without the Installation's capabilities the line under the fields claims no deploy outcome.
+  // The member cannot provision, so the line under the fields claims no deploy outcome.
   assert.equal(
     await page.locator("#create-agent-capability-status").textContent(),
     "Agents you create here are saved as drafts for later deployment.",
@@ -168,12 +182,13 @@ test("a member with Agent create completes the default Preset path without Insta
   const { data: created }: AgentResponse = await response.json();
   assert.equal(created.name, "Member Agent");
   assert.deepEqual(created.harnessAuth, { method: "api_key", source: secret.ref });
-  // Granting the Agent's credential access is Installation administration, which the API refuses
-  // the member: the form names who finishes it instead of a generic denial.
-  await page.getByRole("alert").filter({ hasText: MEMBER_GRANT_REFUSED }).waitFor();
-  const agentLink = await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href");
-  assert.ok(agentLink);
-  assert.match(agentLink, new RegExp(created.id));
+  // The member's deploy grants the Agent its credential access (RFC-0026), so the form opens the
+  // saved Agent's draft, where the member deploys it.
+  await page.waitForURL(
+    (url) =>
+      url.pathname.endsWith(`/agents/${created.id}`) &&
+      url.searchParams.get("revision") === "draft",
+  );
   // Every write the console tried was the member's own Namespace work; nothing touched the
   // Installation.
   assert.deepEqual(
@@ -196,13 +211,6 @@ test("a member with Agent create completes the default Preset path without Insta
     [],
   );
   assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
-  assert.equal(
-    await page
-      .getByText(/retr(?:y|ies)/i)
-      .filter({ visible: true })
-      .count(),
-    0,
-  );
 });
 
 test("a member without Agent create never sees the form, and Create Agent names why", async (t) => {
@@ -458,6 +466,297 @@ test("a draft that saved its Configuration keeps it when a permission retry refu
   );
 });
 
+async function dismissSavedConfigurationCancel(page: Page, id: string) {
+  const confirmation = page.waitForEvent("dialog");
+  const cancelClick = page.getByRole("button", { name: "Cancel", exact: true }).click();
+  const dialog = await confirmation;
+  const warning = dialog.message();
+  await dialog.dismiss();
+  await cancelClick;
+  assert.equal(
+    warning,
+    `Discard this draft? Configuration ${id} will remain saved. A new draft can save another Configuration.`,
+  );
+}
+
+for (const { persona, resource } of [
+  { persona: "member", resource: "Secret" },
+  { persona: "administrator", resource: "Secret" },
+  { persona: "member", resource: "Configuration" },
+  { persona: "administrator", resource: "Agent" },
+] as const) {
+  test(`${persona === "member" ? "a member" : "an administrator"} can retry an Agent save refused after saving its Configuration (${resource})`, async (t) => {
+    const { fixture, namespace, secret } = await setup(t);
+    const member =
+      persona === "member"
+        ? await fixture.createAccountWithPolicy("agent-creator", (principal) => {
+            // Create permissions come from Installation configuration. The member can use only
+            // the selected Secret, through the exact binding below.
+            grantConfiguredNamespaceRole(fixture.policy, principal.id, {
+              name: "agent-creator",
+              namespaceId: namespace.id,
+              permissions: {
+                namespace: ["read"],
+                preset: ["read"],
+                agent: ["read", "create"],
+                configuration: ["read", "create"],
+                secret: ["read"],
+              },
+            });
+          })
+        : undefined;
+    const memberOperate =
+      member && grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
+    const { page } = await newPage(t, fixture);
+    const answers = apiResponses(page, fixture.origin);
+    const scope = `/namespaces/${namespace.id}`;
+    const configurationUrl = fixture.origin + scope + "/configurations";
+    const agentUrl = fixture.origin + scope + "/agents";
+    await login(
+      page,
+      fixture,
+      `/console/agents/new?namespace=${namespace.id}`,
+      member?.credentials ?? fixture.credentials,
+    );
+    await fillDefaultPreset(page, secret, "Kept Agent");
+    if (member) {
+      assert.ok(answers.includes("GET /installation 403"));
+    }
+    const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+    const post = await holdRequests(t, page, agentUrl, { method: "POST", once: true });
+    const configSaved = responseTo(page, "POST", configurationUrl);
+    const agentRefused = responseTo(page, "POST", agentUrl);
+    await submit.click();
+
+    const configurationResponse = await configSaved;
+    assert.equal(configurationResponse.status(), 201);
+    const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+    // Validation and the Configuration write succeeded. Change access only for the Agent POST.
+    await post.requested;
+    const { action, kind, resourceId, message, reason } = (
+      {
+        Configuration: {
+          action: "read",
+          kind: "configuration",
+          resourceId: configuration.id,
+          message: `Not authorized: this needs Configuration read on Configuration ${configuration.id}. Ask an Installation administrator to grant it.`,
+          reason: "You need Configuration read on the saved Configuration.",
+        },
+        Agent: {
+          action: "create",
+          kind: "agent",
+          resourceId: namespace.id,
+          message: `Not authorized: a Restriction in Namespace ${namespace.id} denies Agent create, even for Installation administrators. Check your access and the applicable IAM Restriction.`,
+          reason: "You need Agent create in this Namespace.",
+        },
+        Secret: {
+          action: "operate",
+          kind: "secret",
+          resourceId: secret.id,
+          message: `Not authorized: this needs Secret operate on Secret ${secret.id}. Ask an Installation administrator to grant it.`,
+          reason: "You need Secret operate on the selected model Secret.",
+        },
+      } as const
+    )[resource];
+    let restoreAccess: () => void;
+    if (resource === "Secret" && member && memberOperate) {
+      memberOperate.revoke(secret.id);
+      restoreAccess = () =>
+        grantSecretOperate(fixture, namespace.id, member.principal, [secret.id]);
+    } else {
+      const denial = restrict(fixture.policy, action, kind, {
+        namespaceId: namespace.id,
+        resourceId,
+      });
+      restoreAccess = () => liftRestriction(fixture.policy, denial);
+    }
+    post.release();
+    const refusalResponse = await agentRefused;
+    assert.equal(refusalResponse.status(), 403);
+    const { error, meta }: ErrorResponse = await refusalResponse.json();
+    assert.equal(error.code, "FORBIDDEN");
+    const alert = page.getByRole("alert").filter({ hasText: "Agent creation was refused." });
+    await alert.waitFor();
+    assert.equal(error.message, message);
+    assert.ok(meta?.requestId);
+    const guidance = member
+      ? "Ask an Installation administrator to check your access."
+      : "Review grants and IAM Restrictions.";
+    assert.equal(
+      await alert.innerText(),
+      `Agent creation was refused. ${reason} ${guidance} If access changes, select Create Agent again here. Request ID: ${meta.requestId}`,
+    );
+    await page
+      .getByRole("status")
+      .filter({
+        hasText: `Configuration saved: ${configuration.id}. Retries reuse these resources.`,
+      })
+      .waitFor();
+    assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
+
+    await dismissSavedConfigurationCancel(page, configuration.id);
+    restoreAccess();
+    assert.deepEqual((await fixture.request("GET", scope + "/agents")).data, []);
+    const agentSaved = responseTo(page, "POST", agentUrl);
+    await submit.click();
+    const agentResponse = await agentSaved;
+    assert.equal(agentResponse.status(), 201);
+    const { data: agent }: AgentResponse = await agentResponse.json();
+    assert.equal(agent.configurationId, configuration.id);
+    assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
+    await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+    assert.deepEqual(
+      answers.filter((answer) => /^POST .*\/(agents(?:\/validate)?|configurations) /.test(answer)),
+      [
+        `POST ${scope}/agents/validate 204`,
+        `POST ${scope}/configurations 201`,
+        `POST ${scope}/agents 403`,
+        `POST ${scope}/agents 201`,
+      ],
+    );
+  });
+}
+
+test("untrusted Agent denials stay generic and an interrupted retry keeps the draft locked", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const { page } = await newPage(t, fixture);
+  const scope = `/namespaces/${namespace.id}`;
+  const agentUrl = fixture.origin + scope + "/agents";
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await fillDefaultPreset(page, secret, "Restricted Agent");
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  const alert = page.getByRole("alert").filter({ hasText: "Agent creation was refused." });
+  const configurationSaved = responseTo(page, "POST", fixture.origin + scope + "/configurations");
+  const unrelatedSecret = "sec_00000000-0000-4000-8000-000000000099";
+  const unrelatedConfiguration = "cfg_00000000-0000-4000-8000-000000000099";
+  const unrelatedNamespace = "ns_00000000-0000-4000-8000-000000000099";
+  const generic = "Your access does not include this action. Review grants and IAM Restrictions.";
+  const agentCreate =
+    "You need Agent create in this Namespace. Review grants and IAM Restrictions. If access changes, select Create Agent again here.";
+  const unnamedSecret =
+    "You need Secret operate on a Secret this request uses. Review grants and IAM Restrictions. If access changes, select Create Agent again here.";
+  // A different resource or extra advice cannot supply the reason or retry instruction.
+  for (const [message, expected] of [
+    [
+      `Not authorized: this needs Configuration read on Configuration ${unrelatedConfiguration}. Ask an Installation administrator to grant it.`,
+      generic,
+    ],
+    [
+      `Not authorized: this needs Agent create in Namespace ${unrelatedNamespace}. Review this permission with whoever manages IAM.`,
+      generic,
+    ],
+    [
+      `Not authorized: this needs Agent create in Namespace ${namespace.id}. Review this permission with whoever manages IAM.`,
+      agentCreate,
+    ],
+    [
+      `Not authorized: this needs Secret operate on Secret ${unrelatedSecret}. Ask an Installation administrator to grant it.`,
+      generic,
+    ],
+    [
+      `Not authorized: this needs Secret operate on Secret ${secret.id}. Ask an Installation administrator to grant it. Lift the Restriction.`,
+      generic,
+    ],
+    [
+      "Not authorized: this needs Secret operate on a Secret this request uses. Ask an Installation administrator to grant it.",
+      unnamedSecret,
+    ],
+  ] as const) {
+    await page.route(
+      agentUrl,
+      (route) => route.fulfill(apiErrorResponse(403, "FORBIDDEN", message)),
+      { times: 1 },
+    );
+    const refused = responseTo(page, "POST", agentUrl);
+    await submit.click();
+    const refusal = await refused;
+    assert.equal(refusal.status(), 403);
+    const { meta }: ErrorResponse = await refusal.json();
+    assert.ok(meta?.requestId);
+    const currentAlert = alert.filter({ hasText: meta.requestId });
+    await currentAlert.waitFor();
+    assert.equal(
+      await currentAlert.innerText(),
+      `Agent creation was refused. ${expected} Request ID: ${meta.requestId}`,
+    );
+    await waitForEnabled(submit);
+  }
+  const configurationResponse = await configurationSaved;
+  assert.equal(configurationResponse.status(), 201);
+  const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+  await page
+    .getByRole("status")
+    .filter({ hasText: `Configuration saved: ${configuration.id}.` })
+    .waitFor();
+
+  // Losing the next Agent response locks the draft even after earlier definitive refusals.
+  await page.route(agentUrl, (route) => route.abort("failed"), { times: 1 });
+  await submit.click();
+  const unknown = page.getByRole("alert").filter({ hasText: "Outcome unknown." });
+  await unknown.waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  assert.equal(await alert.isVisible(), false);
+  assert.doesNotMatch(await unknown.innerText(), /Create Agent again|No Agent was created/);
+  await dismissSavedConfigurationCancel(page, configuration.id);
+  assert.equal(await submit.isDisabled(), true);
+});
+
+test("a malformed Agent success response leaves creation locked and names the Configuration on Cancel", async (t) => {
+  const { fixture, namespace, secret } = await setup(t);
+  const { page } = await newPage(t, fixture);
+  const scope = `/namespaces/${namespace.id}`;
+  const agentUrl = fixture.origin + scope + "/agents";
+  // The Controller really saves the Agent. Drop its identity from the success response so
+  // the form cannot confirm the write and must offer neither another POST nor credential grants.
+  await page.route(
+    agentUrl,
+    (route) =>
+      fulfillPatchedJson(route, AgentResponse, ({ data, ...body }) => ({
+        ...body,
+        data: { ...data, id: null },
+      })),
+    { times: 1 },
+  );
+  const answers = apiResponses(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await fillDefaultPreset(page, secret, "Unconfirmed Agent");
+  const submit = page.getByRole("button", { name: "Create Agent", exact: true });
+  const configurationSaved = responseTo(page, "POST", fixture.origin + scope + "/configurations");
+  const agentSaved = responseTo(page, "POST", agentUrl);
+  await submit.click();
+  const configurationResponse = await configurationSaved;
+  assert.equal(configurationResponse.status(), 201);
+  const { data: configuration }: ConfigurationResponse = await configurationResponse.json();
+  const agentResponse = await agentSaved;
+  assert.equal(agentResponse.status(), 201);
+  assert.equal((await agentResponse.json()).data.id, null);
+  const unknown = page.getByRole("alert").filter({ hasText: "Outcome unknown." });
+  await unknown.waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  assert.doesNotMatch(await unknown.innerText(), /Create Agent again|No Agent was created/);
+  await dismissSavedConfigurationCancel(page, configuration.id);
+  assert.equal(await submit.isDisabled(), true);
+  const inventory = await fixture.request("GET", scope + "/agents");
+  const { data: agents } = fixture.fixtureResponse(
+    inventory,
+    200,
+    AgentListResponse,
+    "list Agents",
+  );
+  assert.deepEqual(
+    agents.map(({ name, configurationId }) => ({ name, configurationId })),
+    [{ name: "Unconfirmed Agent", configurationId: configuration.id }],
+  );
+  assert.deepEqual(
+    answers.filter((answer) => answer.startsWith(`POST ${scope}/`)),
+    [
+      `POST ${scope}/agents/validate 204`,
+      `POST ${scope}/configurations 201`,
+      `POST ${scope}/agents 201`,
+    ],
+  );
+});
+
 test("a temporary Installation read failure keeps an administrator off the member path", async (t) => {
   const { fixture, namespace } = await setup(t);
   const { page } = await newPage(t, fixture);
@@ -500,14 +799,23 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   const rolesPath = `${fixture.origin}/namespaces/${namespace.id}/iam/roles`;
   await page.route(rolesPath, unavailable);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, writer.credentials);
-  await fillDefaultPreset(page, secret, "Member Agent");
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   const retryPermissions = page.getByRole("button", {
     name: "Retry permission check",
     exact: true,
   });
   await waitForEnabled(retryPermissions);
+  const namespaceCapabilities = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}/namespaces/${namespace.id}/agent-capabilities`,
+  );
   await retryPermissions.click();
   await retryPermissions.waitFor({ state: "hidden" });
+  // The Namespace capability answer confirms this Preset uses a Secret. Until permission is
+  // known, the form cannot choose between the Secret and Credential Source paths.
+  assert.equal((await namespaceCapabilities).status(), 200);
+  await fillDefaultPresetFields(page, secret, "Member Agent");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();
@@ -568,7 +876,7 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
   const { page } = await newPage(t, fixture);
   let status: NamespaceWire["status"] = "provisioning";
   await page.route(`${fixture.origin}/namespaces`, (route) =>
-    fulfillPatchedJson(route, (body: NamespaceListResponse) => {
+    fulfillPatchedJson(route, NamespaceListResponse, (body) => {
       body.data = body.data.map((item) => (item.id === namespace.id ? { ...item, status } : item));
       return body;
     }),

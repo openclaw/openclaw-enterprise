@@ -1,12 +1,13 @@
 import type {
   AgentCredentialSourceBinding,
+  AgentNetworkProxy,
   AgentDeploymentStatusWire,
+  AgentRevisionSummaryWire,
   AgentRuntimeHarnessStatus,
   OpenClawConfigurationDocument,
   PluginApprovers,
   PluginDesiredState,
   RepositoryAccess,
-  RepositoryBindingSelection,
   RepositoryOption,
   RuntimeFailureCause,
   SecretDetailResponse,
@@ -44,16 +45,21 @@ type AgentDetailScenario = {
   rules?: Parameters<typeof createFixtureFetch>[0];
   nextStory?: string;
   deployed?: true;
-  auth?: "oauth" | "codex_pat" | null;
+  auth?: "oauth" | "codex_pat" | "api-source" | null;
+  harnessOverrides?: Record<string, unknown>;
   agentPlugins?: PluginDesiredState;
   agentPluginApprovers?: PluginApprovers;
+  agentNetworkProxy?: AgentNetworkProxy;
+  extraSecrets?: readonly Pick<SecretDetailResponse["data"], "id" | "name">[];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
+  oauthCatalog?: string;
   pluginDiscoveryCredential?: "none";
   firstDeploymentFailed?: true;
   scrollToTabs?: false;
   readOnlyPermissionSummary?: true;
   revisionHistory?: number;
+  unrecordedHarnessRevision?: number;
   earlierFailedVersion?: number;
   earlierVersionError?: AgentDeploymentStatusWire["error"];
   revisionPageSize?: number;
@@ -81,7 +87,7 @@ type AgentDetailScenario = {
   harnessId?: "openclaw";
   credentialSources?: AgentCredentialSourceBinding[];
   configurationChangedElsewhere?: { values: OpenClawConfigurationDocument };
-  repositoryBindings?: RepositoryBindingSelection[];
+  policyState?: "repositoryPermissions" | "repositoryPermissionsLimited";
   repositoryAccess?: RepositoryAccess;
   repositoryOptions?: RepositoryOption[];
   repositoryNotConfigured?: true;
@@ -94,6 +100,7 @@ type AgentDetailScenario = {
   cleanupCompletes?: true;
   bootstrapRuntime?: true;
   harness?: AgentRuntimeHarnessStatus;
+  harnessAfterFirstRead?: AgentRuntimeHarnessStatus;
   agentName?: string;
   mobile?: true;
   clipboard?: "unavailable";
@@ -111,7 +118,13 @@ type AgentDetailScenario = {
   stopElsewhereOnReread?: true;
   diagnosticsState?: "noSlack" | "unknown";
   runtimePod?:
-    "startupWarnings" | "dedicatedPair" | "missingAgent" | "none" | "replaced" | "rollover";
+    | "startupWarnings"
+    | "dedicatedPair"
+    | "missingAgent"
+    | "none"
+    | "replaced"
+    | "rollover"
+    | "scaleDown";
   stopNoSelection?: true;
   failedRedeployOnReread?: true;
   runtimeLogDownloadNoPod?: true;
@@ -131,6 +144,100 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const longPluginId =
+    "codex-plugin:example-document-review-and-records-retention-workspace@openai-curated-remote";
+  const pluginSelectionsWithLongId: PluginDesiredState = {
+    ...pluginSelectionState,
+    [longPluginId]: { enabled: true },
+  };
+  const newerDeployment: AgentRevisionSummaryWire = {
+    id: "rev_00000000-0000-4000-8000-000000000008",
+    namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+    agentId: "agt_00000000-0000-4000-8000-000000000001",
+    revision: 8,
+    backendId: null,
+    configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+    configurationGeneration: 2,
+    harness: { id: "codex", version: "demo", mode: "dedicated", overrides: {}, configuration: {} },
+    createdAt: "2026-09-26T23:10:00.000Z",
+    deploymentStatus: "queued",
+    deploymentErrorCode: null,
+  };
+
+  const repositoryPermissionsDraft = {
+    group: "Pages/Agent detail",
+    name: "Set permissions on a saved draft",
+    path: draft,
+    policyState: "repositoryPermissions",
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application", profile: "github-repository" }],
+    },
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        allowedProfiles: ["github-repository"],
+      },
+    ],
+    description:
+      "The saved Agent has a selected repository and no deployment or repository policy.",
+    steps: [
+      "Before Deploy new version, read the conditional warning about deploying without a repository policy and the need for a new Agent to add Per-repository access later.",
+      "Choose Set repository permissions above Deploy new version. In Repositories, choose Manage permissions.",
+      "Choose Enable policy editing, then Add access. Contributor is selected and Advanced is closed.",
+      "Expand Advanced, set Issues to Read-only, and save. Reopen the policy and check that Pull requests still uses the role.",
+    ],
+    gap: "The policy and deployment records are simulated. This preview cannot confirm runtime access.",
+  } satisfies AgentDetailScenario;
+
+  const repositoryPermissions = {
+    ...repositoryPermissionsDraft,
+    name: "Edit repository permissions after deployment",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    description: "The deployed Agent has a saved Contributor policy for example/application.",
+    steps: [
+      "Choose Edit repository permissions. Check that the saved policy matches the active version. Expand Advanced and set Pull requests to No access.",
+      "Save the policy. Confirm the new policy is pending. Reopen Manage permissions and check that Issues still uses the role.",
+      "Change Contributor to Read-only and save. Reopen Manage permissions to check your choice.",
+    ],
+  } satisfies AgentDetailScenario;
+
+  const configurationConflictDraft = {
+    group: "Pages/Agent detail",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: {
+        gateway: { bind: "loopback" },
+        agents: { defaults: { model: "codex/gpt-5.1" } },
+      },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  } satisfies Pick<
+    AgentDetailScenario,
+    "group" | "path" | "configurationChangedElsewhere" | "actions"
+  >;
+
   const runtimeLogsPage = {
     group: "Pages/Agent detail",
     path: `${candidateVersion}&tab=logs`,
@@ -140,6 +247,16 @@ export function createAgentDetailScenarios({
     AgentDetailScenario,
     "group" | "path" | "deployed" | "candidateDeploymentStatus"
   >;
+
+  const candidateRuntimeLogs =
+    "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/runtime/logs";
+  const agentLogStream = {
+    source: "agent",
+    pod: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+    podUid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+    container: "agent",
+    restartCount: 0,
+  };
 
   // The current version, v8, which the viewer cannot read, opened on its Logs tab.
   const hiddenCurrentLogsPage = {
@@ -177,6 +294,65 @@ export function createAgentDetailScenarios({
     name: "slack_search_public",
     ownerId: slackPluginId,
   };
+  const slackSendTool = {
+    id: "slack_send_message",
+    name: "slack_send_message",
+    ownerId: slackPluginId,
+  };
+  const slackMcpBase = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    credentialSources: [{ sourceId: slackSourceId }],
+    pluginDiscoveryCredential: "none",
+    pluginCapabilities: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      approvers: { agent: false, plugin: false, tools: false },
+      toolDefaults: { enabled: false, approval: [], reviewer: [] },
+      tools: { enabled: false, approval: [], reviewer: [] },
+      driverPolicySchema: { type: "object", properties: {} },
+      policyScopeByPlugin: { [slackPluginId]: "tool_human_approval" },
+      credentialSlots: [
+        {
+          pluginId: slackPluginId,
+          releaseSha256: "a".repeat(64),
+          id: "account",
+          label: "Slack account",
+          toolDiscovery: true,
+          sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+        },
+      ],
+    },
+    pluginDiscovery: {
+      pages: { initial: { plugins: [slackEntry], nextCursor: null } },
+      details: { [slackPluginId]: { ...slackEntry, tools: [slackTool, slackSendTool] } },
+    },
+  } satisfies Partial<AgentDetailScenario>;
+  const accountConsent = {
+    ...slackMcpBase,
+    oauthCatalog: "plugin-consent",
+    agentPlugins: { [slackPluginId]: { enabled: true } },
+    pluginCapabilities: {
+      ...slackMcpBase.pluginCapabilities,
+      credentialSlots: [
+        {
+          ...slackMcpBase.pluginCapabilities.credentialSlots[0]!,
+          issuers: ["https://identity.example.com"],
+          recipient: {
+            mode: "mcp_discovery",
+            serverUrl: "https://mcp.example.com/mcp",
+            resource: "https://mcp.example.com/mcp",
+          },
+        },
+      ],
+    },
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Slack"]', click: true },
+      click("Connect account"),
+    ],
+  } satisfies Partial<AgentDetailScenario>;
 
   const shareExistingPerson = [
     { selector: "#share-principal-id", value: "prn_person-demo" },
@@ -201,9 +377,59 @@ export function createAgentDetailScenarios({
           "Tab to Save plugin selections and Discard changes. Each takes focus, looks unavailable and is described by No plugin changes to save.; Enter or Space does nothing. Edit the JSON: both become live.",
         ],
       },
+      pluginsApiKeySource: {
+        group: "Pages/Agent detail",
+        name: "Hosted Apps unavailable with an API key Source",
+        path: `${draft}&tab=plugins`,
+        deployed: true,
+        auth: "api-source",
+        pluginCapabilities,
+        actions: [click("Configure plugins")],
+        description: "Codex shows why the saved model API key cannot load hosted Apps.",
+        steps: [
+          "Read the API key explanation in Plugins. Open Configure plugins and verify that Load plugins is unavailable.",
+        ],
+        gap: "This simulated Console state does not contact the hosted Apps catalog.",
+      },
     } satisfies Record<string, AgentDetailScenario>,
 
     configuration: {
+      harnessOverrides: {
+        group: "Pages/Agent detail",
+        name: "Harness destination override",
+        path: draft,
+        deployed: true,
+        auth: "api-source",
+        harnessOverrides: {
+          modelProvider: {
+            baseUrl: "https://evaluation.example.com/v1",
+            protocol: "openai-responses",
+            supportsStandaloneWebSearch: false,
+          },
+        },
+        description:
+          "Submit requested overrides and inspect the resolved settings after deployment.",
+        steps: [
+          "Read the requested destination beside the deployment checklist. Open Harness destination, choose Override model provider, enter an authorized HTTPS /v1 endpoint, then deploy.",
+          "In Configuration snapshot, expand View overrides and View settings. Compare the destinations in the two JSON documents.",
+        ],
+        gap: "Simulated UI proof only; source consent, persistence and inference routing require integration checks.",
+      },
+      harnessDeploymentPending: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment pending",
+        path: draft,
+        description:
+          "The actual deployment request is pending; duplicate submission is unavailable.",
+        rules: [{ method: "POST", suffix: "/deploy", hold: true }],
+      },
+      harnessDeploymentDenied: {
+        group: "Pages/Agent detail",
+        name: "Harness deployment denied",
+        path: draft,
+        description: "Admission refuses the requested settings without creating a version.",
+        rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
+      },
       draft: {
         group: "Pages/Agent detail",
         name: "First version",
@@ -211,6 +437,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
           "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
+          "At desktop width, focus the selected tab, then press End and Left to focus the tab before last. Narrow the window to 920 px, then 390 px. Confirm the label and focus ring stay clear of both faded edges and the selected panel stays open.",
         ],
         description:
           "An Agent without a version can edit saved settings and deploy its first immutable version.",
@@ -230,6 +457,35 @@ export function createAgentDetailScenarios({
         ],
         gap: "Simulated UI proof only; this preview does not run a deployment.",
       },
+      retainedHarnessHistory: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness history",
+        path: revision,
+        deployed: true,
+        revisionHistory: 2,
+        revisionPageSize: 1,
+        unrecordedHarnessRevision: 1,
+        description:
+          "A retained version predates recorded Harness settings. Its metadata remains browsable beside a readable current version.",
+        steps: [
+          "Load older versions, then select v1. Confirm the notice begins Historical version and the saved-settings warning appears without invented settings. Return to v2 and confirm its Configuration remains readable.",
+        ],
+        gap: "Simulated API responses matching the PostgreSQL history regression; no persistence or deployment proof.",
+      },
+      retainedHarnessWithoutOverrides: {
+        group: "Pages/Agent detail",
+        name: "Retained Harness without overrides",
+        path: revision,
+        deployed: true,
+        unrecordedHarnessRevision: 1,
+        description:
+          "The last admitted version has no recorded Harness overrides. The draft must not offer to retain settings that are absent.",
+        steps: [
+          "Open draft, then Harness destination. Confirm Use Installation default is selected and Override model provider is the only other choice; no Retain option is offered.",
+          "Choose Override model provider, then return to Use Installation default without deploying. The destination summary follows the selected choice.",
+        ],
+        gap: "Simulated UI proof only; the draft is readable independently of the retained snapshot. No deployment is submitted.",
+      },
       newVersion: {
         group: "Pages/Agent detail",
         name: "Open draft",
@@ -245,6 +501,124 @@ export function createAgentDetailScenarios({
           "Inspect the admitted version and its deployment activity.",
         ],
         gap: "The fixture simulates saves, admission, and worker completion; it does not run a live Agent or Gateway.",
+      },
+      networkProxyEmpty: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy empty",
+        path: draft,
+        deployed: true,
+        description:
+          "The draft has no upstream proxy. The editor labels its Gateway-channel-only scope and the next-deployment lifecycle.",
+        steps: [
+          "Enter an HTTP or HTTPS endpoint and optionally select a proxy credential Secret.",
+          "Save the setting, then inspect the current version to confirm its snapshot did not change.",
+        ],
+        gap: "Simulated UI proof; no proxy, Secret backend, or Gateway runs.",
+      },
+      networkProxySaved: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy saved",
+        path: draft,
+        deployed: true,
+        agentNetworkProxy: {
+          url: "https://proxy.example:8443",
+          credentialSecretId: "sec_00000000-0000-4000-8000-000000000010",
+        },
+        extraSecrets: [
+          { id: "sec_00000000-0000-4000-8000-000000000010", name: "Proxy credential (simulated)" },
+        ],
+        description:
+          "The draft shows the endpoint and a safe Secret reference. Clearing applies only to the next deployment.",
+        steps: ["Clear the proxy, inspect the current version, then deploy the cleared draft."],
+        gap: "Simulated UI proof; revision and deployment results are fixture state.",
+      },
+      networkProxyValidation: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy validation",
+        path: draft,
+        deployed: true,
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "socks5://proxy.example:1080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description: "The editor rejects an unsupported proxy URL before sending an Agent update.",
+        gap: "Simulated UI proof; server admission is separate.",
+      },
+      networkProxySaveError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy save error",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              "The Network proxy endpoint is not configured by the Installation. Select an installed endpoint.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "A refused save keeps the edit visible and leaves Deploy blocked until it is fixed or canceled.",
+        gap: "Simulated UI refusal; no Compute admission runs.",
+      },
+      networkProxyEnforcementUnavailable: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy enforcement unavailable",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+            method: "PATCH",
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+            message:
+              "Gateway channel proxy enforcement is unavailable. Retry; if the problem continues, ask an Installation administrator to check the Envoy fleet, trust bundle, and DNS.",
+          },
+        ],
+        actions: [
+          { selector: "#agent-network-proxy-url", value: "http://proxy.example:8080" },
+          click("Save Network proxy for next deployment"),
+        ],
+        description:
+          "An enforcement outage shows safe recovery guidance and requires a draft reload before another save.",
+        gap: "Simulated UI refusal; no Envoy fleet is stopped.",
+      },
+      networkProxyPermission: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy permission",
+        path: draft,
+        deployed: true,
+        agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+        description:
+          "A viewer can inspect the saved selection but cannot edit it without exact Agent update permission.",
+        gap: "Simulated permission response.",
+      },
+      networkProxySecretLoading: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets loading",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", delayMs: 4000 }],
+        description:
+          "The existing Secret selector reports loading while its Namespace list is pending.",
+        gap: "Simulated delayed Secret list.",
+      },
+      networkProxySecretError: {
+        group: "Pages/Agent detail",
+        name: "Gateway channel proxy Secrets error",
+        path: draft,
+        deployed: true,
+        rules: [{ suffix: "/secrets", method: "GET", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+        description:
+          "The existing Secret selector reports an unavailable list without treating it as empty.",
+        gap: "Simulated Secret list failure.",
       },
       editCurrentConfiguration: {
         group: "Pages/Agent detail",
@@ -272,6 +646,7 @@ export function createAgentDetailScenarios({
           "The permission answer denies Configuration update, so a version's Configuration tab offers Open draft instead of Edit current Configuration. The draft it opens shows the saved JSON with no editor. The API still decides.",
         steps: [
           "Find Open draft below the Configuration snapshot, and no Edit current Configuration.",
+          "Choose Draft repositories beside the snapshot heading. Check that the Repositories tab opens read-only. Use Back and check that Draft repositories has focus.",
           "Choose Open draft: the draft opens read-only, with no Edit Configuration button.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -285,9 +660,10 @@ export function createAgentDetailScenarios({
         description:
           "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
         steps: [
-          "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+          "Choose Copy Agent ID. When the copy succeeds, “Copied” appears for two seconds. Otherwise, the entire ID is selected and “Copy selection” appears.",
           "Focus Open draft, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
           "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+          "Beside Configuration snapshot, choose Draft credentials. Check that Credentials has focus and the draft shows the authentication source. Use Back and check that Draft credentials has focus on the snapshot. Repeat with Draft repositories.",
           "Choose Open draft to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
         ],
         nextStory: "authSaveHoldsNavigation",
@@ -392,7 +768,8 @@ export function createAgentDetailScenarios({
           "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
         steps: [
           "Enter prn_person-demo as the existing Principal ID.",
-          "Review the native-access disclosure, acknowledge it, and share.",
+          "Review the native-access disclosure and acknowledge it.",
+          "Tab to Share Agent, press Enter once, and confirm focus remains on Share Agent when Agent access is shared.",
           "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
         ],
       },
@@ -402,7 +779,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=access`,
         actions: shareExistingPerson,
         description:
-          "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+          "The sharing acknowledgment explains that removing the Agent grant leaves the separate Namespace discovery grant in place. Other grants may still provide access.",
       },
       agentSharingHoldsNavigation: {
         group: "Pages/Agent detail",
@@ -558,6 +935,11 @@ export function createAgentDetailScenarios({
         actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
         description:
           "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
+        steps: [
+          "Confirm the array error appears below the raw JSON editor and the editor has focus.",
+          'Replace the draft with {"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}. Collapse the JSON editor and choose Save plugin selections. The editor opens and takes focus with a number-range error; no save request starts.',
+          "Open Configure plugins. The existing invalid-JSON guidance appears, focus stays in the dialog, and the raw draft remains unchanged. Correct the number before using policy controls.",
+        ],
       },
       agentAuthenticationRequiredFields: {
         group: "Pages/Agent detail",
@@ -600,6 +982,7 @@ export function createAgentDetailScenarios({
           "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
         steps: [
           "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
+          "Select a few characters with Shift+Left. Switch browser tabs and return. After the access check, press Shift+Left again. The selection extends one more character to the left.",
           "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
           "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
           "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
@@ -842,6 +1225,29 @@ export function createAgentDetailScenarios({
         ],
         gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail.test.mjs covers the page with the real Kubernetes Compute rules.",
       },
+      codexGatewayPasswordMissingRefused: {
+        group: "Pages/Agent detail",
+        name: "Dedicated Codex without the gateway password",
+        path: draft,
+        deployed: true,
+        rules: [
+          {
+            suffix: "/agents/validate",
+            method: "POST",
+            status: 400,
+            code: "INVALID_REQUEST",
+            message:
+              'Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.',
+          },
+        ],
+        description:
+          "An older release saved a Dedicated Codex Configuration without gateway.auth.password. Kubernetes Compute refuses it where it applies the workspace node at runtime, so the page asks Create Agent's preflight, which runs the Installation's Compute rules. Here it refuses, so the page shows that refusal and holds Deploy.",
+        steps: [
+          "In Prepare this version, the first step reads Fix the gateway password.",
+          "Deploy new version is disabled with the gateway.auth.password refusal deploy gives.",
+        ],
+        gap: "The stored setting and the preflight refusal are simulated; tests/browser/console-agent-detail-deployment.ts covers the page with the real Kubernetes Compute rules.",
+      },
       kubernetesEntryKeyVariantChecking: {
         group: "Pages/Agent detail",
         name: "Plugin entry key, Compute check in flight",
@@ -981,7 +1387,7 @@ export function createAgentDetailScenarios({
         path: `${draft}&tab=plugins`,
         deployed: true,
         auth: "codex_pat",
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
         pluginCapabilities,
         pluginDiscovery,
@@ -989,6 +1395,7 @@ export function createAgentDetailScenarios({
         description:
           "The permission answer denies Agent update, so the saved selections show as a read-only summary with no editor, Save or Discard, and the note names the grant to ask for. The page does not read the plugin policy capabilities, which need Agent update, so the saved default plugin approvers show as text. The API still decides.",
         steps: [
+          "At 390 px, focus the Plugins tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
           "Under Default plugin approvers, read that the next deployment uses these Agent default approvers and find slack: team:TDEMO123:user:UDEMO123. No approver field is offered.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every save.",
@@ -1085,36 +1492,9 @@ export function createAgentDetailScenarios({
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
       slackMcpTools: {
-        group: "Pages/Agent detail",
+        ...slackMcpBase,
         name: "Choose tools for a connected Slack account",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
-        pluginDiscoveryCredential: "none",
-        pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
-          policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
-          credentialSlots: [
-            {
-              pluginId: slackPluginId,
-              releaseSha256: "a".repeat(64),
-              id: "account",
-              label: "Slack account",
-              toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
-            },
-          ],
-        },
-        pluginDiscovery: {
-          pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
-        },
         rules: [
           {
             suffix: "/plugins/details",
@@ -1127,13 +1507,177 @@ export function createAgentDetailScenarios({
         ],
         actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "The Tools picker loads available tools from the selected Slack account. Enable tools and choose whether native calls require human approval on the next deployment.",
         steps: [
           "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
           "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "After loading tools, both tools start disabled. Enable slack_send_message, then open Tool policy and set Require approval for to Every action. Unsupported approval modes, reviewer selection, and plugin defaults are disabled.",
+          "Choose Done and Save plugin selections. Open the picker: saved tools and approval choices remain visible as Unavailable until discovery succeeds. Load tools again to confirm the choices.",
+          "Disable slack_send_message to remove its approval override, or turn off Enable plugin to clear its managed account and tool policies before saving.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
+      },
+      slackMcpBoundAgentDiscovery: {
+        ...slackMcpBase,
+        name: "Load tools with the Agent's existing account grant",
+        credentialSources: [],
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+            },
+          },
+        },
+        pluginCapabilities: {
+          ...slackMcpBase.pluginCapabilities,
+          credentialSlots: [
+            {
+              ...slackMcpBase.pluginCapabilities.credentialSlots[0]!,
+              sources: [],
+              boundSourceId: slackSourceId,
+            },
+          ],
+        },
+        actions: [
+          click("Configure plugins"),
+          { selector: 'button[aria-label="Slack"]', click: true },
+        ],
+        description:
+          "The caller cannot select the Source, but the saved Agent retains its verified bound grant. The current account is read-only and Load tools can use the Agent's grant.",
+        steps: [
+          "Check that Current account (Agent access only) is selected but cannot be chosen as a new binding.",
+          "Choose Load tools. The simulated MCP tools appear and start disabled until explicitly enabled.",
+          "Choose Install without an account. The Agent-only account is no longer selectable; restoring it requires credential access.",
+        ],
+        gap: "The saved grant and MCP response are Storybook fixtures. This does not prove IAM authorization or a live server request.",
+      },
+      pluginAccountConsent: {
+        ...accountConsent,
+        name: "Connect an account from a saved Plugin slot",
+        description:
+          "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
+        gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
+      },
+      pluginAccountConsentMultipleClients: {
+        ...accountConsent,
+        oauthCatalog: "plugin-consent-multiple-clients",
+        name: "Choose an eligible OAuth Client",
+        description:
+          "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
+        steps: ["Choose Support alternate and confirm it remains selected."],
+        gap: "Client eligibility is simulated. This does not complete OAuth or create a Source.",
+      },
+      pluginAccountConsentNoClients: {
+        ...accountConsent,
+        name: "No eligible OAuth Client for a Plugin Template",
+        rules: [{ suffix: "/connections/oauth-clients", method: "GET", data: [] }],
+        description:
+          "The selected Template has no compatible Client. The dialog explains the missing registration and cannot start consent.",
+        gap: "Client eligibility is simulated; this does not prove Namespace authorization or TokenService custody.",
+      },
+      pluginAccountConsentClientsLoading: {
+        ...accountConsent,
+        name: "Loading eligible OAuth Clients",
+        rules: [
+          { suffix: "/connections/oauth-clients", method: "GET", delayMs: 4000, status: 503 },
+        ],
+        description:
+          "The dialog shows that eligible Clients are loading and keeps consent disabled until selection succeeds.",
+        gap: "The delayed response is simulated.",
+      },
+      pluginAccountConsentClientsFailed: {
+        ...accountConsent,
+        name: "OAuth Client discovery unavailable",
+        rules: [{ suffix: "/connections/oauth-clients", method: "GET", status: 503 }],
+        description:
+          "The dialog reports a failed eligible-Client lookup and does not submit a consent request.",
+        gap: "The API refusal is simulated.",
+      },
+      pluginAccountConsentStartFailed: {
+        ...accountConsent,
+        name: "Retry when Plugin account sign-in cannot start",
+        rules: [{ suffix: "/connections", method: "POST", status: 503 }],
+        actions: [...accountConsent.actions, click("Connect and attach")],
+        description:
+          "A simulated start failure keeps the account dialog and selected scopes usable and offers Try again.",
+        gap: "The API refusal is simulated. This preview does not verify provider consent or Source creation.",
+      },
+      pluginAccountConsentStartDelayed: {
+        ...accountConsent,
+        name: "Cancel while Plugin account sign-in is starting",
+        rules: [{ suffix: "/connections", method: "POST", delayMs: 4000, status: 503 }],
+        description:
+          "The simulated connection start remains pending long enough to cancel the dialog. Cancellation aborts the request and closes its temporary sign-in tab.",
+        steps: [
+          "Choose Connect and attach, then Cancel while the start request is pending.",
+          "Check that the Plugin editor remains usable and no account was attached.",
+        ],
+        gap: "The delayed start is a Storybook fixture. It does not contact an OAuth provider.",
+      },
+      pluginAccountTemplateNeedsClient: {
+        ...slackMcpBase,
+        name: "Configure an existing OAuth Template before connecting",
+        oauthCatalog: "plugin-consent",
+        credentialSources: [],
+        agentPlugins: { "occ-plugin:google@1.0.0": { enabled: true } },
+        pluginCapabilities: {
+          ...slackMcpBase.pluginCapabilities,
+          policyScopeByPlugin: { "occ-plugin:google@1.0.0": "enablement_only" },
+          credentialSlots: [
+            {
+              pluginId: "occ-plugin:google@1.0.0",
+              releaseSha256: "a".repeat(64),
+              id: "account",
+              label: "Google account",
+              issuers: ["https://accounts.google.com"],
+              recipient: { mode: "manual", tokenUrl: "https://oauth2.googleapis.com/token" },
+              sources: [],
+            },
+          ],
+        },
+        pluginDiscovery: {
+          pages: {
+            initial: {
+              plugins: [{ id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] }],
+              nextCursor: null,
+            },
+          },
+          details: {},
+        },
+        actions: [
+          click("Configure plugins"),
+          { selector: 'button[aria-label="Google Workspace"]', click: true },
+          click("Connect account"),
+        ],
+        description:
+          "An Installation administrator sees the unverified Google starter and can edit it instead of creating a duplicate. Consent remains unavailable until a verified version and eligible client exist.",
+        gap: "Template verification and permission responses are simulated. This does not contact Google, register an OAuth client, or start consent.",
+      },
+      slackMcpSavedToolsUnavailable: {
+        ...slackMcpBase,
+        name: "Revoke a saved MCP tool when discovery fails",
+        agentPlugins: {
+          [slackPluginId]: {
+            enabled: true,
+            driverPolicy: {
+              releaseSha256: "a".repeat(64),
+              credentials: { account: slackSourceId },
+              toolNames: [slackSendTool.id],
+            },
+            tools: { [slackSendTool.id]: { approval: "all_actions" } },
+          },
+        },
+        rules: [{ suffix: "/plugins/details", method: "POST", status: 403, code: "FORBIDDEN" }],
+        actions: [click("Configure plugins")],
+        description:
+          "A previously saved tool and its Ask policy remain visible when MCP discovery fails. The operator can revoke that tool without discovering it again or selecting another account.",
+        steps: [
+          "Open Slack and choose Load tools. Inspect slack_send_message, labeled Unavailable, and open Tool policy to see Require approval for set to Every action.",
+          "Disable slack_send_message. Its saved approval policy is removed and the unavailable row disappears. Choose Done and save.",
+        ],
+        gap: "The account and discovery failure are simulated. This verifies Console recovery controls.",
       },
       pluginsDraft: {
         group: "Pages/Agent detail",
@@ -1221,11 +1765,14 @@ export function createAgentDetailScenarios({
         name: "Plugins in admitted version",
         path: revision,
         deployed: true,
-        agentPlugins: structuredClone(pluginSelectionState),
+        agentPlugins: structuredClone(pluginSelectionsWithLongId),
         pluginCapabilities,
         actions: [click("Plugins")],
         description:
           "An admitted version shows its immutable Agent-owned plugin selection and policy.",
+        steps: [
+          "Select Plugins. At 390 px, focus the tab and press Tab. The full plugin ID wraps inside the focused JSON block.",
+        ],
       },
       invalidConfiguration: {
         group: "Pages/Agent detail",
@@ -1238,6 +1785,12 @@ export function createAgentDetailScenarios({
         ],
         description:
           "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+        steps: [
+          "Check the initial syntax error, then Cancel and reopen Edit Configuration. Expand Advanced settings to restore a complete Configuration JSON draft.",
+          'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the rest of the document. This is valid JSON syntax, but the middle number is outside the supported range. Select Save Configuration.',
+          "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that the editor has focus, its exact text is unchanged, and no Configuration write occurs.",
+          "Change only 1e400 to 2 and save again. Reopen the editor and check that thresholds is [1,2,3], with no null substituted. This is simulated UI evidence only.",
+        ],
       },
       invalidConfigurationInvisibleCharacters: {
         group: "Pages/Agent detail",
@@ -1276,34 +1829,10 @@ export function createAgentDetailScenarios({
         ],
       },
       configurationChangedElsewhereMerged: {
-        group: "Pages/Agent detail",
+        ...configurationConflictDraft,
         name: "Configuration edits merged over another browser's save",
-        path: draft,
-        configurationChangedElsewhere: {
-          values: {
-            gateway: { bind: "loopback" },
-            agents: { defaults: { model: "codex/gpt-5.1" } },
-          },
-        },
         actions: [
-          click("Edit Configuration"),
-          {
-            selector: "#configuration-json",
-            value: JSON.stringify(
-              {
-                gateway: { mode: "local", bind: "lan" },
-                agents: {
-                  defaults: {
-                    model: "codex/gpt-4.1",
-                    models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-                  },
-                },
-                channels: {},
-              },
-              null,
-              2,
-            ),
-          },
+          ...configurationConflictDraft.actions,
           click("Save Configuration"),
           click("Reload draft"),
         ],
@@ -1312,6 +1841,29 @@ export function createAgentDetailScenarios({
         steps: [
           "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
         ],
+      },
+      configurationConflictFocus: {
+        ...configurationConflictDraft,
+        name: "Configuration conflict preserves moved focus",
+        rules: [
+          {
+            method: "GET",
+            suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            // Leave time for a person to move focus during the simulated preflight.
+            delayMs: 10000,
+          },
+        ],
+        description:
+          "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
+        steps: [
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration. The conflict moves focus to Reload draft, which is described by the alert.",
+          "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
+          "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
+          "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
+        ],
+        gap: "Simulated preflight conflict. The browser regression covers a real Controller PATCH conflict arriving during a return-to-tab access check.",
       },
       admitted: {
         group: "Pages/Agent detail",
@@ -1324,16 +1876,92 @@ export function createAgentDetailScenarios({
           "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
         ],
       },
+      repositoryAccessRedeployRequired: {
+        group: "Pages/Agent detail",
+        name: "Repository access needs redeployment after completion",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "succeeded",
+        candidateSelected: true,
+        rules: [
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+              agentId: "agt_00000000-0000-4000-8000-000000000001",
+              status: "succeeded",
+              cleanup: null,
+              error: null,
+              progress: null,
+              warnings: [],
+              repositoryAccess: {
+                state: "redeploy-required",
+                code: "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                message:
+                  "The controller can no longer renew this version's repository access on its current runtime. Deploy again to restore repository access.",
+              },
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
+        description:
+          "A completed version acquires a repository access condition on refresh. The original deployment remains Completed and the API guidance appears beside it.",
+        steps: [
+          "Open Deployment and choose Refresh record. Both the version record and expanded Deployment activity show the repository access guidance while keeping Completed.",
+          "View v6 and open Deployment. Its record has no repository notice; Deployment activity still describes v7. Browsing and refreshing send no deployment request.",
+          "Return to v7 and choose Refresh deployment. The guidance stays with v7. Repeat at phone width and check the full message wraps without horizontal scrolling.",
+        ],
+        gap: "Simulated UI proof only; no repository renewal, deployment, or runtime is exercised. Absence of the condition does not establish healthy Git access.",
+      },
       repositoryDraft: {
         group: "Pages/Agent detail",
         name: "Repository access in new version",
         path: draft,
-        repositoryBindings: [
-          { repositoryRef: "application", profile: "git-write" },
-          { repositoryRef: "handbook", profile: "git-read" },
-        ],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [
+            { repositoryRef: "application", profile: "git-write" },
+            { repositoryRef: "handbook", profile: "git-read" },
+          ],
+        },
         description:
           "The new version draft names Contributor and Read-only access and shows write limits.",
+      },
+      repositoryPermissionsDraft,
+      repositoryPermissions,
+      repositoryPermissionsLimited: {
+        ...repositoryPermissions,
+        name: "Block unlisted API resources",
+        policyState: "repositoryPermissionsLimited",
+        description:
+          "The saved limits allow both listed resources. Namespace permissions currently block issue creation.",
+        steps: [
+          "Choose Edit repository permissions. Check that unlisted API resources are blocked.",
+          "Open Advanced. Issues allows Read and create, but current permissions limit it to Read-only.",
+          "Set Issues to Read-only and save. Reopen the pending policy. Select Reset to role defaults to remove all API limits.",
+        ],
+      },
+      repositoryPermissionsDenied: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository policy read denied",
+        readOnlyPermissionSummary: true,
+        description: "The viewer can read this draft but cannot read the repository policy.",
+        steps: [
+          "Choose Manage permissions. Check the permission guidance. The Console shows no policy or save controls.",
+        ],
+      },
+      repositoryPermissionsLoading: {
+        ...repositoryPermissions,
+        path: `${draft}&tab=repositories`,
+        name: "Repository permissions loading",
+        rules: [{ suffix: "/sandbox-policy/networking", hold: true }],
+        description: "The policy read stays pending until the Console times out.",
+        steps: [
+          "Choose Manage permissions. Check the loading message and wait for the read error.",
+        ],
       },
       repositoryEditor: {
         group: "Pages/Agent detail",
@@ -1346,10 +1974,6 @@ export function createAgentDetailScenarios({
             { repositoryRef: "handbook", profile: "git-read" },
           ],
         },
-        repositoryBindings: [
-          { repositoryRef: "application", profile: "git-full" },
-          { repositoryRef: "handbook", profile: "git-read" },
-        ],
         description:
           "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; earlier Agent revisions retain their prior access.",
         steps: [
@@ -1366,7 +1990,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         // Without repository settings, discovery answers 200 with no options and meta.notConfigured.
         repositoryOptions: [],
         repositoryNotConfigured: true,
@@ -1396,7 +2019,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         rules: [
           {
             path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
@@ -1415,7 +2037,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         readOnlyPermissionSummary: true,
         description:
           "The permission answer denies Agent update, so the saved repository access shows as a read-only summary with no editor, and the note names the grant to ask for. The page does not read the repository choices, which need Agent update.",
@@ -1429,7 +2050,6 @@ export function createAgentDetailScenarios({
           defaultProfile: "git-full",
           repositories: [{ repositoryRef: "application" }],
         },
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
         rules: [
           {
             suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
@@ -1451,7 +2071,10 @@ export function createAgentDetailScenarios({
         name: "Repository access in current version",
         path: revision,
         deployed: true,
-        repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: "application", profile: "git-full" }],
+        },
         description:
           "The admitted snapshot names Contributor access and retains the write-limit notice. This fixture does not establish provider authorization or runtime execution.",
       },
@@ -1466,6 +2089,8 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "On Configuration, use Viewing version to choose v6, then v7. Repeat with the keyboard. Each time you return to v7, the picker should show v7 and the notice should say Deploying version. Selected for service stays v6.",
+          "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
       deploymentRunning: {
@@ -1477,7 +2102,8 @@ export function createAgentDetailScenarios({
         description:
           "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
         steps: [
-          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+          'Selected for service reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot."',
+          "Open draft and select the text “v7 was in progress at the last check.” beside the enabled Deploy new version button. Leave it selected through a status poll (about 5 s) and check that the selection stays. Repeat at desktop and phone widths.",
         ],
       },
       deploymentRunningActivates: {
@@ -1502,6 +2128,7 @@ export function createAgentDetailScenarios({
           'On arrival the notice begins "Deploying version" and Selected for service reads v6.',
           "Before the status poll lands, focus Viewing version without changing its v7 selection.",
           'After the next poll and its delayed overview reread, the notice begins "Current version" and Selected for service reads v7. The picker adds Selected for service to v7 without moving focus.',
+          "Reset. Tab to v7 under Latest visible deployment before completion. When the badge reads Completed, the focus outline stays visible. Press Enter to open Deployment for v7.",
           "Reset. Open Deployment and hover Refresh deployment before the next poll. Keep the pointer still: completion and the delayed overview reread preserve the hover fill without marking the button busy.",
           "Reset and repeat, this time pressing Refresh deployment during the delayed reread. The button acknowledges immediately; one full user refresh follows the automatic read. Further presses while busy do not queue more reads.",
         ],
@@ -1529,6 +2156,41 @@ export function createAgentDetailScenarios({
           "Wait for the recorded status to read Completed. The details open and the same button stays focused and fully in view. Repeat at desktop and phone widths.",
           "At phone width, reload the preview and repeat, this time scrolling all the way to the top without changing focus. The details open on completion and the reader stays at the top with the focused button still offscreen.",
         ],
+      },
+      deploymentRefreshFocus: {
+        group: "Pages/Agent detail",
+        name: "Refresh deployment focus when a newer version appears",
+        path: `${candidateVersion}&tab=deployment`,
+        deployed: true,
+        candidateDeploymentStatus: "queued",
+        rules: [
+          {
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            skip: 1,
+            once: true,
+            delayMs: 6_000,
+          },
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            skip: 1,
+            data: [newerDeployment],
+          },
+          {
+            suffix: `/deployments/${newerDeployment.id}`,
+            delayMs: 1_800,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A quiet poll for queued v7 is still running when you request a refresh. The refresh discovers v8, whose deployment record is temporarily unavailable.",
+        steps: [
+          "Fold Deployment details and Tab to Refresh deployment. About five seconds after v7 appears, the quiet poll starts. The button stays enabled and focused.",
+          "Press Enter while that poll is pending. The button becomes busy and keeps focus. When the refresh discovers v8 and replaces the panel, its Refresh deployment button keeps focus in the same position.",
+          "Wait for the v8 retry notice. Refresh deployment is enabled again and remains focused. Reset the story to repeat.",
+          "Reset and repeat the refresh. While it is pending, press Shift+Tab to focus Deployment details. When the v8 retry notice appears, Enter folds the focused disclosure and Space reopens it.",
+        ],
+        gap: "Storybook simulates the version list and the failed deployment read. The Controller browser regression covers the real version discovery and read failure.",
       },
       deploymentCompletesRereadFails: {
         group: "Pages/Agent detail",
@@ -1622,17 +2284,76 @@ export function createAgentDetailScenarios({
       deploymentBootstrapCleanup: {
         group: "Pages/Agent detail",
         name: "Bootstrap failure with cleanup pending",
-        path: `${candidateVersion}&tab=deployment`,
+        path: `${candidateVersion}&tab=configuration`,
         deployed: true,
         candidateDeploymentStatus: "failed",
         bootstrapFailure: true,
+        harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         cleanupStatus: "queued",
         cleanupCompletes: true,
+        rules: [
+          // Match the first queued record. Later reads use the failed bootstrap and its cleanup.
+          {
+            suffix: `/agents/${newerDeployment.agentId}/revisions`,
+            once: true,
+            data: (
+              [
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000007",
+                  revision: 7,
+                  deploymentStatus: "queued",
+                  createdAt: "2026-09-26T22:52:53.000Z",
+                },
+                {
+                  ...newerDeployment,
+                  id: "rev_00000000-0000-4000-8000-000000000006",
+                  revision: 6,
+                  configurationGeneration: 1,
+                  createdAt: "2026-09-25T12:00:00.000Z",
+                  deploymentStatus: "succeeded",
+                },
+              ] satisfies AgentRevisionSummaryWire[]
+            ).map((summary) => ({
+              ...summary,
+              harness: {
+                ...summary.harness,
+                configuration: {
+                  modelProvider: {
+                    baseUrl: "https://api.openai.com/v1",
+                    protocol: "openai-responses",
+                    supportsStandaloneWebSearch: false,
+                  },
+                },
+              },
+            })),
+          },
+          {
+            method: "GET",
+            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+            once: true,
+            data: {
+              deploymentId: "rev_00000000-0000-4000-8000-000000000007",
+              namespaceId: newerDeployment.namespaceId,
+              agentId: newerDeployment.agentId,
+              status: "queued",
+              cleanup: null,
+              progress: { lastAttempt: null, nextAttemptAt: "2026-09-26T22:53:01.000Z" },
+              error: null,
+              warnings: [],
+            } satisfies AgentDeploymentStatusWire,
+          },
+        ],
         description:
-          "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+          "A poll changes the Configuration notice from queued to cleanup pending. The deployment remains failed after cleanup and its recorded evidence stays visible.",
         steps: [
+          "Before the replacement fails, check that Live serving says Sandbox running.",
+          "On Configuration, tab to View deployment while the notice says a deployment is queued or in progress.",
+          "Wait for the notice to say Deployment resource cleanup needs attention. Press Enter with focus still on the link to open Deployment for v7.",
           "Read the failing oauth-bootstrap exit status beside the successful init container.",
-          "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+          "After cleanup completes, check that the deployment still shows failed and the evidence remains visible.",
+          "Without refreshing, confirm the same version remains selected and Live serving now says Sandbox lost and Deploy a new version.",
         ],
       },
     } satisfies Record<string, AgentDetailScenario>,
@@ -1670,16 +2391,44 @@ export function createAgentDetailScenarios({
         ],
         gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
       },
+      deploymentFailedStatusOnly: {
+        group: "Pages/Agent detail",
+        name: "New version failed, viewer may inspect runtime status",
+        path: currentVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+        agentPermissionSummary: {
+          update: false,
+          deploy: false,
+          operate: true,
+          readLogs: false,
+          delete: false,
+          administer: false,
+        },
+        description:
+          "The viewer can inspect failed v7’s runtime status but cannot read log text or deploy. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
+        steps: [
+          "Check that the startup failure says who can deploy a new version after the fix.",
+          "At 1440 and 390 wide, check that View v7 runtime status in Logs and the advice about checking logs are both visible.",
+          "Press Tab to reach the action and Enter to open it. Viewing version changes from v6 to v7 and the Logs tab receives focus.",
+          "Inspect the simulated runtime status. Log text, Follow and Download remain unavailable.",
+          "Use Back to return to v6. Reach the same action with Tab and press Enter again. Check that v7’s runtime status appears again.",
+        ],
+        gap: "Permissions and runtime status are simulated. This story does not verify Controller authorization, a live runtime or which reads the Console sends.",
+      },
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "lost", code: "SANDBOX_STOPPED" },
+        rules: [{ suffix: "/harness-status", skip: 1, delayMs: 1500 }],
         description:
           "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
         steps: [
           'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version." The line was reserved while the Sandbox was read, so nothing below moved.',
+          'Switch to another window and return. During the delayed check, "Sandbox lost" and "Deploy a new version." stay visible. They remain when the same reply arrives.',
           "At 390 and 900 wide the note stays on one line under the badge.",
         ],
         gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",
@@ -1687,16 +2436,23 @@ export function createAgentDetailScenarios({
       sandboxRunning: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox running",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "running" },
+        harnessAfterFirstRead: { state: "lost", code: "SANDBOX_STOPPED" },
         description:
-          "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+          "Returning to the Agent refreshes the Sandbox record for the same active version.",
+        steps: [
+          "Confirm Live serving shows Not verified with Sandbox running below it.",
+          "Switch to another window and return without reloading the story.",
+          "Confirm the same Agent and version show Sandbox lost and Deploy a new version.",
+        ],
+        gap: "The Sandbox records are simulated.",
       },
       sandboxStatusUnknown: {
         group: "Pages/Agent detail",
         name: "Sandbox status unknown",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         harness: { state: "unknown", code: "UNAVAILABLE" },
         description:
@@ -1705,13 +2461,13 @@ export function createAgentDetailScenarios({
       agentHeader: {
         group: "Pages/Agent detail",
         name: "Page header with a long name",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         agentName: "Quarterly release review and signoff bot",
         description:
-          "The Agent page header: ← Agents, the name with Refresh and Open draft at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+          "The Agent page header: ← Agents, the name, then the Agent ID, Copy Agent ID and Namespace. Refresh and Open draft sit beside the name above 1100 px and beside the back link at narrower widths.",
         steps: [
-          "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Open draft stay on its first line and nothing overlaps.",
+          "At 1440 and 1101 px, Refresh and Open draft stay beside the name. At 1100 and 1024 px, they share the back-link row above the name. Nothing overlaps.",
           "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
           "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
           "Select Open draft; the draft opens and its header shows Refresh only.",
@@ -1721,7 +2477,7 @@ export function createAgentDetailScenarios({
       agentHeaderMobile: {
         group: "Pages/Agent detail",
         name: "Page header at 390px",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         mobile: true,
         description:
@@ -1734,13 +2490,12 @@ export function createAgentDetailScenarios({
       agentHeaderNoClipboard: {
         group: "Pages/Agent detail",
         name: "Copy Agent ID without clipboard access",
-        path: currentVersion,
+        path: revision,
         deployed: true,
         clipboard: "unavailable",
         actions: [{ selector: ".page-meta-copy", click: true }],
-        description:
-          "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
-        steps: ["Check that the Agent ID is selected and no Copied status appears."],
+        description: "When the browser has no clipboard access, you can copy the Agent ID by hand.",
+        steps: ["Check that the entire Agent ID is selected and “Copy selection” appears."],
       },
       draftCredentialRejected: {
         group: "Pages/Agent detail",
@@ -1866,10 +2621,10 @@ export function createAgentDetailScenarios({
         candidateDeploymentStatus: "failed",
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
         description:
-          "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
+          "The recovery banner names the model configured for v7 and leads with Open Configuration draft so the operator can correct the model and deploy the same Agent.",
         steps: [
-          "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
-          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+          "Open v7 Logs and confirm the failed version, then go Back. Select Open Configuration draft. The Configuration tab scrolls into view and receives focus. No deployment starts.",
+          "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration draft in the recovery card.",
           "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
           "At phone width, the failure, both recovery links, and selected version are still near the top.",
         ],
@@ -1922,8 +2677,8 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
         steps: [
-          "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
-          "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
+          "Check that recovery says whom to ask for logs. The viewer cannot read logs or runtime status, so the block has no Logs link.",
+          "The header still offers Open draft. The picker includes Draft and its Configuration access.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
       },
@@ -1938,6 +2693,7 @@ export function createAgentDetailScenarios({
           update: false,
           deploy: true,
           operate: false,
+          readLogs: false,
           delete: false,
           administer: false,
           configurationUpdate: false,
@@ -1950,7 +2706,7 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
         steps: [
-          "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
+          "Confirm Open draft is the only recovery action. Select it and check that the Configuration tab opens in view, focused, without deploying.",
         ],
         gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
       },
@@ -1975,10 +2731,10 @@ export function createAgentDetailScenarios({
           sandboxPolicyRead: false,
         },
         description:
-          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration.",
+          "The viewer may save the Configuration but not the Agent: an Agent update would also need operate on its Harness authentication Secret. Recovery follows the Configuration's own answer and offers Open Configuration draft.",
         steps: [
-          "Check that Open Configuration is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
-          "Select Open Configuration and confirm the draft's Configuration tab opens in view with Edit Configuration available.",
+          "Check that Open Configuration draft is first. Recovery tells the editor to choose a model and ask someone with deploy access to redeploy.",
+          "Select Open Configuration draft. The Configuration tab comes into view with Edit Configuration available.",
         ],
         gap: "The failure and permissions are simulated; the API still authorizes every save.",
       },
@@ -1999,7 +2755,7 @@ export function createAgentDetailScenarios({
         gap: "The failure is simulated; this story does not verify a live deployment.",
       },
       // Finding 2537: these codes read "Deployment reconciliation failed." and got the generic logs
-      // advice. Messages copy deploymentErrorMessage in packages/occ/src/state/controller-work.ts.
+      // advice. Messages copy deploymentErrorMessage in packages/occ/src/deployment-work-status.ts.
       deploymentFailedAdmissionUnavailable: {
         group: "Pages/Agent detail",
         name: "New version failed, protected admission changed",
@@ -2018,6 +2774,46 @@ export function createAgentDetailScenarios({
           "Deploy again is the one filled button and Open v7 Logs an edged secondary button.",
         ],
         gap: "The failure is simulated; this story does not verify a live deployment.",
+      },
+      deploymentFailedCodexPolicy: {
+        group: "Pages/Agent detail",
+        name: "New version failed, incompatible Codex policy",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+          message:
+            "This Codex runtime’s managed permission policy does not allow the sandbox mode, named profile or human reviewer required by OpenShell. Ask the policy owner to verify compatibility, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's managed policy refuses the required sandbox mode, profile or reviewer. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
+      deploymentFailedCodexRequirementsSize: {
+        group: "Pages/Agent detail",
+        name: "New version failed, oversized Codex requirements",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "RUNTIME_CODEX_REQUIREMENTS_TOO_LARGE",
+          message:
+            "The Codex runtime’s managed requirements reply exceeds OCE’s 1 MiB limit. Ask the policy owner to reduce the requirements document, then deploy a new version.",
+        },
+        description:
+          "v7 failed because Codex's requirements reply exceeds OCE's supported size. Recovery names the policy owner’s action before redeployment.",
+        steps: [
+          "At 1440 and 390 wide, read the failure code and policy-owner remedy without horizontal scrolling.",
+          "The recovery block offers Open v7 Logs, with no Deploy again shortcut or generic advice appended to the policy remedy.",
+          "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
+        ],
+        gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
       },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",
@@ -2238,6 +3034,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
           "Open Deployment details to read the in-progress stages.",
+          'Reload and open Configuration while the first read is pending. The notice says "Read-only admitted snapshot." When v7 is in progress it says "Deploying version · read-only admitted snapshot."',
         ],
       },
       deploymentUnavailable: {
@@ -2253,6 +3050,7 @@ export function createAgentDetailScenarios({
           },
         ],
         steps: [
+          'Open Configuration: the latest version says "Read-only admitted snapshot." while its deployment record is unavailable. Return to Deployment.',
           "Fold Deployment details. The selected record still shows the read error outside the fold with one visible alert. Expand again: the activity owns that alert instead of announcing it twice.",
           "Fold and press Refresh deployment. The same failed read opens the details again; this explicit action differs from a routine transient poll.",
         ],
@@ -2373,6 +3171,7 @@ export function createAgentDetailScenarios({
         description:
           "The Logs tab shows the Gateway Pod, its OOMKilled restart and BackOff Event, then redacted operational output with a withheld-structured-output row. Previous instance is available after the restart.",
         steps: [
+          "At 1440 px, read the Gateway status. Phase and Ready share a row. Last termination has its own row, with the reason, exit code, and time visible before Age.",
           "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
           "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
           "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. From 320px up, each timestamp stays on one line; below about 400px it takes a line of its own, with the level beside the origin under it. When the Logs card is narrower than 662px (at 1000px and below, and from 1101px to about 1280px, where the card sits beside the version list), the message moves under the time, level, and origin instead of shrinking.",
@@ -2403,7 +3202,8 @@ export function createAgentDetailScenarios({
         description:
           "The first runtime status takes 1.2 s after the Logs tab is selected. The Logs panel reserves space for the strip and output.",
         steps: [
-          "Scroll to the version tabs and select Logs. The area keeps its height. After 1.2 s the strip and output appear and the panel scrolls into view.",
+          "Focus Logs and press Enter. While runtime status is loading, press Shift+Tab until Viewing version has focus. When the output appears, focus stays on Viewing version and the page stays at the same scroll position.",
+          "Reset the story, open Logs again, and leave focus on the tab. When the output appears, Logs keeps focus and the panel scrolls into view if needed.",
         ],
       },
       runtimeLogsStartupWarnings: {
@@ -2416,6 +3216,7 @@ export function createAgentDetailScenarios({
         description:
           "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color. With no restart there is no previous instance, and a note under the log toolbar says so.",
         steps: [
+          "At 1440 px, read the Gateway status across three rows. Look for Phase and Ready, Container and Restarts, then State and Age.",
           "Tab through the log controls. Previous instance takes focus and looks unavailable, described by “This container has not restarted, so there is no previous instance.” Space or a click does not check it (finding 2944).",
         ],
       },
@@ -2426,8 +3227,8 @@ export function createAgentDetailScenarios({
         description:
           "The Agent (Harness) and Gateway Pod cards share the Logs panel's width, each with its long generated name and its init containers.",
         steps: [
-          "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
-          "At 390 each card spans the panel, one under the other.",
+          "At 1440 px, the cards sit side by side and fill the panel. Read each container name and its restart count on the same row, then its state and any termination details before the next container.",
+          "At 390 px, the cards stack. Read one label and its value per row, in the same order.",
         ],
       },
       runtimeLogsMissingAgentPod: {
@@ -2536,6 +3337,59 @@ export function createAgentDetailScenarios({
           "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
         ],
       },
+      runtimeLogsSourceSwitchAfterRateLimit: {
+        ...runtimeLogsPage,
+        name: "Switch log sources after a rate-limited refresh",
+        runtimePod: "dedicatedPair",
+        rules: [
+          // The expected reads are Gateway, Agent, Agent refresh, then Gateway again.
+          // Check the last read's delay first so every earlier read advances its skip count.
+          { path: candidateRuntimeLogs, skip: 3, once: true, delayMs: 10_000 },
+          {
+            path: candidateRuntimeLogs,
+            skip: 2,
+            once: true,
+            status: 429,
+            code: "RUNTIME_LOGS_RATE_LIMITED",
+            retryAfter: 5,
+          },
+          {
+            path: candidateRuntimeLogs,
+            skip: 1,
+            once: true,
+            data: {
+              revisionId: "rev_00000000-0000-4000-8000-000000000007",
+              source: "agent",
+              stream: agentLogStream,
+              observedAt: "2026-09-27T12:00:00.000Z",
+              records: [
+                {
+                  type: "line",
+                  time: "2026-09-27T11:40:01.120Z",
+                  stream: agentLogStream,
+                  contentClass: "operational",
+                  kind: "text",
+                  level: "info",
+                  message: "Agent harness ready",
+                },
+              ],
+              withheld: 0,
+              truncated: false,
+              cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+            },
+          },
+        ],
+        description:
+          "An Agent (Harness) refresh is rate limited for five seconds. Switching to Gateway clears the old feedback while its read is pending.",
+        steps: [
+          "Wait for Gateway output, select Agent (Harness) under Source, and wait for “Agent harness ready.” Keep Follow off.",
+          "Choose Refresh logs. Check that the Agent output stays visible with “Too many requests. Try again in 5 seconds.”",
+          "Switch Source to Gateway while the message is visible. Check for “Reading output…” with neither the Agent output nor its rate-limit message.",
+          "After five seconds, confirm the retry message has not returned and the Gateway read is still pending. After about ten seconds from the switch, confirm “gateway listening” appears.",
+          "Reload the preview to repeat the sequence.",
+        ],
+        gap: "Storybook simulates the response and delay. The controller-backed Logs browser regression checks the same interaction through the Console API.",
+      },
       runtimeLogsDenied: {
         group: "Pages/Agent detail",
         name: "Runtime logs without administer",
@@ -2554,6 +3408,18 @@ export function createAgentDetailScenarios({
         steps: [
           "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
           "Tab through Source, Previous instance, Include debug, Follow, Refresh logs and Download. Each takes focus and looks unavailable, its description is the permission message, and Enter, Space, a click or an arrow key changes nothing.",
+        ],
+      },
+      runtimeLogOnePodRemains: {
+        ...runtimeLogsPage,
+        name: "One Pod remains while reading logs",
+        runtimePod: "scaleDown",
+        description:
+          "The selected Pod keeps serving logs when the other Pod disappears. The Pod / container picker is no longer needed.",
+        steps: [
+          "At 1440 px, note the status rows in the first Pod card. Tab from Source to Pod / container and leave the first Pod selected.",
+          "After the next status update, check that the remaining Pod widens and keeps the same status rows. The picker disappears, Source has focus, and the same output remains visible. Tab to Previous instance.",
+          "Reload and tab to Previous instance before the update. Focus should stay there.",
         ],
       },
       runtimeLogPodReplaced: {
@@ -2698,7 +3564,55 @@ export function createAgentDetailScenarios({
             status: 404,
           },
         ],
-        description: "A deleted or inaccessible Agent link returns a resource-unavailable panel.",
+        description:
+          "A simulated 404 shows Agent details and Resource unavailable without an Agent name.",
+        actions: [{ text: "Agent details" }],
+        steps: [
+          "Confirm the page heading is Agent details and the panel says Resource unavailable, without an Agent name.",
+          "Choose ← Agents and confirm the collection heading is Agents.",
+        ],
+      },
+      agentReadInterrupted: {
+        group: "Pages/Agent detail",
+        name: "Retry a direct Agent link",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A simulated interruption shows Agent details and Request unavailable. Retry reads the fixture's Research assistant.",
+        actions: [{ text: "Agent details" }, { text: "Request unavailable" }],
+        steps: [
+          "Open the preview directly in its own tab, without navigating from the Agents list.",
+          "Confirm the heading is Agent details and the panel says Request unavailable, without an Agent name.",
+          "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
+        ],
+      },
+      agentReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an Agent read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            status: 408,
+            skip: 1,
+            once: true,
+          },
+        ],
+        description: "A simulated Agent read timeout masks the Agent name and hides the draft.",
+        steps: [
+          "Open the preview in its own tab. Choose Edit Configuration, make an unsaved edit, and scroll the editor into view.",
+          "Switch to another browser tab and return. Confirm the heading is Agent details, the warning says Could not check Agent details, and the draft is hidden.",
+          "Focus Retry with Tab if needed, then press Enter. Confirm Research assistant and the unsaved edit return at the previous scroll position.",
+        ],
       },
       configurationError: {
         group: "Pages/Agent detail",
@@ -2733,6 +3647,52 @@ export function createAgentDetailScenarios({
           "For Save recovery, follow Channel binding read denied and the binding preflight workflow: Save, inspect the scrubbed refusal, Refresh, then explicitly save again.",
         ],
         gap: "Simulated permission responses through the production Console; Native IAM browser regressions cover real authorization. See unreadable-configuration-workflow.md for reload, refocus, and Save recovery instructions.",
+      },
+      configurationReadInterruptedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Recover a Configuration read on tab return",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            status: 503,
+            skip: 1,
+            once: true,
+          },
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            delayMs: 2500,
+          },
+        ],
+        description: "The Console retries one temporary Configuration read failure on tab return.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved JSON edit, select text in the editor, and scroll until the page header is out of view.",
+          "Switch to another browser tab and return. When the draft hides for the automatic retry, confirm Still checking… appears immediately and only once at the bottom of the viewport, then switch away again. Let the delayed retry finish while the preview tab is hidden.",
+          "Return to the preview. After the next access check succeeds, confirm the status disappears and the editor regains focus with the unsaved draft, selection, and scroll position intact. Type without clicking the editor to verify that only the selected text changes. Reset the story and repeat at 390 px wide. Confirm the status fits the viewport and navigation remains available.",
+        ],
+      },
+      configurationReadUnavailableOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Retry an unavailable Configuration on tab return",
+        path: draft,
+        rules: Array.from({ length: 2 }, () => ({
+          method: "GET",
+          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          status: 503,
+          skip: 1,
+          once: true,
+        })),
+        description:
+          "Both Configuration reads fail. The Agent page shows a warning and hides the draft.",
+        steps: [
+          "Open the preview in its own tab and choose Edit Configuration. Make an unsaved edit.",
+          "Switch to another browser tab and return. The Agent name remains above the warning. The draft and its controls are hidden.",
+          "Select Retry. The Configuration returns with the unsaved edit.",
+        ],
       },
       unreadableAgentConfiguration: {
         group: "Pages/Agent detail",
@@ -2795,6 +3755,26 @@ export function createAgentDetailScenarios({
         ],
         description: "Deployment stays disabled when revision history cannot be read.",
       },
+      revisionRejected: {
+        group: "Pages/Agent detail",
+        name: "Revision history rejects with null",
+        path: `${draft}&tab=configuration`,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The revision-history fetch rejects with raw JavaScript null and no HTTP status. The draft Configuration GET uses its normal fixture response. The separate Revision history unavailable preview retains HTTP 403.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm Version history unavailable appears without No readable versions or Load older versions.",
+          "Read the draft Configuration, open Edit Configuration, then Cancel. The history warning remains local to version history.",
+          "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
       deployDenied: {
         group: "Pages/Agent detail",
         name: "Deployment denied",
@@ -2830,6 +3810,33 @@ export function createAgentDetailScenarios({
           "Read the note beside Deploy new version: it names Demo model API key (simulated) and asks an Installation administrator to grant Secret operate.",
         ],
         gap: "The Secret answer is simulated; the API still authorizes the deployment and every Secret it binds.",
+      },
+      deploySecretOperateGrantedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Deployment regains Secret operate on refocus",
+        path: draft,
+        rules: [
+          {
+            method: "POST",
+            suffix: "/deploy",
+            status: 403,
+            code: "FORBIDDEN",
+            message: "The exact platform operation was not authorized.",
+            once: true,
+          },
+          {
+            suffix: "/agents/agt_00000000-0000-4000-8000-000000000001/permissions/secrets",
+            // The first read allows Deploy. The read after the refusal sees the changed access.
+            skip: 1,
+            once: true,
+            data: { operateDenied: ["sec_demo_model"], unreadableOperateDenied: 0 },
+          },
+        ],
+        description: "A Deploy request is refused. The next refocus reads a simulated grant.",
+        steps: [
+          "Open the preview in its own tab and select Deploy new version. Read the Secret operate alert beside the unavailable action.",
+          "Switch to another tab and return. Deploy new version is enabled and the refusal clears on the same draft.",
+        ],
       },
       deployInProgress: {
         group: "Pages/Agent detail",
@@ -3055,6 +4062,29 @@ export function createAgentDetailScenarios({
     } satisfies Record<string, AgentDetailScenario>,
 
     layout: {
+      channelsAccessUnconfirmedOnRefocus: {
+        group: "Pages/Agent detail",
+        name: "Channels access could not be checked on tab return",
+        path: `${draft}&tab=channels`,
+        slack: true,
+        rules: [
+          {
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/permissions",
+            method: "GET",
+            skip: 1,
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "Channels opens with editing available. When you return to the browser tab, the Agent's permission check fails once.",
+        steps: [
+          "Open the preview in its own tab. Use the keyboard to open Edit Slack, then Cancel. Check that focus returns to Edit Slack.",
+          "Switch to another browser tab and return. Channels stays selected and receives focus. Read the access-check message and Refresh guidance. Edit Slack and Deploy new version are unavailable.",
+          "Choose Refresh in the page header. Channels stays selected, the access-check message clears, and Edit Slack is available again.",
+        ],
+      },
       agentDetailLayout: {
         group: "Pages/Agent detail",
         name: "Agent detail layout",
@@ -3134,9 +4164,9 @@ export function createAgentDetailRepositoryScenarios(
   const repositoryCollaborator = {
     ...repositoryEditor,
     name: "Select repository collaborator from an empty set",
+    policyState: "repositoryPermissions",
     repositoryOptions: collaboratorRepositoryOptions,
     repositoryAccess: { defaultProfile: "git-full", repositories: [] },
-    repositoryBindings: [],
     description:
       "An empty selection offers the approved collaborator repository. API-only access is not a Git repository choice; the existing Contributor default stays unchanged.",
     steps: [
@@ -3153,13 +4183,23 @@ export function createAgentDetailRepositoryScenarios(
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "application" }],
     },
-    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
-    rules: [{ suffix: "/repository-options", delayMs: 3000 }],
+    rules: [
+      { suffix: "/repository-options", delayMs: 3000 },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        skip: 1,
+        once: true,
+        delayMs: 10_000,
+      },
+    ],
     description:
-      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty.",
+      "A saved inherited Contributor selection meets a changed collaborator-only approval after a three-second discovery delay. Discovery must not migrate the saved intent or mark it dirty. The first save waits ten seconds for the Agent read.",
     steps: [
       "During discovery, inspect Access awaiting verification. After discovery, inspect Choose approved access; Save stays disabled and Channels stays enabled.",
-      "Expand Access for example/application, clear Use Agent default, and choose Repository collaborator. Save the explicit change and confirm the saved message.",
+      "Under Access for example/application, clear Use Agent default and choose Contributor. Check that the repository reads Repository collaborator · Custom, then select Save repository access.",
+      "While the save is pending, choose Account → Settings. Check that Repositories stays open, the edit remains selected, and the page asks you to wait for the save.",
+      "After Repository access saved appears, choose Account → Settings again. Confirm Signed-in account opens, then go back and check that the custom Repository collaborator access is still saved.",
     ],
   } satisfies AgentDetailScenario;
   const repositoryCollaboratorReadOnly = {

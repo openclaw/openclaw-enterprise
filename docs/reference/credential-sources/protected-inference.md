@@ -1,25 +1,33 @@
 # Protected static inference
 
-New local development launches of this profile are retired. The launcher rejects
-`OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence of
-`OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before effects, with no fallback.
-Unset, empty or `0` protected-egress selections retain ordinary authenticated
-OpenShell startup. See the [retirement notice](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+The bundled OpenShell protected static inference profile is retired for new
+Sources, adoption, and deployments. Use a
+[managed model Source](managed-static.md) for new model access. The legacy credential-egress Driver is deprecated and pending removal. This reference
+records the request and response policy for existing protected revisions and
+separately qualified installed senders.
 
-The controller contracts below remain for existing installations, source owners
-and historical specifications. Launcher retirement does not remove their admission,
-withdrawal or cleanup responsibilities.
+The local launcher rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` and any presence
+of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP` before preparing workloads.
+Unset, empty, or `0` protected-egress settings retain ordinary OpenShell startup.
+See the [local profile settings](../../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
-Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell pair that
-enforces the whole-execution profile below. The security principal is one freshly
-admitted Agent execution. Its parent, a sibling and an ordinary client can use the
-same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. There is no caller binary allowlist or client hook.
+## Bundled OpenShell admission
 
-The bundled legacy OpenShell release cannot enforce this profile. Before using a
-candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)
-and test the actual static inference path. A repository metadata read exercises the
-shared exchange but does not establish static inference or Git transport support.
+OCC returns `409 RESOURCE_CONFLICT` for a new bundled protected OpenAI Source
+before reading Secret material. It also refuses a new revision using a retired
+Source before contacting the counterpart. For a retained revision, its original
+owner handles authorization, withdrawal, and cleanup under the recorded policy.
+
+In this profile, authority belongs to one admitted Agent execution. A
+parent, sibling, or ordinary client in that execution can use the allowed
+operation. A different execution of the same Agent needs its own admission. The
+profile uses the OpenShell `/**` matcher for verified absolute executable
+paths. The supervisor checks process identity, and the middleware checks each
+credentialed operation.
+
+An installed sender needs its own [dispatch and response custody qualification](../../testing/protected-repository-custody.md)
+for this profile. A credential-free metadata request exercises only the shared
+exchange.
 
 ## Execution admission cutoff
 
@@ -56,6 +64,12 @@ releasing the workload, then for the Harness to report `serving` before reportin
 If the revision never becomes ready, deployment status reports the convergence timeout.
 Only the preparation worker can warm the family; startup, readiness and requests cannot.
 
+Enrollment receipts belong to individual revisions. A confirmed runtime stop retires
+that revision's enrollment without deleting its receipt. Only one enrollment per
+sender and Sandbox can be current; a successor reusing the Sandbox must enroll
+after retirement. Separate Sandboxes can have independent current enrollments.
+Retired receipts cannot authorize requests or become current again.
+
 ## Loaded enforcement
 
 The OpenShell Gateway and trusted supervisor must report credential access,
@@ -80,7 +94,7 @@ retry follows. Retain that uncertain receipt.
 
 ## Static source and response policy
 
-Fresh static sources select the first provider for their type in catalog order.
+A qualifying installed sender selects the first provider for a Source type in catalog order.
 The selected provider ID and generation must identify one registration; duplicates
 return `409` before credential material is read. Multiple distinct providers for
 the same type remain supported. Reordering distinct providers does not change the
@@ -96,21 +110,41 @@ Responses requests may declare local function and custom tools, including namesp
 in the top-level `tools` list or a developer `additional_tools` input item. Inline
 declarations use the same local-tool restrictions; they do not authorize hosted tools.
 Local function parameter schemas accept `encrypted: true` only on a string schema.
-This annotation does not itself encrypt data. The JSON string in
+This annotation does not itself encrypt data. Native `agent_message` input
+accepts bounded `/root` agent paths and one text part, optionally followed by one
+encrypted content part. Agent paths label the message. Credential authority
+still comes from the admitted execution. Request `reasoning.effort` accepts
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`. The JSON string in
 `client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
-`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
-Unknown request fields remain refused. In streamed Responses envelopes, tool echoes may contain null descriptions,
+`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultra`.
+The proxy accepts `ultra` only in telemetry; it does not translate effort values. The metadata can also include
+`workspaces` with one absolute Git root. Each entry must include at least one
+of `latest_git_commit_hash` (a lowercase SHA-1 or SHA-256 hash), `has_changes`
+(a Boolean), or `associated_remote_urls` (1–16 named Git remotes).
+The proxy accepts HTTPS URLs without user info and SCP-style URLs with the
+literal `git` transport user. Both forms use plain ASCII repository paths and
+omit queries and fragments. The separate optional
+`client_metadata["mcp_attribution"]` JSON string accepts exactly
+`{"status":"none"}`. These fields carry telemetry and grant no authority.
+For `request_kind: "compaction"`, turn metadata may include a `compaction` object
+with a native trigger, reason and phase, `implementation: "responses"` and
+`strategy: "memento"`. All five fields are required in that object.
+Replayed assistant `output_text` parts can include `annotations` and `logprobs`.
+Each field must be an empty array if present. Replayed `reasoning` items accept
+`content: null` or an array of `reasoning_text` parts. Codex can send null after
+loading a saved thread whose reasoning item omitted the field. The proxy refuses
+unknown request fields.
+
+In streamed Responses envelopes, tool echoes may contain null descriptions,
 `strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
 the same type and local-tool restrictions. Namespace descriptions remain text. The optional
 `image` response object accepts only `context_compression: "enabled" | "disabled"`,
 the effective policy reported by the provider. Missing or unknown members and other
 values are refused; the request-only `"auto"` value is not an effective response policy.
 
-Static provider generation two identifies whole-execution authority. A generation-one
-grant remains narrower. Adopting live material and authorizing the broader execution
-are explicit, separate decisions; a Secret edit grants neither. The first cutover
-requires an unbound source and an explicitly admitted new binding. Leave an existing
-approved copy available until its owner can make that transition safely.
+Static provider generation two records whole-execution authority. A recorded
+generation-one grant keeps its narrower authority. A Secret update does not
+change the admitted scope.
 
 The supervisor withholds the complete bounded response, including the last trailer,
 until Credential Proxy permits its release. The 30-second operation deadline bounds
@@ -143,25 +177,21 @@ tags remain text.
 Check the Plan itself, too. Codex extracts a completed Plan before removing
 citations, but can build a streamed Plan from deltas across several assistant
 items. If pending parser tails could change their order, withhold the response.
+Reasoning summary parts open only by appending the next index. A summary delta for
+an index that was never opened, or that skips ahead, withholds the response.
+Reasoning text has no part event: only its first delta opens the next content index.
+A completion requires an open index, and a gap still withholds the response. That index's accumulated text is scanned
+on its own, so selected material split across one part is withheld when another
+part's delta arrives between the halves.
 These checks cover the named views of one finite response, not arbitrary future
 client transformations; they do not reinterpret function-call argument data.
 
 ## Installation configuration
 
-For retained controller installations, consult the
-[OpenShell Backend and Sandbox configuration](../drivers/openshell-credential-gateway.md).
-The retired local launcher cannot prepare this configuration.
-Select the same Driver ID in `backend[].drivers.credential_proxy` and the
-Installation's `drivers.credential_proxy` selection. Configuring only one is an
-error, not a request to disable protection. Startup also rejects the retired
-`drivers.conduit` key at either boundary, including when both keys are present;
-use `drivers.credential_proxy` instead.
-Set its middleware name and `authorityScope: execution`. Provide an authenticated
-HTTPS Gateway, the authority's TLS identity and trusted Gateway issuer public key.
-Keep the single authority process reachable for the whole exchange.
-
-Prepared GitHub metadata is a separate, bodyless GET grant isolated to the named
-Agent. Deleting that Agent stops renewal and use at once; the worker then revokes the
-source's token. Delete the source afterwards. The grant's optional custody and trusted
-issuer settings belong to the Installation operator, not the credential source. [Credential preparation](../../flows/credential-source-refresh.md)
-describes the worker, cold behavior and recovery.
+Do not configure a new credentialed legacy proxy. Recovery of a retained
+revision uses its recorded Driver and authenticated
+[OpenShell Backend](../backends.md#openshell-gateway); changing only one side of
+that pair can break enforcement or cleanup. The
+[earlier configuration](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/credential-sources/protected-inference.md#installation-configuration)
+records release-specific settings. Use a [managed Source](managed-static.md) for
+new model credentials.

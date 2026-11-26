@@ -113,7 +113,9 @@ test(
         id: sourceId,
         namespaceId: workspace,
         driverId: driver.id,
+        ownerCapability: "credential_gateway",
         type: "codex-oauth",
+        state: "ready",
         config: {},
         secrets: {},
       },
@@ -248,17 +250,18 @@ test(
     );
     assert.equal(configured.status, "configured");
 
-    const fingerprint = async ({ accessToken, accountId }) => {
-      assert.equal(accountId, "poc-account");
-      return createHash("sha256").update(accessToken).digest("hex");
+    // The certificate-only export returns a usable credential without an explicit rotation.
+    const fingerprint = async () => {
+      const { value } = await backend.client
+        .credentialClientForNamespace(workspace)
+        .getProviderCredential(workspace, name, credentialKey, signal);
+      return createHash("sha256").update(value).digest("hex");
     };
-    // The Driver asks upstream for a usable credential without an explicit rotate
-    // call. Only its Backend's certificate-only export channel may return the token.
-    const first = await driver.withSourceToken(context, fingerprint);
+    const first = await fingerprint();
     assert.notEqual(first, createHash("sha256").update(initialAccessToken).digest("hex"));
     assert.equal((await driver.sourceStatus(context)).state, "ready");
     assert.equal(
-      await driver.withSourceToken(context, fingerprint),
+      await fingerprint(),
       first,
       "a credential with sufficient remaining lifetime is reused without another mint",
     );
@@ -275,7 +278,7 @@ test(
     // The issuer rejects reuse of the old refresh token. A second successful rotation proves
     // OpenShell persisted and used the replacement refresh token without OCE supplying it again.
     assert.equal((await refreshDriver.rotate(context, randomUUID())).state, "ready");
-    const second = await driver.withSourceToken(context, fingerprint);
+    const second = await fingerprint();
     assert.notEqual(first, second);
     assert.deepEqual(
       await driver.attachForRevision({

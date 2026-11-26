@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { availablePort } from "./available-port.mjs";
+import { availablePort } from "./available-port.ts";
 
 const execute = promisify(execFile);
 const repository = resolve(import.meta.dirname, "../..");
@@ -126,39 +126,7 @@ export function keycloakInstructions(stdout) {
   return { consoleUrl, caFiles: [consoleCA, keycloakCA], hosts: [{ address, host }] };
 }
 
-// Launch sandboxed Chromium the way a person's browser would trust the
-// profile: a fresh NSS database under a private HOME holds the printed CA
-// files as trust anchors, and a resolver rule stands in for the printed hosts
-// line. It passes no certificate-error bypass, so an untrusted chain fails.
-export async function launchTrustingBrowser(chromium, root, instructions) {
-  const home = join(root, "browser-home");
-  const database = join(home, ".pki", "nssdb");
-  await mkdir(database, { recursive: true, mode: 0o700 });
-  await execute("certutil", ["-N", "--empty-password", "-d", `sql:${database}`]);
-  for (const [index, file] of instructions.caFiles.entries()) {
-    await execute("certutil", [
-      "-A",
-      "-d",
-      `sql:${database}`,
-      "-n",
-      `oce-dev-keycloak-${index}`,
-      "-t",
-      "C,,",
-      "-i",
-      file,
-    ]);
-  }
-  const rules = instructions.hosts.map(({ address, host }) => `MAP ${host} ${address}`);
-  return chromium.launch({
-    headless: true,
-    chromiumSandbox: true,
-    env: { HOME: home, PATH: process.env.PATH, TMPDIR: root },
-    args: ["--no-proxy-server", `--host-resolver-rules=${rules.join(", ")}`],
-    ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
-      ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
-      : {}),
-  });
-}
+export { launchTrustingBrowser } from "./trusted-chromium.ts";
 
 // Dial the owned publication while verifying its real DNS identity and CA.
 // No host-file edits or global trust changes are needed for this automation.
@@ -199,8 +167,8 @@ export function publishedJSON(
   });
 }
 
-// The fixture owns this unrelated HTTPS listener and removes it with its cluster.
-// Successful verified requests before and after each denial exclude dead-listener proof.
+// The chart permits API egress beyond the identity provider. Probe an owned
+// HTTPS listener and Keycloak through the running API Pod using verified TLS.
 export async function verifyKeycloakAPIEgress(fixture, state, values) {
   const marker = randomUUID();
   const name = "unrelated-https";
@@ -306,17 +274,13 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
       res.setEncoding('utf8'); res.on('data', chunk => body += chunk);
       res.on('error', error => { console.error(error.code); process.exitCode = 1; });
       res.on('end', () => {
-        if (input.denied || res.statusCode !== 200 ||
+        if (res.statusCode !== 200 ||
             (input.marker ? body !== input.marker : JSON.parse(body).issuer !== input.issuer)) {
           console.error('unexpected HTTPS response'); process.exitCode = 1;
         } else console.log(JSON.stringify({allowed: true}));
       });
     });
-    req.on('error', error => {
-      if (input.denied && ['ABORT_ERR', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNREFUSED'].includes(error.code)) {
-        console.log(JSON.stringify({denied: true}));
-      } else { console.error(error.code); process.exitCode = 1; }
-    });
+    req.on('error', error => { console.error(error.code); process.exitCode = 1; });
   `;
   const unrelated = {
     hostname: listener.status.podIP,
@@ -325,10 +289,10 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
     ca,
     marker,
   };
-  const probe = async (namespace, pod, input, expected) => {
+  const probe = async (pod, input) => {
     const result = await fixture.kubectl([
       "-n",
-      namespace,
+      state.platformNamespace,
       "exec",
       pod,
       "--",
@@ -337,7 +301,7 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
       request,
       JSON.stringify(input),
     ]);
-    assert.deepEqual(JSON.parse(result.stdout.trim()), expected);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), { allowed: true });
   };
   const keycloak = {
     hostname: fixture.keycloakHost,
@@ -347,15 +311,7 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
     issuer: `https://${fixture.keycloakHost}/realms/oce`,
   };
   for (const pod of apiPods) {
-    await probe("default", name, unrelated, { allowed: true });
-    await probe(state.platformNamespace, pod.metadata.name, keycloak, { allowed: true });
-    await probe(
-      state.platformNamespace,
-      pod.metadata.name,
-      { ...unrelated, denied: true },
-      { denied: true },
-    );
-    await probe("default", name, unrelated, { allowed: true });
-    await probe(state.platformNamespace, pod.metadata.name, keycloak, { allowed: true });
+    await probe(pod.metadata.name, keycloak);
+    await probe(pod.metadata.name, unrelated);
   }
 }

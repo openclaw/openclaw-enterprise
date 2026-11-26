@@ -13,21 +13,24 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
-import { openShellRefreshSourceType } from "../credential-gateway/openshell.ts";
+import {
+  CODEX_OAUTH_TYPE,
+  CODEX_ACCESS_TOKEN_ENV,
+  openShellRefreshSourceType,
+} from "../../backends/openshell-refresh-sources.ts";
 import type {
   OpenShellProviderResponse,
   OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
-  CODEX_OAUTH_TYPE,
   CODEX_OAUTH_CLIENT_ID,
   CODEX_ACCOUNT_CONFIG,
-  CODEX_ACCESS_TOKEN_ENV,
   codexAccountMetadata,
   codexDeviceAuthorizationState,
   startCodexDeviceAuthorization,
@@ -180,7 +183,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey(input.config),
+        credentialKey: type.credentialKey(context.source.config),
         strategy: type.strategy,
         material,
         requestId: input.requestId,
@@ -275,18 +278,14 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       CODEX_ACCESS_TOKEN_ENV,
       context.signal,
     );
-    // A concurrent gateway mint is still pending; never redeem or reseed the login grant.
-    if (status?.status === "refresh_in_progress" || status?.status === "refresh_committing") {
+    const state =
+      status?.status === "configured"
+        ? (await this.rotate(context, requestId)).state
+        : status && refreshState(status.status);
+    if (state === "pending") {
       return { status: "pending" };
     }
-    let refreshed = status === undefined ? undefined : credentialRefreshStatus(status);
-    if (status?.status === "configured") {
-      refreshed = await this.rotate(context, requestId);
-    }
-    if (refreshed?.state === "pending") {
-      return { status: "pending" };
-    }
-    if (refreshed?.state !== "ready") {
+    if (state !== "ready") {
       throw new OpenShellCredentialRefreshFailure(
         "OpenShell could not establish managed Codex OAuth refresh. Connect again.",
       );
@@ -331,12 +330,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       openShellProviderName(context.source.id),
       context.signal,
     );
-    if (
-      provider !== undefined &&
-      (provider.type !== openShellProviderName(context.source.id) ||
-        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== context.source.id)
-    ) {
+    if (provider !== undefined && !openShellOwnedBy(provider, context.source.id)) {
       throw new ScopeViolationError(
         "The OpenShell provider is not owned by this credential source.",
       );

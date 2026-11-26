@@ -20,12 +20,15 @@ type InstallationScenario = {
   openclawSettingRefusal?: string;
   sandboxDriverUnavailable?: boolean;
   credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
-  pluginCapabilities?: InstallationCapabilities["pluginPolicies"] & {
+  deviceAuthorization?: true;
+  modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
+  pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
+  pluginCapabilities?: NonNullable<
+    InstallationCapabilities["pluginCatalogs"]
+  >[number]["pluginPolicies"] & {
     credentialSlots?: readonly AgentPluginCredentialSlot[];
   };
-  pluginDiscoveryCredential?: NonNullable<
-    InstallationCapabilities["pluginDiscovery"]
-  >["credential"];
+  pluginDiscoveryCredential?: "required" | "none";
 };
 
 export function installationDriverConfigurations(scenario: DriverConfigurationsScenario): {
@@ -152,10 +155,10 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ...(scenario.installationValuesUnavailable ? { writeOnly: true } : {}),
           additionalProperties: false,
           properties: {
+            integrationMode: { type: "string", enum: ["service", "legacy"], default: "legacy" },
             gateway: {
               type: "object",
               properties: {
-                workspaceMode: { type: "string" },
                 operatorWorkspaceResources: { type: "array", writeOnly: true },
               },
             },
@@ -165,8 +168,8 @@ export function installationDriverConfigurations(scenario: DriverConfigurationsS
           ? {}
           : {
               startupConfiguration: {
+                integrationMode: "legacy",
                 gateway: {
-                  workspaceMode: "operator",
                   operatorWorkspaceResources: "[redacted]",
                 },
               },
@@ -227,15 +230,27 @@ export function installationFixture(
               ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
             },
           }),
+      ...(scenario.deviceAuthorization ? { deviceAuthorization: true } : {}),
+      ...(scenario.modelCredentialSourcePresets === undefined
+        ? {}
+        : { modelCredentialSourcePresets: scenario.modelCredentialSourcePresets }),
       ...(scenario.credentialSourceTypes !== undefined
         ? { credentialSources: { types: scenario.credentialSourceTypes } }
         : {}),
-      ...(scenario.pluginCapabilities
-        ? { pluginPolicies: installationPluginPolicies(scenario.pluginCapabilities) }
-        : {}),
-      ...(scenario.pluginDiscoveryCredential
-        ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
-        : {}),
+      pluginCatalogs:
+        scenario.pluginCatalogs ??
+        (scenario.pluginCapabilities
+          ? [
+              {
+                harnessId:
+                  scenario.pluginCapabilities.driver.implementation === "occ/openclaw-plugin"
+                    ? "openclaw"
+                    : "codex",
+                pluginPolicies: installationPluginPolicies(scenario.pluginCapabilities),
+                pluginDiscovery: { credential: scenario.pluginDiscoveryCredential ?? "required" },
+              },
+            ]
+          : []),
     },
   };
 }

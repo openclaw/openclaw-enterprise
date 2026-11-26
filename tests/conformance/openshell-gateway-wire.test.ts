@@ -1,0 +1,28 @@
+import { registerManagedWorkloadCases } from "./openshell-gateway-wire-managed-cases.ts";
+import { registerPolicyCases } from "./openshell-gateway-wire-policy-cases.ts";
+import { registerExecCases } from "./openshell-gateway-wire-exec-cases.ts";
+import { registerConnectCases } from "./openshell-gateway-wire-connect-cases.ts";
+import { registerSandboxCases } from "./openshell-gateway-wire-sandbox-cases.ts";
+import { registerAdmissionCases } from "./openshell-gateway-wire-admission-cases.ts";
+import { registerProfilesCases } from "./openshell-gateway-wire-profiles-cases.ts";
+import { registerOutagesCases } from "./openshell-gateway-wire-outages-cases.ts";
+import { registerTlsCases } from "./openshell-gateway-wire-tls-cases.ts";
+import { registerCancellationCases } from "./openshell-gateway-wire-cancellation-cases.ts";
+import { registerLogsCases } from "./openshell-gateway-wire-logs-cases.ts";
+import { registerCredentialsCases } from "./openshell-gateway-wire-credentials-cases.ts";
+import { registerWorkloadCases } from "./openshell-gateway-wire-workload-cases.ts";
+
+registerPolicyCases();
+registerExecCases();
+registerConnectCases();
+registerSandboxCases();
+registerAdmissionCases();
+registerProfilesCases();
+registerOutagesCases();
+registerTlsCases();
+registerCancellationCases();
+registerLogsCases();
+registerCredentialsCases();
+registerWorkloadCases();
+
+registerManagedWorkloadCases();

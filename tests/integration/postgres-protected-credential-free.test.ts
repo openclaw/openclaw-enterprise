@@ -1,0 +1,277 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import test from "node:test";
+
+import { isArray, isRecord, parseJson } from "../helpers/egress-observation-values.ts";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  bindRuntimeSource,
+  commitLossScenario,
+  noMaterialSelection,
+  type Capture,
+} from "../helpers/postgres-protected-scenarios.ts";
+import { receipts as installedReceipts } from "../helpers/egress-custody-observations.mjs";
+import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
+
+type CaptureChanges = {
+  target?: Partial<Capture["request"]["target"]>;
+  headers?: Capture["request"]["headers"];
+  body?: Buffer;
+};
+type InstalledObserverRow = {
+  exact: boolean;
+  observation: { kind: string } | null;
+};
+
+function installedObservation(value: unknown): value is InstalledObserverRow {
+  return (
+    isRecord(value) &&
+    typeof value.exact === "boolean" &&
+    (value.observation === null ||
+      (isRecord(value.observation) && typeof value.observation.kind === "string"))
+  );
+}
+
+// Acts as the enrolled supervisor on genuine TLS gRPC; exercises real API, IAM, HTTP origin and
+// PostgreSQL dispatch + recovery. Supplier custody and network enforcement need the installed suite.
+test(
+  "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal",
+  { ...requiresPostgres, timeout: 120_000 },
+  async (t) => {
+    let readsBeforeAdmission: number | undefined;
+    const repository = { id: 7311, full_name: "fixture/credential-free" };
+    const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
+      async admitSource({ app, agent, namespace, origin, path, secret, countSecretReads }) {
+        readsBeforeAdmission = countSecretReads();
+        const installation = await app.request("GET", "/installation");
+        assert.equal(installation.status, 200);
+        assert.ok(isRecord(installation.data));
+        const capabilities = installation.data.capabilities;
+        assert.ok(isRecord(capabilities) && isRecord(capabilities.credentialSources));
+        const { types } = capabilities.credentialSources;
+        assert.ok(isArray(types));
+        assert.ok(
+          types.some(
+            (entry: unknown) =>
+              isRecord(entry) && entry.type === "credential-free-repository-metadata",
+          ),
+        );
+        assert.ok(
+          !types.some((entry: unknown) => isRecord(entry) && entry.type === "github-app-metadata"),
+        );
+
+        // A real Namespace Secret cannot revive the retired built-in signer offer.
+        const refused = await app.request("POST", path, {
+          body: {
+            name: "retired-signer",
+            type: "github-app-metadata",
+            config: {
+              app_id: "7302",
+              installation_id: "7303",
+              repository_id: String(repository.id),
+              repository: repository.full_name,
+              agent_id: agent.id,
+              authority: "execution",
+            },
+            secrets: { private_key: secret.ref },
+          },
+        });
+        assert.equal(refused.status, 400);
+        assert.match(
+          JSON.stringify(refused.body),
+          /Register static credentials or OAuth through TokenService/,
+        );
+        assert.equal(countSecretReads(), readsBeforeAdmission);
+
+        const source = await app.controller.createCredentialSource(app.principal.id, {
+          namespaceId: namespace.id,
+          name: "identity-only",
+          type: "credential-free-repository-metadata",
+          config: {
+            origin,
+            repository_id: String(repository.id),
+            repository: repository.full_name,
+            agent_id: agent.id,
+            authority: "execution",
+          },
+        });
+        assert.equal(source.ownerCapability, "credential_proxy");
+        assert.equal(source.egress?.adoption, "credential_free");
+        return bindRuntimeSource(app, namespace, agent, source);
+      },
+    });
+    assert.equal(
+      f.secretReads,
+      readsBeforeAdmission,
+      "source + Agent + revision admission never read a provider Secret",
+    );
+    assert.deepEqual(
+      f.revision.credentialSources,
+      [
+        {
+          sourceId: f.source.id,
+          sourceType: f.source.type,
+          credentialProxyId: f.controller.selectedDriver("credential_proxy").id,
+        },
+      ],
+      "a protected Source names its selected Proxy",
+    );
+    const capture = (changed?: CaptureChanges) => captureMetadata(f, changed);
+    const resolve = async (captured: Capture) => {
+      const selection = noMaterialSelection(await f.resolve(captured), captured);
+      return f.permitRequest(captured, selection, { noMaterial: true });
+    };
+    const emptyDigest = createHash("sha256").digest("hex");
+    const accepted = capture();
+    for (const changed of [
+      { target: { method: "POST" } },
+      { body: Buffer.from("not-bodyless") },
+      { target: { path: "/repos/other/repository" } },
+      ...["authorization", "cookie", "proxy-authorization", "x-oce-binding", "x-api-key"].map(
+        (name) => ({ headers: [{ name, value: "must-not-send" }] }),
+      ),
+    ]) {
+      const { refused } = await f.resolve(capture(changed));
+      assert.ok(refused, "do not admit a different read or ambient credentials");
+    }
+    const evidence = f.supervisorEvidence;
+    const old = evidence.enforced_capabilities;
+    evidence.enforced_capabilities = old.slice(0, -1);
+    assert.ok(
+      (await f.resolve(capture())).refused,
+      "credentialed-only four-capability installation cannot claim no-material",
+    );
+    evidence.enforced_capabilities = old;
+    const permit = await resolve(accepted);
+    const allowed = (await f.authorize(permit)).allowed;
+    assert.ok(allowed);
+    assert.equal(allowed.no_material_required, true);
+    assert.equal(allowed.credential_headers_sha256.toString("hex"), emptyDigest);
+    const audience = await receipt(accepted);
+    const {
+      binding: { material },
+      dispatch,
+    } = audience;
+    assert.ok(material && dispatch);
+    assert.deepEqual(Object.keys(material).sort(), [
+      "binding",
+      "grantHash",
+      "isolationId",
+      "kind",
+      "source",
+    ]);
+    assert.equal(material.kind, "no_material_required");
+    assert.equal(material.isolationId, f.agent.id);
+    assert.equal(dispatch.injectionDigest, emptyDigest);
+    assert.equal(
+      dispatch.association.installation.policyHash,
+      accepted.verified_execution_policy_hash,
+    );
+    assert.equal(
+      dispatch.association.custodyId,
+      createHash("sha256").update(accepted.response_custody).digest("hex"),
+    );
+    f.setResponse({ status: 200, body: { ...repository, private: "must not release" } });
+    const response = await f.send(accepted, { credential_headers: [] });
+    const protectedResponse = await f.protect(accepted, response);
+    assert.ok("response_complete" in protectedResponse && protectedResponse.response_complete);
+    assert.deepEqual(parseJson(protectedResponse.body.toString("utf8")), repository);
+    const installed: unknown = await installedReceipts(
+      pool,
+      f.installation,
+      "no_material_required",
+    );
+    assert.ok(
+      isArray(installed) &&
+        installed.length === 1 &&
+        installedObservation(installed[0]) &&
+        installed[0].exact &&
+        installed[0].observation?.kind === "response",
+      "installed observer reads the real no-material dispatch + response row with its genuine peer shape",
+    );
+    const configured = (
+      await pool.query<{ secret: boolean; family: boolean }>(
+        "SELECT EXISTS (SELECT FROM occ.credential_source_secrets WHERE credential_source_id=$1) AS secret, EXISTS (SELECT FROM occ.prepared_github_families WHERE source_id=$1) AS family",
+        [f.source.id],
+      )
+    ).rows;
+    assert.deepEqual(configured, [{ secret: false, family: false }]);
+    const [request, ...extra] = f.providerRequests;
+    assert.ok(request);
+    assert.equal(request.method, "GET");
+    assert.equal(request.path, "/repos/" + repository.full_name);
+    assert.equal(request.body, undefined);
+    assert.deepEqual(Object.keys(request.headers).sort(), ["connection", "host"]);
+    assert.deepEqual(extra, []);
+    assert.equal(proxy.egress.authorizations, 1, "one acknowledged durable dispatch");
+
+    for (const changed of [
+      { no_material_required: false },
+      { no_material_required: undefined },
+      { credential_headers_sha256: Buffer.alloc(32) },
+      { evidence: { material_id: "forged" } },
+    ]) {
+      const send = await resolve(capture());
+      assert.ok(
+        // @ts-expect-error The test sends malformed wire selections through the genuine exchange.
+        (await f.authorize({ ...send, ...changed })).refused,
+        "false, absent, conflicting, or nonempty selection",
+      );
+    }
+    assert.equal(proxy.egress.authorizations, 1);
+    // Final-gate installation replacement must not convert the old positive selection into a send.
+    const replaced = await resolve(capture());
+    const instance = evidence.instance_id;
+    evidence.instance_id = "00000000-0000-4000-8000-000000000001";
+    assert.ok((await f.authorize(replaced)).refused);
+    evidence.instance_id = instance;
+
+    const forbidden = capture();
+    assert.ok((await f.authorize(await resolve(forbidden))).allowed);
+    f.setResponse({
+      status: 200,
+      body: repository,
+      trailers: { "x-first": "first", "x-forbidden-last": "private" },
+    });
+    const actual = await f.send(forbidden, { credential_headers: [] });
+    assert.deepEqual(actual.trailers?.at(-1), { name: "x-forbidden-last", value: "private" });
+    assert.deepEqual(await f.protect(forbidden, actual), { blocked: true });
+    assert.equal(
+      f.providerRequests.length,
+      2,
+      "origin executed; not even its response head released",
+    );
+
+    await assertLostDispatch(capture(), { noMaterial: true });
+    assert.equal(
+      proxy.egress.authorizations,
+      3,
+      "only approved read, forbidden trailer read, and uncertain dispatch",
+    );
+
+    const withdrawn = await resolve(capture());
+    const route =
+      "/namespaces/" +
+      f.namespace.id +
+      "/agents/" +
+      f.agent.id +
+      "/credential-sources/" +
+      f.source.id +
+      "/withdraw";
+    assert.equal((await f.request("POST", route)).status, 202);
+    assert.ok(
+      (await f.authorize(withdrawn)).refused,
+      "independent before-send policy observes last route withdrawal",
+    );
+    assert.ok(
+      (await f.resolve(capture())).refused,
+      "withdrawal also closes the before-access gate",
+    );
+    assert.equal(f.providerRequests.length, 2);
+    assert.equal(
+      f.secretReads,
+      readsBeforeAdmission,
+      "zero provider Secret reads, including refusal paths",
+    );
+  },
+);

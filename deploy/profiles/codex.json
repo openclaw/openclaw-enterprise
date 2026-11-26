@@ -6,12 +6,14 @@
   "pluginSelection": "hosted-discovery-pat",
   "installation": {
     "drivers": {
-      "plugin": {
-        "id": "codex-plugin",
-        "configuration": {
-          "catalogSource": "hosted"
+      "plugin": [
+        {
+          "id": "codex-plugin",
+          "configuration": {
+            "catalogSource": "hosted"
+          }
         }
-      }
+      ]
     }
   }
 }

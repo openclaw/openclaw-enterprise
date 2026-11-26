@@ -13,7 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +40,15 @@ func TestDevelopmentSignInAcceptsKeycloakOnlyInTheRoutingProfile(t *testing.T) {
 	if value, err := developmentSignIn(map[string]string{}); err != nil || value != "" {
 		t.Fatalf("unset: developmentSignIn = %q, %v", value, err)
 	}
+	// Unset profile selectors resolve to the Kubernetes-only profile, so
+	// Keycloak sign-in needs no other selection.
+	for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE"} {
+		env := keycloakProfileEnv()
+		env[key] = ""
+		if value, err := developmentSignIn(env); err != nil || value != "keycloak" {
+			t.Fatalf("unset %s: developmentSignIn = %q, %v", key, value, err)
+		}
+	}
 }
 
 func TestDevelopmentSignInRefusesEveryOtherProfile(t *testing.T) {
@@ -47,9 +56,7 @@ func TestDevelopmentSignInRefusesEveryOtherProfile(t *testing.T) {
 		key, value, want string
 	}{
 		"docker compute":   {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker", "OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes"},
-		"unset compute":    {"OCC_DEVELOPMENT_COMPUTE_DRIVER", "", "OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes"},
 		"compose plane":    {"OCC_DEVELOPMENT_CONTROL_PLANE", "compose", "Kubernetes-only profile"},
-		"unset plane":      {"OCC_DEVELOPMENT_CONTROL_PLANE", "", "Kubernetes-only profile"},
 		"openshell":        {"OCC_DEVELOPMENT_SANDBOX_DRIVER", "openshell", "OCC_DEVELOPMENT_SANDBOX_DRIVER=none"},
 		"unknown provider": {"OCC_DEVELOPMENT_SIGN_IN", "github", "must be keycloak or unset"},
 	}
@@ -63,13 +70,36 @@ func TestDevelopmentSignInRefusesEveryOtherProfile(t *testing.T) {
 	}
 }
 
-func TestDockerComputeStartupRefusesKeycloakSignIn(t *testing.T) {
-	env := map[string]string{"OCC_DEVELOPMENT_SIGN_IN": "keycloak"}
-	if err := CheckDevelopmentSignIn(func(key string) string { return env[key] }); err == nil {
-		t.Fatal("the Docker Compute profile accepted OCC_DEVELOPMENT_SIGN_IN=keycloak")
+// scripts/dev-up runs occ dev check-profile (CheckDevelopmentProfile) before it
+// starts the Docker stack, so the check itself must refuse Keycloak sign-in
+// for the Docker Compute profile, whose startup does not read it.
+func TestCheckDevelopmentProfileRefusesKeycloakSignInForDockerCompute(t *testing.T) {
+	for _, key := range []string{"OCC_DEVELOPMENT_COMPUTE_DRIVER", "OCC_DEVELOPMENT_CONTROL_PLANE", "OCC_DEVELOPMENT_SANDBOX_DRIVER", "OCC_DEVELOPMENT_PROTECTED_EGRESS"} {
+		t.Setenv(key, "")
 	}
-	if err := CheckDevelopmentSignIn(func(string) string { return "" }); err != nil {
+	// A present OCC_DEVELOPMENT_DATABASE_NAME counts as selected even when empty.
+	t.Setenv("OCC_DEVELOPMENT_DATABASE_NAME", "")
+	os.Unsetenv("OCC_DEVELOPMENT_DATABASE_NAME")
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "keycloak")
+	err := CheckDevelopmentProfile()
+	if err == nil || !strings.Contains(err.Error(), "OCC_DEVELOPMENT_SIGN_IN=keycloak requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes") {
+		t.Fatalf("the Docker Compute profile accepted OCC_DEVELOPMENT_SIGN_IN=keycloak: %v", err)
+	}
+	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "github")
+	if err := CheckDevelopmentProfile(); err == nil || !strings.Contains(err.Error(), "must be keycloak or unset") {
+		t.Fatalf("an unknown sign-in provider was accepted: %v", err)
+	}
+	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "")
+	if err := CheckDevelopmentProfile(); err != nil {
 		t.Fatalf("unset sign-in was refused: %v", err)
+	}
+	// The Kubernetes-only profile is the one that accepts it.
+	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "keycloak")
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
+	t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "kubernetes")
+	if err := CheckDevelopmentProfile(); err != nil {
+		t.Fatalf("the Kubernetes-only profile refused Keycloak sign-in: %v", err)
 	}
 }
 
@@ -352,12 +382,6 @@ func TestKeycloakManifests(t *testing.T) {
 		t.Errorf("certificate = %v", certificate)
 	}
 
-	policy := manifestByKind(t, items, "NetworkPolicy", "openclaw-development-api-keycloak-egress")
-	egress := field(t, policy, "spec", "egress", 0)
-	if field(t, egress, "ports", 0, "port") != float64(10443) || field(t, egress, "to", 0, "podSelector", "matchLabels", "gateway.envoyproxy.io/owning-gateway-namespace") != "occ-development-keycloak" || field(t, policy, "spec", "podSelector", "matchLabels", "app.kubernetes.io/component") != "api" {
-		t.Errorf("egress policy = %v", policy)
-	}
-
 	dns := manifestByKind(t, items, "ConfigMap", "coredns-custom")
 	if field(t, dns, "metadata", "namespace") != "kube-system" || field(t, dns, "data", "occ-development-keycloak.override") != "rewrite name exact "+host+" occ-development-keycloak.envoy-gateway-system.svc.cluster.local\n" {
 		t.Errorf("CoreDNS rewrite = %v", dns)
@@ -461,7 +485,7 @@ func firstPassValues(t *testing.T) []byte {
 	data, err := json.Marshal(map[string]any{
 		"images":                map[string]string{"controller": "controller:dev"},
 		"auth":                  map[string]string{"baseUrl": "https://console.occ-dev-test.oce.localhost:8443"},
-		"agentNativeAdmin":      map[string]any{"enabled": true, "domain": "agents.occ-dev-test.oce.localhost", "sharedCookieDomain": "occ-dev-test.oce.localhost"},
+		"agentNativeAdmin":      map[string]any{"enabled": true, "domain": "agents.occ-dev-test.oce.localhost"},
 		"gatewayRouting":        map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"},
 		"repositoryCredentials": map[string]any{"enabled": true},
 	})
@@ -495,16 +519,14 @@ func TestKeycloakSignInValuesEnableOIDCForTheRecoveryAdministrator(t *testing.T)
 			"clientIdKey":      "client-id",
 			"clientSecretKey":  "client-secret",
 			"displayName":      "Keycloak",
-			"egressCidrs":      []string{"10.43.0.42/32"},
 		},
 	}
 	if got := mustJSON(t, values["auth"]); string(got) != string(mustJSON(t, want)) {
 		t.Fatalf("auth = %s\nwant %s", got, mustJSON(t, want))
 	}
-	// The chart refuses OIDC beside native administration; a leftover shared
-	// cookie domain would not render either.
-	if got, _ := json.Marshal(values["agentNativeAdmin"]); string(got) != `{"enabled":false}` {
-		t.Fatalf("agentNativeAdmin = %s", got)
+	// OIDC preserves the existing native browser routing and shared session hosts.
+	if got := values["agentNativeAdmin"]; !reflect.DeepEqual(got, map[string]any{"domain": "agents.occ-dev-test.oce.localhost", "enabled": true}) {
+		t.Fatalf("agentNativeAdmin = %#v", got)
 	}
 	for _, key := range []string{"images", "gatewayRouting", "repositoryCredentials"} {
 		if values[key] == nil {
@@ -823,128 +845,59 @@ func TestKeycloakSignInRejectsUnownedOrInvalidService(t *testing.T) {
 			}
 			spec := service["spec"].(map[string]any)
 			spec["clusterIP"], spec["clusterIPs"] = address, []string{address}
-			if _, err := developmentKeycloakEgressCIDRs(mustJSON(t, service)); err == nil {
+			if err := validateDevelopmentKeycloakService(mustJSON(t, service)); err == nil {
 				t.Fatal("unsafe address accepted")
 			}
 		})
 	}
 }
 
-func TestKeycloakSecondPassRenderedPoliciesRestrictHTTPS(t *testing.T) {
+func TestKeycloakSecondPassUsesControlPlaneEgress(t *testing.T) {
 	helm, err := exec.LookPath("helm")
 	if err != nil {
-		t.Skip("Helm is required to verify the complete rendered policy set")
+		t.Skip("Helm is required to verify the rendered policy set")
 	}
 	first := map[string]any{}
 	if err := json.Unmarshal(firstPassValues(t), &first); err != nil {
 		t.Fatal(err)
 	}
-	// The local profile does not enable repository credentials by default.
 	delete(first, "repositoryCredentials")
-	first["bootstrap"] = map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}}
+	first["bootstrap"] = map[string]any{"adminEmail": developmentAdministratorEmail, "credentials": map[string]string{"secretName": "bootstrap-credentials"}}
 	first["api"] = map[string]any{"clients": []any{map[string]any{"namespace": "oce-system", "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}}
 	first["images"] = map[string]string{"controller": "controller@" + profileTestDigest}
 	first["database"] = map[string]any{"cidrs": []string{"10.42.0.20/32"}}
+	first["channelEgress"] = map[string]any{"enabled": false}
 	first["cluster"] = map[string]any{"cidrs": []string{"172.30.42.3/32"}, "port": 6443}
 	second, err := developmentKeycloakSignInValues(mustJSON(t, first), "occ-dev-test", "user1", keycloakServiceJSON(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, broad := range []bool{false, true} {
-		var values map[string]any
-		if err := json.Unmarshal(second, &values); err != nil {
-			t.Fatal(err)
+	path := filepath.Join(t.TempDir(), "values.json")
+	if err := os.WriteFile(path, second, 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(helm, "template", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", "oce-system", "-f", path)
+	command.Dir = repositoryRoot(t)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Helm render: %v\n%s", err, output)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(output))
+	for {
+		var item map[string]any
+		err := decoder.Decode(&item)
+		if err == io.EOF {
+			t.Fatal("missing control-plane egress policy")
 		}
-		if broad {
-			delete(values["auth"].(map[string]any)["oidc"].(map[string]any), "egressCidrs")
-		}
-		path := filepath.Join(t.TempDir(), "values.json")
-		if err := os.WriteFile(path, mustJSON(t, values), 0600); err != nil {
-			t.Fatal(err)
-		}
-		command := exec.Command(helm, "template", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", "oce-system", "-f", path)
-		command.Dir = repositoryRoot(t)
-		output, err := command.CombinedOutput()
 		if err != nil {
-			t.Fatalf("Helm render: %v\n%s", err, output)
+			t.Fatal(err)
 		}
-		decoder := yaml.NewDecoder(bytes.NewReader(output))
-		var policies []map[string]any
-		for {
-			var item map[string]any
-			err := decoder.Decode(&item)
-			if err == io.EOF {
-				break
+		if item["kind"] == "NetworkPolicy" && field(t, item, "metadata", "name") == "openclaw-enterprise-control-plane-egress" {
+			rules := field(t, item, "spec", "egress").([]any)
+			if len(rules) != 1 || len(rules[0].(map[string]any)) != 0 {
+				t.Fatalf("control-plane egress = %v", rules)
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if item["kind"] == "NetworkPolicy" {
-				policies = append(policies, item)
-			}
-		}
-		// Include launcher policies too: a narrow additional policy cannot cancel
-		// a broad permission in another policy selected by the same API Pod.
-		for _, item := range developmentKeycloakManifests(developmentKeycloakInput{Cluster: "occ-dev-test", PlatformNamespace: "oce-system"}) {
-			var normalized map[string]any
-			if err := json.Unmarshal(mustJSON(t, item), &normalized); err != nil {
-				t.Fatal(err)
-			}
-			if normalized["kind"] == "NetworkPolicy" {
-				policies = append(policies, normalized)
-			}
-		}
-		cidrs := []string{}
-		postDNAT := false
-		for _, policy := range policies {
-			spec := policy["spec"].(map[string]any)
-			selector := spec["podSelector"].(map[string]any)
-			labels, _ := selector["matchLabels"].(map[string]any)
-			if component, ok := labels["app.kubernetes.io/component"]; ok && component != "api" {
-				continue
-			}
-			// Other component expressions in this profile include the API.
-			egress, _ := spec["egress"].([]any)
-			for _, raw := range egress {
-				rule := raw.(map[string]any)
-				ports, _ := rule["ports"].([]any)
-				if len(ports) == 0 {
-					t.Fatalf("unrestricted egress ports in %v", policy["metadata"])
-				}
-				for _, rawPort := range ports {
-					port := rawPort.(map[string]any)
-					number := fmt.Sprint(port["port"])
-					if number == "10443" && field(t, policy, "metadata", "name") == "openclaw-development-api-keycloak-egress" {
-						peers := rule["to"].([]any)
-						if len(peers) != 1 || field(t, peers[0], "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") != "envoy-gateway-system" || field(t, peers[0], "podSelector", "matchLabels", "gateway.envoyproxy.io/owning-gateway-name") != "keycloak" || field(t, peers[0], "podSelector", "matchLabels", "gateway.envoyproxy.io/owning-gateway-namespace") != "occ-development-keycloak" {
-							t.Fatal("post-DNAT permission is not scoped to Keycloak")
-						}
-						postDNAT = true
-					}
-					if number != "443" {
-						continue
-					}
-					for _, rawPeer := range rule["to"].([]any) {
-						peer := rawPeer.(map[string]any)
-						block, ok := peer["ipBlock"].(map[string]any)
-						if !ok {
-							t.Fatalf("unscoped HTTPS peer in %v", policy["metadata"])
-						}
-						cidrs = append(cidrs, block["cidr"].(string))
-					}
-				}
-			}
-		}
-		if !postDNAT {
-			t.Fatal("missing selector-scoped post-DNAT policy")
-		}
-		slices.Sort(cidrs)
-		want := []string{"10.43.0.42/32"}
-		if broad {
-			want = []string{"0.0.0.0/0"}
-		}
-		if !slices.Equal(cidrs, want) {
-			t.Fatalf("complete rendered HTTPS destinations = %v; want %v (old broad rule=%t)", cidrs, want, broad)
+			return
 		}
 	}
 }

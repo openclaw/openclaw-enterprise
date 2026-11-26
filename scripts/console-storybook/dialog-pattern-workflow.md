@@ -10,10 +10,13 @@ simulated data.
    and **Create Secret**. Each is a centred box with the same corners, edge,
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
-   Create Secret).
+   Create Secret). In Stop and Delete, check the Agent name and ID before
+   confirming.
    In Delete, read what stays in the Namespace, then open **View separate cleanup
-   commands**. Each command includes the Namespace ID. Copying it keeps the
-   confirmation open and runs nothing.
+   commands**. Each command includes the Namespace ID. Press Enter on **Copy
+   Configuration command**, then on **Copy Secret command** if it appears. Only
+   the latest row shows feedback. If copying fails, its full command is selected.
+   Copying keeps the confirmation open and runs nothing. Choose **Cancel**.
    In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
    to check the window’s scrollbar gutter, rather than the surrounding frame.
    An empty gutter blends into the backdrop; a classic scrollbar remains visible.
@@ -24,6 +27,14 @@ simulated data.
    Open **Plugins (tablet)** (a 1024 px frame). Up to 1100 px the workspace
    stacks: the catalog shows alone, choosing Calendar replaces it with
    Calendar's detail, and **Back to plugins** returns to the catalog.
+   In **Components / Plugins / Available catalog**, add Calendar. Set
+   **Destructive tools** to **Disabled**, read its hint, and check that
+   **Calendar tools enabled by default** still says **Inherit default policy**.
+   The preview exercises the form; it does not submit a policy to a Controller.
+   In **Components / Plugins / Install Google Workspace**, confirm Google
+   Workspace appears and its policy controls are visible. This component fixture
+   supplies catalog data directly. The saved-Agent browser test checks discovery
+   through the Controller for a dedicated Agent using the default Harness.
    In **Pages / Create Agent / Short window plugin picker** (1440×480), expand
    and collapse **Access and credential setup**. Scroll the catalog browser:
    plugin names stay readable, Calendar opens its details, and pagination is
@@ -37,6 +48,9 @@ simulated data.
 5. Open each **(phone)** story. The dialog is a full-width sheet on the bottom
    edge with rounded top corners. Stop, Delete and Create Secret are only as tall
    as their content. The drawer header keeps Close beside its title.
+   At short desktop and phone heights, open **Pages / Credentials / Secrets / Create** and
+   **Replace value** and use Tab and Shift+Tab to check that the focused control
+   and its outline are fully visible.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.
@@ -77,3 +91,7 @@ return to Plugins, and open Configure plugins. The catalog must load instead of
 staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
 Close and reopen the picker, then Reset story and repeat. This scenario simulates
 catalog responses; it does not establish plugin installation or runtime access.
+
+## Recover an unconfirmed template save
+
+Open **Pages / Credentials / Unconfirmed template save**. The preview edits Google OAuth and saves version 2, then omits the version from the response. Check that the warning and focused **Close** action are visible together, including at phone width. **Save new version** should be disabled. Press Enter to close the editor and confirm that the catalog shows one Google OAuth row at version 2.

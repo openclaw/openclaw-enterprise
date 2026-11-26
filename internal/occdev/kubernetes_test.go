@@ -1,6 +1,7 @@
 package occdev
 
 import (
+	"bytes"
 	"context"
 	"encoding/json/v2"
 	"os"
@@ -34,10 +35,15 @@ func TestImportRuntimePassesTheCheckoutSourceIdentity(t *testing.T) {
 	fakeEngine(t, "docker", `
 build*) printf '%s\n' "$@" > build-args; exit 17 ;;
 `)
-	r := newRunner(Options{Repository: repository})
+	var out bytes.Buffer
+	r := newRunner(Options{Repository: repository, Out: &out})
 	r.engine = "docker"
 	if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil {
 		t.Fatal("the failed build was reported as success")
+	}
+	// No runtime tag yet: say that a first build can compile Node.js for a long time.
+	if !strings.Contains(out.String(), runtimeFirstBuildNote) {
+		t.Fatalf("first build printed %q, want the first-build note", out.String())
 	}
 	arguments, err := os.ReadFile(filepath.Join(repository, "build-args"))
 	if err != nil {
@@ -83,6 +89,36 @@ build*) printf '%s\n' "$@" > build-args; exit 17 ;;
 		t.Fatal("the engine ran with an invalid build CA")
 	}
 
+}
+
+func TestImportRuntimeSkipsTheFirstBuildNoteWhenTheTagExists(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_BUILD_CA_FILE", "")
+	t.Setenv("OCC_KUBERNETES_RUNTIME_IMAGE", "")
+	repository := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repository, "deploy/runtime"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := `{"commit":"` + strings.Repeat("a", 40) + `","sourceArchiveSha256":"` + strings.Repeat("b", 64) + `","buildTimestamp":"2026-01-02T03:04:05Z"}`
+	if err := os.WriteFile(filepath.Join(repository, "deploy/runtime/openclaw-source.json"), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeEngine(t, "docker", `
+"image inspect --format {{.Id}} openclaw-enterprise-runtime:kubernetes-quickstart") echo sha256:`+strings.Repeat("c", 64)+` ;;
+build*) touch build-attempted; exit 17 ;;
+`)
+	var out bytes.Buffer
+	r := newRunner(Options{Repository: repository, Out: &out})
+	r.engine = "docker"
+	if _, err := r.importRuntime(context.Background(), &developmentState{}); err == nil {
+		t.Fatal("the failed build was reported as success")
+	}
+	if _, err := os.Stat(filepath.Join(repository, "build-attempted")); err != nil {
+		t.Fatalf("the rebuild did not run: %v", err)
+	}
+	// An earlier build left the tag, so its cache most likely holds the Node.js compile.
+	if strings.Contains(out.String(), runtimeFirstBuildNote) {
+		t.Fatalf("rebuild printed the first-build note: %q", out.String())
+	}
 }
 
 func TestImportRuntimeRejectsInvalidSourceIdentityBeforeTheBuild(t *testing.T) {

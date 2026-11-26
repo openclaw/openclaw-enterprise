@@ -21,13 +21,15 @@ first-time setup.
 | Integrations     | Named Drivers, Providers, or channels; their setup, support limits, and comparisons.                                         |
 | Deploy & Operate | Production installation and ongoing work: monitoring, platform troubleshooting, credentials, upgrades, and recovery.         |
 | Reference        | Exact CLI and HTTP API contracts: commands, flags, requests, responses, and errors.                                          |
+| Testing & CI     | Test setup, scenarios, automated test workflows, and verification evidence.                                                  |
 | Contribute       | Work on the platform itself: Design, Local Development, Repository Layout, and Documentation.                                |
 
 The first page in each menu should orient readers to the whole section, not
 drop them into one category. Put prerequisites before the steps that need them;
 for example, local platform setup precedes deploying a first Agent. Keep existing
 audiences clear: the first five menus serve product users and operators, while
-Contribute serves people changing the platform.
+Testing & CI and Contribute serve people changing the platform. Publication and
+preview workflows belong in Contribute; Testing & CI owns test workflows.
 
 Give each subject one owning page and link to it from other useful locations.
 For example, explain Sandbox in Topics; keep OpenShell setup in Integrations

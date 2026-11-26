@@ -1,10 +1,11 @@
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
-import type { Locator, Page, Request } from "playwright";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { Locator, Page } from "playwright";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import { isResourceKind, PERMISSION_ACTIONS } from "../../packages/contracts/src/index.ts";
 import type {
   AccessBinding,
@@ -16,15 +17,12 @@ import type {
   ChannelDirectoryResult,
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
-
-import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   AGENT_READ,
@@ -47,31 +45,31 @@ import {
   secretOptionLabel,
   selectSecret,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-  waitForSettledFetches,
   statusTone,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
 
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   expectNativeAdminHidden,
   withholdPermissionSummary,
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   callerDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
-  SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
@@ -79,10 +77,11 @@ import {
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
-  NAMESPACE_UNAVAILABLE,
   VERSION_READ_DENIED_HEADING,
 } from "../helpers/refusal-text.mjs";
-import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { SANDBOX_POLICY_READ_DENIED, NAMESPACE_UNAVAILABLE } from "../helpers/refusal-access.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
+import { importConsoleModule } from "../helpers/console-browser-module.ts";
 
 function deferred<T>() {
   let resolve: (value: T | PromiseLike<T>) => void = () =>
@@ -133,6 +132,8 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
+    const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
     const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
@@ -168,7 +169,8 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     const secret = `${cli} secret delete ${harnessSource.id}`;
     assert.equal(await dialog.getByText(configuration, { exact: true }).isVisible(), false);
     assert.equal(await dialog.getByText(secret, { exact: true }).isVisible(), false);
-    await dialog.getByText("View separate cleanup commands").press("Enter");
+    const disclosure = dialog.getByText("View separate cleanup commands");
+    await disclosure.press("Enter");
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
     for (const [kind, command] of [
       ["Configuration", configuration],
@@ -183,6 +185,130 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
         .waitFor();
       assert.equal(await page.evaluate(() => globalThis.navigator.clipboard.readText()), command);
     }
+    const clipboard = await page.evaluateHandle(() => {
+      const writes = new Map<string, { accept(): void; deny(): void }>();
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: (command: string) =>
+            new Promise<void>((resolve, reject) => {
+              writes.set(command, {
+                accept: resolve,
+                deny: () => reject(new Error("Clipboard denied by test")),
+              });
+            }),
+        },
+      });
+      return (command: string) => {
+        const write = writes.get(command);
+        if (!write) {
+          throw new Error(`No clipboard write for ${command}`);
+        }
+        writes.delete(command);
+        return write;
+      };
+    });
+    function commandRow(command: string) {
+      const row = dialog.locator(".agent-kept-command").filter({ hasText: command });
+      return {
+        command,
+        button: row.getByRole("button"),
+        status: row.getByRole("status", { includeHidden: true }),
+      };
+    }
+    type CommandRow = ReturnType<typeof commandRow>;
+    const configRow = commandRow(configuration);
+    const secretRow = commandRow(secret);
+    async function startCopy(row: CommandRow) {
+      await row.button.press("Enter");
+      const write = await clipboard.evaluateHandle((take, command) => take(command), row.command);
+      return async (outcome: "accept" | "deny") => {
+        await write.evaluate((pending, result) => pending[result](), outcome);
+        await write.dispose();
+      };
+    }
+    const selectionText = () => page.evaluate(() => globalThis.document.getSelection()?.toString());
+    async function assertManualCopy(current: CommandRow, previous: CommandRow) {
+      assert.equal(
+        await current.status.textContent(),
+        "Command selected. Use your copy shortcut to copy it.",
+      );
+      assert.equal(await previous.status.textContent(), "");
+      assert.equal(await selectionText(), current.command);
+      assert.equal(
+        await current.button.evaluate((node) => node.ownerDocument.activeElement === node),
+        true,
+      );
+    }
+
+    // A late success must not replace a newer manual selection, even for the same command.
+    const firstConfig = await startCopy(configRow);
+    assert.equal(await secretRow.status.textContent(), "", "Pending copy clears prior success");
+    const retryConfig = await startCopy(configRow);
+    await retryConfig("deny");
+    await firstConfig("accept");
+    await assertManualCopy(configRow, secretRow);
+
+    // Once denial has settled, switching rows must retire its selection notice in either direction.
+    for (const [current, previous] of [
+      [secretRow, configRow],
+      [configRow, secretRow],
+    ] as const) {
+      const next = await startCopy(current);
+      assert.equal(await previous.status.textContent(), "");
+      await next("deny");
+      await assertManualCopy(current, previous);
+    }
+
+    const pendingConfig = await startCopy(configRow);
+    const latestSecret = await startCopy(secretRow);
+    await latestSecret("deny");
+    await pendingConfig("deny");
+    await assertManualCopy(secretRow, configRow);
+
+    // Collapse ends this attempt. Neither completion while closed nor a rejection after reopening
+    // may select the hidden command or leave feedback for the next visit.
+    const pendingWhileHidden = await startCopy(configRow);
+    await disclosure.press("Enter");
+    assert.equal(await configRow.button.isVisible(), false);
+    await pendingWhileHidden("accept");
+    assert.equal(await configRow.status.textContent(), "");
+
+    await disclosure.press("Enter");
+    const pendingAcrossReopen = await startCopy(configRow);
+    await disclosure.press("Enter");
+    await disclosure.press("Enter");
+    await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
+    await pendingAcrossReopen("deny");
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+    assert.equal(await secretRow.status.textContent(), "");
+
+    // Keep rejection and reopening in one browser task so the rejection handler runs after both toggles.
+    await configRow.button.press("Enter");
+    await clipboard.evaluate((take, command) => {
+      const details = globalThis.document.activeElement?.closest("details");
+      if (!details?.open) {
+        throw new Error("Expected focus inside the open cleanup disclosure");
+      }
+      take(command).deny();
+      details.open = false;
+      details.open = true;
+    }, configuration);
+    assert.equal(await selectionText(), "");
+    assert.equal(await configRow.status.textContent(), "");
+
+    const canceled = await startCopy(configRow);
+    await cancel.click();
+    await dialog.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "Delete Agent" }).click();
+    await disclosure.press("Enter");
+    const reopened = await startCopy(secretRow);
+    await reopened("deny");
+    await canceled("deny");
+    await assertManualCopy(secretRow, configRow);
+    await clipboard.dispose();
+
     // Attach the rejection check when the timed wait starts: on a loaded runner the click can
     // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
     // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
@@ -294,6 +420,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { moveFocusDuringPoll }: { moveFocusDuringPoll: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -551,6 +678,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Retry refusal feedback", {
       ready: true,
@@ -670,6 +798,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   });
 
   test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
     // has no form, so a schema refusal does not ask to check entered values, and the API's typed
     // 409 sentence shows with the step that recovers (finding 2538).
@@ -766,6 +895,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     t: TestContext,
     { endsAccess, readFails = false }: { endsAccess: boolean; readFails?: boolean },
   ) {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace(
       `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
@@ -879,6 +1009,7 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
   }
 
   test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
+    const { DELETION_POLL_MS } = await importConsoleModule("agents/deletion.mjs");
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Repeat deletion uncertainty", {
       ready: true,
@@ -971,30 +1102,285 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   });
 
-  test("Agent link without a Namespace opens the Agent in the Namespace that holds it", async (t) => {
+  async function agentLinkFixture(t: TestContext) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    // Sorted first, so it is the default selection for a link without a Namespace.
-    const selected = await fixture.createNamespace("A link default", { ready: true });
-    const holder = await fixture.createNamespace("Z link holder", { ready: true });
-    const agent = await fixture.createAgent(holder.id, "Linked Agent", nativeValues("link"));
+    // The first Namespace by name is the default for unscoped links.
+    const selected = await fixture.createNamespace("A history default", { ready: true });
+    const other = await fixture.createNamespace("Z history alternative", { ready: true });
     const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
     await trackSettledFetches(page);
-    const missed = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${selected.id}/agents/${agent.id}` &&
-        response.request().method() === "GET",
-    );
+    async function expectAgentRead(path: string, status: number, action: () => Promise<unknown>) {
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (response) =>
+            response.url() === fixture.origin + path && response.request().method() === "GET",
+        ),
+        action(),
+      ]);
+      assert.equal(response.status(), status, "GET " + path);
+      return response;
+    }
+    return { fixture, selected, other, page, requests, expectAgentRead };
+  }
 
-    await login(page, fixture, `/console/agents/${agent.id}`);
-    assert.equal((await missed).status(), 404);
+  test("Agent link without a Namespace opens the Agent in the Namespace that holds it", async (t) => {
+    const { fixture, selected, other, page, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(other.id, "Linked Agent", nativeValues("link"));
+    const path = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(path, 404, () => login(page, fixture, `/console/agents/${agent.id}`));
     await page.waitForURL(
       (url) =>
         url.pathname === `/console/agents/${agent.id}` &&
-        url.searchParams.get("namespace") === holder.id,
+        url.searchParams.get("namespace") === other.id,
     );
     await page.getByRole("heading", { name: "Linked Agent" }).first().waitFor();
     await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
+  });
+
+  test("Back restores an unscoped Agent revision after leaving its Namespace lookup", async (t) => {
+    const { holdRequests } = await import("./console-agents-browser-helpers.ts");
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(other.id, "History Agent", nativeValues("history"));
+    const { revision } = await fixture.seedActiveAgentRevision(other.id, agent.id, undefined);
+    await fixture.seedActiveAgentRevision(other.id, agent.id, revision.id);
+    const wrongNamespace = detailUrl(fixture, selected.id, agent.id, revision.id, "deployment");
+    const unscoped = new URL(wrongNamespace);
+    unscoped.searchParams.delete("namespace");
+    const path = `/namespaces/${other.id}/agents/${agent.id}`;
+    const unavailable = page.getByRole("heading", { name: "Resource unavailable", exact: true });
+
+    // An explicitly scoped link must never look for this Agent in another Namespace.
+    const wrongPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(wrongPath, 404, () => login(page, fixture, wrongNamespace));
+    await unavailable.waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), wrongNamespace.href);
+    assert.equal(pathRequests(requests, "GET", path).length, 0);
+
+    // Let the holder read complete on the server while the user leaves the lookup.
+    const lookup = await holdRequests(t, page, fixture.origin + path, {
+      method: "GET",
+      afterServer: true,
+      once: true,
+    });
+    await page.goto(unscoped.href);
+    await page.getByText("Looking for this Agent in your other Namespaces.").waitFor();
+    const held = await lookup.requested;
+    assert.ok(held);
+    assert.equal(held.status(), 200);
+    assert.equal(resourceId(responseData(await held.json())), agent.id);
+
+    await page.getByRole("link", { name: "← Agents", exact: true }).click();
+    const list = page.getByRole("heading", { name: "No Agents yet", exact: true });
+    await list.waitFor();
+    const listUrl = page.url();
+    assert.equal(new URL(listUrl).pathname, "/console/agents");
+    lookup.release();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), listUrl, "The stale lookup must leave the Agents list in place");
+    assert.equal(await list.isVisible(), true);
+
+    const backRequestStart = requests.length;
+    const backResponses = new Map<string, number>();
+    page.on("response", (response) => {
+      if (response.request().method() === "GET") {
+        backResponses.set(response.url(), response.status());
+      }
+    });
+    await page.goBack();
+    const deployment = page.getByRole("tab", { name: "Deployment", exact: true, selected: true });
+    await deployment.or(unavailable).first().waitFor();
+    const restored = new URL(page.url());
+    assert.equal(
+      restored.searchParams.get("namespace"),
+      other.id,
+      `Back must restore the Agent's Namespace (${restored.href}, Resource unavailable: ${await unavailable.isVisible()})`,
+    );
+    assert.equal(restored.pathname, unscoped.pathname);
+    assert.equal(restored.searchParams.get("revision"), revision.id);
+    assert.equal(restored.searchParams.get("tab"), "deployment");
+    assert.equal(backResponses.get(fixture.origin + wrongPath), 404);
+    assert.equal(backResponses.get(fixture.origin + path), 200);
+    await page.getByRole("heading", { name: "History Agent", exact: true }).first().waitFor();
+    await page
+      .getByRole("tabpanel", { name: "Deployment", exact: true })
+      .getByRole("heading", { name: "This version’s deployment record", exact: true })
+      .waitFor();
+    assert.ok(
+      pathRequests(requests.slice(backRequestStart), "GET", `${path}/revisions/${revision.id}`)
+        .length > 0,
+      "Back must read the linked historical revision",
+    );
+
+    await page.goForward();
+    await list.waitFor();
+    assert.equal(page.url(), listUrl);
+  });
+
+  test("Agent in the default Namespace scopes the existing history entry", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const agent = await fixture.createAgent(selected.id, "Default Agent", nativeValues("default"));
+    const { revision } = await fixture.seedActiveAgentRevision(selected.id, agent.id, undefined);
+    const target = detailUrl(fixture, selected.id, agent.id, revision.id, "deployment");
+    target.searchParams.delete("namespace");
+    await login(page, fixture, "/console/namespaces");
+    const namespaces = page.getByRole("heading", { name: "Namespaces", exact: true }).first();
+    await namespaces.waitFor();
+    await waitForIdleFetches(page);
+    const previousUrl = page.url();
+    const historyLength = await page.evaluate(() => history.length);
+
+    const path = `/namespaces/${selected.id}/agents/${agent.id}`;
+    await expectAgentRead(path, 200, () => page.goto(target.href));
+    await page.getByRole("tab", { name: "Deployment", exact: true, selected: true }).waitFor();
+    await waitForIdleFetches(page);
+    target.searchParams.set("namespace", selected.id);
+    assert.equal(page.url(), target.href);
+    const otherPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    assert.equal(pathRequests(requests, "GET", otherPath).length, 0);
+    assert.equal(await page.evaluate(() => history.length), historyLength + 1);
+
+    await page.goBack();
+    await page.waitForURL(previousUrl);
+    await namespaces.waitFor();
+  });
+
+  test("Retry after a different Agent response preserves the link's Namespace scope", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const different = await fixture.createAgent(
+      selected.id,
+      "Different Agent",
+      nativeValues("other"),
+    );
+    const agent = await fixture.createAgent(other.id, "Retry Agent", nativeValues("retry"));
+    const selectedPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    const holderPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    const differentPath = `/namespaces/${selected.id}/agents/${different.id}`;
+    const explicit = detailUrl(fixture, selected.id, agent.id);
+    const unscoped = new URL(explicit);
+    unscoped.searchParams.delete("namespace");
+    await login(page, fixture, "/console/namespaces");
+
+    for (const target of [explicit, unscoped]) {
+      await page.route(
+        fixture.origin + selectedPath,
+        async (route) => {
+          const response = await route.fetch({ url: fixture.origin + differentPath });
+          assert.equal(response.status(), 200);
+          const data = responseData(await response.json());
+          assert.equal(data.id, different.id);
+          assert.equal(data.namespaceId, selected.id);
+          assert.equal(data.configurationId, different.configurationId);
+          await route.fulfill({ response });
+        },
+        { times: 1 },
+      );
+      await expectAgentRead(selectedPath, 200, () => page.goto(target.href));
+      await page.getByRole("heading", { name: "Request unavailable", exact: true }).waitFor();
+      await waitForIdleFetches(page);
+      assert.equal(page.url(), target.href);
+      assert.equal(pathRequests(requests, "GET", holderPath).length, 0);
+
+      const retry = page.getByRole("button", { name: "Retry", exact: true });
+      await expectAgentRead(selectedPath, 404, () => retry.click());
+      if (target === explicit) {
+        await page.getByRole("heading", { name: "Resource unavailable", exact: true }).waitFor();
+        await waitForIdleFetches(page);
+        assert.equal(page.url(), explicit.href);
+        assert.equal(pathRequests(requests, "GET", holderPath).length, 0);
+      } else {
+        await page.getByRole("heading", { name: "Retry Agent", exact: true }).first().waitFor();
+        assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
+      }
+    }
+  });
+
+  test("A secondary Agent response for a different Namespace leaves the link unscoped", async (t) => {
+    const { fixture, selected, other, page, requests, expectAgentRead } = await agentLinkFixture(t);
+    const wrong = await fixture.createNamespace("M history wrong", { ready: true });
+    const agentName = "Misrouted Agent";
+    const agent = await fixture.createAgent(other.id, agentName, nativeValues("misrouted"));
+    const unscoped = new URL(`/console/agents/${agent.id}`, fixture.origin);
+    const selectedPath = `/namespaces/${selected.id}/agents/${agent.id}`;
+    const holderPath = `/namespaces/${other.id}/agents/${agent.id}`;
+    const wrongPath = `/namespaces/${wrong.id}/agents/${agent.id}`;
+    const holderUrl = fixture.origin + holderPath;
+    const wrongUrl = fixture.origin + wrongPath;
+
+    // Make the holder's probe a settled 404, leaving the mismatched reply as the
+    // only reason discovery is incomplete.
+    await page.route(holderUrl, async (route) => {
+      const missingUrl = fixture.origin + selectedPath;
+      const response = await route.fetch({ url: missingUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), missingUrl);
+      assert.equal(response.status(), 404);
+      await route.fulfill({ response });
+    });
+    let holderBody: Buffer | undefined;
+    await page.route(wrongUrl, async (route) => {
+      if (holderBody) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({ url: holderUrl, maxRedirects: 0, maxRetries: 0 });
+      assert.equal(response.url(), holderUrl);
+      assert.equal(response.status(), 200);
+      const data = responseData(await response.json());
+      assert.equal(data.id, agent.id);
+      assert.equal(data.namespaceId, other.id);
+      assert.equal(data.configurationId, agent.configurationId);
+      assert.equal(data.name, agentName);
+      holderBody = await response.body();
+      await route.fulfill({ response, body: holderBody });
+    });
+    const replay = await expectAgentRead(wrongPath, 200, () =>
+      expectAgentRead(holderPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => login(page, fixture, unscoped)),
+      ),
+    );
+    assert.ok(holderBody);
+    assert.deepEqual(await replay.body(), holderBody);
+
+    const incomplete = page.getByRole("heading", {
+      name: "Agent not in this Namespace",
+      exact: true,
+    });
+    const unavailable = page.getByRole("heading", { name: "Resource unavailable", exact: true });
+    await incomplete.or(unavailable).first().waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(page.url(), unscoped.href, "A mismatched probe must leave the Agent URL unscoped");
+    await incomplete.waitFor();
+    await page.getByText("not in the A history default Namespace", { exact: false }).waitFor();
+    const selector = page.locator("#namespace-selector");
+    assert.equal(await selector.inputValue(), selected.id);
+    assert.equal(await page.getByText(agentName, { exact: true }).count(), 0);
+    assert.equal(pathRequests(requests, "GET", wrongPath).length, 1);
+    assert.equal(pathRequests(requests, "GET", holderPath).length, 1);
+    const probePaths = [selectedPath, holderPath, wrongPath];
+    const followupReads = requests.filter(
+      ({ method, path }) =>
+        method === "GET" &&
+        (probePaths.some((probePath) => path.startsWith(probePath + "/")) ||
+          path.includes(`/configurations/${agent.configurationId}`)),
+    );
+    assert.deepEqual(followupReads, []);
+    await page.getByRole("button", { name: "Switch Namespace", exact: true }).click();
+    assert.equal(
+      await selector.evaluate((node) => node === node.ownerDocument.activeElement),
+      true,
+    );
+
+    await page.unroute(holderUrl);
+    await page.unroute(wrongUrl);
+    await expectAgentRead(holderPath, 200, () =>
+      expectAgentRead(wrongPath, 404, () =>
+        expectAgentRead(selectedPath, 404, () => page.reload()),
+      ),
+    );
+    await page.getByRole("heading", { name: agentName, exact: true }).first().waitFor();
+    assert.equal(page.url(), detailUrl(fixture, other.id, agent.id).href);
   });
 
   test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {
@@ -2751,96 +3137,91 @@ export function registerSharingCredentialsAndChannelsCases(
     );
   });
 
-  for (const method of ["api_key", "codex_pat"] as const) {
-    test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
-      const fixture = await detailApp(t);
-      const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
-        ready: true,
-      });
-
-      const agent = await fixture.createAgent(
-        namespace.id,
-        "Credential Agent",
-        createHarnessConfiguration("codex", "gpt-4.1"),
-        { executionMode: "dedicated" },
-      );
-
-      const replacement = await fixture.createSecret(
-        namespace.id,
-        "Replacement model credential",
-        "test-replacement-token",
-      );
-
-      const unrelated = await fixture.createSecret(
-        namespace.id,
-        "Unrelated credential",
-        "test-unrelated-token",
-      );
-
-      const { page } = await newPage(t, fixture);
-      await login(
-        page,
-        fixture,
-        `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
-      );
-      await page.getByLabel("Authentication source").selectOption(method);
-      await selectSecret(
-        page,
-        method === "api_key" ? "API key Secret" : "Service account token Secret",
-        replacement,
-      );
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      const bindings = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/iam/access-bindings`,
-      );
-      const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-      const currentBindings = bindingsFrom(bindings.data);
-      const grants = currentBindings.filter(
-        (binding) =>
-          binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
-      );
-      assert.equal(grants.length, 1);
-      const grant = grants[0];
-      assert.ok(grant);
-      assert.deepEqual(grant, {
-        id: grant.id,
-        namespaceId: namespace.id,
-        subjectKind: "identity",
-        subjectId: agent.servicePrincipalId,
-        roleId: grant.roleId,
-        resourceKind: "secret",
-        resourceId: replacement.id,
-      });
-      assert.deepEqual(
-        readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
-        [{ action: "operate", resourceKind: "secret" }],
-      );
-      assert.equal(
-        currentBindings.some((binding) => binding.resourceId === unrelated.id),
-        false,
-      );
-      const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-      assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
-      // Saving the same source again repairs missing access and reuses an existing exact binding.
-      await page.getByRole("button", { name: "Save authentication source" }).click();
-      await page.waitForFunction(
-        () =>
-          globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
-          false,
-      );
-      assert.deepEqual(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
-        bindings.data,
-      );
+  test("Credentials grants exact Agent access when rebinding api_key", async (t) => {
+    const method = "api_key";
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
+      ready: true,
     });
-  }
+
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Credential Agent",
+      createHarnessConfiguration("codex", "gpt-4.1"),
+      { executionMode: "dedicated" },
+    );
+
+    const replacement = await fixture.createSecret(
+      namespace.id,
+      "Replacement model credential",
+      "test-replacement-token",
+    );
+
+    const unrelated = await fixture.createSecret(
+      namespace.id,
+      "Unrelated credential",
+      "test-unrelated-token",
+    );
+
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+    );
+    await page.getByLabel("Authentication source").selectOption(method);
+    await selectSecret(page, "API key Secret", replacement);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    // Wait for the real IAM write and the refreshed form, not just the earlier Agent PATCH.
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    const bindings = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/iam/access-bindings`,
+    );
+    const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+    const currentBindings = bindingsFrom(bindings.data);
+    const grants = currentBindings.filter(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId && binding.resourceId === replacement.id,
+    );
+    assert.equal(grants.length, 1);
+    const grant = grants[0];
+    assert.ok(grant);
+    assert.deepEqual(grant, {
+      id: grant.id,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: grant.roleId,
+      resourceKind: "secret",
+      resourceId: replacement.id,
+    });
+    assert.deepEqual(
+      readRole(records(roles.data).find((role) => role.id === grant.roleId)).permissions,
+      [{ action: "operate", resourceKind: "secret" }],
+    );
+    assert.equal(
+      currentBindings.some((binding) => binding.resourceId === unrelated.id),
+      false,
+    );
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(responseData(saved).harnessAuth, { method, source: replacement.ref });
+    // Saving the same source again repairs missing access and reuses an existing exact binding.
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    await page.waitForFunction(
+      () =>
+        globalThis.document.querySelector<HTMLSelectElement>("#harness-auth-method")?.disabled ===
+        false,
+    );
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)).data,
+      bindings.data,
+    );
+  });
 
   test("Credentials retries denied and interrupted grants without repeating the authentication save", async (t) => {
     const fixture = await createConsoleAppFixture(t);
@@ -2879,8 +3260,8 @@ export function registerSharingCredentialsAndChannelsCases(
     const deniedGrant = restrict(fixture.policy, "administer", "installation", {
       resourceId: resourceId(installation),
     });
-    await page.getByLabel("Authentication source").selectOption("codex_pat");
-    await selectSecret(page, "Service account token Secret", replacement);
+    await page.getByLabel("Authentication source").selectOption("api_key");
+    await selectSecret(page, "API key Secret", replacement);
     await page.getByRole("button", { name: "Save authentication source" }).click();
     await page
       .getByText(
@@ -3246,8 +3627,12 @@ export function registerSharingCredentialsAndChannelsCases(
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     const directoryBodies: DirectoryBody[] = [];
-    const pendingDirectory = deferred<Request>();
     const releaseDirectory = deferred<void>();
+    const releaseChangedQuery = deferred<void>();
+    t.after(() => {
+      releaseDirectory.resolve();
+      releaseChangedQuery.resolve();
+    });
     // The browser test owns Console selection and saved API state; only provider directory data is simulated.
     await page.route(
       `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
@@ -3256,8 +3641,10 @@ export function registerSharingCredentialsAndChannelsCases(
         const ids = body.ids;
         directoryBodies.push(body);
         if (body.query === "pending") {
-          pendingDirectory.resolve(route.request());
           await releaseDirectory.promise;
+        }
+        if (body.query === "pending-query") {
+          await releaseChangedQuery.promise;
         }
         let nextCursor;
         let candidates: ChannelDirectoryResult["candidates"];
@@ -3310,8 +3697,13 @@ export function registerSharingCredentialsAndChannelsCases(
     const channelSearch = channelDialog.getByRole("combobox", { name: "Channels", exact: true });
     const channelPicker = channelSearch.locator("..").locator("..");
     await channelPicker.getByText("#existing-room", { exact: true }).waitFor();
-    await channelSearch.focus();
+    await channelSearch.click();
     await channelPicker.getByRole("option", { name: /existing-room.*CEXIST123/ }).waitFor();
+    assert.equal(
+      directoryBodies.filter((body) => body.kind === "channels" && !body.ids).length,
+      1,
+      "pointer focus and click start only one lookup",
+    );
     // Advance browser time explicitly: intermediate keystrokes and dismissed searches must not query.
     const clockTime = new Date("2026-09-27T12:00:00Z");
     await page.clock.install({ time: new Date("2026-09-27T11:59:00Z") });
@@ -3339,17 +3731,51 @@ export function registerSharingCredentialsAndChannelsCases(
       directoryBodies.some((body) => body.query === "dismissed"),
       false,
     );
-    // A new query aborts the old browser request, even while its provider response is held.
+    // Escape cancels a keyboard reopen while its synthetic directory response is held.
     await channelSearch.fill("pending");
-    await channelSearch.press("Enter");
-    const pendingRequest = await pendingDirectory.promise;
+    await channelSearch.press("Escape");
+    const pendingDirectory = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending",
+      { timeout: 10_000 },
+    );
+    await channelSearch.press("ArrowDown");
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    const pendingRequest = await pendingDirectory;
+    await channelSearch.press("ArrowDown");
+    await channelSearch.press("ArrowDown");
+    await page.clock.runFor(300);
+    assert.equal(directoryBodies.filter((body) => body.query === "pending").length, 1);
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
     const canceledRequest = page.waitForEvent(
       "requestfailed",
       (request) => request === pendingRequest,
     );
-    await channelSearch.fill("general");
+    await channelSearch.press("Escape");
     await canceledRequest;
     releaseDirectory.resolve();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    // Changing the query also aborts the exact held request, independently of dismissal.
+    const changingQuery = page.waitForRequest(
+      (request) =>
+        request.url() === `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup` &&
+        request.method() === "POST" &&
+        directoryBody(request.postDataJSON()).query === "pending-query",
+      { timeout: 10_000 },
+    );
+    await channelSearch.fill("pending-query");
+    await channelSearch.press("Enter");
+    const changedQueryRequest = await changingQuery;
+    const canceledByQuery = page.waitForEvent("requestfailed", {
+      predicate: (request) => request === changedQueryRequest,
+      timeout: 10_000,
+    });
+    await channelSearch.fill("general");
+    await canceledByQuery;
+    releaseChangedQuery.resolve();
     // Enter submits immediately and removes the queued debounce, so it cannot send the same query twice.
     await channelSearch.press("Enter");
     await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
@@ -3367,6 +3793,52 @@ export function registerSharingCredentialsAndChannelsCases(
     await channelSearch.press("Escape");
     assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
     assert.equal(await channelDialog.isVisible(), true);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    assert.equal(await channelSearch.inputValue(), "general");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    const directoryPath = `/namespaces/${namespace.id}/channel-directory/lookup`;
+    const directoryResponse = () =>
+      page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}${directoryPath}` &&
+          response.request().method() === "POST",
+      );
+    const beforeReopen = pathRequests(requests, "POST", directoryPath).length;
+    const reopened = directoryResponse();
+    await channelSearch.press("ArrowDown");
+    assert.equal((await reopened).status(), 200);
+    await channelPicker.locator('[role="option"].active').waitFor();
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 3);
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").first().getAttribute("id"),
+    );
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), true);
+    await channelSearch.press("ArrowDown");
+    assert.equal(
+      await channelSearch.getAttribute("aria-activedescendant"),
+      await channelPicker.getByRole("option").nth(1).getAttribute("id"),
+    );
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 1);
+    await channelSearch.press("Escape");
+    const clicked = directoryResponse();
+    await channelSearch.click();
+    assert.equal((await clicked).status(), 200);
+    await channelPicker.getByRole("option", { name: /general.*CGENERAL/ }).waitFor();
+    assert.equal(pathRequests(requests, "POST", directoryPath).length, beforeReopen + 2);
+    assert.equal(directoryBodies.filter((body) => body.query === "general").length, 4);
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "true");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    await channelSearch.press("Tab");
+    assert.equal(await channelSearch.getAttribute("aria-expanded"), "false");
+    assert.equal(await channelSearch.getAttribute("aria-activedescendant"), null);
+    assert.equal(await channelSearch.evaluate((input) => input === document.activeElement), false);
+    assert.equal(await slackSelectionValue(channelSearch), "CEXIST123");
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).filter((request) => request.path !== directoryPath),
+      [],
+    );
     await channelSearch.fill("GENERALX");
     await channelPicker.getByRole("option", { name: /GENERALX-first.*CUPPER111/ }).waitFor();
     assert.equal(await channelPicker.getByRole("option").count(), 5);
@@ -3637,13 +4109,47 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
-    const fixture = await detailApp(t);
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
+      },
+    });
+    await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
 
     // Issuance is outside this Console test. Seed its realistic result through State;
     // the browser still lists, selects and saves it through production API/IAM paths.
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
+    );
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "Issued PAT source",
+          type: "static",
+          config: { provider_preset: "codex-pat" },
+          secret: `at-${randomUUID()}`,
+        },
+      },
+    );
+    assert.equal(enrollment.status, 201);
+    const sourceId = enrollment.data.id;
     const account = await controller.transact(async (state) => {
       const created = await state.serviceAccounts.createServiceAccount({
         id: `sa_${randomUUID()}`,
@@ -3652,7 +4158,7 @@ export function registerSharingCredentialsAndChannelsCases(
       });
       return state.serviceAccounts.updateCredential(namespace.id, created.id, {
         kind: "access_token",
-        secretRef: { name: "managed-pat-browser-fixture", key: "token" },
+        sourceId,
       });
     });
     assert.ok(account);
@@ -3660,15 +4166,16 @@ export function registerSharingCredentialsAndChannelsCases(
       namespace.id,
       "Managed PAT Agent",
       createHarnessConfiguration("codex", "gpt-5.1"),
-      { executionMode: "dedicated" },
+      { executionMode: "dedicated", harnessAuth: null },
     );
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
     await login(
       page,
       fixture,
-      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
     );
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
     await page
       .getByLabel("Issued ChatGPT service account", { exact: true })
@@ -3679,34 +4186,24 @@ export function registerSharingCredentialsAndChannelsCases(
     );
     await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
     assert.equal((await saved).status(), 200);
-    await page.getByRole("button", { name: "Save authentication source", exact: true }).waitFor();
-    assert.equal(
-      await page.getByLabel("Authentication source", { exact: true }).inputValue(),
-      "service_account",
-    );
-    assert.equal(
-      await page.getByLabel("Issued ChatGPT service account", { exact: true }).inputValue(),
-      account.id,
-    );
+    const harnessAuth = { method: "credential_source", sourceId };
     assert.deepEqual(
       responseData(await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`))
         .harnessAuth,
-      {
-        method: "codex_pat",
-        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-      },
+      harnessAuth,
+    );
+    const patch = requests.find(
+      (request) => request.method === "PATCH" && request.path.endsWith(`/agents/${agent.id}`),
+    );
+    assert.ok(patch);
+    assert.deepEqual(record(patch.body).harnessAuth, harnessAuth);
+    const bindingWrites = requests.filter(
+      ({ method, path }) => method === "POST" && path.endsWith("/access-bindings"),
     );
     assert.equal(
-      requests.some(
-        (request) => request.method === "POST" && request.path.endsWith("/access-bindings"),
-      ),
+      bindingWrites.some(({ body }) => record(body).resourceKind === "secret"),
       false,
     );
-    // The draft summary names the selected account rather than a Secret.
-    await page.goto(
-      `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=configuration`,
-    );
-    await page.getByText(`ChatGPT service account · ${account.id}`, { exact: true }).waitFor();
   });
 
   test("Console can repeat Stop without treating the selected version as cleanup completion", async (t) => {
@@ -3802,50 +4299,44 @@ export function registerSharingCredentialsAndChannelsCases(
   });
 
   test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
-
-    const backend = createOpenShellBackend({
-      id: "openshell-browser",
-      type: "openshell",
-      configuration: { endpoint: "http://127.0.0.1:9" },
-      drivers: {
-        sandbox: "sandbox-openshell-local",
-        credential_gateway: "credential-gateway-openshell",
+    let state: PlatformStateStore | undefined;
+    const fixture = await createConsoleAppFixture(t, {
+      wrapState(platform: PlatformStateStore) {
+        state = platform;
+        return platform;
       },
     });
-    t.after(() => backend.client.close());
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/openclaw"] },
-      { backend },
-    );
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("OpenClaw source", { ready: true });
     const controller: unknown = fixture.controller;
-    assert.ok(controller instanceof OpenClawController);
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-    const input = await fixture.createSecret(
-      namespace.id,
-      "OpenAI source input",
-      "source-browser-fixture",
+    assert.ok(controller instanceof OpenClawController && state);
+    const { driver } = useInstallationSecretDriver(controller);
+    const store = driver.privateSecrets;
+    assert.ok(store);
+    const instance = await controller.activateTokenServiceInstance("occ", randomUUID());
+    const owner = new OCCTokenServiceDriver(
+      "occ",
+      controller.installation.id,
+      store,
+      instance,
+      state,
     );
-
-    // Source registration is outside this Console test. This is the ready API-key
-    // source state the existing OpenClaw credential-gateway path supports.
-    const source = await controller.transact((state) =>
-      state.credentialSources.createCredentialSource({
-        id: `cs_${randomUUID()}`,
-        namespaceId: namespace.id,
-        name: "OpenAI API key",
-        type: "openai",
-        config: {},
-        secrets: { api_key: input.ref },
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
+    controller.registerDriver(owner);
+    controller.selectDriver("token_service", owner.id);
+    const enrollment = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: "OpenAI API key",
+          type: "static",
+          config: { provider_preset: "openai" },
+          secret: randomUUID(),
+        },
+      },
     );
+    assert.equal(enrollment.status, 201, JSON.stringify(enrollment.body));
+    const source = enrollment.data;
     const harnessAuth = { method: "credential_source", sourceId: source.id };
     const agent = await fixture.createAgent(
       namespace.id,

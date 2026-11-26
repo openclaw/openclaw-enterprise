@@ -1,9 +1,12 @@
 package occdev
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 )
 
@@ -12,9 +15,31 @@ import (
 // Concurrent commands overlap: these durations are not additive wall time.
 func (r *runner) commandTiming(name string, args []string, started time.Time, err error) {
 	stage := developmentCommandStage(filepath.Base(name), args)
-	if stage != "" && r.opts.Out != nil {
-		fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t\n", stage, time.Since(started).Milliseconds(), err != nil)
+	if stage == "" || r.opts.Out == nil {
+		return
 	}
+	outcome := ""
+	if stage == "runtime-build" {
+		if result := runtimeBuildFailureOutcome(err); result != "" {
+			// Keep the legacy timing line intact for readers that only collect timings.
+			outcome = "\n[occ-dev-outcome] stage=runtime-build outcome=" + result
+		}
+	}
+	fmt.Fprintf(r.opts.Out, "\n[occ-dev-timing] stage=%s elapsed_ms=%d failed=%t%s\n", stage, time.Since(started).Milliseconds(), err != nil, outcome)
+}
+
+func runtimeBuildFailureOutcome(err error) string {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ProcessState == nil {
+		return ""
+	}
+	if exit.Exited() && exit.ExitCode() > 0 {
+		return "nonzero-exit"
+	}
+	if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return "signaled"
+	}
+	return ""
 }
 
 func developmentCommandStage(name string, args []string) string {

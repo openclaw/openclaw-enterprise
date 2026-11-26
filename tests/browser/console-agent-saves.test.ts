@@ -1,5 +1,12 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  focusedDescription,
+  focusedText,
+  openAdvancedSettings,
+  LIVE_BUTTON,
+  watchForReload,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -19,8 +26,9 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import {
   accessBindingPostRequests,
   apiRequests,
@@ -40,23 +48,16 @@ import {
   setSlackSelection,
   stopFocusTrail,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   waitForShownInputValue,
   secretOptionLabel,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import {
-  LIVE_BUTTON,
-  createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
-  openAdvancedSettings,
-  watchForReload,
-} from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { within } from "../helpers/wait-for.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -734,19 +735,21 @@ test("saving and reloading the authentication source update the Agent page in pl
   for (const secret of [second, first]) {
     await selectSecret(page, "API key Secret", secret);
     await saveAuthentication.scrollIntoViewIfNeeded();
-    const scrollBefore = await scrollY(page);
-    assert.ok(scrollBefore > 0, "the Save button sits below the first screen");
+    assert.ok((await scrollY(page)) > 0, "the Save button sits below the first screen");
     await saveAuthentication.click();
     await page.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
     await waitForInputValue(secretField, secretOptionLabel(secret));
     assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
     assert.equal(await focusedText(page), "Save authentication source");
     assert.equal(await focusedDescription(page), "Authentication source saved.");
-    // The staged-Secret hint is gone after the save, so the page may end one line shorter.
-    const scrollAfter = await scrollY(page);
+    // The staged Secret hint can disappear after save. Keep the action in view as the card shrinks.
     assert.ok(
-      Math.abs(scrollAfter - scrollBefore) <= 40,
-      `the page kept its scroll: ${scrollBefore} -> ${scrollAfter}`,
+      await saveAuthentication.evaluate((button) => {
+        const { top, height } = button.getBoundingClientRect();
+        const center = top + height / 2;
+        return center >= 0 && center < globalThis.innerHeight;
+      }),
+      "the Save button stays in the viewport after the authentication source is saved",
     );
     assert.deepEqual(await savedAgent(), { method: "api_key", source: secret.ref });
   }
@@ -1706,11 +1709,14 @@ for (const c of declinedCarryCases) {
   });
 }
 
+const CONFIGURATION_RESERVED =
+  "The Configuration is reserved for provisioning and is not available for this operation.";
+
 // A Configuration reserved for provisioning also answers 409 RESOURCE_CONFLICT. The console took
 // it for another browser's save and offered a Reload draft that met the same refusal forever
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
 // offers Reload draft now. The API answer is replayed here in the exact shape the controller
-// returns for a reservation (proved in postgres-agent-provisioning.test.mjs).
+// returns for a reservation (proved in postgres-agent-provisioning.test.ts).
 // A Kubernetes resourceVersion conflict answers the catch-all "already exists" sentence instead,
 // which names nothing to fix, so each save shows its own conflict text (finding 1639).
 const SAVED_STATE_CONFLICT =
@@ -1771,9 +1777,7 @@ for (const [c, generic] of configurationSaveCases.flatMap((c) => [
   test(`a ${c.name} save refused ${generic ? "with the catch-all conflict" : "for provisioning"} shows ${generic ? "its own conflict text" : "the refusal"}, not Reload draft`, async (t) => {
     const context = await slackAgentWithNewSecrets(t, `Reserved ${c.name}`);
     const { fixture, namespace, agent } = context;
-    const refusal = generic
-      ? RESOURCE_CONFLICT
-      : "The Configuration is reserved for provisioning and is not available for this operation.";
+    const refusal = generic ? RESOURCE_CONFLICT : CONFIGURATION_RESERVED;
     let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
@@ -1961,16 +1965,80 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("button", { name: "Reload draft" }).click();
-  await page
-    .getByRole("status")
-    .filter({
-      hasText:
-        'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.',
-    })
-    .waitFor();
+  const review =
+    'Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.';
+  const reloaded = `Draft reloaded. ${review}`;
+  await page.getByRole("status").filter({ hasText: reloaded }).waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  assert.match(await focusedDescription(page), /^Draft reloaded\. Your edits are applied/);
-  await page.getByRole("button", { name: "Save Configuration" }).click();
+  assert.equal(await focusedDescription(page), reloaded);
+
+  const editor = page.getByLabel("Configuration JSON");
+  const mergedText = await editor.inputValue();
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  async function refreshAndCheckReview(expected = review) {
+    const original = await editor.elementHandle();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((node) => !node.isConnected, original);
+    await original.dispose();
+    assert.equal(await editor.inputValue(), mergedText);
+    await page.getByRole("status").filter({ hasText: expected }).waitFor();
+    await save.focus();
+    assert.equal(await focusedDescription(page), expected);
+  }
+  // An unavailable permission summary must hide saved values without leaving Save unwarned.
+  const permissions = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  await page.route(
+    permissions,
+    (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }),
+    { times: 1 },
+  );
+  const summary = page.waitForResponse(permissions);
+  await refreshAndCheckReview("Review the merged draft. Saving may replace other changes.");
+  assert.equal((await summary).status(), 503);
+  assert.equal(await save.isEnabled(), true);
+  await refreshAndCheckReview();
+
+  // A failed preflight takes priority, but the same unsaved merge still needs review.
+  const url = fixture.origin + configurationPath(context);
+  await page.route(url, (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }), {
+    times: 1,
+  });
+  const read = page.waitForResponse(url);
+  await save.click();
+  const failedRead = await read;
+  assert.equal(failedRead.request().method(), "GET");
+  assert.equal(failedRead.status(), 503);
+  await page.getByRole("alert").filter({ hasText: "The read could not be completed" }).waitFor();
+  await refreshAndCheckReview();
+
+  // Neither a rate limit nor a provisioning reservation changes the saved generation.
+  for (const refusal of [
+    {
+      response: { status: 429, json: { error: "too_many_requests" } },
+      message: "Too many requests",
+    },
+    {
+      response: apiErrorResponse(409, "RESOURCE_CONFLICT", CONFIGURATION_RESERVED, {
+        requestId: "req_00000000-0000-4000-8000-000000000001",
+      }),
+      message: CONFIGURATION_RESERVED,
+    },
+  ]) {
+    const refusePatch = (route: Route) =>
+      route.request().method() === "PATCH" ? route.fulfill(refusal.response) : route.fallback();
+    await page.route(url, refusePatch);
+    const patched = page.waitForResponse(
+      (r) => r.url() === url && r.request().method() === "PATCH",
+    );
+    await save.click();
+    assert.equal((await patched).status(), refusal.response.status);
+    await page.unroute(url, refusePatch);
+    await page.getByRole("alert").filter({ hasText: refusal.message }).waitFor();
+    assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 2);
+    await refreshAndCheckReview();
+  }
+
+  await save.click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.equal(saved.generation, 3);
@@ -2216,7 +2284,7 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   // The reread can reach this route after the status shows, so wait for it rather than count
   // (finding 2223); the name must stay while the reread is held.
-  await rereading;
+  await within(rereading, "the rebuilt summary's held Secret reread");
   assert.ok(reads >= 2, "the rebuilt summary rereads the Secret");
   assert.equal(await name.isVisible(), true);
   assert.deepEqual(await metadataLoading.jsonValue(), []);
@@ -2248,7 +2316,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
   await waitForEnabled(plugins);
   await page.getByRole("button", { name: "Disable Slack" }).click();
-  await refreshing;
+  await within(refreshing, "the held Configuration refresh");
   assert.equal(await plugins.isDisabled(), true);
   assert.equal(
     await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
@@ -2266,11 +2334,12 @@ test("a Configuration save that lands late does not move the cards below the edi
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Late save");
   const agent = await fixture.createAgent(namespace.id, "Late Save", nativeValues("before"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = configurationPath({ namespace, agent });
   const page = await openTab(t, fixture, namespace, agent, "configuration", {
-    viewport: { width: 1280, height: 800 },
+    viewport: { width: 1280, height: 1000 },
     // The save lands 900 ms after the click.
     beforeLogin: (routed) =>
-      routed.route(`**/namespaces/${namespace.id}/configurations/*`, async (route) => {
+      routed.route(`**${path}`, async (route) => {
         if (route.request().method() === "PATCH") {
           await new Promise((resolve) => setTimeout(resolve, 900));
         }
@@ -2282,12 +2351,19 @@ test("a Configuration save that lands late does not move the cards below the edi
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
   const save = page.getByRole("button", { name: "Save Configuration" });
+  const danger = page.getByRole("heading", { name: "Danger zone", exact: true });
+  const dangerOffset = () =>
+    danger.evaluate((heading) => heading.getBoundingClientRect().top - globalThis.innerHeight);
   // A reader scrolls the editor's actions into view, then saves once the page is still.
   await save.evaluate((control) => control.scrollIntoView({ block: "center" }));
   await page.evaluate(() => globalThis.document.fonts.ready);
   await new Promise((resolve) => setTimeout(resolve, 500));
+  const before = await dangerOffset();
+  assert.ok(before >= 0, `Danger zone starts below the viewport (offset: ${before}px)`);
   await page.evaluate(recordLayoutShifts);
+  const patched = responseTo(page, "PATCH", new URL(path, fixture.origin).href);
   await save.click();
+  assert.equal((await patched).status(), 200);
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   await new Promise((resolve) => setTimeout(resolve, 500));
   // The tab and the cards below it. Headless Chromium also reports the body itself when the
@@ -2297,13 +2373,20 @@ test("a Configuration save that lands late does not move the cards below the edi
     .filter((entry) => entry.sources.some((source) => !source.node.startsWith("BODY.")))
     .reduce((sum, entry) => sum + entry.value, 0);
   t.diagnostic(`shift ${shift}: ${JSON.stringify(shifts)}`);
+  const after = await dangerOffset();
+  assert.ok(after >= 0, `Danger zone stays below the viewport after saving (offset: ${after}px)`);
   assert.ok(shift < 0.01, `shift ${shift}`);
   // The saved summary's next step is in view, where Save Configuration was.
-  assert.equal(
-    await page.evaluate(() => globalThis.document.activeElement?.textContent),
-    "Edit Configuration",
-  );
-  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  assert.equal(await edit.isVisible(), true);
+  const editView = await edit.evaluate((control) => {
+    const { top, bottom } = control.getBoundingClientRect();
+    return {
+      focused: globalThis.document.activeElement === control,
+      inView: top >= 0 && bottom <= globalThis.innerHeight,
+    };
+  });
+  assert.deepEqual(editView, { focused: true, inView: true });
 });
 
 // A deployed Agent's Configuration tab with an unsaved edit in the JSON editor.

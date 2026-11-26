@@ -15,7 +15,10 @@ existing control or enable a paid feature without approval.
 In **Settings > Actions > General**:
 
 - Select the read-only default for `GITHUB_TOKEN` workflow permissions.
-- Disable **Allow GitHub Actions to create and approve pull requests**.
+- Enable **Allow GitHub Actions to create and approve pull requests** for the
+  [contributor refresh workflow](workflows/contributors.yml). It opens a README
+  update for review; it does not approve or merge PRs. Keep write permissions scoped
+  to that job.
 - Keep fork workflow access, write tokens, and secrets disabled unless an
   explicitly reviewed use case requires them.
 - Review the actions allowlist against the actual workflow dependencies before

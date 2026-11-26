@@ -1,5 +1,5 @@
 // This module must stay free of imports: the installation profile renderer
-// (scripts/render-installation-profile.mjs) loads it straight from a checkout, before
+// (scripts/render-installation-profile.ts) loads it straight from a checkout, before
 // `pnpm install` has run. `api/common.ts` re-exports it for everything else.
 
 /**

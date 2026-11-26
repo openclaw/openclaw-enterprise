@@ -1,12 +1,15 @@
 # Delete a Namespace in the console
 
 Open **Namespaces** and select the trash icon in the Namespace's **Actions**
-column. Only an Installation administrator can delete a Namespace: Namespace
-IAM Roles cannot grant Namespace `delete`. For other people the icon is
-unavailable, and focusing it reads that reason. Ask an Installation
-administrator to delete the Namespace. A deny Restriction can also refuse
-deletion to an Installation administrator; then the reason names the
-Restriction. Ask whoever manages IAM Restrictions to lift it.
+column. Deletion requires Namespace `delete` on that Namespace. An
+[Installation-configured Role](../../reference/authorization/default-users.md)
+can grant it, for example through an Owner binding on a Namespace the person
+created. The Namespace IAM API cannot grant Namespace `delete`.
+
+If the icon is unavailable, focus it to read the reason. Ask an Installation
+administrator to check your access. If you administer the Installation, check
+the grant and any IAM Restrictions. The permission check alone cannot establish
+the cause. The deletion request rechecks access and can also refuse Preset cleanup.
 
 1. Check the name and ID in the confirmation. Deletion cannot be undone, and
    the name remains reserved. Unchanged, automatically added Presets are removed
@@ -24,9 +27,13 @@ Restriction. Ask whoever manages IAM Restrictions to lift it.
    row disappears and a success message appears. If it was selected, the Console
    chooses another readable Namespace, or clears the selection when none remain.
 
-If the outcome is unknown, select **Refresh status** before deciding to try
-again. The Console does not repeat an unconfirmed write automatically. If access
-is refused, it reports the access change without claiming deletion succeeded.
+If a status check fails, the confirmation closes. An invalid response shows
+**Could not check deletion status**. An unconfirmed status or write shows a
+warning **Status unknown** badge and hides both deletion actions. Select
+**Refresh status**; a successful check restores the confirmed badge and lets
+you open a new confirmation if deletion is still available. The Console never
+repeats an unconfirmed write automatically. If access is refused, it reports the
+access change without claiming deletion succeeded.
 
 If cleanup does not finish, ask an operator to check teardown. After the cause
 is resolved, select **Request deletion again** and confirm. The API enforces

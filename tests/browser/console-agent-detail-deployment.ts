@@ -1,25 +1,43 @@
+import { openAdvancedSettings, waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import type { Route, Response as PlaywrightResponse } from "playwright";
 import type {
   CatalogEntry,
   PluginFieldCatalog,
   PluginFieldsOptions,
 } from "/console/agents/plugin-fields.mjs";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import type { SandboxNetworkGrant } from "../../packages/contracts/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { FakeSecretCoreV1Api } from "../helpers/kubernetes-secret-core.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
+import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-client.ts";
+import { credentialGatewayOverProviders } from "../integration/sandbox-driver-credential-fixture.ts";
+import {
+  buildSandboxInstallation,
+  loadSelectedOpenShellAgentInstallation,
+} from "../integration/sandbox-driver-installation-fixture.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  AGENT_READ,
+  deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
-  deploymentStatusResponse,
   detailUrl,
   draftActions,
   expectDeployHeld,
@@ -40,14 +58,16 @@ import {
   saveConfigurationUntilReady,
   settledView,
   storeRefusedConfiguration,
-  trackSettledFetches,
+  assertConfigurationValues,
   versionChooser,
   versionOption,
   waitForChosenVersion,
   waitForEnabled,
-  waitForIdleFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+} from "./console-agents-browser-helpers.ts";
+
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { refocusHeld } from "./console-refocus-helpers.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
@@ -55,29 +75,32 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  openAdvancedSettings,
   assertRevisionUrl,
   replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
+import {
+  invalidSecretProviderDefaultsRefusal,
+  unreadableGatewayPasswordRefusal,
+  unreadablePluginSecretRefusal,
+} from "../helpers/refusal-credential-diagnostics.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_EDITS_PENDING,
   READ_UNAVAILABLE,
   SAVED_CONFIGURATION_CHANGED,
   KUBERNETES_ALLOW_USERS_REFUSAL,
+  KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
   codexPluginRefusal,
-  configIncludeRefusal,
-  invalidSecretProviderDefaultsRefusal,
-  unreadableGatewayPasswordRefusal,
-  unreadablePluginSecretRefusal,
   pluginEntryKeyVariantRefusal,
   pluginPolicyListRefusal,
-  providerKeyVariantRefusal,
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
+import {
+  configIncludeRefusal,
+  providerKeyVariantRefusal,
+} from "../helpers/refusal-configuration-runtime.ts";
 import {
   OPENCLAW_SANDBOX_SETTINGS,
   openClawSandboxRefusal,
@@ -844,13 +867,15 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   await storeRefusedConfiguration(fixture, configurationDriver, agent, bare, reason);
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  await login(page, fixture, url);
   const rejected = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       response.url().endsWith(`/agents/${agent.id}/deploy`),
   );
-  await page.getByRole("button", { name: "Deploy new version" }).click();
+  await login(page, fixture, url);
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await waitForEnabled(deploy);
+  await deploy.click();
   assert.equal((await rejected).status(), 400);
   // The generic "check the entered values" text cannot tell the user which setting to fix.
   await page.getByText(reason, { exact: true }).waitFor();
@@ -1676,16 +1701,20 @@ test("A member without Agent create sends no Compute preflight for a plugin entr
   );
   const agent = await fixture.createAgent(namespace.id, "Entry key member", values);
   // The row as a release before the Kubernetes save rule stored it.
-  await configurationDriver.update({
-    ...configurationDriver.stored({ namespaceId: namespace.id, id: agent.configurationId }),
-    values: {
-      ...structuredClone(values),
-      plugins: {
-        ...values.plugins,
-        entries: { ...values.plugins.entries, "File-Transfer": { enabled: true } },
-      },
-    },
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
   });
+  assert.ok(stored, "Expected the stored Configuration");
+  const storedValues = {
+    ...structuredClone(values),
+    plugins: {
+      ...values.plugins,
+      entries: { ...values.plugins.entries, "File-Transfer": { enabled: true } },
+    },
+  };
+  assertConfigurationValues(storedValues);
+  await configurationDriver.update({ ...stored, values: storedValues });
   const member = await fixture.createNamespaceMember(
     "entry-key-member",
     namespace.id,
@@ -1787,6 +1816,95 @@ for (const viewport of [
       await card.getByText("Ready to deploy.", { exact: true }).waitFor();
       await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
       assert.equal(await card.getByText(reason, { exact: true }).count(), 0);
+      assert.deepEqual(
+        pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
+        [],
+      );
+    });
+  });
+}
+
+// A Dedicated Codex Gateway that applies its workspace node at runtime signs in with the generated
+// gateway password, and Kubernetes Compute refuses a Dedicated Codex row without one there
+// (finding 3132; the console fixture enables private status). A row an older release saved
+// without gateway.auth.password holds Deploy with deploy's refusal and the gateway password step,
+// through the same Compute preflight as the rows above, and following the step makes the draft
+// ready (finding 3138). An OpenClaw Agent without a password is left to deploy and sends no
+// preflight for it.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`A Dedicated Codex row without the gateway password holds Deploy at ${viewport.width}px`, async (t) => {
+    const withoutPassword = (values: { gateway: Record<string, unknown> }) => {
+      const copy = structuredClone(values);
+      const auth = { ...asObject(copy.gateway.auth) };
+      delete auth.password;
+      return { ...copy, gateway: { ...copy.gateway, auth } };
+    };
+    await t.test("Dedicated Codex", async (t) => {
+      const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+      const fixture = await createConsoleAppFixture(t, { configurationDriver });
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Codex gateway password", { ready: true });
+      const values = nativeValues("codex-gateway-password", { harnessId: "codex" });
+      const agent = await fixture.createAgent(namespace.id, "Codex gateway password", values, {
+        executionMode: "dedicated",
+      });
+      // The row as a release before the save rule stored it.
+      await storeRefusedConfiguration(
+        fixture,
+        configurationDriver,
+        agent,
+        withoutPassword(values),
+        KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+      );
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = draftActions(page);
+      await expectDeployHeld(
+        card,
+        KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL,
+        "Fix the gateway password · ",
+      );
+      // Deploy admission refuses the stored row with the text the page shows.
+      await expectDeployRefused(fixture, agent, KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL);
+
+      // The step, followed in the editor, saves and the draft is ready.
+      await saveConfigurationUntilReady(page, card, values);
+      await expectNoHorizontalScroll(page);
+    });
+
+    await t.test("OpenClaw Agent", async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("OpenClaw gateway password", {
+        ready: true,
+      });
+      // The native admin opt-in's trusted-proxy auth sets no gateway.auth.password.
+      const values = nativeAdminValues("openclaw-no-password", "http://127.0.0.1:18789");
+      assert.equal(asObject(values.gateway.auth).password, undefined);
+      const agent = await fixture.createAgent(namespace.id, "OpenClaw no password", values);
+
+      const { page } = await newPage(t, fixture, { context: { viewport } });
+      const requests = apiRequests(page, fixture.origin);
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      );
+      const card = draftActions(page);
+      await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+      await waitForEnabled(card.getByRole("button", { name: "Deploy new version", exact: true }));
+      assert.equal(
+        await card.getByText(KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL, { exact: true }).count(),
+        0,
+      );
       assert.deepEqual(
         pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`),
         [],
@@ -2064,13 +2182,19 @@ test("Agent detail preserves admitted revision history while draft edits change 
       once: true,
     },
   );
-  // The hint says what managed mode keeps, the tool allowlist included (finding 2690).
-  await page
-    .getByText(
-      "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.",
-      { exact: true },
-    )
-    .waitFor();
+  // The hint says what managed mode keeps, the tool allowlist included (finding 2690). It stays
+  // in view in the Gateway managed mode card and describes the button that turns the mode off.
+  const managedModeHint = page.getByText(
+    "Managed mode keeps the Gateway configuration, including its tool allowlist, as OCE deployed it, and blocks Gateway-local terminals and Gateway-hosted command jobs. With it off, Gateway administrators can change the configuration and widen the tool allowlist until a deployment with managed mode on restores it. Deploy a new version to apply a change.",
+    { exact: true },
+  );
+  await managedModeHint.waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Turn off managed mode for next deployment" })
+      .getAttribute("aria-describedby"),
+    await managedModeHint.getAttribute("id"),
+  );
   // An administrator gets the control, not the note for callers who cannot change it.
   assert.equal(
     await page
@@ -2270,33 +2394,124 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.equal(asObject(savedAgent.data).configurationId, reassigned.id);
 });
 
-test("Agent detail saves plugin changes for the next revision without changing admitted revisions", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+async function createNativeModelConsoleFixture(
+  t: TestContext,
+  name: string,
+  grants: readonly SandboxNetworkGrant[],
+) {
+  const installation = {
+    ...buildSandboxInstallation(),
+    sandboxNetworkPolicyCeiling: [...grants],
+    runtime: { nativeWorkerSupport: "custom-image" },
+  };
+  Reflect.deleteProperty(installation.drivers, "credential_gateway");
+  Reflect.deleteProperty(installation.backend[0]?.drivers ?? {}, "credential_gateway");
+  const core = new FakeSecretCoreV1Api();
+  const runtime = await loadSelectedOpenShellAgentInstallation(t, {
+    installation,
+    computeId: "console-native-compute",
+    tokenServiceId: "occ",
+    core,
+    gatewayClient: completeOpenShellGatewayClient(credentialGatewayOverProviders().client),
+  });
+  // Kubernetes API is controlled; the actual selected Drivers and admission route are used.
+  assert.ok(Reflect.set(runtime.secretDriver, "client", Promise.resolve(core)));
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: [],
+    ...installationControllerOptions(runtime.installation),
+    backends: runtime.installation.backend,
+    credentialSourceDelivery: credentialSourceDeliveryBinding(runtime),
+    namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
+    secretDriver: runtime.secretDriver,
+    wrapState(store: PlatformStateStore) {
+      state = store;
+      return store;
+    },
+  });
   await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const placed = core.addNamespace(namespace.id);
+  Object.assign(core.namespaces.get(placed)!, { apiVersion: "v1", kind: "Namespace" });
+  assert.ok(state);
+  fixture.controller.registerDriver(runtime.computeDriver);
+  fixture.controller.selectDriver("compute", runtime.computeDriver.id);
+  await installTokenServiceDriver(fixture.controller, runtime, state);
+  installSelectedSandboxDrivers(fixture.controller, runtime);
+  return { fixture, namespace, state };
+}
+
+test("Agent detail saves plugin changes for the next revision without changing admitted revisions", async (t) => {
+  const grant = {
+    id: "codex-plugin-model",
+    binary: OPEN_SHELL_CODEX_BINARIES[0],
+    host: "chatgpt.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const identityGrant = { ...grant, id: "codex-plugin-identity", host: "auth.openai.com" };
+  const grants = [grant, identityGrant];
+  const { fixture, namespace, state } = await createNativeModelConsoleFixture(
+    t,
+    "Plugin revision editing",
+    grants,
+  );
   const pluginDriver = new CodexPluginDriver();
   assert.ok(fixture.controller instanceof OpenClawController);
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const namespace = await fixture.createNamespace("Plugin revision editing", { ready: true });
+  const enrolled = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+    body: {
+      name: "Plugin revision PAT",
+      type: "static",
+      config: { provider_preset: "codex-pat" },
+      secret: "at-browser-plugin-revision",
+    },
+  });
+  assert.equal(enrolled.status, 201);
+  const sourceId = enrolled.data.id;
   const agent = await fixture.createAgent(
     namespace.id,
     "Plugin Revision Agent",
-    nativeValues("plugin-revision", { harnessId: "codex" }),
-    { executionMode: "dedicated" },
+    createHarnessConfiguration("codex", "fixture-model"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    },
   );
-  const tokenSecret = await fixture.createSecret(
-    namespace.id,
-    "Plugin Revision Service Accounts token",
-    "at-browser-plugin-revision",
+  fixture.policy.identities.push({
+    kind: "service_principal",
+    id: agent.servicePrincipalId,
+    namespaceId: namespace.id,
+    agentId: agent.id,
+  });
+  grantRole(fixture.policy, agent.servicePrincipalId, {
+    id: `plugin-revision-${randomUUID()}`,
+    namespaceId: namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: sourceId },
+  });
+  const networking = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+  assert.equal(
+    (await fixture.request("PATCH", `${networking}/editing`, { body: { enabled: true } })).status,
+    200,
   );
-  await fixture.grantAgentSecretOperate(agent, tokenSecret.ref);
+  const currentPolicy = await fixture.request("GET", networking);
+  assert.equal(currentPolicy.status, 200);
+  assert.equal(
+    (
+      await fixture.request("PUT", networking, {
+        body: { expectedVersion: currentPolicy.data.policy.version, additions: grants },
+      })
+    ).status,
+    200,
+  );
   const pluginId = "codex-plugin:linear@openai-curated-remote";
   const originalPlugins = {
     [pluginId]: { enabled: true, toolDefaults: { approval: "all_actions" } },
   };
   await fixture.updateAgent(namespace.id, agent.id, {
     configurationId: agent.configurationId,
-    harnessAuth: { method: "codex_pat", source: tokenSecret.ref },
     plugins: originalPlugins,
   });
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -2617,13 +2832,28 @@ test("Agent detail saves plugin changes for the next revision without changing a
   const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.deepEqual(asObject(saved.data).plugins, editedPlugins);
 
+  // A staged revision must complete Stop before it can be replaced. This fixture admits and
+  // simulates activation/retirement; Worker and Compute effects are covered independently.
+  const stop = await fixture.request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/stop`);
+  assert.equal(stop.status, 202);
+  const retired = await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, first.revision.id),
+  );
+  assert.equal(retired?.desiredRuntimeState, "stopped");
+  assert.equal(retired?.activeRevisionId, undefined);
   await page.reload();
   await page.getByRole("heading", { name: "Plugins", exact: true }).waitFor();
   assert.deepEqual(
     JSON.parse(await page.getByLabel("Plugin selections JSON").inputValue()),
     editedPlugins,
   );
+  const deploy = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}/deploy`) &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "Deploy new version" }).click();
+  assert.equal((await deploy).status(), 202);
   await page.waitForURL(
     (current) => current.searchParams.get("revision")?.startsWith("rev_") === true,
   );
@@ -2671,7 +2901,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
 // since page load takes the same path; this case covers Stop.
 test("Plugin save keeps a Stop requested on the same page", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Plugin save after stop");
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   assert.ok(fixture.controller instanceof OpenClawController);
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
@@ -2701,7 +2931,7 @@ test("Plugin save keeps a Stop requested on the same page", async (t) => {
   await repeat.waitFor();
 
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  const plugins = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
+  const plugins = { "occ-plugin:diffs": { enabled: false } };
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   await page.getByLabel("Plugin selections JSON", { exact: true }).fill(JSON.stringify(plugins));
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
@@ -2871,7 +3101,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
     .getByText(
-      "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      "Hosted plugin browsing requires a TokenService account Source. Sign in with ChatGPT or re-enroll a service account token as a Source.",
     )
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
@@ -3062,7 +3292,7 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
       `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/plugins/capabilities`,
   );
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  assert.equal((await capabilities).status(), 200);
+  assert.equal((await capabilities).status(), 501);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
@@ -3072,4 +3302,153 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
   );
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
+});
+
+// Real Console, HTTP, IAM, and Compute admission; runtime observations use the existing wire
+// fixture. This proves submission and refusal/recovery, not a model turn or live cluster.
+test("Harness controls submit the latest request directly and recover from destination refusal", async (t) => {
+  const grant = {
+    id: "codex-inference",
+    binary: OPEN_SHELL_CODEX_BINARIES[0],
+    host: "api.openai.com",
+    ports: [{ from: 443, to: 443 }],
+  };
+  const { fixture, namespace } = await createNativeModelConsoleFixture(t, "Native model route", [
+    grant,
+  ]);
+  const base = `/namespaces/${namespace.id}`;
+  const source = await fixture.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "OpenAI",
+      type: "static",
+      config: { provider_preset: "openai" },
+      secret: randomUUID(),
+    },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const config = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("codex", "fixture-model"),
+  );
+  const draft = await fixture.request("POST", `${base}/agents`, {
+    body: {
+      name: "Native Codex",
+      executionMode: "dedicated",
+      configurationId: config.id,
+      harnessAuth: { method: "credential_source", sourceId: source.data.id },
+      credentialSources: [{ sourceId: source.data.id }],
+    },
+  });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const agent = draft.data;
+  const role = await fixture.request("POST", `${base}/iam/roles`, {
+    body: {
+      name: "Use model Source",
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    },
+  });
+  assert.equal(role.status, 201, JSON.stringify(role.body));
+  const granted = await fixture.request("POST", `${base}/iam/access-bindings`, {
+    body: {
+      subjectKind: "identity",
+      subjectId: agent.servicePrincipalId,
+      roleId: role.data.id,
+      resourceKind: "credential_source",
+      resourceId: source.data.id,
+    },
+  });
+  assert.equal(granted.status, 201, JSON.stringify(granted.body));
+  const modelProvider = { baseUrl: "https://api.openai.com/v1" };
+  const { page } = await newPage(t, fixture);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const networking = path + "/sandbox-policy/networking";
+  const editing = await fixture.request("PATCH", networking + "/editing", {
+    body: { enabled: true },
+  });
+  assert.equal(editing.status, 200, JSON.stringify(editing.body));
+  const policy = await fixture.request("GET", networking);
+  assert.equal(policy.status, 200, JSON.stringify(policy.body));
+  const saved = await fixture.request("PUT", networking, {
+    body: { expectedVersion: policy.data.policy.version, additions: [grant] },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByText("Use the Installation default at deployment.", { exact: true }).waitFor();
+  await page.locator(".agent-harness-settings summary").click();
+  await page.getByLabel("Harness settings", { exact: true }).selectOption("custom");
+  const input = page.getByLabel("Provider base URL", { exact: true });
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await input.fill("https://unapproved.example.com/v1");
+  await waitForEnabled(deploy);
+  const refused = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url() === fixture.origin + path + "/deploy",
+  );
+  await deploy.click();
+  const refusal = await refused;
+  assert.equal(refusal.status(), 409, await refusal.text());
+  await page.getByRole("alert").filter({ hasText: "approved source preset" }).waitFor();
+  assert.equal((await fixture.request("GET", path + "/revisions")).data.length, 0);
+
+  // Editing the URL changes the actual submitted value without another preparatory operation.
+  await input.fill(modelProvider.baseUrl);
+  await page
+    .getByText(`Requested destination: ${modelProvider.baseUrl}`, { exact: true })
+    .waitFor();
+  await waitForEnabled(deploy);
+  const accepted = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url() === fixture.origin + path + "/deploy",
+  );
+  await deploy.click();
+  const response = await accepted;
+  assert.equal(response.status(), 202, await response.text());
+  assert.equal(
+    response.request().postDataJSON().harnessOverrides.modelProvider.baseUrl,
+    modelProvider.baseUrl,
+  );
+  const revision = (await response.json()).data;
+  assert.equal(revision.harness.overrides.modelProvider.baseUrl, modelProvider.baseUrl);
+  assert.equal(revision.harness.configuration.modelProvider.baseUrl, modelProvider.baseUrl);
+  await page.getByText("Resolved Harness settings", { exact: true }).waitFor();
+  assert.equal(pathRequests(requests, "POST", path + "/deploy").length, 2);
+
+  // Keep the summary short without losing any admitted fields when opened by keyboard.
+  const overrides = page.getByText("View overrides (modelProvider)", { exact: true });
+  assert.equal(await overrides.isVisible(), true);
+  const resolved = page.getByText("View settings (modelProvider)", { exact: true });
+  const json = page.locator(".configuration-summary pre:visible");
+  assert.equal(await json.count(), 0);
+  await overrides.press("Enter");
+  assert.equal(await json.innerText(), JSON.stringify(revision.harness.overrides, null, 2));
+  await overrides.press("Space");
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(resolved), true);
+  await page.keyboard.press("Enter");
+  await refocusHeld(t, page);
+  assert.equal(await json.innerText(), JSON.stringify(revision.harness.configuration, null, 2));
+
+  // Without an override, a version reader can still inspect the resolved destination.
+  const defaults = await fixture.deployAgent(namespace.id, agent.id);
+  assert.deepEqual(defaults.harness.overrides, {});
+  const reader = await fixture.createNamespaceMember("harness-reader", namespace.id, AGENT_READ);
+  const { page: phone } = await newPage(t, fixture, {
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(
+    phone,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, defaults.id),
+    reader.credentials,
+  );
+  const empty = phone.locator("dt:has-text('Requested Harness overrides') + dd");
+  assert.equal(await empty.innerText(), "None");
+  await phone.getByText("View settings (modelProvider)", { exact: true }).click();
+  const settings = phone.locator(".configuration-summary pre:visible");
+  assert.equal(await settings.innerText(), JSON.stringify(defaults.harness.configuration, null, 2));
+  assert.equal(await settings.evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  await expectNoHorizontalScroll(phone);
 });

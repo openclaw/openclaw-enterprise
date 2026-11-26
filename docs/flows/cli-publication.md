@@ -1,35 +1,33 @@
 ---
 created: 2026-09-28
-updated: 2026-10-24
-last_updated_session: merge-readiness-20261025T022847Z
+updated: "2026-11-24"
+last_updated_session: "authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371"
 ---
 
 # OCC CLI publication flow
 
 ## Overview
 
-The manual CLI release workflow builds versioned `occ` binaries for macOS and
-Linux, verifies their platform and checksum identities, and publishes the exact
-assets in a GitHub Release. The flow ends when the release is published. It does
-not install OCC or publish the Helm chart and container images.
+The standalone **Release OCC CLI** workflow and [Release OCE](release-oce.md)
+call the same jobs to build and verify four versioned OCC binaries. These jobs
+publish those bytes and a checksum file to GitHub Releases.
 
 ## Entry Points
 
 - `.github/workflows/cli-release.yml:jobs.prepare`: manual dispatch on `main`
   with the exact workflow source SHA and successful main-push CI run ID.
-- `scripts/ci/cli-release.mjs:validate`: trusted source and CI gate.
-- `scripts/ci/cli-release.mjs:packageCli` and `publish`: cross-platform build,
-  protected tag, and release publication.
+- `.github/workflows/cli-release-prepare.yml:jobs.prepare` builds the artifacts.
+  `.github/workflows/cli-release-publish.yml:jobs.publish` publishes them.
 
 ## Flow
 
 ```mermaid
 graph TD
-  A["Select main source and successful CI"] --> B["Validate source, CI and OCE version"]
+  A["Select source on main"] --> B["Validate source and OCE version"]
   B --> C["Build four versioned Go binaries"]
   C --> D["Check platform metadata, native command and SHA-256"]
   D --> E["Retain exact assets in the workflow run"]
-  E --> F["Revalidate source, CI and protected environment"]
+  E --> F["Revalidate release evidence and protected environment"]
   F --> G["Create or verify source tag and draft release"]
   G --> H["Upload missing assets and compare downloads"]
   H --> I["Publish the verified draft"]
@@ -39,16 +37,15 @@ graph TD
 
 ### 1. Bind the source to a tested OCE version
 
-`scripts/ci/cli-release.mjs:validate` requires a manual dispatch from this
-repository's `main`, a full source SHA matching the selected workflow source commit,
-and a successful `CI Required` job from the exact main-push CI run. The root
-package version and chart `version` and `appVersion` must agree. These checks do
-not prove that the chart or images have been published; the operator coordinates
-those separate releases from the same source.
+`scripts/ci/cli-release.ts:validate` checks the root package version against the
+chart `version` and `appVersion`. The standalone workflow requires a successful
+push CI run and `CI Required` for its own workflow commit on `main`. Release OCE
+builds the CLI from its reviewed source commit and requires the approved full
+suite for that source before publication.
 
 ### 2. Prepare the binaries before write access
 
-`scripts/ci/cli-release.mjs:packageCli` resolves its output directory to an absolute
+`scripts/ci/cli-release.ts:packageCli` resolves its output directory to an absolute
 path, including when the caller supplies `.`. Native verification executes that
 file without searching `PATH`. It builds with `CGO_ENABLED=0` for Darwin
 and Linux on amd64 and arm64 using pinned Go 1.27.3. The build embeds
@@ -57,31 +54,32 @@ runs `--version` and `--help` on the runner-native
 binary, and writes `SHA256SUMS`. The prepare job has read-only repository
 permission and retains its output as one workflow artifact. The publication
 job consumes that artifact without rebuilding it.
-The prepare job passes its artifact name to the publication job, so a
-failed-job rerun can use the original build artifact.
+The prepare job records the artifact name and the SHA-256 of `SHA256SUMS`.
+The publisher uses the checksum file to verify each original binary. A
+standalone failed-job rerun can use the retained build artifact.
 
 ### 3. Publish only the verified bytes
 
-`scripts/ci/cli-release.mjs:publish` rechecks source, CI, the protected
+`scripts/ci/cli-release.ts:publish` rechecks the release source, the protected
 `container-publish` environment, and each local checksum. It creates a
 lightweight version tag only when none exists; a matching tag is required on a
 retry. It finds an existing draft through the authenticated release list,
 creates one if absent, and uploads only missing assets,
 downloads every asset, and compares each byte with the prepared artifact before
-publishing the draft. An existing published release is not modified. A partial
-failure leaves a draft and tag for inspection and a matching retry.
+publishing the draft. Release OCE verifies all five public downloads without
+credentials before the image aliases can move. A recovery can continue from an
+already published release only when the source and bytes match.
+A failed run can leave a tag without a release, a tag with a draft, or an
+already published release.
 
 This assumes trusted release administrators do not change the tag or draft
 during publication. The workflow concurrency group serializes participating
 jobs but cannot exclude independent GitHub writers. A competing write between
-the asset checks and draft publication could invalidate their binding. The
-published release is
-the user-facing artifact; the separate chart and image receipt owns deployment
-provenance.
+the asset checks and draft publication could invalidate their binding. Users download binaries from the published release.
 
 ## Debugging and Verification
 
-- Run `node --test tests/integration/cli-release.test.mjs` with a writable Go
+- Run `node --test tests/integration/cli-release.test.ts` with a writable Go
   cache to build all four binaries, run the native command, and reject a changed
   binary. The retry uses current-directory output in a disposable source fixture.
   This does not publish to GitHub.
@@ -89,8 +87,8 @@ provenance.
   release assets, and `SHA256SUMS`. A draft means publication stopped before the
   user-facing release became available.
 - A tag pointing to another source, changed existing asset, or already
-  published release stops a retry. Inspect the registry state before dispatching
-  again; do not move an established release tag.
+  published standalone release stops a standalone retry. Before retrying, check the tag target and the
+  authenticated GitHub release list. Do not move an established release tag.
 
 ## Related docs
 
@@ -104,6 +102,11 @@ provenance.
 
 ## Changelog
 
+- 2026-11-24 13:12: Distinguish CLI source qualification for standalone and combined releases. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 165ced7e4797491e18768dafac4a76b369a025cb)
+
+- 2026-11-24 11:32: Trace shared CLI jobs and public asset verification. (authoring-run/90c31b49-3d89-43f7-922e-ba48b6f34371 - 6908216b29038bd850b44f084b07ba7f886614d5)
+
+- 2026-11-22 23:03: Corrected CLI publication failure states and retry checks (authoring-run/167f564b-fc8b-423a-bc84-6424a8db549d - 428f5fedbb16ec1be835dee171fc6b0b824af9b3)
 - 2026-10-24 21:35: Retained current-directory packaging and Go 1.27.3 during the main-branch sync (merge-readiness-20261025T022847Z - c27fb27edfa1fdcb3417494f2bac8814d0631a63)
 - 2026-10-24 13:47: Documented absolute packaging paths and current-directory retry verification (authoring-run/13963312-37cc-41b3-9ddb-00da20e78c92 - 7f39fb17418ed8653f1dfb71b0204a65f636aa7e)
 - 2026-10-23 15:28: Require Go 1.27.3 for the existing clean-source CLI packaging gate (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)

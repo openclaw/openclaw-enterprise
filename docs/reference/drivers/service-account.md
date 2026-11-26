@@ -27,20 +27,18 @@ three methods; none is optional once a Driver is selected.
 | Method                      | Contract                                                                                                               |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `create(account)`           | Provision the upstream account for the approved OCC ServiceAccount. Does not issue a credential.                       |
-| `createCredential(account)` | Issue a credential for that account and return its kind and a safe Secret reference.                                   |
+| `createCredential(account)` | Issue a credential for that account and return the exact TokenService Source ID.                                       |
 | `delete(account)`           | Revoke and remove provider resources owned by that account; do not delete a different account on an identity mismatch. |
 
-A returned credential contains `kind` and `secretRef: { name, key }`, never the
-credential value. The type includes `api_key`, `access_token`, and
-`oauth_access_token`, but OCC's provider-issuance operation currently accepts
-only `access_token`. The type does not promise a provider or Harness supports
-every kind.
+A managed credential returns `{ kind: "access_token", sourceId }`. The
+issuer key and bearer stay private. Native account references can still use
+`api_key` and `oauth_access_token` metadata.
 
 ## IAM
 
 OCC separately authorizes `create` on the Namespace's ServiceAccount collection,
-`update` on the specific account for credential issuance, and `delete` on the
-specific account. It checks permission before upstream or storage effects.
+`update` on the exact account and Source `create` in its Namespace for
+issuance, and `delete` on the exact account. It checks permission before upstream or storage effects.
 Provider credentials do not grant OCC access; provider account and credential IDs
 and workspace bindings remain private. Public responses cannot contain credential
 values. See the [resource permissions](../service-accounts.md#account-ownership-and-authorization).
@@ -68,20 +66,19 @@ leaves the token unrevoked. See the [credential delivery flow](../../flows/servi
 - The shared interface has no account update, credential refresh or rotation, or
   standalone credential deletion. An expired or revoked managed credential does
   not silently fall back to an operator API key.
-- Current Harness bindings accept managed ChatGPT `access_token` credentials only
-  for dedicated Codex. API keys use Namespace-owned OCC Secrets through
+- Dedicated Codex uses the issued static Source through
   [Agent Harness authentication](../agents.md#harness-authentication).
 - Callers cannot select upstream account identifiers or install an arbitrary
   Driver through the `package` selector.
 
 ## Troubleshooting
 
-| Symptom                                         | What to check                                                                                                                                              |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                             |
-| Credential issuance fails                       | Check the selected Backend/Driver pair, the private account binding, provider authority, Secret storage, and whether the account already has a credential. |
-| Deletion is rejected                            | Remove or update any Agent draft, selected version, or pending deployment reference through OCC, or let provisioning finish, before retrying.              |
-| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                        |
+| Symptom                                         | What to check                                                                                                                                                     |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Account creation succeeds but has no credential | Creation and issuance are separate. Request issuance with `update` permission on that account.                                                                    |
+| Credential issuance fails                       | Check the selected Backend/Driver pair, the private account binding, provider authority, selected TokenService, and whether the account already has a credential. |
+| Deletion is rejected                            | Remove or update any Agent draft, selected version, or pending deployment reference through OCC, or let provisioning finish, before retrying.                     |
+| A managed credential is expired or revoked      | Restore access through the supported provider/account workflow. Do not substitute a different identity or assume automatic renewal.                               |
 
 ## Implementations
 
@@ -89,29 +86,19 @@ leaves the token unrevoked. See the [credential delivery flow](../../flows/servi
 
 The [ChatGPT Driver](../../../apps/controller/src/drivers/service-account/chatgpt.ts)
 requires a matching `type: chatgpt` Backend and an empty Driver configuration.
-It stores the private Namespace binding in PostgreSQL and asks selected Compute
-credential storage to write the token and workspace identity to an account-owned
-Secret. Issuance and deletion recheck Backend, Driver, and workspace ownership.
-A missing binding makes provider deletion a no-op; conflicting ownership fails.
-Backend and Secret creation register compensation with OCC; a create whose
-reply is lost is not compensated, since nothing proves which account it made.
-A credential reply that fails validation revokes the credential it names under
-the requested account in this workspace. A Secret create that fails removes the
-Secret it may have stored, only when that Secret holds this request's token.
-A later failure's compensation runs after the account lock is released, when
-another issuance may already hold the same Secret name, so it also deletes the
-Secret only while it holds this request's token, with uid and resourceVersion
-preconditions.
-The Secret also records the provider credential ID. A crash or an unknown
-COMMIT that failed runs no compensation, so under the account lock, with no
-credential recorded, issuance and deletion first revoke the credential a
-leftover Secret records and delete that Secret.
-Deletion revokes the credential, removes its Secret, and deletes the upstream
-account; each step treats an already-absent resource as done, so a retry
-completes a deletion that applied but failed. See
+It stores the private Namespace binding in PostgreSQL. Issuance and deletion
+recheck Backend, Driver and workspace ownership. The issuer hands the new PAT
+to the selected TokenService in-process. TokenService inserts the ready static
+Source, and the Driver returns its exact ID. OCC grants the creator Source
+access and saves the account issuance. On a confirmed failure before finalization,
+the Driver revokes the exact provider credential and removes unfinished Source
+custody if enrollment succeeded.
+
+Deletion revokes the issuer credential and deletes the upstream account.
+The Source follows its own access checks and retirement. See
 [Backend configuration](../backends.md) and [service accounts](../service-accounts.md).
 
 ## Related
 
 - [ServiceAccount resource](../service-accounts.md), [settings](../settings.md), and [deployment](../../guides/deploy.md)
-- [OCC account operations](../../../packages/occ/src/index.ts)
+- [OCC account operations](../../../packages/occ/src/service-account-operations.ts)

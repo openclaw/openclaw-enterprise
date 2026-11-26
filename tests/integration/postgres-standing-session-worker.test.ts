@@ -1,11 +1,13 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import { fileURLToPath } from "node:url";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
+import { waitFor } from "../helpers/wait-for.ts";
 import {
-  observationGateway,
   setupStandingWorkerAuthority,
   setupStandingWorkerDatabase,
 } from "../helpers/postgres-standing-worker-fixture.ts";
@@ -20,7 +22,6 @@ type StandingAuthority = Awaited<ReturnType<typeof setupStandingWorkerAuthority>
 
 function standingDrivers({ driver, sender }: Pick<StandingAuthority, "driver" | "sender">) {
   return (d: { installation: { drivers: object } }) => {
-    const gateway = observationGateway();
     const sandbox = {
       id: "sandbox-worker-fixture",
       capability: "sandbox" as const,
@@ -33,14 +34,12 @@ function standingDrivers({ driver, sender }: Pick<StandingAuthority, "driver" | 
       ...d,
       repositoryPolicy: driver,
       nativeRepositorySender: sender,
-      credentialGatewayDriver: gateway,
       sandboxDriver: sandbox,
       installation: {
         ...d.installation,
         drivers: {
           ...d.installation.drivers,
           sandbox: { id: sandbox.id, configuration: {} },
-          credential_gateway: { id: gateway.id, configuration: {} },
         },
       },
     };
@@ -50,13 +49,19 @@ function standingDrivers({ driver, sender }: Pick<StandingAuthority, "driver" | 
 // Real queue, worker, State and prepared native sender; Compute is a controlled
 // observation adapter. This does not prove an OpenShell process or actual chat.
 test(
-  "standing maintenance supervises missing Git evidence across restart and still withdraws model authority",
+  "standing maintenance supervises missing Git evidence across restart",
   { ...requiresPostgres, timeout: 240_000 },
   async (t) => {
     const f = await setupStandingWorkerDatabase(t, import.meta.url);
     try {
-      const { credentials, driver, sender, owner, modelSourceId, revision, execution } =
-        await setupStandingWorkerAuthority(t, f);
+      const plugin = new OCCPluginDriver();
+      const { credentials, driver, sender, owner, revision, execution } =
+        await setupStandingWorkerAuthority(t, f, {
+          plugins: {
+            driver: { id: plugin.id, implementation: plugin.implementation },
+            plugins: { "occ-plugin:diffs": { enabled: true } },
+          },
+        });
       type Delivered = Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>;
       const deliveries: Delivered[] = [];
       type WorkerEvent = {
@@ -74,7 +79,6 @@ test(
       let prepares = 0;
       let activations = 0;
       let observations = 0;
-      let modelWithdrawals = 0;
       let harness: SandboxHarnessObservation = { state: "running" };
       const compute = {
         ...f.compute,
@@ -107,15 +111,6 @@ test(
         async activateRevision() {
           activations++;
         },
-        async withdrawCredentialSource(
-          r: Parameters<ComputeDriver["prepareRevision"]>[0],
-          source: { id: string },
-        ) {
-          assert.equal(r.id, revision.id);
-          assert.equal(source.id, modelSourceId);
-          modelWithdrawals++;
-          return { sourceId: source.id, state: "revoked" as const };
-        },
         async retireExpiredRepositoryAccess(r: Parameters<ComputeDriver["prepareRevision"]>[0]) {
           assert.equal(r.id, revision.id);
           assert.equal(created, true);
@@ -131,14 +126,17 @@ test(
           created = false;
         },
       };
-      const start = () =>
+      const start = (pluginInstalled = true) =>
         f.start(compute, {
           emit: (e?: WorkerEvent) => {
             if (e) {
               events.push(e);
             }
           },
-          transformDrivers: standingDrivers({ driver, sender }),
+          transformDrivers: (drivers: { installation: { drivers: object } }) => ({
+            ...standingDrivers({ driver, sender })(drivers),
+            pluginDrivers: pluginInstalled ? [plugin] : [],
+          }),
         });
       await start();
       await f.work(revision, "succeeded");
@@ -155,7 +153,6 @@ test(
         15_000,
       );
       const provider = credentials.repositories[0]!.github;
-      assert.ok(modelSourceId);
       // The first observation can precede completion of the claim that schedules maintenance.
       await waitFor("active maintenance established", async () =>
         events.find((e) => e.revisionId === revision.id && e.code === "REVISION_ALREADY_ACTIVE"),
@@ -175,9 +172,10 @@ test(
         harness = { state, ...{ diagnostic: "driver-only-observation-data" } };
         events.length = 0;
         // Only advance queue due time. Keep the real approval, session, execution and
-        // model source unchanged; restart creates a fresh worker and database pool.
+        // approved scope unchanged; restart creates a fresh worker and database pool.
         await f.advanceMaintenance(revision);
-        await start();
+        // The second restart also drops the admitted plugin. It must still supervise Git.
+        await start(state === "running");
         await waitFor("pending Git evidence observation", async () =>
           events.find(
             (e) => e.revisionId === revision.id && e.code === "REPOSITORY_EXECUTION_UNVERIFIED",
@@ -208,28 +206,6 @@ test(
       await f.stop();
       assert.ok(prepares > before.prepares);
       assert.equal(executionCreates, 1);
-      evidenceMissing = true;
-      const recoveredPrepares = prepares;
-      const recoveredActivations = activations;
-      // The normal API records model withdrawal while Git evidence is missing. The next
-      // worker must deliver that withdrawal, never prepare the Agent to observe it.
-      await f.controller.withdrawAgentCredentialSource(f.actor.id, {
-        namespaceId: f.namespace.id,
-        agentId: owner.id,
-        credentialSourceId: modelSourceId,
-      });
-      await f.advanceMaintenance(revision);
-      await start();
-      await waitFor("model withdrawal acknowledged", async () => {
-        const row = await f.state.read((v) =>
-          v.credentialSources.findCredentialWithdrawal(f.namespace.id, revision.id, modelSourceId),
-        );
-        return row?.state === "revoked" ? row : undefined;
-      });
-      await f.stop();
-      assert.ok(modelWithdrawals > 0);
-      assert.equal(prepares, recoveredPrepares);
-      assert.equal(activations, recoveredActivations);
       assert.equal(provider.issuesOfTokens.length, 0);
     } catch (error) {
       t.diagnostic("registered standing session proof stopped before all assertions completed");
@@ -362,5 +338,87 @@ test(
       deliveredBefore,
       "withdrawn eligibility cannot deliver more authority",
     );
+  },
+);
+
+// Provisioning copies the admission descriptor before worker.started; reconciliation
+// must retain the same bound owner even when the caller later replaces its policy.
+test(
+  "bound worker reconciliation retains the original repository admission policy",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    const f = await setupStandingWorkerDatabase(t, import.meta.url);
+    const { credentials, driver, sender, owner, revision, execution } =
+      await setupStandingWorkerAuthority(t, f);
+    const resolveBindings = driver.resolveBindings.bind(driver);
+    const original = t.mock.method(driver, "resolveBindings", resolveBindings);
+    const legacy = t.mock.method(driver, "resolve", () => {
+      throw new Error("Bound reconciliation must not use legacy resolve");
+    });
+    const replacement = new GitHubRepositoryPolicy(
+      { driverId: driver.id, backendId: credentials.backendId },
+      credentials.registry,
+      { sessionDurationSeconds: 90 },
+    );
+    const replaced = t.mock.method(replacement, "resolveBindings", resolveBindings);
+    const admission = { policy: driver, backendId: credentials.backendId };
+    const backend = {
+      id: credentials.backendId,
+      type: "github" as const,
+      drivers: { repo: driver.id },
+      configuration: {
+        registryPath: fileURLToPath(
+          new URL("../../deploy/examples/repository-credentials/registry.json", import.meta.url),
+        ),
+      },
+    };
+    const compute = {
+      ...f.compute,
+      validateRepositoryCredentials() {},
+      async verifyRepositoryExecution() {
+        return execution;
+      },
+      async observeRevision() {
+        return { state: "running" as const };
+      },
+      async activateRevision() {},
+    };
+    await f.start(compute, {
+      emit(event: { event?: string }) {
+        if (event.event === "worker.started") {
+          // Change only the caller's envelope, not the selected Driver or its methods.
+          admission.policy = replacement;
+        }
+      },
+      transformDrivers(drivers: { installation: { drivers: object } }) {
+        const configured = standingDrivers({ driver, sender })(drivers);
+        return {
+          ...configured,
+          repositoryAdmission: admission,
+          installation: {
+            ...configured.installation,
+            backend: [backend],
+            drivers: {
+              ...configured.installation.drivers,
+              repo: {
+                id: driver.id,
+                implementation: driver.implementation,
+                configuration: { sessionDurationSeconds: 90 },
+              },
+            },
+          },
+        };
+      },
+    });
+    try {
+      await f.work(revision, "succeeded");
+      assert.equal(admission.policy, replacement);
+      assert.equal(replaced.mock.callCount(), 0, "reconciliation must not reread caller policy");
+      assert.equal(legacy.mock.callCount(), 0);
+      assert.ok(original.mock.callCount() > 0, "the original bound resolver must run");
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+    } finally {
+      await f.stop();
+    }
   },
 );

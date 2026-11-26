@@ -3,7 +3,7 @@ import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   type GitHubRepositoryRegistry,
-} from "../../drivers/repo/github/credentials/registry.ts";
+} from "../../drivers/repo/github/access/registry.ts";
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 
 export type RepositoryPolicyInput<Configuration = Readonly<Record<string, unknown>>> = {
@@ -31,14 +31,21 @@ export function repositoryPolicyOwner(input: RepositoryPolicyInput) {
 
 export async function loadRepositoryPolicy(
   input: RepositoryPolicyInput<Readonly<{ sessionDurationSeconds: number }>>,
+  options: { readonly allowNameOnlyNativeRepositories?: boolean } = {},
 ) {
   const repositoryOwner = repositoryPolicyOwner(input);
   const { sessionDurationSeconds } = input.selection.configuration;
   const registry = await loadGitHubRepositoryRegistry(
     input.backend.configuration.registryPath,
     input.backend.id,
+    options,
   );
-  const policy = composeRepositoryPolicy(repositoryOwner, registry, sessionDurationSeconds);
+  const policy = composeRepositoryPolicy(
+    repositoryOwner,
+    registry,
+    sessionDurationSeconds,
+    options,
+  );
   return Object.freeze({
     ...policy,
     resolveRepositoryDelivery: createGitHubRepositoryDeliveryResolver(registry),
@@ -50,9 +57,11 @@ export function composeRepositoryPolicy(
   repositoryOwner: ReturnType<typeof repositoryPolicyOwner>,
   registry: GitHubRepositoryRegistry,
   sessionDurationSeconds: number,
+  options: { readonly allowNameOnlyNativeRepositories?: boolean } = {},
 ) {
   const repositoryPolicy = new GitHubRepositoryPolicy(repositoryOwner, registry, {
     sessionDurationSeconds,
+    ...options,
   });
   return Object.freeze({
     repositoryRegistry: registry,

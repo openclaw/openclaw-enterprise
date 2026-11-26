@@ -5,12 +5,11 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -220,10 +219,6 @@ test(
         .getProviderCredential(workspace, provider, key, signal),
       { value: current, expirationTime: `${expiry.toISOString().slice(0, 19)}.000000000Z` },
     );
-    const driver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend },
-    );
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({
       id: "openshell-ip",
@@ -236,37 +231,25 @@ test(
       },
     });
     t.after(() => ipBackend.client.close());
-    const ipDriver = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/codex"] },
-      { backend: ipBackend },
-    );
-    const context = {
-      signal,
-      namespace: { id: "namespace", name: workspace },
-      source: { id: sourceId, namespaceId: "namespace", driverId: driver.id, type: "codex-oauth" },
-    };
+    const readCredential = (operationSignal = signal) =>
+      backend.client
+        .credentialClientForNamespace(workspace)
+        .getProviderCredential(workspace, provider, key, operationSignal);
     assert.equal(
-      await ipDriver.withSourceToken(context, async ({ accessToken }) => accessToken),
+      (
+        await ipBackend.client
+          .credentialClientForNamespace(workspace)
+          .getProviderCredential(workspace, provider, key, signal)
+      ).value,
       current,
     );
-    const seen = [];
-    const consume = async (token) => {
-      seen.push(token);
-      return "catalog-result";
-    };
-    assert.equal(await driver.withSourceToken(context, consume), "catalog-result");
-    // The fake server represents an already-published replacement. This proves a fresh RPC read,
-    // not OAuth rotation; the separate real-gateway test proves refresh and committed storage.
+    assert.equal((await readCredential()).value, "synthetic-access-first");
+    // The fixture models an already-published replacement. A fresh RPC reads that value.
     current = "synthetic-access-replacement";
-    await driver.withSourceToken(context, consume);
-    assert.deepEqual(
-      seen.map(({ accessToken }) => accessToken),
-      ["synthetic-access-first", "synthetic-access-replacement"],
-    );
-    assert.equal(seen[1].accountId, "account-fixture");
+    assert.equal((await readCredential()).value, current);
     assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
     denyRead = true;
-    await assert.rejects(driver.withSourceToken(context, consume), (error) => {
+    await assert.rejects(readCredential(), (error) => {
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
       assert.match(error.message, /GetProviderCredentials failed/);
       assert.equal(error.message.includes("synthetic-private-provider-error"), false);
@@ -291,9 +274,8 @@ test(
       [{ [key]: { value: current, expiration_time: { seconds: "1" } } }, /expired/],
     ]) {
       readResponse = credentials;
-      await assert.rejects(driver.withSourceToken(context, consume), error);
+      await assert.rejects(readCredential(), error);
     }
-    assert.equal(seen.length, 2, "denied and unusable values never reach plugin discovery");
     readResponse = { [key]: { value: current } };
     const exported = await backend.client
       .credentialClientForNamespace(workspace)
@@ -308,12 +290,11 @@ test(
     pendingRead = true;
     const abort = new AbortController();
     const reason = new Error("credential discovery cancelled");
-    const pending = driver.withSourceToken({ ...context, signal: abort.signal }, consume);
+    const pending = readCredential(abort.signal);
     const rejection = assert.rejects(pending, (error) => error === reason);
     await received.promise;
     abort.abort(reason);
     await Promise.all([rejection, cancelled.promise]);
-    assert.equal(seen.length, 2, "cancelled exports never reach plugin discovery");
   },
 );
 

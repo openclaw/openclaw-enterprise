@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,15 +10,15 @@ import { NativeIAMDriver, createAuthPrincipalSeed } from "../../packages/iam/src
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
-import { createDevelopmentIAMState } from "./development-iam-state.mjs";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { stopProcess } from "./stop-process.mjs";
-import { waitFor } from "./wait-for.mjs";
+import { waitFor } from "./wait-for.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { reservedPortArgs } from "./available-port.mjs";
+import { reservedPortArgs } from "./available-port.ts";
 import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
@@ -33,6 +33,7 @@ export const serviceAccountDriverId = "chatgpt-service-accounts";
 export const workspaceId = "11111111-1111-4111-8111-111111111111";
 export const alternateWorkspaceId = "22222222-2222-4222-8222-222222222222";
 export const apiKeyPath = "/etc/openclaw/chatgpt/admin-key";
+/** @returns {import("../../packages/contracts/src/index.ts").ChatGPTBackendDefinition} */
 export function backendDefinition(options = {}) {
   return {
     id: backendId,
@@ -46,33 +47,6 @@ export function backendDefinition(options = {}) {
     },
     drivers: { service_account: options.serviceAccountDriverId ?? serviceAccountDriverId },
   };
-}
-
-export function authorizedPrincipal(iam, required = [["deploy", "agent"]]) {
-  const roles = new Set(
-    iam.roles
-      .filter(({ permissions }) =>
-        required.every(([action, resourceKind]) =>
-          permissions.some(
-            (permission) =>
-              permission.action === action && permission.resourceKind === resourceKind,
-          ),
-        ),
-      )
-      .map(({ id }) => id),
-  );
-  return iam.identities.find(
-    ({ id, kind }) =>
-      kind === "principal" &&
-      iam.bindings.some(
-        (binding) =>
-          binding.subjectKind === "identity" &&
-          binding.subjectId === id &&
-          binding.namespaceId === undefined &&
-          binding.resourceKind === undefined &&
-          roles.has(binding.roleId),
-      ),
-  );
 }
 
 export async function ensureInstallation(state, label) {
@@ -169,24 +143,6 @@ function trackNamespaces(context, pool, close) {
   };
 }
 
-export async function createAccessTokenServiceAccount(state, namespaceId, label) {
-  const id = `sa_${randomUUID()}`;
-  return state.transact((unit) =>
-    unit.serviceAccounts.createServiceAccount({
-      id,
-      namespaceId,
-      name: `${label}-${randomUUID()}`,
-      credential: {
-        kind: "access_token",
-        secretRef: {
-          name: `service-account-${createHash("sha256").update(id).digest("hex").slice(0, 32)}`,
-          key: "token",
-        },
-      },
-    }),
-  );
-}
-
 export async function seedBackendBinding(pool, account, options = {}) {
   await pool.query(
     `INSERT INTO occ.service_account_driver_bindings
@@ -251,6 +207,9 @@ export function createBackendWorkerDrivers(
   if (options.secretDriver !== undefined) {
     installation.drivers.secret.id = options.secretDriver.id;
   }
+  if (options.tokenServiceDriverId !== undefined) {
+    installation.drivers.token_service = { id: options.tokenServiceDriverId };
+  }
   if (backends.length > 0) {
     installation.drivers.service_account = {
       id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
@@ -259,6 +218,7 @@ export function createBackendWorkerDrivers(
   return {
     installation,
     computeDriver,
+    ...(options.tokenService && { tokenService: options.tokenService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),
@@ -364,7 +324,8 @@ export async function createBootstrappedBackendState(context, options) {
     email: options.email,
     password: options.password,
     authSecret: options.authSecret,
-    authBaseURL: options.origin,
+    authBaseURL: options.authBaseURL,
+    agentDomain: "agents.oce.localhost",
     installationName: options.installationName,
     environment: { PATH: process.env.PATH },
   });
@@ -422,7 +383,8 @@ export async function startBackendlessDevelopmentServer(context, options) {
         OCC_HOST: "127.0.0.1",
         OCC_PORT: String(options.reservation.port),
         OCC_DATABASE_URL: databaseUrl,
-        OCC_AUTH_BASE_URL: options.origin,
+        OCC_AUTH_BASE_URL: options.authBaseURL,
+        OCC_AGENT_NATIVE_ADMIN_DOMAIN: "agents.oce.localhost",
         OCC_AUTH_SECRET: options.authSecret,
         OCC_DEVELOPMENT_CONFIGURATION_ROOT: configurationRoot,
         OCC_DOCKER_RUNTIME_IMAGE: "openclaw-enterprise-runtime:not-used-by-backend-repair",

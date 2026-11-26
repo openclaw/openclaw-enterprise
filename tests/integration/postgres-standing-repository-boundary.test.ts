@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
-import { sessionAttempt } from "../conformance/repository-sessions.contract.mjs";
+import { sessionAttempt } from "../conformance/repository-sessions.contract.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 // Contract prerequisite, not an implementation of standing approval. Exercises the real

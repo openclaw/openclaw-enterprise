@@ -1,0 +1,393 @@
+import { validRequestPath } from "./request-path.ts";
+
+/** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
+export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
+export function isOAuthScopeToken(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 512 && oauthScopeTokenPattern.test(value);
+}
+
+/** Where a connected credential may be sent; the Credential Gateway releases it nowhere else. */
+export interface ConnectionEndpoint {
+  readonly host: string;
+  readonly port: number;
+  readonly path: string;
+}
+
+/** An allowed HTTP request that can receive a static bearer credential. */
+export interface StaticKeyDestination extends ConnectionEndpoint {
+  readonly method: string;
+}
+
+/** Uppercase HTTP token syntax, bounded for credential request policy. */
+export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
+
+export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
+
+interface CredentialClientRegistration {
+  readonly id: string;
+  readonly namespaceId?: string;
+  readonly displayName: string;
+  readonly createdAt: string;
+}
+
+/** An independent client registration for one OAuth issuer. */
+export interface OAuthClient extends CredentialClientRegistration {
+  readonly kind: "oauth2";
+  readonly issuer: string;
+  readonly clientId: string;
+  readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
+}
+
+/** The signing key is used only within the selected TokenService. */
+export interface GitHubAppClient extends CredentialClientRegistration {
+  readonly kind: "github-app";
+  readonly appId: string;
+}
+
+export type CredentialClient = OAuthClient | GitHubAppClient;
+
+/** Public metadata observed during MCP discovery. The administrator selects a subset. */
+export interface McpAuthorizationMetadata {
+  readonly serverUrl: string;
+  readonly resource: string;
+  readonly issuers: readonly string[];
+  readonly resourceScopes?: readonly string[];
+  readonly requestedScopes: readonly string[];
+  readonly issuer?: string;
+  readonly authorizationUrl?: string;
+  readonly tokenUrl?: string;
+  readonly revocationUrl?: string;
+  readonly registrationUrl?: string;
+  readonly supportedScopes?: readonly string[];
+  readonly tokenEndpointAuthMethods?: readonly string[];
+}
+
+export interface ConnectionTemplateValues {
+  readonly mode: "manual" | "mcp_discovery";
+  readonly issuer: string;
+  readonly authorizationUrl: string;
+  readonly tokenUrl: string;
+  readonly revocationUrl?: string;
+  /** An empty list leaves scope selection to the account owner and provider. */
+  readonly scopes: readonly string[];
+  readonly authorizationParameters: Readonly<Record<string, string>>;
+  readonly destinations: readonly ConnectionEndpoint[];
+  readonly mcp?: { readonly serverUrl: string; readonly resource: string };
+  readonly observed?: McpAuthorizationMetadata;
+  /** Present only after the issuer metadata verifies this immutable version's endpoints. */
+  readonly issuerVerification?: {
+    readonly tokenEndpointAuthMethods: readonly OAuthClientAuthMethod[];
+  };
+}
+
+export interface StaticKeyTemplateValues {
+  readonly mode: "static_bearer";
+  readonly destinations: readonly StaticKeyDestination[];
+}
+export type ConnectionTemplateSettings = ConnectionTemplateValues | StaticKeyTemplateValues;
+export type ConnectionTemplateVersion =
+  | OAuthConnectionTemplateVersion
+  | (StaticKeyTemplateValues & {
+      readonly templateId: string;
+      readonly version: number;
+      readonly createdAt: string;
+    });
+export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues {
+  readonly templateId: string;
+  readonly version: number;
+  readonly createdAt: string;
+}
+
+export interface ConnectionTemplate {
+  readonly id: string;
+  readonly namespaceId?: string;
+  readonly displayName: string;
+  readonly current: Readonly<ConnectionTemplateVersion>;
+  readonly createdAt: string;
+}
+
+const flowParameters = new Set([
+  "resource",
+  "client_secret",
+  "response_type",
+  "client_id",
+  "redirect_uri",
+  "scope",
+  "state",
+  "code_challenge",
+  "code_challenge_method",
+]);
+
+export function isFlowOwnedOAuthParameter(name: string): boolean {
+  return flowParameters.has(name);
+}
+
+export class ConnectionTemplateValidationError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.field = field;
+    this.name = "ConnectionTemplateValidationError";
+  }
+}
+
+/** Validate immutable OAuth settings before OCC registers a client. */
+export function validateConnectionTemplateAuthorization(
+  values: Pick<
+    ConnectionTemplateValues,
+    "issuer" | "authorizationUrl" | "tokenUrl" | "revocationUrl" | "authorizationParameters"
+  >,
+): void {
+  for (const field of ["issuer", "authorizationUrl", "tokenUrl", "revocationUrl"] as const) {
+    const value = values[field];
+    if (value === undefined) {
+      continue;
+    }
+    if (
+      !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
+      !URL.canParse(value) ||
+      (field === "issuer" && value.includes("?"))
+    ) {
+      throw new ConnectionTemplateValidationError(
+        field,
+        `${field} must be a valid HTTPS URL without userinfo or a fragment${field === "issuer" ? " or query." : "."}`,
+      );
+    }
+  }
+  if ([...new URL(values.authorizationUrl).searchParams.keys()].some(isFlowOwnedOAuthParameter)) {
+    throw new ConnectionTemplateValidationError(
+      "authorizationUrl",
+      "The authorization URL contains a parameter that the OAuth flow supplies.",
+    );
+  }
+  if (Object.keys(values.authorizationParameters).some(isFlowOwnedOAuthParameter)) {
+    throw new ConnectionTemplateValidationError(
+      "authorizationParameters",
+      "The template cannot override a parameter that the OAuth flow supplies.",
+    );
+  }
+}
+
+function compareText(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  return left === right ? 0 : 1;
+}
+
+function compareEndpoint(left: ConnectionEndpoint, right: ConnectionEndpoint): number {
+  return (
+    compareText(left.host, right.host) ||
+    left.port - right.port ||
+    compareText(left.path, right.path)
+  );
+}
+
+const dnsHostPattern =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const ipv4Pattern = /^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9][0-9]{0,2})){3}$/;
+
+/** Accept an exact DNS name or canonical RFC 1918 IPv4 address. */
+export function isApprovedDestinationHost(host: string): boolean {
+  if (host.length > 253) {
+    return false;
+  }
+  if (dnsHostPattern.test(host)) {
+    return true;
+  }
+  if (!ipv4Pattern.test(host)) {
+    return false;
+  }
+  const octets = host.split(".").map(Number);
+  return (
+    octets.every((octet) => octet <= 255) &&
+    (octets[0] === 10 ||
+      (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) ||
+      (octets[0] === 192 && octets[1] === 168))
+  );
+}
+
+function validEndpoint(port: number, path: string): boolean {
+  return (
+    Number.isInteger(port) &&
+    port >= 1 &&
+    port <= 65535 &&
+    path.length <= 512 &&
+    /^\/[!-~]*$/.test(path) &&
+    !/[?#\\]/.test(path)
+  );
+}
+
+/** Save exact HTTPS routes in a stable order regardless of editor row order or omitted defaults. */
+export function normalizeConnectionDestinations(
+  rows: readonly { readonly host: string; readonly port?: number; readonly path?: string }[],
+): ConnectionEndpoint[] {
+  if (!rows.length) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "Choose at least one HTTPS destination.",
+    );
+  }
+  const destinations = rows
+    .map(({ host, port = 443, path = "/**" }) => {
+      host = host.toLowerCase();
+      if (host.length > 253 || !dnsHostPattern.test(host) || !validEndpoint(port, path)) {
+        throw new ConnectionTemplateValidationError(
+          "destinations",
+          "Choose a DNS host, HTTPS port and request path for each destination.",
+        );
+      }
+      return { host, port, path };
+    })
+    .sort(compareEndpoint);
+  return destinations.filter(
+    (row, index) => index === 0 || compareEndpoint(row, destinations[index - 1]!) !== 0,
+  );
+}
+
+function compareStaticDestination(left: StaticKeyDestination, right: StaticKeyDestination): number {
+  return compareEndpoint(left, right) || compareText(left.method, right.method);
+}
+
+/** Canonicalize the configured HTTP destination set, including each method. */
+export function normalizeStaticKeyDestinations(
+  rows: readonly StaticKeyDestination[],
+): StaticKeyDestination[] {
+  if (!rows.length || rows.length > 128) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "Choose 1 to 128 HTTP destinations.",
+    );
+  }
+  const destinations = rows
+    .map(({ host, port, path, method }) => {
+      host = host.toLowerCase();
+      if (
+        !isApprovedDestinationHost(host) ||
+        !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
+        !staticKeyHttpMethodPattern.test(method)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "destinations",
+          "Choose an exact DNS host or private IPv4 address, port, request path and uppercase HTTP method for each destination.",
+        );
+      }
+      return { host, port, path, method };
+    })
+    .sort(compareStaticDestination);
+  return destinations.filter(
+    (row, index) => index === 0 || compareStaticDestination(row, destinations[index - 1]!) !== 0,
+  );
+}
+
+/** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateSettings): void {
+  if (values.mode === "static_bearer") {
+    const canonical = normalizeStaticKeyDestinations(values.destinations);
+    if (
+      values.destinations.length !== canonical.length ||
+      values.destinations.some(
+        (row, index) => compareStaticDestination(row, canonical[index]!) !== 0,
+      )
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "destinations",
+        "The saved static destinations must be canonical.",
+      );
+    }
+    return;
+  }
+  const canonical = normalizeConnectionDestinations(values.destinations);
+  if (
+    !sameDestinations(values.destinations, canonical) ||
+    (values.mode === "mcp_discovery" && canonical.length !== 1)
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "The saved destinations must be canonical. An MCP template requires exactly one server destination.",
+    );
+  }
+}
+
+function sameDestinations(
+  left: readonly ConnectionEndpoint[],
+  right: readonly ConnectionEndpoint[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((row, index) => compareEndpoint(row, right[index]!) === 0)
+  );
+}
+
+/** True when `next` changes settings that require a new template version. */
+export function connectionValuesChanged(
+  current: Readonly<ConnectionTemplateSettings>,
+  next: Readonly<ConnectionTemplateSettings>,
+): boolean {
+  if (current.mode === "static_bearer" || next.mode === "static_bearer") {
+    return (
+      current.mode !== "static_bearer" ||
+      next.mode !== "static_bearer" ||
+      !sameStaticDestinations(current.destinations, next.destinations)
+    );
+  }
+  return (
+    current.mode !== next.mode ||
+    current.mcp?.serverUrl !== next.mcp?.serverUrl ||
+    current.mcp?.resource !== next.mcp?.resource ||
+    current.issuer !== next.issuer ||
+    current.authorizationUrl !== next.authorizationUrl ||
+    current.tokenUrl !== next.tokenUrl ||
+    current.revocationUrl !== next.revocationUrl ||
+    current.issuerVerification?.tokenEndpointAuthMethods.join(",") !==
+      next.issuerVerification?.tokenEndpointAuthMethods.join(",") ||
+    !sameDestinations(current.destinations, next.destinations) ||
+    current.scopes.length !== next.scopes.length ||
+    current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
+    !sameParameters(current.authorizationParameters, next.authorizationParameters)
+  );
+}
+
+function sameStaticDestinations(
+  left: readonly StaticKeyDestination[],
+  right: readonly StaticKeyDestination[],
+): boolean {
+  const canonicalLeft = normalizeStaticKeyDestinations(left);
+  const canonicalRight = normalizeStaticKeyDestinations(right);
+  return (
+    canonicalLeft.length === canonicalRight.length &&
+    canonicalLeft.every((row, index) => compareStaticDestination(row, canonicalRight[index]!) === 0)
+  );
+}
+
+function sameParameters(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])
+  );
+}
+
+/** A pending browser authorization, found by the SHA-256 of its `state` and consumed once. */
+export interface ConnectionSession {
+  readonly stateHash: string;
+  readonly namespaceId: string;
+  /** Server-private PKCE state, erased when the callback consumes the attempt. */
+  readonly pkceVerifier: string;
+  readonly selectedScopes: readonly string[];
+  readonly issuerRequired: boolean;
+  readonly sessionId: string;
+  readonly redirectUri: string;
+  readonly actorId: string;
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly oauthClientId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}

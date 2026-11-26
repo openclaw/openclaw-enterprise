@@ -18,9 +18,8 @@ export class PostgresMetricsSnapshot {
 
   async collect(): Promise<PlatformMetricsSnapshot> {
     const client = await this.pool.connect();
-    let failed = false;
     let transportError: Error | undefined;
-    let snapshot: PlatformMetricsSnapshot;
+    let snapshot: PlatformMetricsSnapshot | undefined;
     const onTransportError = (error: Error) => {
       transportError ??= error;
     };
@@ -92,18 +91,14 @@ export class PostgresMetricsSnapshot {
       if (transportError !== undefined) {
         throw transportError;
       }
-      const row = result.rows[0] as PlatformMetricsSnapshot | undefined;
-      if (row === undefined) {
+      snapshot = result.rows[0] as PlatformMetricsSnapshot | undefined;
+      if (snapshot === undefined) {
         throw new Error("Metrics require the singleton Installation.");
       }
-      snapshot = row;
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
       // Wait for query settlement before returning the client. The pool takes
       // error ownership during release; retain ours if release itself fails.
-      client.release(failed || transportError !== undefined);
+      client.release(snapshot === undefined || transportError !== undefined);
       client.removeListener?.("error", onTransportError);
     }
     if (transportError !== undefined) {

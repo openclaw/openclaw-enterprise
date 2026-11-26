@@ -218,6 +218,10 @@ func dockerHubReference(reference string) (string, bool) {
 	}
 }
 
+// runtimeFirstBuildNote matches scripts/dev-up's note for the Docker profile.
+const runtimeFirstBuildNote = "Building the runtime image. With no build cache, this compiles Node.js from source first: " +
+	"15-60 minutes or longer, depending on CPUs and memory; later builds reuse the cache."
+
 func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string, error) {
 	image := r.setting("OCC_KUBERNETES_RUNTIME_IMAGE", "openclaw-enterprise-runtime:kubernetes-quickstart")
 	if r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
@@ -255,6 +259,11 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			args = append(args, "--secret", "id=build-ca,src="+path)
 		}
 		args = append(args, "--tag", image, ".")
+		// Startup keeps this tag, so its absence marks a first build on this
+		// engine, which is likely to compile Node.js with no build cache.
+		if _, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Id}}", image); err != nil {
+			fmt.Fprintln(r.opts.Out, runtimeFirstBuildNote)
+		}
 		if err := r.run(ctx, r.engine, args...); err != nil {
 			return "", err
 		}
@@ -412,7 +421,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
-	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// Memory matches the installation profiles (scripts/render-installation-profile.ts):
 	// requests cover measured use between turns and limits cover measured peaks.
 	// Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB on their first turn; a dedicated
 	// Codex Gateway with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
@@ -429,7 +438,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"secret":        map[string]any{"id": "secret-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
-				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
+				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "20"}, "containerDefaults": resources}},
 				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "pluginStatusProxySourceCidrs": []string{statusProxySource}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
@@ -443,8 +452,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
-	config["drivers"].(map[string]any)["plugin"] = map[string]any{
-		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	config["drivers"].(map[string]any)["plugin"] = []map[string]any{
+		{"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"}},
 	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
@@ -472,10 +481,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"port":    8080,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
-		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id": openShellCredentialGatewayID,
-			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
-			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
+		config["drivers"].(map[string]any)["token_service"] = map[string]any{
+			"id": "occ", "configuration": map[string]any{},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -486,10 +493,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	return exclusiveWrite(filepath.Join(s.directory, "installation.yaml"), data, 0644)
 }
 
-const (
-	openShellSandboxID           = "sandbox-openshell-development"
-	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-)
+const openShellSandboxID = "sandbox-openshell-development"
 
 // Match the kernel-resolved executable on both architectures of the pinned runtime.
 // The container engine may run remotely, so the launcher's architecture is not authoritative.
@@ -500,11 +504,10 @@ func openShellCodexBinaries() []string {
 	}
 }
 
-// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
-// Credential Gateway Drivers.
+// openShellBackendConfiguration owns the OpenShell management connection.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
-		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
+		drivers := map[string]string{"sandbox": openShellSandboxID}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -529,7 +532,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"insecureTransport": "network-policy",
 			"requestTimeoutMs":  30000,
 		},
-		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"drivers": map[string]string{"sandbox": openShellSandboxID},
 	}
 }
 
@@ -545,8 +548,8 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			"integrationMode": "legacy",
 			"gateway": map[string]any{
-				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},
@@ -570,8 +573,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 				},
 			},
 			"kubernetes": map[string]any{
-				"runtimeClassName": openShellRuntimeClass,
-				"userNamespaces":   false,
+				"userNamespaces": false,
 				// Provider-owned Harness Pods need the same budget as Compute-owned
 				// Harnesses; otherwise the namespace's smaller default applies.
 				"agentResources":   harnessResources,
@@ -591,11 +593,15 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	}
 }
 
-// prepareDevelopmentCodexSandbox verifies the owned node before either local
-// control-plane profile selects a dedicated Codex runtime.
+// prepareDevelopmentCodexSandbox verifies workspace-write confinement unless the
+// caller explicitly selects full-access development verification.
 func (r *runner) prepareDevelopmentCodexSandbox(ctx context.Context, state *developmentState, runtimeImage string, timeoutSeconds int) (string, error) {
+	if r.env["OCC_DEVELOPMENT_CODEX_VERIFICATION_MODE"] == "danger-full-access" {
+		fmt.Fprintln(r.opts.Out, "Workspace-write sandbox proof is not applicable and was not performed: danger-full-access was explicitly selected.")
+		return "", nil
+	}
 	fmt.Fprintln(r.opts.Out, "Verifying the dedicated Codex sandbox on the owned k3d node...")
-	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.mjs", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
+	command := r.command(ctx, "node", "scripts/prepare-development-codex-seccomp.ts", state.directory, runtimeImage, strconv.Itoa(timeoutSeconds))
 	command.Stderr = r.opts.Err
 	output, err := command.Output()
 	if err != nil {

@@ -4,33 +4,30 @@ published: false
 
 ### Configure browser access
 
-Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, plus permission to read the bootstrap claim, get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. The listener terminates TLS on Pod loopback and forwards HTTP/WebSocket traffic to OCC. OCC retains browser authentication and authorizes access to the Agent UI.
+Continue in the same operator shell. The laptop needs OpenSSL, jq and kubectl, plus access to the retained credential files, permission to get the listener Deployment, list its Pods and create `pods/portforward` in `oce-system`. The listener terminates TLS on Pod loopback and forwards HTTP/WebSocket traffic to OCC. OCC retains browser authentication and authorizes access to the Agent UI.
 
-### Read the protected initial owner files
+<a id="read-the-protected-initial-owner-files"></a>
 
-After the Helm initialization Job succeeds, mount its output claim read-only. Use a fresh private output directory. Kubernetes permission to read this claim is privileged. The one-use reader must run in the claim’s volume topology on a control node with access to the chosen storage.
+### Use the protected initial owner files
+
+After the Helm initialization Job succeeds, use the private CLI file prepared
+by the installer. No reader Pod, container extraction, or JSON generation is needed.
+For existing-Secret mode, set `OCC_SERVICE_KEY_FILE` to your prepared file first:
 
 ```bash
-jq -n --arg image "$CONTROLLER_IMAGE" --arg namespace "$PLATFORM_NS" \
-  --arg claim occ-bootstrap-admin-password --argjson nodeSelector '{"oce-role":"control"}' \
-  -f "$assets/bootstrap-reader.jq" |
-  kubectl --context "$CONTEXT" create -f -
-kubectl -n "$PLATFORM_NS" wait --for=condition=Ready pod/oce-owner-bootstrap-reader --timeout=3m
-for file in initial-admin-password initial-admin-service-key.json; do
-  test ! -e "$RUN_DIR/$file"
-  kubectl -n "$PLATFORM_NS" exec oce-owner-bootstrap-reader -- \
-    node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1]))' \
-    "/bootstrap/$file" > "$RUN_DIR/$file.tmp"
-  test -s "$RUN_DIR/$file.tmp"
-  chmod 600 "$RUN_DIR/$file.tmp"
-  mv "$RUN_DIR/$file.tmp" "$RUN_DIR/$file"
-done
-kubectl -n "$PLATFORM_NS" delete pod oce-owner-bootstrap-reader
-mv "$RUN_DIR/initial-admin-service-key.json" "$RUN_DIR/service-key.json"
-export OCC_SERVICE_KEY_FILE="$RUN_DIR/service-key.json"
+if [ -z "${OCC_SERVICE_KEY_FILE:-}" ]; then
+  BOOTSTRAP_INPUT_DIRECTORY="$(jq -er .inputDirectory "$RUN_DIR/install-receipt/bootstrap-secret.json")" || exit 1
+  export OCC_SERVICE_KEY_FILE="$BOOTSTRAP_INPUT_DIRECTORY/bootstrap-client-key.json"
+fi
 ```
 
-Use `ADMIN_EMAIL` and `$RUN_DIR/initial-admin-password` for ordinary Console password sign-in. The initial administrator has the required Agent administration access. Other owners need a browser account with `administer` permission on this exact Agent. The service key file authenticates operator REST calls. Retain the original bootstrap claim for recovery.
+Use `ADMIN_EMAIL` and `$BOOTSTRAP_INPUT_DIRECTORY/initial-admin-password` for
+ordinary Console password sign-in. With existing-Secret mode, use your own
+prepared CLI file and corresponding password instead. The initial administrator has the required Agent
+administration access. Other owners need a browser account with `administer`
+permission on this exact Agent. The service key file authenticates operator REST
+calls; the authenticated API response supplies the Installation ID. Retain the
+original protected inputs for recovery; bootstrap does not reissue them.
 
 ### Install the loopback TLS listener
 
@@ -64,7 +61,7 @@ openssl x509 -req -in "$tls_dir/tls.csr" -CA "$tls_dir/ca.crt" -CAkey "$tls_dir/
   -CAcreateserial -days 28 -extfile "$tls_dir/leaf.ext" -out "$tls_dir/tls.crt"
 openssl verify -CAfile "$tls_dir/ca.crt" -verify_hostname "$console_host" "$tls_dir/tls.crt"
 kubectl -n "$PLATFORM_NS" create secret tls oce-owner-browser-tls --cert="$tls_dir/tls.crt" --key="$tls_dir/tls.key"
-kubectl -n "$PLATFORM_NS" create configmap oce-owner-listener --from-file="$assets/owner-listener.mjs"
+kubectl -n "$PLATFORM_NS" create configmap oce-owner-listener --from-file="$assets/owner-listener.mts"
 kubectl -n "$PLATFORM_NS" get svc openclaw-enterprise-api -o json > "$RUN_DIR/api-service.json"
 kubectl -n kube-system get svc kube-dns -o json > "$RUN_DIR/dns-service.json"
 jq -n --arg image "$CONTROLLER_IMAGE" --argjson api "$(cat "$RUN_DIR/api-service.json")" \

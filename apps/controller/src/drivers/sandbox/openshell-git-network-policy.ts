@@ -1,0 +1,265 @@
+import {
+  parseRepositoryApiLimits,
+  type DeploymentRequestMatch,
+  type RepositoryNetworkGrant,
+} from "@openclaw-enterprise/contracts";
+import {
+  repositoryGitRestOperations,
+  type RepositoryGitRestAuthority,
+} from "../repo/access/delivery.ts";
+import {
+  openShellProfileEndpoint,
+  type OpenShellProviderProfileEndpoint,
+} from "./openshell-gateway-client.ts";
+
+export type OpenShellGitNetworkTarget =
+  | { readonly repository: string; readonly installationId?: never }
+  | { readonly repository?: never; readonly installationId: string };
+
+/** Stock Git and transport helpers eligible to receive Repository credentials. */
+export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
+  "/usr/bin/git",
+  "/usr/lib/git-core/git-remote-https",
+  "/usr/lib/git-core/git-remote-http",
+  "/usr/libexec/git-core/git-remote-https",
+  "/usr/libexec/git-core/git-remote-http",
+]);
+
+export function openShellRepositoryMetadataRequest(repository: string) {
+  return {
+    binary: "/usr/bin/curl",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+  } satisfies DeploymentRequestMatch;
+}
+
+const binaries = Object.freeze([
+  ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
+  "/usr/bin/curl",
+  "/usr/local/bin/node",
+  "/usr/bin/node",
+]);
+
+export function openShellGitNetworkDefaults(target: OpenShellGitNetworkTarget) {
+  return {
+    binaries: target.installationId ? [...binaries, "/usr/bin/gh", "/usr/local/bin/gh"] : binaries,
+    gitOrigin: "https://github.com",
+    apiOrigin: "https://api.github.com",
+  };
+}
+
+/**
+ * The OpenShell Git rules bind only the github.com origins above. Why another prepared GitHub
+ * origin (or none) is refused, and what to do; undefined only for api.github.com. Names host and
+ * port only, never user info, a path or a query, in text the worker log keeps (no commas).
+ */
+export function openShellGitOriginRefusal(apiOrigin: string): string | undefined {
+  if (apiOrigin === "https://api.github.com") {
+    return undefined;
+  }
+  let selected = "not an https origin";
+  if (typeof apiOrigin === "string" && URL.canParse(apiOrigin)) {
+    const url = new URL(apiOrigin);
+    selected = `${url.hostname}:${url.port || (url.protocol === "http:" ? "80" : "443")}`;
+  }
+  return `repository.openShell reaches only https://github.com and https://api.github.com but repository.preparedGitHub.apiOrigin is ${selected}. Remove apiOrigin to use github.com: repository.openShell supports no other GitHub origin.`;
+}
+
+/** OpenShell imports these endpoints into the Sandbox policy when attaching the Git Provider. */
+export function openShellGitEndpoints(
+  git: URL,
+  api: URL,
+  target: OpenShellGitNetworkTarget,
+): readonly OpenShellProviderProfileEndpoint[] {
+  return target.installationId
+    ? [
+        {
+          host: git.hostname,
+          port: 443,
+          protocol: "rest",
+          rules: [
+            { allow: { method: "GET", path: "/**/info/refs" } },
+            { allow: { method: "POST", path: "/**/git-upload-pack" } },
+            { allow: { method: "POST", path: "/**/git-receive-pack" } },
+          ],
+        },
+        {
+          host: api.hostname,
+          port: 443,
+          protocol: "rest",
+          access: "NETWORK_ACCESS_PRESET_FULL",
+        },
+        {
+          host: api.hostname,
+          port: 443,
+          protocol: "graphql",
+          path: "/graphql",
+          access: "NETWORK_ACCESS_PRESET_FULL",
+        },
+      ]
+    : [
+        {
+          host: git.hostname,
+          port: Number(git.port || 443),
+          protocol: "rest",
+          path: "/" + target.repository + ".git/**",
+        },
+        {
+          host: api.hostname,
+          port: Number(api.port || 443),
+          protocol: "rest",
+          path: "/repos/" + target.repository + "/pulls",
+        },
+      ];
+}
+
+function canonicalGrants(grants: readonly RepositoryNetworkGrant[]): RepositoryNetworkGrant[] {
+  if (!Array.isArray(grants) || grants.length === 0 || grants.length > 32) {
+    throw new Error("Expected between 1 and 32 repository grants.");
+  }
+  const seen = new Set<string>();
+  const policy: RepositoryNetworkGrant[] = [];
+  const count = grants.length;
+  for (let index = 0; index < count; index++) {
+    const grant = grants[index];
+    if (
+      !grant ||
+      typeof grant !== "object" ||
+      Array.isArray(grant) ||
+      Reflect.ownKeys(grant).length !== (Object.hasOwn(grant, "apiLimits") ? 3 : 2) ||
+      !Object.hasOwn(grant, "repository") ||
+      !Object.hasOwn(grant, "access")
+    ) {
+      throw new Error("Expected a repository and an access level.");
+    }
+    const { repository, access } = grant;
+    if (
+      typeof repository !== "string" ||
+      !/^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/.test(repository) ||
+      repository.endsWith(".git") ||
+      (access !== "read" && access !== "write") ||
+      seen.has(repository)
+    ) {
+      throw new Error("Invalid repository network grant.");
+    }
+    seen.add(repository);
+    const apiLimits = Object.hasOwn(grant, "apiLimits")
+      ? parseRepositoryApiLimits(grant.apiLimits)
+      : undefined;
+    policy.push({ repository, access, ...(apiLimits && { apiLimits }) });
+  }
+  return policy.sort((left, right) => (left.repository < right.repository ? -1 : 1));
+}
+
+export function openShellGitServiceRules({ repository, access }: RepositoryNetworkGrant) {
+  const root = `/${repository}.git`;
+  const services =
+    access === "write" ? ["git-upload-pack", "git-receive-pack"] : ["git-upload-pack"];
+  return services.flatMap((service) => [
+    {
+      allow: {
+        method: "GET",
+        path: `${root}/info/refs`,
+        query: { service: { glob: service } },
+      },
+    },
+    { allow: { method: "POST", path: `${root}/${service}` } },
+  ]);
+}
+
+function repositoryNetworkEndpoint(grant: RepositoryNetworkGrant) {
+  return openShellProfileEndpoint({
+    host: "github.com",
+    port: 443,
+    protocol: "rest",
+    path: `/${grant.repository}.git/**`,
+    rules: openShellGitServiceRules(grant),
+  });
+}
+
+export type OpenShellScopedRestGrant = RepositoryGitRestAuthority[number];
+
+function scopedApiEndpoints(
+  policy: readonly RepositoryNetworkGrant[],
+  permissions: readonly OpenShellScopedRestGrant[] | undefined,
+): readonly OpenShellProviderProfileEndpoint[] {
+  const endpoints: OpenShellProviderProfileEndpoint[] = [];
+  for (const { repository, issues, pull_requests: pulls } of repositoryGitRestOperations(
+    policy,
+    permissions,
+  )) {
+    const rules = [];
+    if (pulls === "write") {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+    }
+    if (issues === "write") {
+      rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });
+    }
+    for (const [resource, enabled] of [
+      ["issues", issues !== "none"],
+      ["pulls", pulls !== "none"],
+    ] as const) {
+      if (!enabled) {
+        continue;
+      }
+      const path = `/repos/${repository}/${resource}`;
+      rules.push({ allow: { method: "GET", path } });
+      // OpenShell matches globs. An unbounded * also admits /issues/comments and /issues/events.
+      // Enumerate positive decimal detail paths up to 19 digits.
+      for (let width = 1; width <= 19; width++) {
+        rules.push({ allow: { method: "GET", path: `${path}/[1-9]${"[0-9]".repeat(width - 1)}` } });
+      }
+    }
+    if (rules.length) {
+      endpoints.push({
+        host: "api.github.com",
+        port: 443,
+        protocol: "rest",
+        path: `/repos/${repository}/**`,
+        rules,
+      });
+    }
+  }
+  return endpoints;
+}
+
+/** The Sandbox owns the grants. The attached Provider supplies only the credential. */
+export function compileOpenShellBoundGitRule(
+  grants: readonly RepositoryNetworkGrant[],
+  provider: string,
+  binaries: readonly string[],
+  scopedRest?: readonly OpenShellScopedRestGrant[],
+) {
+  if (typeof provider !== "string" || !/^oce-github-installation-[a-f0-9]{32}$/.test(provider)) {
+    throw new Error("Expected an installation Git Provider.");
+  }
+  if (!Array.isArray(binaries) || binaries.length === 0) {
+    throw new Error("Expected exact Git transport binary paths.");
+  }
+  for (const path of binaries) {
+    if (
+      typeof path !== "string" ||
+      !/^\/[A-Za-z0-9_./-]+$/.test(path) ||
+      path
+        .slice(1)
+        .split("/")
+        .some((part) => part === "" || part === "." || part === "..")
+    ) {
+      throw new Error("Expected exact Git transport binary paths.");
+    }
+  }
+  const policy = canonicalGrants(grants);
+  const endpoints = [
+    ...policy.map(repositoryNetworkEndpoint),
+    ...scopedApiEndpoints(policy, scopedRest).map((endpoint) => openShellProfileEndpoint(endpoint)),
+  ];
+  return {
+    name: "repository-git-network",
+    binaries: binaries.map((path) => ({ path })),
+    endpoints: endpoints.map((endpoint) => ({
+      ...endpoint,
+      credential_binding: { provider },
+    })),
+  };
+}

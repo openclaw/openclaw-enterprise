@@ -11,7 +11,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 1. Open **Pages/Create Agent → ChatGPT OAuth before sign-in (Experimental)**. Confirm the
    provider is OpenAI, the harness is Codex, and authentication is **ChatGPT OAuth (Experimental)**. Confirm the Experimental
    notice explains that sign-in, plugins, deployment, and recovery may have limitations.
-   Confirm **Sign in with OAuth** is available. The model picker remains usable; no token input appears.
+   Confirm **Model credential** offers **Sign in with OAuth** and the sign-in button is
+   available. The model picker remains usable; no token input appears.
 2. Open **ChatGPT device login pending (Experimental)**. Inspect the displayed code and the
    **Open Codex sign-in** link. Do not submit the simulated code to the provider.
    Choose **Cancel login** and confirm the sign-in button returns.
@@ -21,8 +22,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    never access or refresh tokens. Confirm creation opens the saved draft; deploy it
    separately from Agent detail because guided provisioning does not support credential sources.
 4. Check **ChatGPT login permission denied (Experimental)**, **ChatGPT login exchange failed (Experimental)**,
-   and **ChatGPT device login expired (Experimental)**. Failed or expired polls stop; recovery
-   requires cancelling and starting a new login. Other form choices remain usable.
+   and **ChatGPT device login expired (Experimental)**. For an expired login or a failed
+   exchange, cancel and start a new login. Other form choices remain usable.
 5. Open **ChatGPT login unavailable (Experimental)**. Confirm the message says sign-in
    is unavailable for this Installation, gives the API's reason (no Credential Refresh
    Driver) and suggests another authentication method. **Sign in with OAuth** stays
@@ -44,10 +45,24 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
 
+Open **Pages/Create Agent → Reuse a saved ChatGPT OAuth Source**. Confirm the saved
+built-in Source is selected under **Model credential**. Select **Create Agent** and
+check that the draft references its exact Source ID. The simulated request log must
+show no new device authorization or Source enrollment.
+
+## Check a refused poll
+
+Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
+**Sign in with OAuth**. The simulated API starts the login, then refuses the first poll.
+Confirm the refusal names the missing CredentialSource create permission and shows a
+request ID. The failed attempt is cancelled and has no Source. Choose **Cancel login**,
+then start a new login after access is restored. The new login becomes ready. The request
+log shows separate starts for the failed attempt and the successful login.
+
 ## Return after an interrupted start
 
 Open **Pages/Create Agent → ChatGPT sign-in interrupted by navigation (Experimental)**.
-Choose **Sign in with OAuth**, then **Secrets** while the start is pending.
+Choose **Sign in with OAuth**, then **Credentials** while the start is pending.
 Use browser Back. Confirm that the Console asks an administrator to investigate
 and disables another sign-in. Switch to API key and back: sign-in stays disabled.
 The request log must show one start and no poll or cancellation.
@@ -90,8 +105,11 @@ log must show two starts and one cancellation.
    Also inspect **Latest deployment access denied**, **Latest deployment loading**,
    and **Latest deployment unavailable**; each preserves the current pointer.
 4. Open **Pages/Agent detail → Bootstrap failure with cleanup pending**.
-   Read the retained Job/Pod and container evidence. Wait for cleanup to complete;
-   the deployment must remain failed and the evidence must stay visible.
+   On **Configuration**, tab to **View deployment** while the notice says the
+   deployment is queued or in progress. Wait for **Deployment resource cleanup
+   needs attention**. With focus still on the link, press Enter. On **Deployment**
+   for v7, read the recorded Job, Pod, and container evidence. After cleanup
+   completes, the deployment still shows failed and the evidence stays visible.
 5. Open **Pages/Agent detail → Bootstrap container status and logs**. Confirm
    `prepare-oauth-home` exited 0 while `oauth-bootstrap` exited 1. Use **Pod /
    container** to select each stream and inspect its distinct simulated output.
@@ -119,12 +137,7 @@ Capture screenshots of pending, ready, and failure states and a short video of
 sign-in, plugin selection, and cancellation. Keep evidence outside the checkout.
 Record the tested commit and browser; label it simulated UI proof.
 
-## Select a managed or imported PAT
+## Select an issued PAT Source
 
-Open **Components/Credentials → ChatGPT service account**. Confirm the issued
-Research service account is selected. Switch to **Service Accounts**, select an
-imported token Secret, then switch back to **Issued ChatGPT service account** and
-save. The request uses `codex_pat` with a `service_account` source reference; the
-imported choice uses the same method with a `secret` source reference. Check
-**No issued service accounts** and **Issued service accounts unavailable** for
-the empty and denied states.
+Use the [issued account selection workflow](codex-pat-workflow.md) to verify that
+saving a ChatGPT service account binds its TokenService Source to the Agent.

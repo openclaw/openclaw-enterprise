@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { NamespaceCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -10,22 +12,23 @@ import {
   detailUrl,
   expectReachableReason,
   fileBrowser,
-  fulfillPatchedJson,
   grantMember,
   hasFocus,
   holdRequests,
   inViewport,
+  isRecord,
   login,
   nativeValues,
   newPage,
   nextFrames,
   pathRequests,
-  revokeMemberGrant,
   settlePageRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
+import { createNativeConsoleFixture, nativeBrowserSupported } from "./console-native-ingress.ts";
 import {
   fulfillMethod,
   refocus,
@@ -33,13 +36,14 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+} from "./console-refocus-helpers.ts";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
+import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import {
   AGENT_STOP_AND_DELETE_DENIED,
   GENERIC_DENIAL,
-  SECRET_CREATE_DENIED,
+  SECRET_CREATE_MEMBER_DENIED,
   callerDenied,
   deleteRefused,
   stopRefused,
@@ -178,60 +182,79 @@ for (const action of ["Stop", "Delete"] as const) {
   });
 }
 
-// A refocus reread that started before an Agent page Stop or Delete refusal lifted it when its
-// older "allowed" answer landed (finding 2966): the grant was revoked after that read and the API
-// refused the action. As on the Agents list, only a read started after the refusal lifts it.
+// An ordinary permission reread can start before an Agent page Stop or Delete refusal and
+// deliver an older "allowed" answer afterward (finding 2966). Only a read started after
+// the refusal can lift it. Refresh sharing exercises this race without holding the page.
 for (const action of ["Stop", "Delete"] as const) {
-  test(`a refocus reread started before an Agent page ${action} refusal keeps it`, async (t) => {
+  test(`an older sharing permission reread keeps an Agent page ${action} refusal`, async (t) => {
     const stopping = action === "Stop";
     const name = `Reread race ${action.toLowerCase()}`;
-    const label = `reread-race-${action.toLowerCase()}`;
     const grant = stopping ? "operate" : "delete";
     const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
-    const agent = await fixture.createAgent(namespace.id, name, nativeValues(label));
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues("reread-race"));
     const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    const member = await fixture.createNamespaceMember(label, namespace.id, AGENT_READ);
-    grantMember(fixture, label, [[grant, "agent"]]);
     const { page } = await newPage(t, fixture, { browser });
-    const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    const permissionsUrl = `${agentUrl}/permissions`;
     await login(
       page,
       fixture,
       detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
-      member.credentials,
     );
     const row = page.getByRole("region", { name: `${action} Agent`, exact: true });
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
-    // The refocus reread reaches the real API while the grant holds; its answer is held.
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
+    const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+    await sharing.getByText("Current policy loaded.", { exact: true }).waitFor();
+    await settlePageRequests(page);
     const reread = await holdRequests(t, page, permissionsUrl, {
       once: true,
       method: "GET",
       afterServer: true,
     });
-    await refocus(page);
+    await sharing.getByRole("button", { name: "Refresh sharing", exact: true }).click();
     const allowed = await reread.requested;
     assert.ok(allowed, "the real API answered the reread");
+    assert.equal(allowed.status(), 200);
     assert.equal((await allowed.json()).data[grant], true);
-    // The grant is revoked, so the real API refuses the action for grants.
-    revokeMemberGrant(fixture, label, [grant, "agent"]);
-    await page.locator(settledView).waitFor();
-    await control.click();
-    await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await waitForEnabled(control);
+
+    const restriction = restrict(fixture.policy, grant, "agent", {
+      namespaceId: namespace.id,
+      resourceId: agent.id,
+    });
     const alert = row.getByRole("alert");
-    await alert
-      .getByText(stopping ? stopRefused(name) : deleteRefused(name), { exact: true })
-      .waitFor();
-    const refusal = (await alert.textContent())?.trim() ?? "";
-    // The older "allowed" answer lands and keeps the refusal.
-    reread.release();
+    const text = stopping ? stopRefused(name) : deleteRefused(name);
+    let refusal: string;
+    try {
+      await control.click();
+      const refused = responseTo(
+        page,
+        stopping ? "POST" : "DELETE",
+        stopping ? `${agentUrl}/stop` : agentUrl,
+      );
+      await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
+      assert.equal((await refused).status(), 403);
+      await alert.getByText(text, { exact: true }).waitFor();
+      refusal = (await alert.textContent())?.trim() ?? "";
+    } finally {
+      reread.release();
+    }
+    // The older allowed answer lands after the refusal and leaves it in place.
     await settlePageRequests(page);
     await nextFrames(page);
+    await alert.getByText(text, { exact: true }).waitFor();
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
-    // A refocus after a re-grant reads the answer again, and that read lifts the refusal.
-    grantMember(fixture, label, [[grant, "agent"]]);
+
+    liftRestriction(fixture.policy, restriction);
+    const current = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
+    const answer = await current;
+    assert.equal(answer.status(), 200);
+    assert.equal((await answer.json()).data[grant], true);
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
   });
@@ -803,6 +826,126 @@ test("a refused Request deletion again names the Agent, not the API's denial", a
   await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
 });
 
+test("deletion retry stays unavailable after a lost delete grant until permission returns", async (t) => {
+  if (!nativeBrowserSupported(t)) {
+    return;
+  }
+  const name = "Deletion grant withdrawn";
+  let gatewayKeyRequested = false;
+  t.after(() => {
+    assert.equal(gatewayKeyRequested, false, "Deletion must not request a native gateway key");
+  });
+  const { fixture, browserOptions } = await createNativeConsoleFixture(t, {
+    async nativeAdminGatewayApiKey(): Promise<string> {
+      gatewayKeyRequested = true;
+      throw new Error("Deletion must not request a native gateway key");
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("deletion-grant"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const agentUrl = `${fixture.origin}${agentPath}`;
+  const permissionsUrl = `${agentUrl}/permissions`;
+  const url = detailUrl(fixture, namespace.id, agent.id).href;
+  // The fixture administrator starts deletion and performs both repeats in the browser.
+  assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
+  const { page } = await newPage(t, fixture, browserOptions);
+  const requests = apiRequests(page, fixture.origin);
+  const deletes = () => pathRequests(requests, "DELETE", agentPath).length;
+  const nextPermission = () => responseTo(page, "GET", permissionsUrl);
+  const checkPermission = async (pending: ReturnType<typeof nextPermission>, expected: boolean) => {
+    const response = await pending;
+    assert.equal(response.status(), 200);
+    const body: unknown = await response.json();
+    assert.ok(isRecord(body) && isRecord(body.data));
+    assert.equal(body.data.delete, expected);
+  };
+  const initialPermission = nextPermission();
+  await login(page, fixture, url);
+  await checkPermission(initialPermission, true);
+
+  const row = page.getByRole("region", { name: "Delete Agent", exact: true });
+  const repeatLabel = "Request deletion again";
+  const repeat = row.getByRole("button", { name: repeatLabel, exact: true });
+  const refresh = row.getByRole("button", { name: "Refresh deletion status", exact: true });
+  const alert = row.getByRole("alert");
+  const dialog = page.getByRole("dialog", { name: `Request deletion again for ${name}?` });
+  const confirm = dialog.getByRole("button", { name: repeatLabel, exact: true });
+
+  // Revoke only delete for this Agent. The administrator can still read its status.
+  const restriction = restrict(fixture.policy, "delete", "agent", {
+    namespaceId: namespace.id,
+    resourceId: agent.id,
+  });
+  await repeat.click();
+  const refused = responseTo(page, "DELETE", agentUrl);
+  await confirm.click();
+  const denial = await refused;
+  assert.equal(denial.status(), 403);
+  const denialBody: unknown = await denial.json();
+  assert.ok(isRecord(denialBody) && isRecord(denialBody.error));
+  assert.equal(denialBody.error.message, callerDenied("Agent delete", `Agent ${agent.id}`));
+  const requestId = denial.headers()["x-request-id"];
+  assert.ok(requestId);
+  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
+  await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  assert.equal(await repeat.getAttribute("aria-disabled"), "true");
+
+  // Status still says deleting; the separate permission read confirms the lost grant.
+  const deniedPermission = nextPermission();
+  const status = responseTo(page, "GET", agentUrl);
+  await refresh.click();
+  const refreshed = await status;
+  assert.equal(refreshed.status(), 200);
+  const refreshedBody: unknown = await refreshed.json();
+  assert.ok(isRecord(refreshedBody) && isRecord(refreshedBody.data));
+  const { id, namespaceId, status: lifecycle } = refreshedBody.data;
+  assert.deepEqual(
+    { id, namespaceId, lifecycle },
+    { id: agent.id, namespaceId: namespace.id, lifecycle: "deleting" },
+  );
+  await checkPermission(deniedPermission, false);
+  await waitForEnabled(refresh);
+  assert.equal(page.url(), url);
+  assert.equal(
+    (await repeat.getAttribute("aria-disabled")) === "true",
+    true,
+    "manual status must not revive a denied deletion retry",
+  );
+  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
+  await alert.getByText(`Request ID: ${requestId}`, { exact: true }).waitFor();
+  await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
+  assert.equal(deletes(), 1, "refresh and disabled activation send no extra DELETE");
+
+  // Refresh can recover in place, but only after the grant is actually restored.
+  liftRestriction(fixture.policy, restriction);
+  const restoredPermission = nextPermission();
+  await refresh.click();
+  await checkPermission(restoredPermission, true);
+  await waitForEnabled(repeat);
+  await alert.waitFor({ state: "hidden" });
+  assert.equal(await accessibleDescription(repeat), "");
+  assert.equal(deletes(), 1, "permission recovery sends no DELETE");
+
+  const permission = nextPermission();
+  await page.reload();
+  await checkPermission(permission, true);
+  await waitForEnabled(repeat);
+  assert.equal(await accessibleDescription(repeat), "");
+  await repeat.click();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await settlePageRequests(page);
+  assert.equal(deletes(), 1, "cancelling sends no DELETE");
+  await repeat.click();
+  const retry = responseTo(page, "DELETE", agentUrl);
+  await confirm.click();
+  assert.equal((await retry).status(), 202);
+  await dialog.waitFor({ state: "hidden" });
+  await settlePageRequests(page);
+  assert.equal(deletes(), 2, "one confirmed retry sends one DELETE");
+});
+
 // A row refusal that is not about grants is kept for a refocus that rebuilds the list (finding
 // D812), and only until Refresh. Refresh reread the row, so a later refocus rebuild must not show
 // that refusal again or hold the row's icons for it.
@@ -854,7 +997,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
       ...body,
       data: { ...body.data, secrets: { create: true } },
     })),
@@ -870,7 +1013,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
   assert.equal((await refused).status(), 403);
   const alert = dialog.getByRole("alert");
-  await alert.getByText(SECRET_CREATE_DENIED, { exact: true }).waitFor();
+  await alert.getByText(SECRET_CREATE_MEMBER_DENIED, { exact: true }).waitFor();
   // Show value stays in the Tab order, described by the refusal, and does not unmask.
   const reveal = dialog.getByRole("button", { name: "Show value", exact: true });
   await expectReachableReason(page, reveal, (await alert.textContent())?.trim() ?? "");
@@ -878,7 +1021,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
   // The page's Create Secret says why instead of offering another refused attempt.
-  await expectReachableReason(page, create, `${SECRET_CREATE_DENIED} Then select Refresh.`);
+  await expectReachableReason(page, create, `${SECRET_CREATE_MEMBER_DENIED} Then select Refresh.`);
   assert.equal(await page.getByRole("dialog").count(), 0);
 });
 

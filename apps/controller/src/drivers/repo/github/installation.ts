@@ -1,7 +1,6 @@
 import { closed, nonempty, object } from "../../../composition/installation-fields.ts";
 import type { ConfigurationRecord } from "../../../composition/installation-fields.ts";
-import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
-import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
+import { preparedGitHubConfiguration } from "./access/prepared-configuration.ts";
 
 /** Interpret portable repository configuration after integration extracts transport. */
 export function githubRepositoryConfiguration(selection: ConfigurationRecord) {
@@ -22,9 +21,6 @@ export function githubRepositoryConfiguration(selection: ConfigurationRecord) {
     prepared:
       selection.preparedGitHub === undefined
         ? undefined
-        : (preparedGitHubConfiguration(
-            selection.preparedGitHub,
-            true,
-          ) as PreparedRepositoryGitConfiguration),
+        : preparedGitHubConfiguration(selection.preparedGitHub),
   };
 }

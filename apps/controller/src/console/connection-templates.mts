@@ -1,0 +1,795 @@
+import type {
+  ConnectionEndpoint,
+  ConnectionTemplate,
+  McpAuthorizationMetadata,
+  Namespace,
+  StaticKeyDestination,
+} from "@openclaw-enterprise/contracts";
+import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
+import {
+  openCredentialClientRegistration,
+  isOAuthTemplate,
+  type OAuthTemplate,
+  availabilityLabel,
+  availableInNamespace,
+  oauthClients,
+  oauthFailure as failure,
+} from "./oauth-client-registration.mjs";
+import { button, element, field, validateFields } from "./dom.mjs";
+import { resourceActionIcon } from "./resource-actions.mjs";
+import { oauthCatalog } from "./oauth-catalog.mjs";
+import { oauthDeleteButton } from "./oauth-deletion.mjs";
+import type { ConsolePageContext } from "./page-context.mjs";
+
+type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
+type TemplatePrefill = { issuer?: string; tokenUrl?: string; mcpServerUrl?: string };
+function option(value: string, label: string) {
+  return element("option", { value }, label);
+}
+
+export async function connectionTemplates(context: Context) {
+  return (await context.request("/connection-templates", {
+    installationAdministration: "required",
+  })) as ConnectionTemplate[];
+}
+
+function destinationEditor(
+  initial: readonly (ConnectionEndpoint | StaticKeyDestination)[],
+  onEdit: () => void,
+  includeMethod = false,
+) {
+  const body = element("tbody");
+  const panel = element("details", { className: "connection-destinations" });
+  const summary = element("summary");
+  const rows = new Map<HTMLTableRowElement, ReturnType<typeof inputs>>();
+  function inputs(value?: ConnectionEndpoint | StaticKeyDestination) {
+    return {
+      ...(includeMethod && {
+        method: element("input", {
+          "aria-label": "Method",
+          required: true,
+          maxLength: 16,
+          value: value && "method" in value ? value.method : "GET",
+          spellcheck: false,
+        }),
+      }),
+      host: element("input", {
+        "aria-label": "Host",
+        required: true,
+        value: value?.host ?? "",
+        spellcheck: false,
+      }),
+      port: element("input", {
+        "aria-label": "Port",
+        type: "number",
+        required: true,
+        min: 1,
+        max: 65535,
+        value: String(value?.port ?? 443),
+      }),
+      path: element("input", {
+        "aria-label": "Path",
+        required: true,
+        pattern: "/.*",
+        value: value?.path ?? "/**",
+        spellcheck: false,
+      }),
+    };
+  }
+  function updateRows() {
+    summary.textContent = `API destinations (${rows.size})`;
+    for (const remove of body.querySelectorAll("button")) {
+      remove.disabled = rows.size === 1;
+    }
+  }
+  function append(value?: ConnectionEndpoint) {
+    const controls = inputs(value);
+    const row = element("tr");
+    const remove = button(
+      resourceActionIcon("delete"),
+      () => {
+        const focusRow = row.nextElementSibling ?? row.previousElementSibling;
+        rows.delete(row);
+        row.remove();
+        updateRows();
+        focusRow?.querySelector("input")?.focus();
+        onEdit();
+      },
+      { className: "icon-button", title: "Remove destination", "aria-label": "Remove destination" },
+    );
+    row.append(
+      ...Object.entries(controls).map(([name, input]) =>
+        element("td", { "data-label": name }, input),
+      ),
+      element("td", {}, remove),
+    );
+    rows.set(row, controls);
+    body.append(row);
+    return controls.host;
+  }
+  panel.open = initial.length === 0;
+  for (const value of initial) {
+    append(value);
+  }
+  if (!rows.size) {
+    append();
+  }
+  updateRows();
+  const add = button(
+    "Add destination",
+    () => {
+      const host = append();
+      updateRows();
+      host.focus();
+      onEdit();
+    },
+    { size: "sm" },
+  );
+  const table = element(
+    "table",
+    {
+      className: `connection-destination-table${includeMethod ? " connection-destination-table--static" : ""}`,
+      "aria-label": includeMethod ? "HTTP destinations" : "HTTPS destinations",
+    },
+    element(
+      "thead",
+      {},
+      element(
+        "tr",
+        {},
+        ...[...(includeMethod ? ["Method"] : []), "Host", "Port", "Path", ""].map((label) =>
+          element("th", { scope: "col" }, label),
+        ),
+      ),
+    ),
+    body,
+  );
+  panel.append(summary, element("div", { className: "connection-destination-scroll" }, table), add);
+  return {
+    element: panel,
+    controls: () =>
+      Array.from(rows.values()).flatMap(({ method, host, port, path }) =>
+        method ? [method, host, port, path] : [host, port, path],
+      ),
+    values: () =>
+      Array.from(rows.values(), ({ method, host, port, path }) => ({
+        ...(method && { method: method.value.trim() }),
+        host: host.value.trim(),
+        port: Number(port.value),
+        path: path.value.trim(),
+      })),
+  };
+}
+
+function destinationKeys(rows: readonly StaticKeyDestination[]) {
+  return JSON.stringify(
+    [
+      ...new Set(
+        rows.map(({ method, host, port, path }) =>
+          JSON.stringify([method, host.toLowerCase(), port, path]),
+        ),
+      ),
+    ].sort(),
+  );
+}
+
+const installationWide = "installation-wide";
+function availabilitySelect(
+  namespaces: readonly Namespace[],
+  currentNamespace: string | null,
+  template?: { namespaceId?: string },
+) {
+  const scope = element(
+    "select",
+    { disabled: !!template, required: true },
+    element("option", { value: "", disabled: true }, "Choose availability"),
+    option(installationWide, "Installation-wide"),
+    ...namespaces.map((item) => option(item.id, `Namespace · ${item.name}`)),
+  );
+  if (template?.namespaceId && !namespaces.some((item) => item.id === template.namespaceId)) {
+    scope.append(option(template.namespaceId, template.namespaceId));
+  }
+  scope.value = template
+    ? (template.namespaceId ?? installationWide)
+    : (namespaces.find((item) => item.id === currentNamespace)?.id ?? "");
+  return scope;
+}
+function availabilityNamespace(scope: HTMLSelectElement) {
+  return scope.value === installationWide ? undefined : scope.value;
+}
+
+export function renderConnectionTemplates(
+  context: Context,
+  namespaces: readonly Namespace[],
+  currentNamespace: string | null,
+) {
+  const create = button("Create connection template", () => edit(), {
+    tone: "primary",
+    size: "sm",
+  });
+  const { section, list, notice, showRows } = oauthCatalog(
+    "Connection templates",
+    create,
+    "Template",
+    ["Availability", "Authentication", "Details", "Version"],
+  );
+  section.classList.add("connection-template-catalog");
+  let savedTemplates: ConnectionTemplate[] = [];
+  let redirectUri: string | undefined;
+  async function refresh(saved?: string) {
+    create.disabled = true;
+    list.replaceChildren();
+    notice.textContent = "Loading connection templates…";
+    try {
+      const [templates, available] = await Promise.all([
+        connectionTemplates(context),
+        oauthClients(context),
+      ]);
+      if (!context.isCurrent()) {
+        return;
+      }
+      savedTemplates = templates.filter((item) => availableInNamespace(item, currentNamespace));
+      redirectUri = available.meta?.redirectUri;
+      showRows(
+        savedTemplates.map((template) => {
+          const scope = availabilityLabel(template, namespaces);
+          const oauth = isOAuthTemplate(template);
+          return {
+            name: template.displayName,
+            details: [
+              scope,
+              oauth ? "OAuth" : "Static Bearer",
+              oauth
+                ? `${template.current.issuer} · ${template.current.issuerVerification ? "Verified" : "Unverified"}`
+                : `${template.current.destinations.length} ${template.current.destinations.length === 1 ? "destination" : "destinations"}`,
+              String(template.current.version),
+            ],
+            actions: [
+              button("Edit", () => edit(template), {
+                size: "sm",
+                "aria-label": `Edit ${template.displayName}`,
+              }),
+              oauthDeleteButton(context, "connection template", template, scope, refresh, create),
+            ],
+          };
+        }),
+      );
+      notice.textContent =
+        saved ||
+        (savedTemplates.length ? "" : "No connection templates are available for this selection.");
+      create.disabled = false;
+      return true;
+    } catch (cause) {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (refusedAsNonAdministrator(cause)) {
+        section.remove();
+        return;
+      }
+      notice.textContent = failure(cause, "the connection template list");
+      list.append(button("Reload connection templates", () => void refresh(), { size: "sm" }));
+    }
+  }
+
+  function edit(template?: ConnectionTemplate, prefill?: TemplatePrefill) {
+    openConnectionTemplateEditor(context, {
+      parent: section,
+      namespaces,
+      currentNamespace,
+      template,
+      ...(prefill && { prefill }),
+      onSaved(saved) {
+        void refresh(`Saved ${saved.displayName}, version ${saved.current.version}.`);
+      },
+      onUnconfirmed: () => void refresh(),
+      onRegister(saved) {
+        openCredentialClientRegistration(context, {
+          parent: section,
+          namespaces,
+          currentNamespace,
+          kind: "oauth2",
+          selected: saved,
+          redirectUri,
+          async onClose(created) {
+            if (!(await refresh(created ? `Registered ${created.displayName}.` : undefined))) {
+              return;
+            }
+            const latest = savedTemplates.find((t) => t.id === saved.id);
+            if (latest && isOAuthTemplate(latest) && context.isCurrent() && section.isConnected) {
+              edit(latest);
+            }
+          },
+        });
+      },
+    });
+  }
+  void refresh().then((loaded) => {
+    const url = new URL(location.href);
+    const requestedEdit = url.searchParams.get("edit");
+    if (
+      !loaded ||
+      !context.isCurrent() ||
+      !section.isConnected ||
+      (!requestedEdit && url.searchParams.get("create") !== "1")
+    ) {
+      return;
+    }
+    if (requestedEdit) {
+      url.searchParams.delete("edit");
+      history.replaceState(history.state, "", url);
+      const template = savedTemplates.find((item) => item.id === requestedEdit);
+      if (template) {
+        edit(template);
+      } else {
+        notice.textContent = "This connection template is unavailable for the selected Namespace.";
+      }
+      return;
+    }
+    const prefill: TemplatePrefill = {};
+    for (const key of ["issuer", "tokenUrl", "mcpServerUrl"] as const) {
+      const value = url.searchParams.get(key);
+      if (value && value.length <= 2048) {
+        prefill[key] = value;
+      }
+      url.searchParams.delete(key);
+    }
+    url.searchParams.delete("create");
+    history.replaceState(history.state, "", url);
+    edit(undefined, prefill);
+  });
+  return section;
+}
+
+export function openConnectionTemplateEditor(
+  context: Context,
+  options: {
+    parent: HTMLElement;
+    namespaces: readonly Namespace[];
+    currentNamespace: string | null;
+    template?: ConnectionTemplate | undefined;
+    oauthOnly?: boolean;
+    prefill?: TemplatePrefill;
+    onSaved: (saved: ConnectionTemplate) => void;
+    onUnconfirmed: () => void;
+    onRegister?: (saved: OAuthTemplate) => void;
+  },
+) {
+  const { parent, namespaces, currentNamespace, template } = options;
+  const version = template?.current;
+  const oauthVersion = version?.mode === "static_bearer" ? undefined : version;
+  const dialog = element("dialog", {
+    className: "dialog dialog--framed connection-template-dialog",
+    "aria-label": template ? "Edit connection template" : "Create connection template",
+  });
+  const name = element("input", {
+    required: true,
+    maxLength: 200,
+    value: template?.displayName ?? "",
+  });
+  const scope = availabilitySelect(namespaces, currentNamespace, template);
+  const authentication = element(
+    "select",
+    { id: "connection-template-authentication", disabled: !!template },
+    option("oauth", "OAuth"),
+    ...(!options.oauthOnly ? [option("static_bearer", "Static Bearer")] : []),
+  );
+  authentication.value = version?.mode === "static_bearer" ? "static_bearer" : "oauth";
+  const mode = element(
+    "select",
+    { id: "connection-template-mode" },
+    option("manual", "Enter OAuth details manually"),
+    option("mcp_discovery", "Discover from an MCP server URL"),
+  );
+  mode.value = oauthVersion?.mode ?? (options.prefill?.mcpServerUrl ? "mcp_discovery" : "manual");
+  const issuer = element("input", {
+    type: "url",
+    required: true,
+    value: oauthVersion?.issuer ?? options.prefill?.issuer ?? "",
+  });
+  const authorizationUrl = element("input", {
+    type: "url",
+    required: true,
+    value: oauthVersion?.authorizationUrl ?? "",
+  });
+  const tokenUrl = element("input", {
+    type: "url",
+    required: true,
+    value: oauthVersion?.tokenUrl ?? options.prefill?.tokenUrl ?? "",
+  });
+  const revocationUrl = element("input", {
+    type: "url",
+    value: oauthVersion?.revocationUrl ?? "",
+  });
+  const destinations = destinationEditor(oauthVersion?.destinations ?? [], markEdited);
+  const staticDestinations = destinationEditor(
+    version?.mode === "static_bearer" ? version.destinations : [],
+    markEdited,
+    true,
+  );
+  staticDestinations.element.open = true;
+  const manual = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    element("legend", {}, "OAuth provider"),
+    field({ label: "Issuer URL", control: issuer }),
+    field({ label: "Authorization URL", control: authorizationUrl }),
+    field({ label: "Token URL", control: tokenUrl }),
+    field({ label: "Revocation URL (optional)", control: revocationUrl }),
+    destinations.element,
+    oauthVersion?.mode === "manual"
+      ? element(
+          "p",
+          { className: "hint" },
+          "Hosts you add can receive access tokens for existing accounts.",
+        )
+      : null,
+  );
+  const server = element("input", {
+    id: "connection-template-server",
+    type: "url",
+    required: true,
+    value: oauthVersion?.mcp?.serverUrl ?? options.prefill?.mcpServerUrl ?? "",
+  });
+  const authority = element("select");
+  const authorityField = field({ label: "Authorization server", control: authority });
+  const observation = element("div");
+  const discover = button("Discover OAuth settings", () => void inspect(), { size: "sm" });
+  const remote = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    element("legend", {}, "MCP discovery"),
+    field({ label: "MCP server URL", control: server }),
+    discover,
+    authorityField,
+    observation,
+  );
+  const scopeLimit = element(
+    "select",
+    { id: "connection-template-scope-limit" },
+    option("unrestricted", "No template limit"),
+    option("restricted", "Limit to approved scopes"),
+  );
+  scopeLimit.value = oauthVersion?.scopes.length ? "restricted" : "unrestricted";
+  const scopes = element("textarea", { rows: 2, "data-trim": "" });
+  scopes.value = oauthVersion?.scopes.join("\n") ?? "";
+  const approvedScopes = field({
+    label: "Approved OAuth scopes",
+    control: scopes,
+    help: "Enter at least one scope. Separate scopes with spaces or new lines.",
+  });
+  function showScopeLimit() {
+    const limited = scopeLimit.value === "restricted";
+    scopes.required = limited;
+    approvedScopes.hidden = scopes.disabled = !limited;
+  }
+  scopeLimit.addEventListener("change", showScopeLimit);
+  showScopeLimit();
+  const parameters = element("textarea", { rows: 2 });
+  function formatParameters(values: Readonly<Record<string, string>>) {
+    return Object.entries(values)
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n");
+  }
+  parameters.value = formatParameters(oauthVersion?.authorizationParameters ?? {});
+  const status = element("p", { className: "hint", role: "status" });
+  let edited = false;
+  const register = options.onRegister
+    ? button(
+        template ? "Register a new OAuth client" : "Create template and register OAuth client",
+        () => {
+          if (template && isOAuthTemplate(template) && !edited) {
+            dialog.close();
+            options.onRegister?.(template);
+          } else {
+            void submit(true);
+          }
+        },
+        { size: "sm" },
+      )
+    : undefined;
+  const save = button(
+    template
+      ? version?.mode === "static_bearer"
+        ? "Save changes"
+        : "Save new version"
+      : "Create template",
+    () => void submit(),
+    { tone: "primary" },
+  );
+  const close = button("Cancel", () => dialog.close());
+  const oauthFields = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    oauthVersion && !oauthVersion.issuerVerification
+      ? element(
+          "p",
+          { className: "hint" },
+          "This OAuth Template is unverified and cannot be used for consent. Save a new version to verify its endpoints against the issuer’s metadata.",
+        )
+      : null,
+    field({ label: "OAuth configuration", control: mode }),
+    manual,
+    remote,
+    field({
+      label: "OAuth scope limit",
+      control: scopeLimit,
+      help: "Choose which scopes this template allows people to request when connecting an account. With no template limit, the provider and the consent request determine the scopes.",
+    }),
+    approvedScopes,
+    field({
+      label: "Authorization parameters (optional)",
+      control: parameters,
+      help: "Enter one name=value per line for additional provider consent parameters.",
+    }),
+    register ?? null,
+  );
+  const staticFields = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    element("legend", {}, "Static Bearer destinations"),
+    element(
+      "p",
+      { className: "hint" },
+      "Configure the uppercase HTTP method, host, port, and exact path for each destination. End a path with /** to include its subtree. This template contains no credential.",
+    ),
+    staticDestinations.element,
+  );
+  const inputs = element(
+    "fieldset",
+    { className: "connection-template-fields" },
+    field({ label: "Template name", control: name }),
+    field({ label: "Template availability", control: scope }),
+    !options.oauthOnly ? field({ label: "Authentication method", control: authentication }) : null,
+    staticFields,
+    oauthFields,
+  );
+  dialog.append(
+    element(
+      "header",
+      { className: "dialog-header" },
+      element("h2", {}, template ? "Edit connection template" : "Create connection template"),
+    ),
+    element("div", { className: "dialog-body" }, inputs, status),
+    element("div", { className: "dialog-actions" }, close, save),
+  );
+  parent.append(dialog);
+  inputs.addEventListener("input", markEdited);
+  inputs.addEventListener("change", markEdited);
+  function markEdited() {
+    edited = true;
+    if (template && register) {
+      register.textContent = "Save changes and register OAuth client";
+    }
+  }
+  dialog.addEventListener("close", () => {
+    dialog.remove();
+    if (uncertain) {
+      options.onUnconfirmed();
+    }
+  });
+  let observed = oauthVersion?.observed;
+  let discoveryEpoch = 0;
+  let busy = false;
+  let uncertain = false;
+
+  function renderDiscovery() {
+    const advertised = observed?.issuers ?? [];
+    authorityField.hidden = advertised.length < 2;
+    const chooseIssuer = option("", "Select an issuer");
+    chooseIssuer.disabled = true;
+    authority.replaceChildren(chooseIssuer, ...advertised.map((url) => option(url, url)));
+    authority.value = observed?.issuer ?? "";
+    observation.replaceChildren();
+    if (observed?.issuer) {
+      const facts = [
+        ["Issuer", observed.issuer],
+        ["Resource", observed.resource],
+        ["Authorization URL", observed.authorizationUrl],
+        ["Token URL", observed.tokenUrl],
+        ["Revocation URL", observed.revocationUrl],
+        ["Registration URL", observed.registrationUrl],
+        ["Requested scopes", observed.requestedScopes.join(" ")],
+        ["Supported scopes", observed.supportedScopes?.join(" ")],
+      ];
+      observation.append(
+        element("h3", {}, "Discovered provider settings"),
+        element(
+          "dl",
+          { className: "settings" },
+          ...facts
+            .filter(([, value]) => value)
+            .flatMap(([label, value]) => [element("dt", {}, label), element("dd", {}, value)]),
+        ),
+      );
+    }
+  }
+  function showMode() {
+    const isStatic = authentication.value === "static_bearer";
+    staticFields.hidden = staticFields.disabled = !isStatic;
+    oauthFields.hidden = oauthFields.disabled = isStatic;
+    manual.hidden = manual.disabled = mode.value !== "manual";
+    remote.hidden = remote.disabled = mode.value === "manual";
+    discoveryEpoch++;
+    discover.disabled = false;
+    renderDiscovery();
+  }
+  async function inspect(chosenIssuer?: string) {
+    if (!validateFields([server])) {
+      return;
+    }
+    const epoch = ++discoveryEpoch;
+    const serverUrl = server.value.trim();
+    discover.disabled = true;
+    status.textContent = "Discovering OAuth settings…";
+    observed = undefined;
+    renderDiscovery();
+    try {
+      const result = (await context.request("/connection-templates/discover", {
+        method: "POST",
+        body: { serverUrl, ...(chosenIssuer && { issuer: chosenIssuer }) },
+      })) as McpAuthorizationMetadata;
+      if (epoch !== discoveryEpoch || !dialog.open || !context.isCurrent()) {
+        return;
+      }
+      observed = result;
+      renderDiscovery();
+      status.textContent = result.issuer
+        ? "Review the discovered settings and choose an OAuth scope limit."
+        : "Choose an advertised authorization server to continue.";
+    } catch (cause) {
+      if (epoch === discoveryEpoch && dialog.open) {
+        status.textContent = failure(cause, "OAuth discovery");
+      }
+    } finally {
+      if (epoch === discoveryEpoch) {
+        discover.disabled = false;
+      }
+    }
+  }
+  function setBusy(value: boolean) {
+    busy = value;
+    inputs.disabled = value || uncertain;
+    close.disabled = value;
+    save.disabled = value || uncertain;
+  }
+  dialog.addEventListener("cancel", (event) => {
+    if (busy) {
+      event.preventDefault();
+    }
+  });
+  async function submit(continueRegistration = false) {
+    const isStatic = authentication.value === "static_bearer";
+    if (
+      busy ||
+      uncertain ||
+      !validateFields([
+        scope,
+        name,
+        ...(isStatic
+          ? staticDestinations.controls()
+          : [
+              scopes,
+              ...(mode.value === "manual"
+                ? [issuer, authorizationUrl, tokenUrl, revocationUrl, ...destinations.controls()]
+                : [server]),
+            ]),
+      ])
+    ) {
+      return;
+    }
+    if (!isStatic && mode.value !== "manual" && !observed?.issuer) {
+      status.textContent = "Discover the MCP server and select its authorization server first.";
+      return;
+    }
+    const authorizationParameters: Record<string, string> = Object.create(null);
+    for (const line of isStatic ? [] : parameters.value.trim().split("\n").filter(Boolean)) {
+      const split = line.indexOf("=");
+      if (split < 1 || Object.hasOwn(authorizationParameters, line.slice(0, split))) {
+        status.textContent = "Enter each authorization parameter once as name=value.";
+        return;
+      }
+      authorizationParameters[line.slice(0, split)] = line.slice(split + 1);
+    }
+    const approved =
+      scopeLimit.value === "restricted" ? [...new Set(scopes.value.trim().split(/\s+/))] : [];
+    const staticValues: StaticKeyDestination[] = staticDestinations.values().map((row) => ({
+      host: row.host,
+      port: row.port,
+      path: row.path,
+      method: row.method!,
+    }));
+    const body = isStatic
+      ? {
+          displayName: name.value.trim(),
+          ...(!template && { namespaceId: availabilityNamespace(scope) }),
+          mode: "static_bearer",
+          destinations: staticValues,
+        }
+      : {
+          displayName: name.value.trim(),
+          ...(!template && { namespaceId: availabilityNamespace(scope) }),
+          scopes: approved,
+          authorizationParameters,
+          ...(mode.value === "manual"
+            ? {
+                mode: "manual",
+                issuer: issuer.value.trim(),
+                authorizationUrl: authorizationUrl.value.trim(),
+                tokenUrl: tokenUrl.value.trim(),
+                ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
+                destinations: destinations.values(),
+              }
+            : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),
+        };
+    setBusy(true);
+    status.textContent = "Saving connection template…";
+    try {
+      const saved = (await context.request(
+        template
+          ? `/connection-templates/${encodeURIComponent(template.id)}`
+          : "/connection-templates",
+        { method: template ? "PATCH" : "POST", expectedStatus: template ? 200 : 201, body },
+      )) as ConnectionTemplate;
+      if (!context.isCurrent() || !dialog.open) {
+        return;
+      }
+      if (
+        !saved.id ||
+        !Number.isSafeInteger(saved.current.version) ||
+        saved.current.version < 1 ||
+        (template &&
+          (saved.id !== template.id || saved.current.version < template.current.version)) ||
+        saved.displayName !== body.displayName ||
+        (isStatic
+          ? saved.current.mode !== "static_bearer" ||
+            destinationKeys(saved.current.destinations) !== destinationKeys(staticValues)
+          : !isOAuthTemplate(saved) ||
+            saved.current.issuer !== ("issuer" in body ? body.issuer : undefined) ||
+            !saved.current.issuerVerification)
+      ) {
+        throw Error("Unconfirmed connection template");
+      }
+      dialog.close();
+      if (continueRegistration && options.onRegister && isOAuthTemplate(saved)) {
+        options.onRegister(saved);
+      } else {
+        options.onSaved(saved);
+      }
+    } catch (cause) {
+      const code = requestFailure(cause).status;
+      uncertain = code === undefined || code >= 500 || code === 408;
+      if (dialog.open) {
+        if (uncertain) {
+          close.textContent = "Close";
+          status.textContent =
+            "The template may have been saved. Close this dialog and check the template list before trying again.";
+        } else {
+          status.textContent = failure(cause, "the template change");
+        }
+      }
+    } finally {
+      setBusy(false);
+      if (uncertain && dialog.open && context.isCurrent()) {
+        close.focus();
+      }
+    }
+  }
+  server.addEventListener("input", () => {
+    discoveryEpoch++;
+    observed = undefined;
+    discover.disabled = false;
+    renderDiscovery();
+    status.textContent = "";
+  });
+  authority.addEventListener("change", () => {
+    if (authority.value) {
+      void inspect(authority.value);
+    }
+  });
+  mode.addEventListener("change", showMode);
+  authentication.addEventListener("change", showMode);
+  showMode();
+  dialog.showModal();
+  name.focus();
+}

@@ -1,6 +1,7 @@
 package occdev
 
 import (
+	"context"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -107,7 +108,6 @@ func TestComposeNativeAdminPublishesOnlyTheOwnedHTTPSOrigin(t *testing.T) {
 		"OCC_AUTH_BASE_URL":              state.BrowserOrigin,
 		"OCC_AGENT_NATIVE_ADMIN_ENABLED": "true",
 		"OCC_AGENT_NATIVE_ADMIN_DOMAIN":  "agents.occ-dev-example.oce.localhost",
-		"OCC_AUTH_COOKIE_DOMAIN":         "occ-dev-example.oce.localhost",
 		"OCC_GATEWAY_API_KEY_PATH":       developmentGatewayAPIKeyMount,
 		"NODE_EXTRA_CA_CERTS":            developmentGatewayCAMount,
 	}
@@ -122,5 +122,18 @@ func TestComposeNativeAdminPublishesOnlyTheOwnedHTTPSOrigin(t *testing.T) {
 	rendered["services"].(map[string]any)["browser-proxy"].(map[string]any)["ports"] = []any{"0.0.0.0:8443:8443/tcp"}
 	if err := validateComposeNativeAdmin(rendered, state); err == nil || !strings.Contains(err.Error(), "only on 127.0.0.1") {
 		t.Fatalf("public native admin publication was not rejected: %v", err)
+	}
+}
+
+func TestUpRefusesRetiredCookieDomainSettingsBeforeCreatingResources(t *testing.T) {
+	for _, name := range []string{"OCC_AUTH_COOKIE_DOMAIN", "OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "")
+			t.Setenv("PATH", t.TempDir())
+			err := Up(context.Background(), Options{Repository: t.TempDir()})
+			if err == nil || !strings.Contains(err.Error(), name+" is no longer supported") {
+				t.Fatalf("Up error = %v", err)
+			}
+		})
 	}
 }

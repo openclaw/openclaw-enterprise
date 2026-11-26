@@ -1,31 +1,62 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Locator } from "playwright";
-import type { AuditEvent } from "../../packages/contracts/src/index.ts";
+import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import type { AuditEvent, Permission } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
-import { restrict } from "../helpers/iam-grants.mjs";
-import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
-import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
+import { grantConfiguredNamespaceRole, grantRole, restrict } from "../helpers/iam-grants.ts";
+import { namespaceDeleteDenied } from "../helpers/refusal-access.ts";
+import { callerDenied } from "../helpers/refusal-text.mjs";
+
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { callbackGate } from "../helpers/wait-for.ts";
 import {
   apiRequests,
   fileBrowser,
   hasFocus,
   holdRequests,
+  isRecord,
   login,
   newPage,
   pathRequests,
-  settledFetches,
   settledView,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.mjs";
+} from "./console-fetch-accounting.ts";
+import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
+
+const NAMESPACE_DELETE_DENIED =
+  "Deleting this Namespace requires Namespace delete. Ask an Installation administrator to check your access.";
+const NAMESPACE_DELETE_ACCESS_CHECK =
+  "Deleting this Namespace requires Namespace delete. Check your access and whether an IAM Restriction applies.";
 
 const browser = fileBrowser();
+
+async function configuredNamespaceMember(
+  fixture: Pick<
+    Awaited<ReturnType<typeof createConsoleAppFixture>>,
+    "policy" | "createAccountWithPolicy"
+  >,
+  namespaceId: string,
+  actions: Permission["action"][],
+) {
+  const name = "namespace-cleanup";
+  const { credentials, principal } = await fixture.createAccountWithPolicy(name, () => {});
+  const role = grantConfiguredNamespaceRole(fixture.policy, principal.id, {
+    name,
+    namespaceId,
+    permissions: { namespace: actions },
+  });
+  return { credentials, role };
+}
 
 // How a refused, still focusable delete control looks once a keyboard user reaches it (findings
 // D788, 2863): its icon or label fades as a disabled button's does, but nothing fades the control
@@ -160,8 +191,14 @@ test("a lost Namespace deletion response requires a status read without automati
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Uncertain cleanup");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}`;
+  const url = `${fixture.origin}${path}`;
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
-  const lost = await holdRequests(t, page, `${fixture.origin}/namespaces/${namespace.id}`, {
+  const row = page
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("link", { name: namespace.name, exact: true }) });
+  const badge = row.locator(".namespace-cell-status .badge");
+  const lost = await holdRequests(t, page, url, {
     method: "DELETE",
     afterServer: true,
     loseResponse: true,
@@ -169,7 +206,9 @@ test("a lost Namespace deletion response requires a status read without automati
   });
   await page.getByRole("button", { name: "Delete Uncertain cleanup", exact: true }).click();
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
-  await lost.requested;
+  const accepted = await lost.requested;
+  assert.ok(accepted);
+  assert.equal(accepted.status(), 202);
   lost.release();
   await page
     .getByText(
@@ -177,31 +216,77 @@ test("a lost Namespace deletion response requires a status read without automati
       { exact: true },
     )
     .waitFor();
+  assert.equal(await badge.textContent(), "Status unknown");
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
   assert.equal(
     await page.getByRole("button", { name: "Request deletion again", exact: true }).count(),
     0,
   );
-  await page
-    .getByRole("button", { name: "Refresh Uncertain cleanup deletion status", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
-  assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status,
-    "deleting",
+  // Corrupt only the status of the real row after the accepted write. This models an
+  // invalid wire value, not a status that a conforming Controller produces.
+  await page.route(
+    url,
+    async (route) => {
+      assert.equal(route.request().method(), "GET");
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body: unknown = await response.json();
+      assert.ok(isRecord(body) && isRecord(body.data));
+      assert.equal(body.data.id, namespace.id);
+      assert.equal(body.data.status, "deleting");
+      await route.fulfill({
+        response,
+        json: { ...body, data: { ...body.data, status: [body.data.status] } },
+      });
+    },
+    { times: 1 },
   );
-  assert.equal(pathRequests(requests, "DELETE", `/namespaces/${namespace.id}`).length, 1);
+  const refresh = page.getByRole("button", {
+    name: "Refresh Uncertain cleanup deletion status",
+    exact: true,
+  });
+  const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await refresh.click();
+  await page
+    .getByText("Could not check deletion status. Select Refresh status to check again.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await badge.textContent(), "Status unknown");
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
+  assert.equal(await retry.count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Delete Uncertain cleanup", exact: true }).count(),
+    0,
+  );
+  assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+  const recovered = page.waitForResponse(
+    (response) => response.url() === url && response.request().method() === "GET",
+  );
+  await refresh.click();
+  const response = await recovered;
+  assert.equal(response.status(), 200);
+  const body: unknown = await response.json();
+  assert.ok(isRecord(body) && isRecord(body.data));
+  assert.equal(body.data.id, namespace.id);
+  assert.equal(body.data.status, "deleting");
+  await retry.waitFor();
+  await row.getByText("Deleting…", { exact: true }).waitFor();
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
+  const current: unknown = (await fixture.request("GET", path)).data;
+  assert.ok(isRecord(current));
+  assert.equal(current.status, "deleting");
+  assert.equal(pathRequests(requests, "DELETE", path).length, 1);
 });
 
 test("Namespace deletion permission is advisory and a later revocation is enforced by the real write", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Restricted cleanup");
-  const label = "restricted-namespace-deleter";
-  const member = await fixture.createNamespaceMember(label, namespace.id, [["read", "namespace"]]);
+  const { credentials, role } = await configuredNamespaceMember(fixture, namespace.id, ["read"]);
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
   const remove = page.getByRole("button", { name: "Delete Restricted cleanup", exact: true });
-  // No Namespace Role grants delete, so the reason names who can delete, not a grant to ask for.
-  // The icon stays in the Tab order, so a keyboard user reaches the reason, and it opens nothing
-  // (finding D788).
+  // The icon stays in the Tab order with the permission requirement (finding D788).
+  // A denied operation opens no confirmation by either keyboard or pointer.
   await page
     .getByRole("button", {
       name: "Delete Restricted cleanup",
@@ -218,23 +303,53 @@ test("Namespace deletion permission is advisory and a later revocation is enforc
   assert.equal(await page.locator("dialog[open]").count(), 0);
   await remove.click({ force: true });
   assert.equal(await page.locator("dialog[open]").count(), 0);
-  grantMember(fixture, label, [["delete", "namespace"]]);
+  role.permissions.push({ action: "delete", resourceKind: "namespace" });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await remove.click();
   // Revocation after the advisory answer must prevent any lifecycle transition.
-  memberRole(fixture, label).permissions = [{ action: "read", resourceKind: "namespace" }];
+  role.permissions = [{ action: "read", resourceKind: "namespace" }];
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
   await page.waitForFunction(() => !document.querySelector("dialog[open]"));
   assert.equal((await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status, "ready");
   assert.equal(await remove.isDisabled(), true);
+  await page.getByText(namespaceDeleteDenied(namespace.id), { exact: true }).waitFor();
   // The refused trash control, natively disabled while the write ran, takes focus back.
   assert.equal(await hasFocus(remove), true);
 });
 
-// Finding 2861. A deny Restriction refuses Namespace delete even to an Installation administrator,
-// and administration cannot lift it. Her permission answer shows administration without delete,
-// so the reason names the Restriction and who lifts it, not an administrator to ask: she is one.
-test("a Restriction on Namespace delete names the Restriction to an Installation administrator", async (t) => {
+test("a Namespace deletion refused during cleanup names the Preset permission", async (t) => {
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Default Preset cleanup", {
+    defaultPresets: [preset],
+  });
+  const { credentials } = await configuredNamespaceMember(fixture, namespace.id, [
+    "read",
+    "delete",
+  ]);
+  const path = `/namespaces/${namespace.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
+  await page.getByRole("button", { name: "Delete Default Preset cleanup", exact: true }).click();
+  const response = page.waitForResponse(
+    (reply) => reply.url() === fixture.origin + path && reply.request().method() === "DELETE",
+  );
+  await page.getByRole("dialog").getByRole("button", { name: "Delete Namespace" }).click();
+  const refused = await response;
+  assert.equal(refused.status(), 403);
+  const body: ErrorResponse = await refused.json();
+  const message = callerDenied("Preset delete", "a Preset this request uses");
+  assert.deepEqual(body.error, { code: "FORBIDDEN", message });
+  await page
+    .locator(`#namespace-delete-feedback-${namespace.id}`)
+    .getByText(message, { exact: true })
+    .waitFor();
+  assert.equal((await fixture.request("GET", path)).data.status, "ready");
+});
+
+// The same advisory answer can follow a missing grant or a Restriction (finding 2861).
+test("a Restriction on Namespace delete gives an Installation administrator the access check", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Held cleanup");
   restrict(fixture.policy, "delete", "namespace", { namespaceId: namespace.id });
   const { page } = await newPage(t, fixture, { browser });
@@ -242,7 +357,7 @@ test("a Restriction on Namespace delete names the Restriction to an Installation
   const remove = page.getByRole("button", {
     name: "Delete Held cleanup",
     exact: true,
-    description: NAMESPACE_DELETE_RESTRICTED,
+    description: NAMESPACE_DELETE_ACCESS_CHECK,
   });
   await remove.waitFor();
   assert.equal(await page.getByText(NAMESPACE_DELETE_DENIED, { exact: true }).count(), 0);
@@ -263,13 +378,12 @@ test("a Restriction on Namespace delete names the Restriction to an Installation
 
 test("losing Namespace read permission during cleanup does not report deletion", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Lost read access");
-  const label = "namespace-cleanup-reader";
-  const member = await fixture.createNamespaceMember(label, namespace.id, [
-    ["read", "namespace"],
-    ["delete", "namespace"],
+  const { credentials, role } = await configuredNamespaceMember(fixture, namespace.id, [
+    "read",
+    "delete",
   ]);
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, member.credentials);
+  await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`, credentials);
   await page.getByRole("button", { name: "Delete Lost read access", exact: true }).click();
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
   const refresh = page.getByRole("button", {
@@ -278,7 +392,7 @@ test("losing Namespace read permission during cleanup does not report deletion",
   });
   await refresh.waitFor();
   // Revoke only read after acceptance; the Namespace still exists and the next GET really denies.
-  memberRole(fixture, label).permissions = [{ action: "delete", resourceKind: "namespace" }];
+  role.permissions = [{ action: "delete", resourceKind: "namespace" }];
   await refresh.click();
   await page
     .getByText(
@@ -373,6 +487,83 @@ test("a Namespace deletion confirmation opened during a background poll closes w
   // Its opener left with the row, so focus goes to the outcome, not the page.
   assert.equal(await hasFocus(page.locator(".namespace-deletion-outcome")), true);
 });
+
+for (const focus of [
+  "Search Namespaces",
+  "Clear search",
+  "Create Namespace",
+  "surviving search",
+] as const) {
+  test(`a Namespace cleanup poll preserves focus from ${focus}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Finishing cleanup");
+    const { credentials, principal } = await fixture.createNamespaceMember(
+      "cleanup-reader",
+      namespace.id,
+      [["read", "namespace"]],
+    );
+    if (focus === "surviving search") {
+      const remaining = await fixture.createNamespace("Unaffected team", { ready: true });
+      grantRole(fixture.policy, principal.id, {
+        id: "read-unaffected-team",
+        namespaceId: remaining.id,
+        permissions: { namespace: ["read"] },
+      });
+    }
+    const path = `/namespaces/${namespace.id}`;
+    assert.equal((await fixture.request("DELETE", path)).status, 202);
+    const event = fixture.auditSink
+      .list()
+      .find((entry: AuditEvent) => entry.action === "openclaw.namespaces.delete");
+    assert.ok(event);
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, "/console/namespaces", credentials);
+    const pending = page.getByRole("link", { name: namespace.name, exact: true });
+    await pending.waitFor();
+    const url = fixture.origin + path;
+    const poll = await holdRequests(t, page, url, { method: "GET", once: true });
+    await poll.requested;
+
+    const search = page.getByRole("searchbox", { name: "Search Namespaces" });
+    const control =
+      focus === "Clear search" || focus === "Create Namespace"
+        ? page.getByRole("button", { name: focus, exact: true })
+        : search;
+    await search.fill("no matching team");
+    await page.getByRole("heading", { name: "No matching Namespaces" }).waitFor();
+    assert.equal(await pending.count(), 0);
+    await control.focus();
+    assert.equal(await hasFocus(control), true);
+
+    await fixture.controller.handleNamespaceLifecycle(event.actorId, namespace.id, "deleted");
+    const response = page.waitForResponse(
+      (answer) => answer.url() === url && answer.request().method() === "GET",
+    );
+    poll.release();
+    assert.equal((await response).status(), 404);
+    await page
+      .getByText("Finishing cleanup was deleted. Its name remains reserved.", { exact: true })
+      .waitFor();
+    if (focus === "surviving search") {
+      assert.equal(await search.inputValue(), "no matching team");
+      assert.equal(await hasFocus(search), true);
+      await page.getByRole("heading", { name: "No matching Namespaces" }).waitFor();
+      await search.fill("Unaffected");
+      await page.getByRole("link", { name: "Unaffected team", exact: true }).waitFor();
+    } else {
+      await page.getByRole("heading", { name: "No readable Namespaces" }).waitFor();
+      assert.equal(await search.count(), 0);
+      const next =
+        focus === "Create Namespace" ? control : page.locator(".namespace-deletion-outcome");
+      assert.equal(
+        await hasFocus(next),
+        true,
+        `focus after the last row disappeared from ${focus}`,
+      );
+    }
+    assert.equal(pathRequests(requests, "DELETE", path).length, 0);
+  });
+}
 
 test("returning to an unchanged Namespaces page reads each row's delete permission once", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -474,3 +665,153 @@ test("a refused Namespace deletion retry keeps its reason through a background p
     faded: 0.6,
   });
 });
+
+for (const outcome of [
+  "unavailable",
+  "external focus",
+  "access ended",
+  "still deleting",
+] as const) {
+  test(`an open Namespace retry handles a background status result: ${outcome}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Observed cleanup");
+    const other = await fixture.createNamespace("Unaffected team", { ready: true });
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    const path = `/namespaces/${namespace.id}`;
+    const url = `${fixture.origin}${path}`;
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Delete Observed cleanup", exact: true }).click();
+    const accepted = page.waitForResponse(
+      (response) => response.url() === url && response.request().method() === "DELETE",
+    );
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Delete Namespace", exact: true })
+      .click();
+    assert.equal((await accepted).status(), 202);
+    const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+    await retry.waitFor();
+    const started = callbackGate("the held background deletion poll");
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route(
+      url,
+      (route) =>
+        started.run(async () => {
+          assert.equal(route.request().method(), "GET");
+          started.resolve();
+          await release.promise;
+          if (outcome === "still deleting") {
+            await route.continue();
+          } else if (outcome === "access ended") {
+            await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
+          } else {
+            await route.fulfill(proxyErrorResponse(503));
+          }
+        }),
+      { times: 1 },
+    );
+    // The normal background poll is already running when the operator opens retry.
+    await started.reached();
+    await retry.click();
+    const dialog = page.getByRole("dialog", {
+      name: "Retry deletion of Observed cleanup?",
+      exact: true,
+    });
+    const confirm = await dialog
+      .getByRole("button", { name: "Request deletion again", exact: true })
+      .elementHandle();
+    assert.ok(confirm);
+    if (outcome === "external focus") {
+      // A consumer of the native close event deliberately moves focus before the owner's
+      // queued close listener. Recovery must not steal it back.
+      await dialog.evaluate((node) =>
+        node.addEventListener(
+          "close",
+          () => {
+            document
+              .querySelector<HTMLButtonElement>('button[aria-label="Delete Unaffected team"]')
+              ?.focus();
+          },
+          { capture: true, once: true },
+        ),
+      );
+    }
+    const observed = (await settledFetches(page, path)) + 1;
+    const response = page.waitForResponse(
+      (answer) => answer.url() === url && answer.request().method() === "GET",
+    );
+    release.resolve();
+    assert.equal(
+      (await response).status(),
+      {
+        "still deleting": 200,
+        "access ended": 403,
+        unavailable: 503,
+        "external focus": 503,
+      }[outcome],
+    );
+    await waitForSettledFetches(page, path, observed);
+    if (outcome === "still deleting") {
+      assert.equal(await dialog.isVisible(), true);
+      assert.equal(
+        await dialog
+          .getByRole("button", { name: "Request deletion again", exact: true })
+          .isEnabled(),
+        true,
+      );
+      assert.equal(
+        await hasFocus(dialog.getByRole("button", { name: "Cancel", exact: true })),
+        true,
+      );
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+    } else {
+      assert.equal(
+        await dialog.isVisible(),
+        false,
+        "failed status must close the live confirmation",
+      );
+      await dialog.waitFor({ state: "detached" });
+      const recovery = page.getByRole("button", {
+        name: "Refresh Observed cleanup deletion status",
+        exact: true,
+      });
+      const otherDelete = page.getByRole("button", { name: "Delete Unaffected team", exact: true });
+      // A closed dialog leaves the role query before its queued close event restores focus.
+      await waitForFocusedLabel(
+        page,
+        outcome === "external focus"
+          ? "Delete Unaffected team"
+          : "Refresh Observed cleanup deletion status",
+      );
+      assert.equal(await hasFocus(outcome === "external focus" ? otherDelete : recovery), true);
+      assert.equal(await retry.count(), 0);
+      // A retained DOM event must not revive a closed prompt, even after a successful read
+      // makes a fresh deliberate retry available again.
+      await confirm.evaluate((node) =>
+        node.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await waitForIdleFetches(page);
+      assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+      await recovery.click();
+      await retry.waitFor();
+      await confirm.evaluate((node) =>
+        node.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await waitForIdleFetches(page);
+      assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+      await retry.click();
+      await dialog.waitFor();
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+    }
+    assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+    assert.equal((await fixture.request("GET", `/namespaces/${other.id}`)).data.status, "ready");
+    assert.equal(
+      await page.getByRole("button", { name: "Delete Unaffected team", exact: true }).isEnabled(),
+      true,
+    );
+  });
+}

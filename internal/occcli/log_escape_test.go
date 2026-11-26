@@ -2,11 +2,15 @@ package occcli
 
 import (
 	"context"
+	"encoding/json/jsontext"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 )
 
 // hiddenRunes are the bidirectional, zero-width and other format characters
@@ -90,6 +94,56 @@ func TestVisibleTextEscapesOnlyInvisibleCharacters(t *testing.T) {
 		if got := visibleText(test.in); got != test.want {
 			t.Errorf("visibleText(%q) = %q, want %q", test.in, got, test.want)
 		}
+	}
+}
+
+func TestRuntimeLogPageReportsNoticeWriteFailure(t *testing.T) {
+	writeErr := errors.New("stderr unavailable")
+	for _, test := range []struct {
+		name   string
+		record jsontext.Value
+		notice string
+	}{
+		{
+			name:   "gap",
+			record: jsontext.Value(gapRecord),
+			notice: "notice: - gap stream_replaced: Container restarted; showing the new instance.\n",
+		},
+		{
+			name:   "withheld",
+			record: jsontext.Value(`{"type":"withheld","time":"2026-09-30T12:00:02Z","stream":{"source":"gateway"},"reason":"over_limit","count":3}`),
+			notice: "notice: 2026-09-30T12:00:02Z 3 lines withheld (over_limit)\n",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			page := &occclient.RuntimeLogPage{Records: []jsontext.Value{test.record}}
+			var stdout, stderr strings.Builder
+			app := &application{out: &stdout, output: "text"}
+			if err := app.printRuntimeLogPage(page, &stderr); err != nil {
+				t.Fatalf("writable stderr: %v", err)
+			}
+			if got := stderr.String(); got != test.notice {
+				t.Errorf("stderr = %q, want %q", got, test.notice)
+			}
+
+			failedStderr := logOutputFunc(func([]byte) (int, error) { return 0, writeErr })
+			if err := app.printRuntimeLogPage(page, failedStderr); !errors.Is(err, writeErr) {
+				t.Errorf("renderer returned %v, want %v", err, writeErr)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("notice-only page wrote to stdout: %q", stdout.String())
+			}
+
+			// NDJSON keeps the record on stdout even when its stderr copy fails.
+			stdout.Reset()
+			app.output = "json"
+			if err := app.printRuntimeLogPage(page, failedStderr); err != nil {
+				t.Errorf("NDJSON with failed stderr: %v", err)
+			}
+			if got, want := stdout.String(), string(test.record)+"\n"; got != want {
+				t.Errorf("NDJSON stdout = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

@@ -3,10 +3,10 @@ import test from "node:test";
 import type {
   AttemptContext,
   CaptureObservation,
-} from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { createCustody } from "../../apps/controller/src/drivers/repo/credentials/custody.ts";
-import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
-import { custodyLimits } from "../fixtures/repository-credentials/builders.mjs";
+} from "../../apps/controller/src/drivers/repo/access/backend-contracts.ts";
+import { createCustody } from "../../apps/controller/src/drivers/repo/access/custody.ts";
+import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
+import { custodyLimits } from "../fixtures/repository-credentials/builders.ts";
 
 function setup() {
   const clock = createControlledClock(1700000000000);

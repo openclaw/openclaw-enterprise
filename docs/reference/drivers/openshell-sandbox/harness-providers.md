@@ -1,27 +1,19 @@
 # OpenShell Harness providers and exposure
 
-How the [OpenShell SandboxDriver](../openshell-sandbox.md) attaches credential
-sources and each Agent revision's runtime provider to a Sandbox, and how
-dedicated Codex exposes its app-server.
+The [OpenShell Sandbox Driver](../openshell-sandbox.md) supplies runtime files
+through revision Providers and exposes the dedicated Codex app-server.
 
-## Credential attachments
+<a id="credential-attachments"></a>
 
-For an Agent revision that uses a [credential source](../../credential-sources.md),
-the paired Credential Gateway issues one attachment per source. Compute passes
-them to the OpenShell Sandbox Driver in `credentialAttachments`. The Driver
-appends each attachment's provider name to the static `providers` list in
-`SandboxSpec`, rejecting a name outside the OCC `oce-cs-` provider shape or one
-that repeats a static provider. Startup rejects
-static `providers` entries that use the OCC shape, so operator-configured
-providers cannot impersonate a credential source. After the Harness is ready,
-Compute requires every attachment to report `ready` before activation.
+## Managed credential delivery
+
+The paired [Credential Proxy](../credential-proxy.md) configures the admitted
+Source bindings before Compute releases the Harness. With OCC TokenService,
+Proxy prepares a Provider with the delivery copy. The native OpenShell
+TokenService preview attaches its existing Provider. The Harness receives
+placeholders for those bindings. [Source support](../../credential-sources.md#implementation-status)
 
 <span id="dedicated-codex-runtime-provider"></span>
-
-For external ChatGPT authentication, the Sandbox stores account metadata but
-omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
-its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
-Harness holds its authentication failure without starting Codex or using cached state.
 
 ## Dedicated runtime providers
 
@@ -94,16 +86,31 @@ replayable Create receipt must be removed, not mutated by `ExposeService`.
 Compute replaces the fail-closed Gateway target and omits its direct Agent
 Service and Harness route. Drivers without provider transport retain Kubernetes transport.
 
-A native worker's node opens its Gateway connection. Its exposure serves
+Compute reports native OpenClaw ready only after its Gateway carries the enrolled
+node identity and completes rollout. A native worker's node opens its Gateway connection. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation has none. A missing
-service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
+service or Sandbox is gone only if `GetWorkspace` answers
 and a second read still misses it (OpenShell hides unauthorized Sandboxes as
 missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
 sweep covers Agent revisions without a current reconciliation pass and failed candidates.
 
 ## Harness observation
+
+Dedicated Codex revisions using a `credential_source` with login mode `codex_pat`
+require authentication in the serving app-server before `harnessStatus` reports
+`serving`. The Driver initializes the exact bearer-authenticated WebSocket service,
+then calls `getAuthStatus` with `includeToken: false` and `refreshToken: false`.
+It requires `authMethod: personalAccessToken`, `authToken: null` and
+`requiresOpenaiAuth: true`. Missing, mismatched or malformed authentication stays
+`starting` under the existing readiness deadline. The earlier `codex login status`
+check alone does not establish authentication in this fresh process.
+
+The check neither logs in nor refreshes credentials, and successful authentication
+is not model-inference proof. Other login modes retain their existing transport
+handshake. TLS verification, cancellation and held-startup-failure reporting remain
+in force; an unavailable WebSocket still permits the held-failure document read.
 
 OpenShell reads the phase from `GetSandbox`. A completed phase maps to `lost`
 with `HARNESS_EXITED`. An error phase, including a deleted or evicted Pod, maps
@@ -116,3 +123,16 @@ process with an exit code and a positive restart count, the Driver returns
 `restart_count` to `exitCode` and `restarts`. On first startup the Driver
 returns plain `starting`. OCC diagnostics mark a restarting Harness as a failed
 `sandbox` check while the gateway attempts the restart.
+
+## Sandbox startup refusals
+
+Check `worker.compute-prepare-failed` for the `sandbox_provision` step and one
+of these codes:
+
+- `OPENSHELL_SANDBOX_IDENTITY_MISMATCH`: The gateway returned a different Sandbox name on creation.
+- `OPENSHELL_SANDBOX_OWNERSHIP_MISMATCH`: The existing Sandbox differs from the expected Workspace, ownership metadata, or specification.
+- `OPENSHELL_HARNESS_SERVICE_INVALID`: The Harness service is missing, unexpected, or has an invalid origin, target port, or authorization mode.
+- `OPENSHELL_WORKSPACE_INITIALIZATION_FAILED`: The worker could not verify or initialize the workspace files.
+
+The event omits the exception message and provider response. Match `workId` or
+`revisionId` with `worker.completed` for the attempt outcome.

@@ -14,11 +14,10 @@ use the standalone [host token procedure](../repository-credentials/development-
 
 Create an absolute private directory outside the checkout. Place these files in it:
 
-| File                  | Contents                                                                                                                                                                                                                                                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `registry.json`       | The [canonical registry](../../reference/repository-credentials.md#canonical-platform-registry) with the real App, installation, and repository IDs and the allowed repository profiles. Each repository must have exactly one Namespace policy, with its `namespaceId` set to the literal `${OCC_INITIAL_NAMESPACE_ID}`. |
-| `private-key.pem`     | The existing RSA private key for that GitHub App, readable only by the current user.                                                                                                                                                                                                                                      |
-| `upstream-cidrs.json` | A JSON array of operator-approved IPv4 `/32` endpoints for the actual GitHub HTTPS destinations.                                                                                                                                                                                                                          |
+| File              | Contents                                                                                                                                                                                                                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `registry.json`   | The [canonical registry](../../reference/repository-credentials.md#canonical-platform-registry) with the real App, installation, and repository IDs and the allowed repository profiles. Each repository must have exactly one Namespace policy, with its `namespaceId` set to the literal `${OCC_INITIAL_NAMESPACE_ID}`. |
+| `private-key.pem` | The existing RSA private key for that GitHub App, readable only by the current user.                                                                                                                                                                                                                                      |
 
 For example, copy `deploy/examples/repository-credentials/registry.json`, replace
 its example identities, and set the literal Namespace placeholder. Each policy
@@ -31,8 +30,11 @@ Cover the addresses that both `github.com` and `api.github.com` can resolve to;
 GitHub rotates DNS answers, so one successful lookup or API request does not
 establish Git transport connectivity. Review the `git` and `api` inventories in
 [GitHub Meta](https://api.github.com/meta) when preparing the allowlist.
-Each entry must be a canonical IPv4 `/32`; broad ranges are rejected. The
-metadata also includes broader networks, and host DNS alone does not prove
+Each entry in a local endpoint array must be a canonical IPv4 `/32`. Hosted QA uses
+a separate `githubApiAndGit` object. Before it configures the worker, the installer
+checks each range against the current `api` and `git` lists from GitHub Meta. If the
+lookup fails or a range is absent, the installer stops. The metadata includes
+broader networks, and host DNS alone does not prove
 the address seen after cluster network translation. Verify the actual path in
 the selected cluster before supplying the endpoints. Update the input and
 recreate this disposable installation when provider endpoints change.
