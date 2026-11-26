@@ -522,6 +522,35 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     assert.equal(secondLookup.request().postDataJSON().sourceId, second.source.id);
     assert.equal("secretId" in secondLookup.request().postDataJSON(), false);
   });
+  await t.test("known bot Source remains usable when discovery read is unavailable", async () => {
+    // Discovery lists only readable Sources. A known channel binding remains usable with exact
+    // operate authority even when the caller can no longer discover that Source.
+    grantExactSourceOperate(fixture, namespace.id, [second.source.id]);
+    const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+    const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+    try {
+      const sourcePath = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+      const list = page.waitForResponse(
+        (result) => result.url() === sourcePath && result.request().method() === "GET",
+      );
+      const sourceField = page.locator("#approver-directory-source").locator("..");
+      await sourceField.getByRole("button", { name: "Refresh Source list", exact: true }).click();
+      const discovered = await list;
+      assert.equal(discovered.status(), 200);
+      assert.deepEqual(await discovered.json(), []);
+      assert.equal(await page.locator("#approver-directory-source").inputValue(), second.source.id);
+      const response = responseFor("known");
+      await page
+        .getByRole("combobox", { name: "Default plugin approvers people", exact: true })
+        .fill("known");
+      const lookup = await response;
+      assert.equal(lookup.status(), 200, await lookup.text());
+      assert.equal(lookup.request().postDataJSON().sourceId, second.source.id);
+    } finally {
+      restoreRead();
+      restoreOperate();
+    }
+  });
   await t.test(
     "Create stages and removes native signing bindings, then names exact denial",
     async () => {

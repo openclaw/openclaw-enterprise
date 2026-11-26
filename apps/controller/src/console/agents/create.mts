@@ -2103,6 +2103,7 @@ function renderAgentForm(
       id: "approver-directory-source",
       label: "Slack bot Credential Source for people search",
       initial: directorySource,
+      currentId: slackBotSource()?.id,
       onChange(source) {
         directorySource = source;
         directoryUsesChannelSource = source?.id === slackBotSource()?.id;
