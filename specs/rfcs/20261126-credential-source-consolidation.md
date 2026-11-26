@@ -10,87 +10,100 @@ author: stevenlee-oai
 
 ## Decision
 
-Use TokenService Credential Sources as the single credential resource that an operator can bind to an Agent or select for an authorized service operation. Replace the remaining public Namespace Secret consumers, then remove the Namespace Secret API and Console page. Credential Clients remain a separate public resource for administrator-managed OAuth client secrets and GitHub App signing keys, which TokenService uses to issue or renew Source credentials.
+OCC currently exposes Secret Driver storage as a top-level Namespace Secret resource alongside Credential Sources. Operators must choose between two ways to create, authorize, bind, and retire credentials. Direct Secret bindings also require consumers to implement a separate path outside the TokenService Source lifecycle.
 
-This removes a duplicate credential management model. It does not remove the Secret Driver, private credential storage, Compute's delivery copies, or operator-managed platform secrets.
+Move Secret Driver out of the top-level credential resource model:
 
-**Breaking change:** The pre-1.0 cutover discards old user-facing Namespace Secrets and their stored values. Users must recreate needed credentials as Sources and update their bindings. There is no automatic import or compatibility path.
+- **Operators manage Credential Sources** for credentials selected by Agents or authorized service operations.
+- **Administrators manage Credential Clients** for OAuth client secrets and GitHub App signing keys used to issue or renew Source credentials.
+- **OCC TokenService uses Secret Driver privately** to store Source and Client material. Secret Driver remains an Installation-selected Driver, but no longer exposes a separate user-managed Secret resource. Other TokenService implementations own their storage.
 
-**Tradeoff:** An explicit Gateway binding creates a usable copy outside Credential Proxy's request restrictions. Gateway namespace workload managers can mount it elsewhere, and the Gateway keeps its startup value until managed redeploy. Revocation blocks subsequent managed starts; it does not erase an existing environment. An upstream proxy needs its own delivery and withdrawal decision.
+**Breaking change:** After consumers switch, discard pre-1.0 Namespace Secrets and their values. Users must recreate credentials as Sources and update their bindings. No automatic import or compatibility path is planned.
 
-## What each component owns
+**Tradeoff:** Gateway startup delivery creates a usable copy outside Credential Proxy restrictions. Gateway Pod namespace workload managers can mount that copy, and rotation takes effect on managed redeploy. Revocation blocks later managed starts but does not erase a running Gateway's environment.
 
-| Component         | Responsibility                                                                                                                                                                                                |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Credential Source | The credential and its lifecycle, owned by the selected TokenService instance. OCC stores metadata and bindings, and authorizes exact Source operations.                                                      |
-| Credential Client | An OAuth client or GitHub App identity and its private issuance material. One Client can support multiple Sources.                                                                                            |
-| Secret Driver     | Private storage for OCC TokenService Source and Client material. Its private store is not a public Namespace Secret. Other TokenService implementations own their storage.                                    |
-| Compute Driver    | Delivery to a specific workload. Kubernetes Compute stages Gateway values in a Secret per Agent revision and deletes that copy after the revision's Pods stop or the candidate is abandoned.                  |
-| Credential Proxy  | Admitted data-plane credential delivery and any copies it owns, such as an OpenShell Provider created for an OCC-owned Source. An OpenShell-owned Source can instead use its authoritative Provider directly. |
-| Platform operator | Bootstrap and infrastructure credentials such as database URLs, OCC signing keys, and TLS keys. Kubernetes stores these separately; Deployments refer to them across Pod restarts.                            |
+## Public resources and private storage
 
-- **Public Namespace Secret:** A top-level OCC resource with its own ID, IAM, and CRUD API. Reads return metadata only.
-- **Private Secret:** Storage that OCC TokenService uses for Sources and Clients through `SecretDriver.privateSecrets`. It has no separate Namespace Secret resource or listing.
+- **Public Namespace Secret, removed:** A top-level OCC resource with its own ID, IAM, and CRUD API. Reads return metadata only.
+- **Private Secret, retained:** Storage used by OCC TokenService through `SecretDriver.privateSecrets`. Users manage its Source or Client, not a separate Secret resource.
+- **Delivery copies, retained:** Compute owns workload copies; Credential Proxy owns its delivery copies. An OpenShell-owned Source can use its authoritative Provider directly instead of a copy.
+- **Platform secrets, retained:** Operators provision database, OCC signing, and TLS credentials separately. Kubernetes Deployments keep references to those Secrets across Pod restarts.
 
-Both can use Kubernetes Secrets.
+Public and private Secrets can both use Kubernetes Secrets as their physical storage. Delivery copies may be shared or remain until cleanup succeeds.
 
-A delivery copy is not an independently user-managed credential. Some copies can be shared or retained until cleanup succeeds. Removing the Namespace Secret resource must not remove private Source or Client material, platform secrets, or Compute and Proxy copies that are still needed.
+## Consumers and recipients
 
-## Replace the remaining callers
+| Current use                                                             | Replacement                                                                           | Recipient                                    |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Slack bot/app, signing, user, relay credentials; other Gateway bindings | Explicit ready static Source in `Configuration.secretBindings`                        | Dedicated Gateway                            |
+| Slack preflight, directory, saved-ID hydration, Plugin approver lookup  | Authorized Source selected for the Channel operation                                  | OCC / Channel Driver                         |
+| Model authentication and guided provisioning                            | One model Source binding across supported providers and modes                         | Credential Proxy; Harness uses a placeholder |
+| Upstream channel proxy Basic authorization value                        | Static Source selected by `networkProxy`                                              | Envoy's proxy credential slot                |
+| Legacy Secret-backed issuer inputs                                      | Complete [approved legacy Sender retirement](20261124-credential-design-1-0/index.md) | Retired                                      |
 
-| Current caller                                                                         | Source-backed behavior                                                                                                                                                                                                                                                                          |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Slack bot/app and optional signing, user, or relay credentials; other Gateway bindings | Select a ready static Source in the same Namespace and bind it explicitly in `Configuration.secretBindings`. Worker resolves the Source and Compute delivers it only to the dedicated Gateway.                                                                                                  |
-| Slack preflight, directory lookup, saved-ID hydration, and Plugin approver lookup      | Authorize the selected Source and target operation, then use the value transiently through the Channel Driver. Bot validation and directory requests send the bot token to Slack; app-token validation checks the role locally without opening a socket. Preserve named accounts and HTTP mode. |
-| Model credentials and guided Agent provisioning                                        | Use one Source selection, binding, and authorization path across supported providers and execution modes. Model and Credential Proxy admission own provider-specific routes and presentations, including Anthropic's `x-api-key` header.                                                        |
-| Administrator-supplied upstream channel proxy authentication                           | Select a static Source for `networkProxy`; Worker authorizes/resolves it and Compute supplies only the channel egress proxy's Envoy credential slot.                                                                                                                                            |
-| Legacy prepared issuer inputs that reference public Secrets                            | Complete the [approved legacy Sender retirement](20261124-credential-design-1-0/index.md). Do not introduce a replacement Sender or weaken existing issuer evidence.                                                                                                                            |
-| Presets, provisioning, Agent revisions, repair, Stop, deletion, and Namespace teardown | Use Source references for new work and preserve or extend Source reference, withdrawal, and cleanup checks.                                                                                                                                                                                     |
-
-Modern Plugin OAuth and repository credential delivery already use Sources. This proposal changes their Slack approver lookup where applicable, not their credential ownership.
+Dedicated OpenAI credentials and Codex PATs already support Sources. Remaining model paths must use that same selection and authorization interface; provider-specific routes and headers belong to model and Proxy admission. Existing Plugin OAuth and repository delivery already use Sources.
 
 ## Authorization and delivery
 
-OCC requires the caller's exact `credential_source:operate` permission and the existing permission on the target operation. A deployment additionally requires the Agent's delegated Source grant. Check the same Namespace, Source readiness, type, selected owner instance, and recipient before admitting work; recheck authorization and owner identity across asynchronous resolution. Configuration and revisions store references, never plaintext credentials.
+For every selection, OCC checks the caller's exact `credential_source:operate` and target-operation permissions. Require Source and target to share a Namespace; check Source readiness, type, owner instance, and recipient. Deployment also requires the Agent's delegated Source grant. During deployment, Worker rechecks its work claim, both principals' grants, and owner identity across asynchronous resolution. Configuration and revisions persist references, never credential values.
 
-For Slack startup, use the submitted Gateway contract: Compute asks Worker to resolve the explicit binding, and Kubernetes Compute creates one revision-specific Secret referenced only by the Gateway container. A replacement Pod for the same revision reuses it. Compute stops that revision's Gateway Pods before deleting the copy on Stop, retirement, or abandonment. The dedicated Harness receives neither the binding nor Secret-read permissions. Embedded Source export remains unsupported.
+### Gateway example
 
-For upstream proxy authentication, extend the Compute revision context with `authorize(signal): Promise<void>` and `resolve(signal): Promise<{ value: string; version: string }>`. Pin the Source ID and TokenService instance in the revision. Compute authorizes before reuse, resolves only for the existing Envoy credential slot, and clears that slot on withdrawal or retirement. Do not inject this credential into Gateway or Harness.
+1. Alice binds a ready static Source to a Gateway environment variable. Explicit reuse is allowed; no Gateway-specific Source profile or field allowlist is required.
+2. Compute asks Worker to resolve the bound values. Worker authorizes and reads them through the selected TokenService, then returns them to Compute in memory.
+3. Kubernetes Compute stages one Secret per Agent revision. Before every managed start or retry, Compute calls Worker's authorization callback, including when reusing a staged copy. Only the Gateway container references the Secret and receives its values. The dedicated Harness receives no Gateway credential or Kubernetes Secret-read permission.
+4. A replacement Pod for the same revision reuses the Secret. On Stop, retirement, or candidate abandonment, Compute waits for that revision's Gateway Pods to stop, then deletes the copy. Embedded Source export remains unsupported.
+
+### Other consumers
+
+- **Slack validation:** Channel Driver uses authorized values transiently. Bot validation calls Slack `auth.test`; directory requests use the bot token. App-token validation checks its role locally without opening a socket. Preserve named accounts and HTTP mode.
+- **Models:** Credential Proxy enforces the admitted destination and credential presentation. Gateway export must not deliver model credentials to Harness.
+- **Upstream proxy:** Compute calls Worker's authorization and resolution callbacks, supplies the Basic authorization value only to Envoy's credential slot, and clears it on withdrawal or retirement. It must not inject the value into Gateway or Harness.
 
 ## Interface changes
 
 ### APIs
 
-Change Channel directory lookup from `secretId` to `sourceId`, keeping Namespace scope server-owned. Change `networkProxy.credentialSecretId` to `credentialSourceId`. Switch schemas, handlers, permission advice, Console callers, and generated API together. At the final removal gate, remove direct Secret Harness auth, Secret Configuration bindings, legacy issuer `secrets` inputs, the five Secret CRUD operations, and Secret permission endpoints. Give device-authorization sessions their own identifier schema before removing `SecretId`.
+- Channel directory: `secretId` → `sourceId`; Namespace scope remains server-owned.
+- Upstream proxy: `networkProxy.credentialSecretId` → `credentialSourceId`.
+- Switch schemas, handlers, permission advice, Console callers, and generated API together.
+- At the removal gate, delete Secret Harness auth, Secret Configuration bindings, legacy issuer `secrets` inputs, the five Secret CRUD operations, and Secret permission endpoints. Give device-authorization sessions their own identifier schema before deleting `SecretId`.
 
 ### IAM
 
-Reuse Source IAM and existing target operations. Remove the public Secret IAM catalog and bindings only after runtime cutover.
+Use Source IAM and existing target permissions. Remove the public Secret IAM catalog and bindings after consumer replacement.
 
 ### Database entities
 
-After consumer replacement, discard obsolete public Namespace Secret material through each record's original owning Driver, with exact backend identity and ownership checks. Keep its record and Driver methods, and block schema removal, until deletion is confirmed; retry failed or uncertain cleanup. Then remove dependent foreign keys, Secret columns, `credential_source_secrets`, `occ.secrets`, and obsolete validators in a coherent schema change. Existing configurations with Secret references require new Source bindings; do not import or convert legacy Secrets, grants, revisions, or queued work. Preserve Source deletion, withdrawal, and Namespace teardown protections, private Source/Client custody, and Compute delivery Secrets.
+1. Replace Secret references in Preset, provisioning, deployment, repair, deletion, and Namespace teardown code. Existing configurations require new Source bindings; do not convert stored Secrets, grants, revisions, or queued work.
+2. Discard only the old public material through each record's original owning Driver, using exact backend identity and ownership checks. Keep the record and Driver methods, and block schema removal, until deletion is confirmed. Retry failed or uncertain cleanup.
+3. Remove dependent foreign keys, Secret columns, `credential_source_secrets`, `occ.secrets`, and obsolete validators. Preserve Source deletion and withdrawal protections and all Source, Client, platform, and delivery material outside the approved discard.
 
 ### Driver contracts
 
-- **Channel:** Change `ChannelCredentialReader` from a Secret Driver callback to transient, authorized TokenService Source use. Keep provider checks and target/Source/owner rechecks outside the write transaction. Bot validation uses `auth.test`; app validation does not open a socket.
-- **Compute:** Keep the Gateway startup contract and replace the Secret-backed proxy context as described above. Remove `secretEnvironment` only after its remaining callers have replacements.
-- **Secret:** Keep `SecretDriver.privateSecrets` for TokenService's internal storage. Once consumers use Sources and obsolete public material is discarded, verify the selected Driver still supports private credential storage and cleanup, then remove its Namespace Secret methods.
+- **Channel:** Change `ChannelCredentialReader` from a Secret Driver callback to transient TokenService Source use. Recheck target, Source, and owner around provider I/O, outside the write transaction.
+- **Compute:** Keep Gateway startup delivery. For the upstream proxy, pin the Source ID and TokenService instance in the revision. Worker supplies `authorize(signal): Promise<void>` and `resolve(signal): Promise<{ value: string; version: string }>` in Compute's revision context. Compute authorizes before reuse and resolves only for Envoy. Remove `secretEnvironment` after its callers have replacements.
+- **Secret:** Retain `SecretDriver.privateSecrets`. After public material is discarded and private storage and cleanup are qualified, remove the Namespace Secret methods.
 
-## Delivery order and open decisions
+## Delivery order
 
-1. Complete Gateway Source delivery while preserving the existing Slack Namespace Secret path.
-2. Switch Slack validation, Configuration, directory APIs, Console callers, and generated contracts together. Qualify actual Gateway startup before declaring Slack support.
-3. Complete the generic model Source path and recipient-specific upstream proxy path. Then remove public Secrets once no supported runtime caller depends on them.
+1. Complete Gateway Source delivery while preserving the current Slack Namespace Secret path.
+2. Switch Slack validation, bindings, directory APIs, Console callers, and generated contracts together. Qualify actual Gateway Slack startup before claiming support.
+3. Complete remaining model and upstream proxy replacements, then remove public Secrets after no supported runtime caller depends on them.
 
-The remaining decisions are narrow: whether embedded/direct-only model profiles gain an admitted Proxy path or are retired; how the Envoy namespace's workload managers, credential freshness, and withdrawal are handled; and whether OpenShell-owned Gateway export is authorized and qualified, including operator certificate custody and Provider identity handling. Do not enable unqualified export or silently fall back to another owner. Existing model work must qualify supported flows, including active revision replacement, before the public Secret removal gate.
+## Open decisions
+
+- **Models:** Do embedded/direct-only profiles get an admitted Proxy path, or are they retired? Qualify remaining supported flows, including active revision replacement and Anthropic presentation, under the model contract.
+- **Envoy:** What access can namespace workload managers have to the proxy credential copy, and what are its freshness and withdrawal guarantees?
+- **OpenShell:** Can Gateway export an OpenShell-owned Source? Decide operator certificate custody, authority, and Provider identity handling, then qualify the path. Do not enable export or silently fall back before that decision.
 
 ## Simplifications
 
-Keeping the public Secret API, even without a Console page, retains two credential management models and their separate IAM and reference lifecycles. Reusing Source ownership removes that duplication without moving model or proxy credentials into Gateway delivery.
+Hiding the Secret page while retaining its API would still leave duplicate credential IAM, bindings, and lifecycle code.
 
 ## Acceptance Criteria
 
-- Exercise the real Configuration, deployment, Channel directory, and proxy callers with exact Source and target IAM. Admission denial creates no revision or unauthorized provider request. If a later Worker recheck fails, discard resolved values, stop further delivery, and clean any abandoned revision copy through Compute.
-- Register regular Agent workflow integration for PostgreSQL Worker/Compute, Gateway Slack startup, model Proxy admission, authenticated channel egress, redeploy, revocation, repair, Stop, retirement, abandonment, and Namespace teardown. Distinguish fixtures and process-environment checks from native provider use. Live Slack messages require separate authorization.
-- Before public Secret removal, verify that supported runtime callers and newly created work no longer depend on Secret CRUD, references, IAM, or persistence. A backend identity mismatch must prevent deletion; failed or uncertain cleanup must retain the record and block schema removal. Private TokenService/Client custody and Compute copies must remain intact.
+- **Authorization:** Admission denial creates no revision or unauthorized provider request. A later Worker denial discards resolved values, stops delivery, and cleans an abandoned revision copy.
+- **Real callers:** Register regular Agent workflow integration for PostgreSQL Worker/Compute, Gateway Slack startup, model Proxy admission, authenticated channel egress, repair, and Namespace teardown.
+- **Lifecycle:** Verify redeploy, revocation, Stop, retirement, abandonment, and Pod-before-Secret cleanup. Distinguish fixtures or process-environment proof from native provider use; live Slack messages require separate authorization.
+- **Removal:** Verify no supported caller or new work uses public Secret CRUD, references, IAM, or persistence. A backend identity mismatch prevents deletion; uncertain cleanup retains the record and blocks schema removal. Private Source/Client custody and Compute copies remain intact.
