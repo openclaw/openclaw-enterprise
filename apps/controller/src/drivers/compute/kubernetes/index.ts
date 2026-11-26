@@ -14310,7 +14310,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       repositoryRole !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
-    if (revision.harness.id === "openclaw" && isNativeStagedRepositoryRevision(revision)) {
+    if (isNativeStagedRepositoryRevision(revision)) {
       nativeConfiguration = repositoryRestSkillConfiguration(nativeConfiguration);
     }
     const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(

@@ -1027,6 +1027,7 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         ports: [{ from: 443, to: 443 }],
         requestPolicy: { type: "http", method: "GET", path: `/${repository}.git/info/refs` },
       }));
+      const configuration = createHarnessConfiguration(harnessId, "gpt-5");
       const makeFixture = () =>
         dedicatedFirstDeployFixture({
           images: { ...fixtureRelease, requireImmutableDigest: true },
@@ -1045,7 +1046,14 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
           revision: {
             ...nativeSandboxRevision(sandbox.id),
             harness: { id: harnessId, version: "1.0.0", mode: "dedicated", overrides: {} },
-            configuration: createHarnessConfiguration(harnessId, "gpt-5"),
+            configuration: {
+              ...configuration,
+              agents: {
+                ...configuration.agents,
+                defaults: { ...configuration.agents.defaults, skills: ["github", "slack"] },
+              },
+              skills: { entries: { github: { enabled: true } } },
+            },
             harnessAuth: auth,
             credentialSources: [
               {
@@ -1144,13 +1152,19 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       );
       fixture.revision.compute.runtimeInputs = originalInputs;
       assert.equal((await fixture.prepare()).ready, false);
+      const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
+      const [gateway] = pod.containers;
+      const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
+      const baseConfig = JSON.parse(
+        fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
+      );
+      // The Gateway supplies the model's skill catalog for either Dedicated Harness.
+      assert.equal(baseConfig.skills.entries.github.enabled, false);
+      assert.deepEqual(baseConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
+      assert.deepEqual(baseConfig.skills.load.extraDirs, [
+        "/etc/codex/skills/github-repository-rest",
+      ]);
       if (browserEnabled) {
-        const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
-        const [gateway] = pod.containers;
-        const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
-        const baseConfig = JSON.parse(
-          fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
-        );
         assert.equal(gateway.volumeMounts.find(({ name }) => name === config.name)?.readOnly, true);
         assert.equal(
           gateway.volumeMounts.find(({ name }) => name === config.name)?.mountPath,

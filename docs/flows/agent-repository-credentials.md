@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-26"
-last_updated_session: "authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6"
+last_updated_session: "authoring-run/fd01c3e0-3bce-4cdd-aa5d-9f6d48f928f3"
 ---
 
 # Agent repository credential flow
@@ -250,11 +250,10 @@ Codex checks the named profile at thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-The image installs `github-repository-rest` in Codex's admin skill directory.
-For Dedicated OpenClaw with a TokenService Git Source, `projectGatewayRevision`
-adds that skill to Gateway discovery, disables `github` by key and replaces it
-in explicit skill selections. The Gateway includes it in the worker catalog.
-The skill uses stock `gh api` and the binding placeholder.
+For a Dedicated Harness with a TokenService Git Source, `projectGatewayRevision`
+exposes `github-repository-rest` from `/etc/codex/skills` and replaces `github`
+in the Gateway catalog and explicit selections. Codex can read the replacement
+with `skills_read`. The skill uses stock `gh api` with the binding placeholder.
 
 Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
 host, path, generation and deadline before returning a bearer.
@@ -377,6 +376,8 @@ See [repository credential tests](../testing/repository-credentials.md).
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 14:13: Project the repository skill to Codex. (authoring-run/fd01c3e0-3bce-4cdd-aa5d-9f6d48f928f3 - 47627f96cdac8e6b6a0a24bae082e7da6c79491c)
 
 - 2026-11-26 12:46: Trace shared Source PR admission, delivery and skill discovery. (authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd - 4866499d13714a97fc5cade0f0d1cb915d1adbfc, authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6 - 8e891c9a583e1412aff1b7b1d0a603a55039748f)
 
