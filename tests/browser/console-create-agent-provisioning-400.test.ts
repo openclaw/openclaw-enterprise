@@ -65,7 +65,7 @@ import {
   buildSandboxInstallation,
   loadSelectedOpenShellAgentInstallation,
 } from "../integration/sandbox-driver-installation-fixture.ts";
-import { prepareDismissTap, responseTo } from "./console-action-helpers.ts";
+import { fullyInView, prepareDismissTap, responseTo } from "./console-action-helpers.ts";
 import {
   apiRequests,
   asksBeforeUnload,
@@ -1207,7 +1207,10 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   await page.getByRole("row", { name: /Created before inventory denial/ }).waitFor();
 
   const deniedForm = await fill("Denied model");
+  await page.setViewportSize({ width: 320, height: 400 });
+  await deniedForm.getByRole("heading", { level: 2 }).scrollIntoViewIfNeeded();
   revokeAdministratorGrant(fixture, ["create", "credential_source"]);
+  const previousWrites = pathRequests(requests, "POST", base).length;
   const refused = page.waitForResponse(
     (answer) => answer.url() === fixture.origin + base && answer.request().method() === "POST",
   );
@@ -1215,8 +1218,13 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   const denial = await refused;
   assert.equal(denial.status(), 403);
   const message = checked(ErrorResponse, await denial.json()).error.message;
-  await deniedForm.getByText(message, { exact: true }).waitFor();
+  assert.equal(
+    await fullyInView(deniedForm.getByText(message, { exact: true })),
+    true,
+    "Source create denial must be visible in the dialog panel",
+  );
   assert.equal(await deniedForm.getByLabel("Credential value", { exact: true }).inputValue(), "");
+  assert.equal(pathRequests(requests, "POST", base).length, previousWrites + 1);
   const inventory = await fixture.request("GET", base);
   assert.deepEqual(
     (inventory.data as { id: string }[]).map(({ id }) => id).sort(),
@@ -1234,10 +1242,12 @@ test("a lost successful Source create reply blocks another create until Refresh 
   const { fixture } = await modelSourceFixture(t);
   const namespace = await readyNamespace(fixture, "Unknown Source create");
   const base = `/namespaces/${namespace.id}/credential-sources`;
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, { browser, context: { hasTouch: true } });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const desktop = present(page.viewportSize());
+  await page.setViewportSize({ width: 320, height: 400 });
   const held = await holdRequests(t, page, fixture.origin + base, {
     method: "POST",
     afterServer: true,
@@ -1251,13 +1261,24 @@ test("a lost successful Source create reply blocks another create until Refresh 
   await form
     .getByLabel("Credential value", { exact: true })
     .fill("synthetic-source-uncertain-value");
-  await form.getByRole("button", { name: "Create Source", exact: true }).click();
+  // Review the name after entering the value, then submit from the fixed footer.
+  await form.getByRole("heading", { level: 2 }).scrollIntoViewIfNeeded();
+  await form.getByRole("button", { name: "Create Source", exact: true }).tap();
   assert.equal((await held.requested)?.status(), 201);
+  const pendingInView = await fullyInView(form.getByText("Creating Source…", { exact: true }));
+  assert.equal(await form.getByLabel("Credential value", { exact: true }).inputValue(), "");
   // The combined page must keep the Source write's guard as well as the Secret write's guard.
   await page.goBack();
   await page.waitForURL(new RegExp(`/console/secrets\\?namespace=${namespace.id}`));
+  // Check settlement from the top even when the preceding progress message was in view.
+  await form.getByRole("heading", { level: 2 }).scrollIntoViewIfNeeded();
   held.release();
-  await form.getByText(/outcome is unknown/i).waitFor();
+  const recoveryInView = await fullyInView(form.getByText(/outcome is unknown/i));
+  assert.deepEqual(
+    { pendingInView, recoveryInView },
+    { pendingInView: true, recoveryInView: true },
+    "Source write progress and lost-reply recovery must be visible in the dialog panel",
+  );
   assert.equal(await form.getByLabel("Credential value", { exact: true }).inputValue(), "");
   assert.equal(
     await form.getByRole("button", { name: "Create Source", exact: true }).isDisabled(),
@@ -1266,6 +1287,7 @@ test("a lost successful Source create reply blocks another create until Refresh 
   await form.getByLabel("Credential value", { exact: true }).fill("synthetic-source-retry-value");
   await form.locator("form").evaluate((node: HTMLFormElement) => node.requestSubmit());
   await form.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.setViewportSize(desktop);
   const create = page.getByRole("button", { name: "Create Source", exact: true });
   assert.equal(await create.getAttribute("aria-disabled"), "true");
   await create.click({ force: true });

@@ -3682,17 +3682,15 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .secret-dialog h4 {
   margin-bottom: var(--space-1);
 }
-/* Keep dismissal stationary while the content above it changes or scrolls. */
-.dialog--anchored-footer {
-  overflow: clip;
-}
+/* Keep dismissal stationary when the content and footer fit. The dialog itself can
+   scroll when its viewport cap leaves too little room for both. */
 .dialog--anchored-footer[open] {
   display: flex;
   flex-direction: column;
 }
 .dialog--anchored-footer > .dialog-content {
+  min-height: 6rem;
   overflow: auto;
-  overscroll-behavior: contain;
   scroll-padding-block: var(--space-2);
 }
 .dialog--anchored-footer > .dialog-actions {

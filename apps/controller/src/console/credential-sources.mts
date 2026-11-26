@@ -509,6 +509,7 @@ export function renderCredentialSources(context: Context) {
       value.disabled = true;
       reveal.disabled = true;
       result.replaceChildren(element("p", {}, "Creating Source…"));
+      result.scrollIntoView({ block: "nearest" });
       let created = false;
       let outcomeUnknown = false;
       let denied = false;
@@ -589,6 +590,7 @@ export function renderCredentialSources(context: Context) {
           result.replaceChildren(
             statusBlock("danger", "Source not confirmed", createFailure(cause)),
           );
+          result.scrollIntoView({ block: "nearest" });
           outcomeUnknown = ![400, 403, 404, 429, 501].includes(requestFailure(cause).status ?? 0);
           if (requestFailure(cause).status === 409) {
             const capture = () => sourceName;

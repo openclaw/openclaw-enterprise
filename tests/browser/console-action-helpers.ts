@@ -17,6 +17,19 @@ export const confirmAgentAction = (page: Page, title: string, action: "Stop" | "
     })
     .click();
 
+// A focused control or status can be inside the viewport but clipped by a scrolling panel.
+export const fullyInView = (target: Locator) =>
+  target.evaluate(
+    (node) =>
+      new Promise<boolean>((resolve) => {
+        const observer = new IntersectionObserver(([entry]) => {
+          observer.disconnect();
+          resolve(entry?.isIntersecting === true && entry.intersectionRatio === 1);
+        });
+        observer.observe(node);
+      }),
+  );
+
 // Capture the touch point after the dialog opens, while its read is still held.
 export async function prepareDismissTap(
   dialog: Locator,

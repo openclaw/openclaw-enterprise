@@ -70,7 +70,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { prepareDismissTap, responseTo } from "./console-action-helpers.ts";
+import { fullyInView, prepareDismissTap, responseTo } from "./console-action-helpers.ts";
 import { refocusHeld } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
@@ -1284,6 +1284,13 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   for (const name of ["Replace value", "Delete Secret"]) {
     assert.equal(await raceDetail.getByRole("button", { name, exact: true }).isDisabled(), true);
   }
+  const desktop = page.viewportSize();
+  assert.ok(desktop);
+  await page.setViewportSize({ width: 320, height: 150 });
+  await page.keyboard.press("Tab");
+  assert.equal(await hasFocus(readableLink), true);
+  assert.equal(await fullyInView(readableLink), true, "the focused consumer link must be visible");
+  await page.setViewportSize(desktop);
   await raceDetail.getByRole("button", { name: "Close" }).click();
 
   // A fresh read is the control: IAM now counts the hidden consumer without returning its ID.

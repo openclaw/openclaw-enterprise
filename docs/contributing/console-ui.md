@@ -37,6 +37,8 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   If loading can move the dismissal button, use `.dialog--anchored-footer`.
   Group the header and body in `.dialog-content` so a long title can scroll
   with the content. Keep `.dialog-actions` outside that scroll area.
+  On desktop, reserve a dialog height or set its bottom inset so dismissal stays
+  in place, as in `.source-create-dialog` and `.secret-detail-dialog`.
 - **Feedback.** `statusBlock(tone, label, body)` uses `info`, `success`, `warning`,
   or `danger`. Say what happened and what the person can do next. Before reporting
   success or granting access that depends on a write, verify that the response identifies
