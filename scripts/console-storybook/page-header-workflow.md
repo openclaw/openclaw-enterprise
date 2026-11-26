@@ -50,5 +50,14 @@ deployment or clipboard permissions in a real browser profile.
 ## Return to Agents while the list refreshes
 
 1. Open **Pages / Agents / Row navigation** in its own tab. Open an Agent and return with **← Agents** or browser Back. Without moving focus during the return, check that focus returns to the Agent name and its row is visible.
-2. To check a late response, use a signed-in Controller with enough Agents to scroll and a controlled delay on the return list read, or a synthetic Storybook fixture with extra rows and that delay. The stock Row navigation story has two rows and no built-in return delay. Open an Agent below the fold, then return to Agents.
-3. While the list read is pending, press Tab until **Namespace** has focus. Let the unchanged list load. Namespace must remain focused and visible, and the next Tab must continue from it. Repeat with browser Back and **← Agents** at desktop and phone widths.
+2. Sign in to a development Controller with enough Agents to scroll. Filter the Agents list, use the arrow keys to reach a row below the fold, and press Enter. Enable a browser network throttling profile with 1,500 ms latency for the return.
+3. From the top of the Agent page, press browser Back. Leave the keyboard and pointer alone until the list returns. The inert detail must stay in place. When **Still checking…** appears, it must be visible without shifting the heading or reading position. The list must restore the filter and show the focused Agent row. Repeat after scrolling the detail to Configuration, at desktop and phone widths.
+4. Repeat the slow return and press Tab until **Namespace** has focus while the list read is pending. Let the unchanged list load. Namespace must remain focused and visible, and the next Tab must continue from it. Repeat with browser Back and **← Agents** at desktop and phone widths.
+
+The stock Row navigation story has two rows and no built-in return delay. To check the slow return in the standalone story, supply extra rows and a delayed successful reply.
+
+The signed-in browser test holds the successful list response automatically. Install the Console browser test prerequisites before running it.
+
+```sh
+node --test --test-name-pattern="Back keeps the keyboard-focused Agent in view when the filtered list changes" tests/browser/console-refocus-focus.test.ts
+```
