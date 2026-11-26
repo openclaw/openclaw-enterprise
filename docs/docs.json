@@ -103,7 +103,6 @@
             "hidden": [
               "guides/deploy/eks-openshell-installation",
               "guides/README",
-              "guides/repository-credentials/openshell-read-only",
               "guides/repository-credentials/openshell-git-renewal",
               "guides/kubernetes-setup",
               "guides/deploy/quickstart-session",
@@ -293,31 +292,23 @@
                   },
                   {
                     "page": "design/credential-proxy",
-                    "label": "Credential Proxy"
-                  },
-                  {
-                    "page": "design/credential-proxy-architecture",
-                    "label": "Credential Proxy Architecture"
-                  },
-                  {
-                    "page": "reference/security/credential-proxy",
-                    "label": "Credential Proxy Threat Model"
-                  },
-                  {
-                    "page": "reference/connection-templates",
-                    "label": "Connection Templates"
+                    "label": "Credential Design"
                   },
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
                   },
                   {
-                    "page": "reference/credential-sources/managed-static",
-                    "label": "Managed Static Sources"
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
                   },
                   {
-                    "page": "reference/credential-sources/other-delivery-modes",
-                    "label": "Other Delivery Modes"
+                    "page": "design/credential-proxy-architecture",
+                    "label": "Credential Proxy Architecture"
+                  },
+                  {
+                    "page": "reference/credential-sources/managed-static",
+                    "label": "Managed Static Sources"
                   },
                   {
                     "page": "guides/credential-proxy",
@@ -326,10 +317,6 @@
                   {
                     "page": "reference/credential-sources/withdrawal",
                     "label": "Credential Withdrawal"
-                  },
-                  {
-                    "page": "reference/credential-sources/protected-inference",
-                    "label": "Protected Inference"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -383,6 +370,9 @@
               "reference/console/agent-sharing",
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
+              "reference/credential-sources/protected-inference",
+              "reference/credential-sources/protected-repository-metadata",
+              "reference/security/credential-proxy",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -506,19 +496,6 @@
                     ]
                   },
                   {
-                    "group": "Credential Gateway",
-                    "pages": [
-                      {
-                        "page": "reference/drivers/openshell-credential-gateway",
-                        "label": "OpenShell"
-                      },
-                      {
-                        "page": "reference/drivers/openshell-credential-gateway/codex-oauth-poc",
-                        "label": "OpenShell Codex OAuth PoC"
-                      }
-                    ]
-                  },
-                  {
                     "group": "Secrets",
                     "pages": [
                       {
@@ -545,7 +522,15 @@
                       },
                       {
                         "page": "reference/drivers/plugin-bundled",
-                        "label": "Bundled"
+                        "label": "Overview"
+                      },
+                      {
+                        "page": "reference/drivers/openclaw-plugin",
+                        "label": "OpenClaw"
+                      },
+                      {
+                        "page": "reference/drivers/codex-plugin",
+                        "label": "Codex"
                       }
                     ]
                   },
@@ -570,10 +555,6 @@
                         "label": "Installation"
                       },
                       {
-                        "page": "guides/repository-credentials/openshell-enrollment",
-                        "label": "OpenShell Enrollment"
-                      },
-                      {
                         "page": "reference/repository-credentials",
                         "label": "Credential Lifecycle"
                       },
@@ -582,16 +563,8 @@
                         "label": "Access Levels"
                       },
                       {
-                        "page": "reference/repository-credentials/push-ref-guardrail",
-                        "label": "Push Guardrail"
-                      },
-                      {
                         "page": "reference/repository-credentials/prepared-native-git",
-                        "label": "Native Git with a Prepared Credential"
-                      },
-                      {
-                        "page": "reference/repository-credentials/protected-openshell-git",
-                        "label": "Protected Git with OpenShell"
+                        "label": "Prepared Git (Separate)"
                       },
                       {
                         "page": "reference/public-github-reads",
@@ -626,6 +599,8 @@
             ],
             "hidden": [
               "guides/repository-credentials/team-runbook",
+              "reference/repository-credentials/protected-openshell-git",
+              "reference/repository-credentials/push-ref-guardrail",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
@@ -817,6 +792,10 @@
                     "label": "Image Upgrades"
                   },
                   {
+                    "page": "guides/deploy/production-upgrade-credentials",
+                    "label": "Credential Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/one-off-upgrades",
                     "label": "One Off Upgrades"
                   },
@@ -859,10 +838,6 @@
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
                     "label": "Local k3d Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/credential-proxy-upgrade",
-                    "label": "Migrate to Credential Proxy"
                   }
                 ]
               },
@@ -1126,10 +1101,6 @@
                     "label": "Driver Development"
                   },
                   {
-                    "page": "contributing/credential-proxy-driver",
-                    "label": "Legacy Egress Driver"
-                  },
-                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -1149,16 +1120,8 @@
                         "label": "Configuration"
                       },
                       {
-                        "page": "reference/drivers/credential-gateway",
-                        "label": "Credential Gateway"
-                      },
-                      {
                         "page": "reference/drivers/credential-proxy",
                         "label": "Credential Proxy"
-                      },
-                      {
-                        "page": "reference/drivers/credential-refresh",
-                        "label": "Credential Refresh"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -1311,10 +1274,10 @@
             ],
             "hidden": [
               "contributing/rfc-template",
+              "contributing/credential-proxy-driver",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",
-              "guides/deploy/openshell-credential-sources",
               "guides/deploy/local-openshell-images",
               "guides/deploy/local-kubernetes-tools",
               "guides/operate/local-setup-troubleshooting",
@@ -1342,6 +1305,7 @@
               "flows/agent-runtime-logs",
               "flows/platform-console",
               "flows/platform-console/agent-creation",
+              "flows/platform-console/credential-sources",
               "flows/platform-console/agent-editing",
               "flows/platform-console/agent-workspace-files",
               "flows/platform-console/agent-stop-and-deletion",
@@ -1365,7 +1329,6 @@
               "flows/openshell-managed-workload",
               "flows/credential-source-lifecycle",
               "flows/token-service-static-custody",
-              "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -1383,6 +1346,7 @@
               "flows/github-actions-testing",
               "flows/clawsweeper-dispatch",
               "flows/container-package-bootstrap",
+              "flows/release-oce",
               "flows/container-publication",
               "flows/cli-publication",
               "flows/cli-agent-browsing",
@@ -1411,7 +1375,7 @@
       "from": "/guides/deploy/local-openshell-setup/",
       "to": "/guides/deploy/local-setup/",
       "anchors": {
-        "3-enable-the-credential-and-plugin-settings": "/guides/deploy/local-setup/#3-configure-credential-gateway",
+        "3-enable-the-credential-and-plugin-settings": "/guides/deploy/local-setup/#3-prepare-model-credential-delivery",
         "remove-a-previous-quickstart": "/guides/deploy/local-cleanup/#remove-the-installation",
         "next-steps": "/guides/deploy/local-cleanup/#next-steps"
       }
@@ -1422,8 +1386,8 @@
       "anchors": {
         "bind-the-origin-before-deployment": "/guides/deploy/deploy-first-agent/#bind-the-origin-before-deployment",
         "open-the-agent-and-continue-a-chat": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
-        "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
-        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
+        "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-git-push/#5-remove-test-write-access",
+        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-git-renewal/"
       }
     },
     {
@@ -1433,7 +1397,7 @@
         "choose-a-console-deployment-action": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
         "complete-onboarding-in-the-browser": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
         "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
-        "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
+        "restore-read-only-access": "/guides/repository-credentials/openshell-git-push/#5-remove-test-write-access"
       }
     },
     {
@@ -1471,6 +1435,77 @@
         "run-it": "/contributing/documentation-hosting/#deploy-private-documentation",
         "results-and-limits": "/contributing/documentation-hosting/#verify-a-deployment",
         "files": "/contributing/documentation-hosting/#publication-source-files"
+      }
+    },
+    {
+      "from": "/reference/credential-sources/other-delivery-modes/",
+      "to": "/reference/credential-sources/protected-repository-metadata/",
+      "anchors": {
+        "rotate-a-refresh-source": "/reference/credential-sources/#request-renewal"
+      }
+    },
+    {
+      "from": "/guides/repository-credentials/openshell-enrollment/",
+      "to": "/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent",
+      "anchors": {
+        "register-the-harness-model-source-first": "/guides/deploy/deploy-first-agent/#1-select-or-register-the-model-credential",
+        "prepare-an-authenticated-local-gateway": "/reference/backends/#openshell-gateway",
+        "select-repositories-and-deploy": "/guides/repository-credentials/#set-github-app-access-for-an-openshell-agent",
+        "work-with-github-issues-and-pull-requests": "/reference/repository-credentials/prepared-native-git/#let-the-agent-open-a-draft-pull-request"
+      }
+    },
+    {
+      "from": "/guides/repository-credentials/openshell-read-only/",
+      "to": "/guides/repository-credentials/openshell-git-push/#5-remove-test-write-access",
+      "anchors": {
+        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-git-renewal/",
+        "2-stop-and-retire-the-write-grant": "/guides/repository-credentials/openshell-git-push/#5-remove-test-write-access",
+        "3-select-read-access-and-redeploy": "/guides/repository-credentials/openshell-git-push/#5-remove-test-write-access",
+        "4-verify-an-authenticated-read": "/guides/repository-credentials/openshell-git-renewal/"
+      }
+    },
+    {
+      "from": "/guides/deploy/openshell-credential-sources/",
+      "to": "/guides/deploy/credential-lifecycle/#create-or-reuse-a-static-model-source-in-the-console",
+      "anchors": {
+        "rotate-the-key": "/guides/deploy/credential-lifecycle/#replace-an-occ-tokenservice-managed-model-key",
+        "clean-up": "/reference/credential-sources/#delete-a-source"
+      }
+    },
+    {
+      "from": "/guides/deploy/credential-proxy-upgrade/",
+      "to": "/guides/deploy/production-upgrade-credentials/",
+      "anchors": {
+        "recover-from-a-partial-transition": "/guides/deploy/production-upgrade/#recover-from-a-partial-failure"
+      }
+    },
+    {
+      "from": "/reference/drivers/credential-gateway/",
+      "to": "/reference/credential-sources/"
+    },
+    {
+      "from": "/reference/drivers/credential-refresh/",
+      "to": "/reference/credential-sources/#request-renewal"
+    },
+    {
+      "from": "/reference/drivers/openshell-credential-gateway/",
+      "to": "/reference/drivers/openshell-sandbox/"
+    },
+    {
+      "from": "/reference/drivers/openshell-credential-gateway/codex-oauth-poc/",
+      "to": "/guides/deploy/credential-lifecycle/#use-a-personal-codex-login"
+    },
+    {
+      "from": "/flows/credential-source-refresh/",
+      "to": "/flows/credential-source-lifecycle/",
+      "anchors": {
+        "device-authorization-and-configuration": "/flows/credential-source-lifecycle/#device-authorization-and-configuration",
+        "6-issue-and-renew-a-github-installation-token": "/flows/credential-source-lifecycle/#issue-and-renew-a-github-installation-token",
+        "3-background-refresh": "/flows/connection-templates/#5-renew-the-grant",
+        "4-update-and-rotation": "/flows/credential-source-lifecycle/#6-update-or-retire-a-source",
+        "5-deletion": "/flows/credential-source-lifecycle/#retire-the-source",
+        "6.-oce-prepared-github-core": "/flows/agent-repository-credentials/#6-maintain-recover-and-retire-ownership",
+        "6-oce-prepared-github-core": "/flows/agent-repository-credentials/#6-maintain-recover-and-retire-ownership"
       }
     }
   ]

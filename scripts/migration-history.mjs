@@ -159,6 +159,18 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 93 && completedCount > 93) {
     return "preTokenServiceSourceBackendRef";
   }
+  if (count === 94 && completedCount > 94) {
+    return "preTokenServiceCredentialSources";
+  }
+  if (count === 95 && completedCount > 95) {
+    return "preNamespaceGitHubAppClients";
+  }
+  if (count === 96 && completedCount > 96) {
+    return "preOAuthEndpointAuthority";
+  }
+  if (count === 97 && completedCount > 97) {
+    return "preSharedGitSourceRepositoryGrants";
+  }
   if (count === completedCount) {
     return "completed";
   }

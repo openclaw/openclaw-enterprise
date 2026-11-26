@@ -4,305 +4,193 @@ kind: reference/driver
 
 # Credential Proxy Driver contract
 
+**Interface contents**
+
+- [Properties](#properties)
+- [Methods](#methods)
+- [Legacy protected egress](#legacy-protected-egress)
+
 ## Overview
 
-`CredentialProxyDriver` configures and enforces credential injection. `SandboxDriver` enforces network policy and routing. OCC coordinates compatible implementations; neither contract owns the other.
+Use `CredentialProxyDriver` with TokenService for managed Agent credentials.
+TokenService owns credential custody and lifecycle. Credential Proxy prepares
+credential delivery and enables injection only for bindings and requests admitted
+in the Agent revision. `SandboxDriver` enforces network policy and routing;
+it does not delegate network authorization to the Proxy.
 
-`LegacyEgressProxyDriver` serves protected-egress deployments. See its [walkthrough](../../contributing/credential-proxy-driver.md) and [selection rules](selection.md#select-a-protected-sender).
-
-OpenClaw Control Plane (OCC) owns authorization, bindings, execution identity, expiry, and withdrawal. TokenService acquires, stores, renews, and retires credentials. Provider adapters define scope, injection, and response rules. The Proxy enforces requests and resolves credentials.
-
-Legacy Gateway sources remain Gateway-owned; new Source custody belongs to [TokenService](../../flows/token-service-static-custody.md). When static protection is required, neither
-the Gateway nor the Proxy may declare refresh, device authorization or managed
-login tokens. Capabilities omit incompatible types. If OCC detects a mismatch
-before the Secret read, creation and adoption return 409 without reading material.
-OCC checks again after the read and refuses injection if either declaration
-changed. Refused adoption preserves the prior Gateway copy.
-Protected sources and
-repository bindings require Proxy admission; an Agent with neither needs no Proxy
-plan. An unavailable Proxy never permits Gateway fallback for a protected source.
+The separate `LegacyEgressProxyDriver` credential-egress interface is deprecated
+and pending removal. Credential Design 1.0 retires its special protected
+metadata and repository exchanges instead of migrating them. The interface
+remains in current code until removal. Credential Gateway and
+Credential Refresh selections are retired and unsupported; their exported
+legacy contracts are deprecated pending removal.
 
 ## Interface
 
 The public [contracts entry point](../../../packages/contracts/src/index.ts)
-exports `CredentialProxyDriver`, `LegacyEgressProxyDriver`, `DriverRegistration`, the
-[exchange types](../../../packages/contracts/src/credential-proxy-exchange.ts)
-and [repository delivery types](../../../packages/contracts/src/protected-repository-git.ts).
-The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts) defines both contracts.
+exports both interfaces. The [Driver source](../../../packages/contracts/src/drivers/credential-proxy/index.ts)
+defines the canonical `CredentialProxyDriver` contract, which extends `Driver`.
 
-OCC registers Sandbox with delivery; independent composition is planned. Worker and Compute call `deployProxy`, `configureDeployment`, `getDeploymentStatus`, and `removeDeployment` by revision. Optional [`notifyCredentialUpdated`](../../flows/credential-source-lifecycle.md#deliver-source-updates) takes a Source and resolver without a revision.
+### Properties
 
-OpenShell prepares admitted HTTP and managed MCP bindings with a Provider per projection. Accepted temporary MCP exceptions let bodyless legacy SSE GET and unsolicited JSON-RPC response POST reach substitution without an admitted RPC or tool match. See [Source lifecycle](../../flows/credential-source-lifecycle.md) and [implementation status](../credential-sources.md#implementation-status).
+| Property                                     | Requirement | Value and meaning                                     |
+| -------------------------------------------- | ----------- | ----------------------------------------------------- |
+| `id`, `implementation`                       | Required    | Identify the selected Driver and its implementation.  |
+| <a id="property-capability"></a>`capability` | Required    | `credential_proxy_delivery`; native managed delivery. |
 
-## Legacy protected egress
+### Methods
 
-`LegacyEgressProxyDriver` retains the `credential_proxy` selection until legacy serving is removed. Its operations are:
+| Method                                                               | Requirement | Caller and behavior                                                                                                                                                                                    |
+| -------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| <a id="method-deployproxy"></a>`deployProxy`                         | Required    | Compute prepares Proxy resources for the Namespace, revision, network policy, and injection policies; returns any required routing configuration.                                                      |
+| <a id="method-configuredeployment"></a>`configureDeployment`         | Required    | The Worker supplies the target reported by Compute, admitted bindings, exact Source resolvers, and injection policies. The Proxy rejects a mismatched target before resolving and returns projections. |
+| <a id="method-getdeploymentstatus"></a>`getDeploymentStatus`         | Required    | Compute checks the target's expected configuration, policy, serving copies, and versions without reloading or repairing them.                                                                          |
+| <a id="method-removedeployment"></a>`removeDeployment`               | Required    | Compute removes only the named target's bindings or unbound resources left by failed staging.                                                                                                          |
+| <a id="method-notifycredentialupdated"></a>`notifyCredentialUpdated` | Optional    | TokenService notifies the Proxy of an update for one Source. With no delivery resource, the Proxy does nothing. Otherwise, it resolves only when transfer is needed and confirms serving copies.       |
 
-| Member                                      | Caller, inputs and result                                                                                                                                               | Requirement                                                                                              |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `sourceControl`                             | Admission and preparation use its Backend, sender, resolver and provider identities. `assertAvailable(signal, profile?)` checks the configured counterpart.             | Required property, not a method. Discovery alone is not installed enforcement evidence.                  |
-| `bindExchange(createCredentialProxy)`       | API composition supplies a factory. Call it once with the transport's `EgressExchangeOwner`; receive only the five exchange methods. Return a binding with `close()`.   | Optional on the base interface; required to connect a request-time exchange transport.                   |
-| `bindRepositoryGit(authority)`              | Worker composition supplies `ProtectedRepositoryGitAuthority`; return a binding with `close()`.                                                                         | Optional; required for selected protected repository delivery, together with Sandbox `repositoryAccess`. |
-| `configureRevision(context)`                | Compute preparation supplies Namespace, revision, admitted plan and cancellation signal. Return `ProxyWiring` with that exact plan and nonsecret Sandbox configuration. | Required. Cannot broaden the admitted plan.                                                              |
-| `wiringStatus(context, prepared)`           | Compute observes the prepared installation. Return authenticated `EgressInstallation` evidence or `undefined`.                                                          | Required. An accepted configuration request is not sufficient evidence.                                  |
-| `verifyInstallation(context, installation)` | Compute rechecks the counterpart before release, including after recording custody. Return whether the exact evidence remains valid.                                    | Required. A stored receipt is not a readiness lease.                                                     |
-| `removeRevision(context)`                   | Revision cleanup removes the owned installation and returns a boolean completion result.                                                                                | Required; failure must not be reported as completed cleanup.                                             |
-| `policyReduction`                           | Withdrawal uses versioned `apply(context, reduction)`, then independent `observe(context, reduction)`.                                                                  | Optional on the interface; required when the plan records that capability.                               |
+OCC currently registers native delivery with Sandbox; independent composition is
+planned. OpenShell prepares admitted HTTP and managed MCP projections with a
+Provider per projection. See [current support and limits](../credential-sources.md#implementation-status).
 
-There is no `withdrawBinding` member in the legacy interface. Use OCC withdrawal
-and the admitted `policyReduction` capability, or runtime retirement, rather than
-adding a call under that older name. A reduction compares the registration,
-execution, recipient and policy generation. It cannot create, replace or expand
-access. Persist its operation identity and reduction tombstones so stale
-configuration or enrollment cannot restore removed routes. An empty retained
-route set must still enforce deny-all.
+<a id="legacy-protected-egress"></a>
 
-### Delivery profiles
+### Deprecated legacy protected egress
 
-`repositoryGitDeliveryProfile` maps a nonempty set of `github-repository`
-bindings to `github_repository`. All members must have that profile. One
-`git-write` binding maps to `repository_git` and keeps its ref restrictions.
-One installation binding maps to `github_installation` and requires positive
-counterpart confirmation. Mixed profiles, multiple legacy bindings, and standalone
-`git-read` or `git-full` do not qualify for protected delivery. If a resolved
-selection reaches protected admission without a supported profile, deploy returns
-`409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+`LegacyEgressProxyDriver` uses the `credential_proxy` capability. Do not select
+it for new workflows. Its protected exchange features are retired from 1.0. It
+is distinct from both native
+`CredentialProxyDriver` delivery and ordinary network egress.
 
-For bundled OpenShell, `github_repository` and `repository_git` require a
-mandatory pre-credentials request binding. Before release, OCE verifies the
-registration and an authenticated denial for the held launcher request.
-Installation-wide access still requires its separate preview opt-in.
+| Member               | Requirement | Retained behavior                                                                                            |
+| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
+| `sourceControl`      | Required    | Identifies the Backend, sender, resolver, and provider used by deprecated protected admission.               |
+| `configureRevision`  | Required    | Prepares the exact admitted protected plan without broadening it.                                            |
+| `wiringStatus`       | Required    | Observes authenticated installation evidence for that plan.                                                  |
+| `verifyInstallation` | Required    | Rechecks current counterpart evidence before release.                                                        |
+| `removeRevision`     | Required    | Removes the owned installation and reports confirmed cleanup.                                                |
+| `bindExchange`       | Optional    | Required by a retained request-time exchange transport.                                                      |
+| `bindRepositoryGit`  | Optional    | Required by retained protected repository delivery, together with Sandbox repository access.                 |
+| `policyReduction`    | Optional    | Required when the admitted plan records reduction; applies and independently observes a nonexpanding change. |
 
-`repositoryGitAuthorization` distinguishes exact dispatch, `online-request`,
-`request-hook-observed` and unavailable. Admission versions 4, 5 and 6 preserve
-these different guarantees. Version 3 covers protected request-time routes.
-Version 6 is an explicitly admitted bundled preview for installation scope,
-with per-start hook evidence. A hook observed at startup
-does not prove that an operator cannot later disable it.
+#### Delivery profiles
 
-Version 7 adds verified Git policy reduction to **exact dispatch**. A capable
-Driver supplies `policyReduction.version: 2` and positively verifies counterpart
-support with `assertAvailable`. Admission can then combine repository Git with
-independently admitted routes. Reduction can remove Git while preserving the exact
-recipient and other bindings. It does not convert v5 online authorization or v6
-observed hooks to exact dispatch. Existing v3–v6 admissions keep their semantics.
-The [admission source](../../../packages/occ/src/deployment-revision.ts) and
-[version checks](../../../packages/contracts/src/drivers/credential-proxy/index.ts) implement
-this support; they do not qualify stock OpenShell or any installed deployment.
+Retained admissions preserve their original guarantee: version 3 covers protected
+request-time routes, version 4 exact dispatch, version 5 online authorization,
+version 6 an observed-hook installation preview, and version 7 exact dispatch
+with verified reduction v2. Online authorization and a hook observed at startup
+do not establish exact dispatch or filtered response custody. A lost
+request-time authorization reply records possible use; do not repeat the send.
+
+#### Registration and execution release
+
+The API and Worker must match the Driver registration, admitted plan, execution,
+and authenticated installation evidence. Compute verifies the counterpart before
+releasing a retained protected execution. A stored receipt or accepted
+configuration is not current readiness evidence.
+
+#### Request-time exchange
+
+A retained transport binds `resolve`, `authorizeSend`, `beginResponse`,
+`renewResponse`, and `protectResponse` to the captured request and reply.
+Resolution does not authorize a send. `authorizeSend` rechecks current authority;
+the sender enforces its deadline at the controlled send boundary. Do not retry an
+uncertain authorized exchange.
+
+#### Installed material
+
+For retained protected Git, material installation and send authorization remain
+separate. A Provider attachment is not permission to send, and an authorization
+decision does not prove delivery or the upstream result.
+
+#### Cancellation, retries and uncertainty
+
+Preserve operation identities, deadlines, and pending outcomes across restart.
+Cancellation is not proof of remote rollback. Observe existing state before a
+new mutation; do not repeat an uncertain installation, policy reduction, or
+business exchange just to obtain a reply. Withdrawal prevents fresh authority
+but cannot undo an already authorized upstream effect.
+
+#### Request-time capacity
+
+The deprecated exchange registry keeps limits per API process. For an existing
+installation, the retained `requestCapacity` defaults are 1,024 operations,
+256 authenticating operations, 256 operations per Sandbox, 8,192 request IDs,
+and 2,048 IDs per Sandbox. Operation counts have a maximum of 8,192; ID counts
+have a maximum of 131,072. Shares cannot exceed their pools. The request-ID
+window is 30 seconds. A limit breach refuses resolution; invalid settings fail
+startup. Consult the [release-specific legacy reference](https://github.com/openclaw/openclaw-enterprise/blob/691409b2130052b4403d396dd91c7f20b468cd47/docs/reference/drivers/credential-proxy.md#request-time-capacity)
+for old configuration and resource sizing when retiring an existing deployment.
 
 ## IAM
 
-OCC authenticates and authorizes the exact resource operation through selected
-IAM. The transport authenticates its peer and captures the actual request and
-response destination. Workload headers cannot select the exchange owner,
-execution, recipient or response custody. Refuse missing or stale authority;
-do not substitute a cached allow decision.
-
-Material stays in the trusted resolver, sender or verified recipient. Workload
-configuration receives safe references or markers, not issuer inputs or provider
-tokens. Keep material out of logs, receipts and public status. A material read
-permits receipt or installation only; it does not authorize an upstream send.
-Static deployment and exchange require one provider registration whose ID and
-generation match the admitted reference, whose type matches the source, and whose
-lifecycle supports static credentials. Deployment checks again before invoking
-runtime credential provisioning and before calling the revision store. A later
-refusal cannot undo provisioning already started. Exchange pins the Proxy owner and source
-control before Secret metadata lookup, then rechecks them, the Backend, sender,
-resolver and provider before reading material. Another registration of the same
-source type cannot replace the admitted registration.
+OCC authorizes the deployer and Agent's exact Source access before admission and
+checks again before release. Each resolver supplied to `configureDeployment` is
+authorized for its binding's Source only. Keep credentials out of public status,
+logs, and receipts. Resolving a value for delivery does not authorize an upstream
+request.
 
 ## Lifecycle
 
-### Registration and execution release
+```mermaid
+sequenceDiagram
+    participant W as Worker
+    participant C as Compute
+    participant P as Credential Proxy
+    W->>C: Prepare the admitted Agent revision
+    C->>P: deployProxy
+    C->>W: Report the actual target
+    W->>P: configureDeployment with Source resolvers
+    P-->>W: Credential projections
+    W-->>C: Credential projections
+    C->>P: getDeploymentStatus
+    P-->>C: Bindings and injection policy are ready
+    C-->>W: Preparation succeeded
+    W->>C: Activate after authorization recheck
+```
 
-API and worker each construct one registration from the selected package and
-configuration. Capability objects carry their selected `id`, `implementation`
-and literal `capability`; shared hooks and `close()` belong to the registration.
-OCC records its configuration digest in the plan and compares the durable
-identity across processes and restarts.
+Compute prepares an idle Sandbox and calls `deployProxy`. It reports the actual
+target to the Worker, which binds Source resolvers to the admitted credential
+bindings and calls `configureDeployment`. Compute receives only the returned
+projections and checks `getDeploymentStatus` before the Worker releases the Agent.
+For OCC custody, the Proxy resolves the
+Source to initialize or update existing delivery copies. For native OpenShell
+custody, it attaches the authoritative Provider. TokenService commits a
+replacement before notification; a failed delivery retries the committed value
+without minting another token. Removal or withdrawal detaches the exact binding;
+TokenService retains Source custody until Source deletion.
 
-[ProtectedExecutionDriver](../../../apps/controller/src/drivers/compute/protected-execution-driver.ts)
-checks ownership, configures the plan, observes wiring, records installation
-custody, verifies it again, then enrolls the Sandbox with a fresh startup
-challenge. Release requires current committed evidence. Protected execution also
-requires Sandbox provisioning, enrollment, endpoint and status methods.
-In the bundled v6 preview, Compute may record and verify installation, then hold
-the execution while material is installed. Only a later pass that verifies policy
-and the same recipient may sign the startup release.
+## Configuration
 
-Evidence includes the exact execution and plan, sender, Sandbox, enforcement
-instance, configuration and policy hash, with `authorityScope: "execution"`.
-An online Git recipient may bind the ongoing Sandbox execution and Provider
-attachment without pinning process and network IDs. Its Driver must verify current
-runtime readiness before use or startup release. Exact-dispatch and observed-hook
-recipients still require both IDs.
-For protected static inference, the principal is the whole admitted execution,
-including sibling processes; another execution of the same Agent cannot inherit it.
-Exact-dispatch profiles require a peer key; online repository profiles instead
-require their declared recipient authorization evidence. Repository delivery
-also binds provider, attachment epoch, process and network identities. These
-fields must describe authenticated backend observations. Matching names or a
-shared registration do not prove no-bypass networking.
-
-Provider `routes` receives the resolved revision Harness configuration during
-admission. Request-time authority calls the same provider with the saved settings
-and current source, then compares the requested route with that result. A mismatch
-refuses credential delivery, send authorization, or refresh. Source registration
-never chooses the Agent's inference destination. See the [model provider contract](kubernetes-compute/model-provider.md).
-
-### Request-time exchange
-
-[API binding](../../../apps/controller/src/composition/egress-authority.ts)
-exposes `resolve`, `authorizeSend`, `beginResponse`, `renewResponse` and
-`protectResponse`. `EgressExchangeOwner.verify`, `capture` and `owns` must bind
-live transport custody, not just stored IDs.
-
-`resolve` returns eligible material evidence and injection headers, an explicit
-`ready_without_material`, or a refusal. `authorizeSend` rechecks the selected
-version and request and returns a deadline-bound decision. Match request and
-injection digests and enforce `sendStartBy` at the last controlled send boundary.
-Do not treat resolution as send permission.
-
-A provider's `classify` may synchronously report one stable rule ID (1–255) through
-its optional refusal callback. IDs must not encode request data or be reassigned.
-OCC records `classificationRule` only when no operation matches and exactly one
-refused route reports a valid ID. Accepted operations, missing or repeated reports,
-and ambiguous diagnostics provide no rule. The audit binds the authenticated
-execution, source and exact request ID without inventing an operation or accessing
-credentials. Interpretation belongs to the selected provider; the wire refusal
-remains generic. See the [diagnostic flow](../../flows/credential-source-egress.md#debugging-and-verification).
-
-Response acceptance and lease renewal remain bound to that exchange.
-`protectResponse` processes the complete response, including trailers; an
-undefined result must release no response. Positive provider rejection evidence
-identifies the rejected version; an HTTP status alone does not. Do not switch
-credentials and replay the request. See the [request flow](../../flows/credential-source-egress.md)
-for transaction and response ordering.
-
-### Installed material
-
-For repository delivery, call `recipients.observe(installation)` to obtain the
-current installation fence. Use the selected authority's `readMaterial(route,
-signal)` to read committed material. `undefined` or an `absent` result provides
-no credential; `withdrawn` and `unprepared` are distinct absence reasons.
-The request path must not issue a token to fill a miss.
-
-Before installation, call `recipients.beginInstall(route, version)` with both
-`preparationAttemptId` and `materialVersion`. Independently verify that exact
-version at the same recipient before `confirmInstall(pending)`. Preserve the
-pair through renewal. A replacement process must re-observe the recipient;
-a lost installation or confirmation remains pending and cannot be replayed or
-adopted as success. OCC stores fences and delivery facts; Token Service stores
-material. The [recipient evidence checks](../../../apps/controller/src/drivers/repo/access/protected-repository-git-installation.ts)
-require installed state and the exact attempt/version for use.
-
-Call `authorize` once for the captured request and installed version. An exact
-permit binds exchange, request digest and material, with an exclusive
-`sendStartBy`. Check before connection and before writing if setup took time.
-The `online` authority instead returns `replyBy`: deliver the allow by that
-boundary. An already authorized online request may finish after withdrawal.
-Neither decision proves delivery or the provider outcome.
-
-### Cancellation, retries and uncertainty
-
-Pass context/read/request signals to backend operations and preserve absolute
-deadlines across transport delays. Cancellation is not proof of remote rollback.
-The base revision methods do not define a universal timeout or retry policy;
-backend reconciliation must inspect owned state before another mutation.
-Never retry or renew an uncertain installation or authorized business exchange.
-A lost commit acknowledgment can leave possible use recorded. Preserve pending
-writes and their original operation identities across restarts. Fence a replaced
-worker or recipient before reconciliation; a new owner must independently observe
-the current installation. A failed read is not proof that a write failed.
-
-Reduction observation is read-only: it cannot repair or resend a mutation.
-Withdrawal blocks fresh authority but does not undo provider effects or retract
-an already authorized request. Credential retirement remains Token Service work.
+Select TokenService and a compatible Sandbox registration. The registration
+supplies `credential_proxy_delivery`; it has no separate Installation YAML
+selector. See [supported selections](selection.md#supported-selections).
 
 ## Limits
 
-Protected release currently uses bundled Kubernetes Compute. The repository
-`bindRepositoryGit` port supports Git, selected GitHub repository sets and the installation preview;
-it is not a general arbitrary-provider installation API. Its `githubRepository` and
-`githubInstallation` members are optional and scope-specific. `observedHook` is restricted to the
-bundled version 6 preview. Do not infer support from interface membership alone.
-
-Online request authorization does not establish exact dispatch or response
-custody. Those stronger guarantees require the actual enforcing sender and
-response transport. See [qualification requirements](../../testing/protected-repository-custody.md).
-
-### Request-time capacity
-
-The OCC [request registry](../../../packages/occ/src/credential-proxy.ts) keeps
-its bounds in memory, per API process. Set them with the optional
-`requestCapacity` block beside the selection's `id` and `configuration`. It
-applies to any selected Driver, bundled or packaged:
-
-```yaml
-drivers:
-  credential_proxy:
-    id: openshell-egress
-    configuration: # unchanged: the selected Driver's own settings
-    requestCapacity:
-      operations: 1024
-      authenticatingOperations: 256
-      sandboxOperations: 256
-      requestIds: 8192
-      sandboxRequestIds: 2048
-```
-
-| Field                      | Bound                                 | Default                   | Maximum | Released                                                                                                         |
-| -------------------------- | ------------------------------------- | ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
-| `operations`               | Operations in progress, all Sandboxes | 1024                      | 8192    | When the handle closes or expires and no authentication, installation, policy, Secret or receipt work is pending |
-| `authenticatingOperations` | Operations still authenticating       | A quarter of `operations` | 8192    | When peer verification settles; a verified request moves to its Sandbox's share                                  |
-| `sandboxOperations`        | Operations in progress, per Sandbox   | A quarter of `operations` | 8192    | When the handle closes or expires and no installation, policy, Secret or receipt work is pending                 |
-| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | 30 s after each ID's UUIDv7 creation time                                                                        |
-| `sandboxRequestIds`        | Request IDs, per Sandbox              | A quarter of `requestIds` | 131072  | Same                                                                                                             |
-
-Each value is a count from 1 to its maximum. An omitted share is a quarter of
-its configured pool, rounded down and at least 1. A share above its pool, a
-value out of range, a non-integer or an unknown field stops API and worker
-startup, and the chart's upgrade check, with `DRIVER_CONFIGURATION_INVALID`
-naming the field. Each operation in progress can hold its request body (up to 1
-MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
-before raising it. Restart API Pods to apply a change.
-
-A ready handle holds its operation slot until it closes or its deadline (at most
-30 s) passes. Per-Sandbox shares are keyed on the verified sender and Sandbox, so
-one Sandbox's traffic cannot spend another's. Before verification only an unverified
-Sandbox ID is known, so that budget is global. The bundled OpenShell verification is
-in memory, so the budget only bounds bursts; a Driver whose verification does I/O lets
-one Sandbox hold the budget for that latency. The default ID bounds allow about 270
-protected requests per second per API process, and about 68 per Sandbox
-(`requestIds / 30` and `sandboxRequestIds / 30`). With default shares, one Sandbox
-cannot use the whole operation cap or ID table, but four busy Sandboxes can. A request refused
-by the installation or route checks reserves no ID. From exchange capture on, its ID
-stays reserved for the whole window, even if the request is refused.
-Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority also admits at most 1024 pending exchange openings (256 for
-one Sandbox) and 1024 accepted exchanges. Its online request authorization holds
-at most 1024 decisions in flight (256 for one Sandbox) and denies the rest with
-`online_authorization_denied`.
+Supported models, Git, Plugin paths, and custody modes have separate
+[implementation limits](../credential-sources.md#implementation-status).
+OpenShell's accepted temporary MCP exceptions allow bodyless legacy SSE GET and
+unsolicited JSON-RPC response POST to reach substitution without an admitted RPC
+or tool match. A successful delivery push or Provider metadata check does not
+prove that a running Harness consumed the credential.
 
 ## Troubleshooting
 
-- No wiring evidence: inspect the authenticated counterpart and exact plan; do
-  not manufacture a receipt from desired configuration.
-- Material unavailable: check live authority and Token Service readiness. Do not
-  bypass the fence, use a rejected version or acquire on the request path.
-- Restart with pending installation or send: retain the unknown outcome and
-  inspect its original owner. Do not repeat the operation to obtain a reply.
+- If deployment remains unready, inspect the exact target, policy, binding, and
+  expected credential version. Do not treat desired configuration as receipt.
+- If update delivery fails after commit, retry the committed version through the
+  [Source API](../credential-sources.md#retry-credential-delivery).
+- If a retained legacy exchange is uncertain, inspect its original owner and
+  pending outcome; do not repeat the authorized request.
 
 ## Implementations
 
-Bundled OpenShell has profile-specific limits in its
-[Sandbox reference](openshell-sandbox.md). Installed packages can provide the
-paired capabilities through the shared contract; selection is not production
-qualification.
+The bundled OpenShell Sandbox supplies native managed delivery. Its
+[Sandbox reference](openshell-sandbox.md) and the [Source lifecycle flow](../../flows/credential-source-lifecycle.md)
+state the current scope and evidence limits.
 
 ## Related
 
-- [Implement a legacy egress Proxy Driver](../../contributing/credential-proxy-driver.md)
-- [Protected credential request flow](../../flows/credential-source-egress.md)
-- [Static exchange verification](../../testing/static-egress.md)
-- [Repository and response custody qualification](../../testing/protected-repository-custody.md)
+- [Credential design](../../design/credential-proxy.md)
+- [Credential Sources](../credential-sources.md)
+- [Sandbox Driver](sandbox.md)

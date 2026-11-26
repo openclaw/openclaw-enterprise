@@ -258,7 +258,6 @@ export function returnedAgentSnapshot(value: unknown) {
     harnessAuth: agent.harnessAuth,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
-    repositoryBindings: agent.repositoryBindings,
     repositoryAccess: agent.repositoryAccess,
     credentialSources: agent.credentialSources,
   };

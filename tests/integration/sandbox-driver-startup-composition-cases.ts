@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { OpenShellSandboxExecRequest } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type {
@@ -14,13 +13,8 @@ import type {
   SandboxNamespaceContext,
 } from "../../packages/contracts/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { makeStructuralRefusal } from "./sandbox-driver-installation-fixture.ts";
-import {
-  buildSandboxInstallation,
-  rejectsAtStartup,
-} from "./sandbox-driver-startup-installation-fixture.ts";
+import { buildSandboxInstallation } from "./sandbox-driver-startup-installation-fixture.ts";
 import type {
   kubernetesObjectClient as makeKubernetesObjectClient,
   KubernetesMutation,
@@ -30,35 +24,6 @@ import { workspaceGatewayClient } from "./sandbox-workspace-gateway-fixture.ts";
 type Installation = ReturnType<typeof buildSandboxInstallation>;
 type SandboxInput = Installation["drivers"]["sandbox"]["configuration"];
 type GatewayClient = ReturnType<typeof workspaceGatewayClient>;
-export async function verifySharedBackendComposition(t: TestContext) {
-  // An explicit hard_requirement composes like the omitted default above.
-  const configuration = buildSandboxInstallation();
-  Object.assign(configuration.drivers.sandbox.configuration.policy, {
-    landlockCompatibility: "hard_requirement",
-  });
-  const createdDriver = await loadInstallationFile(t, configuration);
-
-  assert.ok(createdDriver?.credentialGatewayDriver instanceof OpenShellCredentialGatewayDriver);
-  assert.equal(createdDriver.credentialGatewayDriver.id, "openshell-credentials");
-  assert.equal(createdDriver.installation.drivers.credential_gateway?.implementation, "openshell");
-  assert.deepEqual(createdDriver.installation.backend?.[0]?.drivers, {
-    sandbox: createdDriver.sandboxDriver?.id,
-    credential_gateway: createdDriver.credentialGatewayDriver.id,
-  });
-}
-
-export function verifyRejectedCredentialGatewayExecutable(t: TestContext): Promise<void> {
-  return rejectsAtStartup(
-    t,
-    (configuration) => {
-      Object.assign(configuration.drivers.credential_gateway.configuration, {
-        toolBinaries: ["bin/curl"],
-      });
-    },
-    makeStructuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
-  );
-}
-
 export function verifyDedicatedHarnessSelection({
   configureAgent,
 }: {

@@ -13,11 +13,13 @@ and their configured enforcement.
 When eligible **Per-repository access** choices are available and none is selected,
 **Create Agent** warns if it will request deployment without a repository policy.
 Select a repository to **Save Agent draft** with its access instead. Saving a
-draft does not deploy it. If the first deployment has no repository policy, adding
-**Per-repository access** later requires a new Agent. A saved policy that allows
-no repositories still counts as a policy. An eligible Dedicated Codex draft shows
-this conditional warning when **Deploy new version** is available and no saved
-repository policy has been confirmed.
+draft does not deploy it. For TokenService Git, you can add
+**Per-repository access** to an existing Dedicated Agent whose earlier
+deployments used only standalone model credentials. Save a GitHub App Client and
+access for each approved repository, complete **Stop**, then deploy. OCC uses or
+creates the Source during deployment. Older deployments
+with unscoped Git require a new Agent. A saved deny-all list counts as a
+repository policy.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.
@@ -40,6 +42,8 @@ deployment. Push and PR permissions remain bundled; see
 merges, and the API contract. Edit saved drafts in **Open draft** >
 **Repositories**; saved versions stay unchanged. Save or cancel edits before
 navigating away; returning to the tab can refresh the session and discard them.
+While a repository save is pending, **Account → Settings** keeps the editor open
+and asks you to wait. After a successful save, Settings opens normally.
 An interrupted save may complete; inspect the saved draft before retrying.
 
 Failed rediscovery keeps unsaved repository choices for retry and

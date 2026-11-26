@@ -150,10 +150,10 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 
 ### `authentication_states`
 
-Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-refresh.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
+Stores OCC's transient [browser OAuth connection attempts](../../flows/connection-templates.md#3-authorize-the-account-in-the-browser) and [device login](../../flows/credential-source-lifecycle.md#device-authorization-and-configuration). The `kind` determines the required fields and lifecycle. Human sign-in attempts use `human_authentication_attempts` instead.
 
 - Common: `kind`, `id`, `namespace_id`, `actor_id`, `expires_at`, `binding` (immutable workflow data)
-- `oauth_connection`: `credential_source_id`, `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scope, redirect, and issuer data
+- `oauth_connection`: `connection_template_id`, `connection_template_version`, `created_at`; `binding` holds browser, PKCE, selected scopes, redirect, and issuer data. The immutable Template version identifies the OAuth client. No Source exists yet.
 - `device_authorization`: `phase`, `next_poll_at`, `encrypted_challenge`, `private_state`, `version`; `binding` holds Agent, source, Driver, and polling-interval data
 
 OCC deletes an OAuth row when the matching browser callback consumes it. Device polling checks `version` before committing; cancellation and expiry clear the encrypted challenge and provider handle.
@@ -179,35 +179,19 @@ Stores each immutable static Bearer template version, including the exact HTTP m
 
 Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
-- `template_id`, `version`, `oauth_client_id`, `mode`
+- `template_id`, `version`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
-- `scopes`, `authorization_parameters`, `observed_metadata`
+- `scopes`, `authorization_parameters`, `observed_metadata`, `issuer_verification`
 - `destinations` (exact host, port, and path for each allowed HTTPS destination)
 - `created_at`
 
 ### `oauth_clients`
 
-Identifies an independently managed OAuth client. A connection template version defines the approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected TokenService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
 
-- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
-- `token_url`, `revocation_url`, `token_endpoint_auth_method`
-- `secret_driver_id`, `cleanup_after`, `created_at`
-
-### `saved_connections`
-
-Records the Namespace, consenting principal, approved template version and revocation status of a saved account.
-
-- `namespace_id`
-- `credential_source_id`
-- `owner_principal_id`
-- `oauth_client_id`, `client_id`, `issuer`, `token_url`
-- `recipient`, `mcp_server_url`, `resource`
-- `requested_scopes`, `granted_scopes`
-- `connection_template_id`
-- `connection_template_version`
-- `created_at`
-- `revocation_requested_by`
-- `revoked_at`
+- `id`, `kind`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_endpoint_auth_method`
+- `app_id`, `token_service_instance_id`, `cleanup_after`, `created_at`
 
 ### `connection_token_custody`
 
@@ -227,7 +211,7 @@ Binds an Installation to its selected TokenService Driver and private-store iden
 
 ### `credential_sources`
 
-Records each source owner. Gateway and Proxy sources identify their Driver. Managed static Sources identify their TokenService instance; saved accounts retain their existing Token Service owner.
+Stores the canonical static and OAuth Sources created by the selected TokenService. The optional Template ID belongs to the Source. OAuth fields preserve the original consent and revocation state. Legacy owner rows use the separate existing storage path.
 
 - `id`
 - `namespace_id`
@@ -235,10 +219,15 @@ Records each source owner. Gateway and Proxy sources identify their Driver. Mana
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service`)
-- `driver_id` (Gateway and Proxy sources)
-- `token_service_instance_id` (managed static Source owner)
+- `owner_capability` (`credential_proxy` or `token_service`)
+- `driver_id` (Proxy Sources)
+- `token_service_instance_id` (selected TokenService owner)
 - `backend_ref` (optional private, nonsecret TokenService locator)
+- `connection_template_id` (optional immutable association)
+- `oauth_provenance`, `oauth_account` (Template consent or the fixed Codex preset)
+- `oauth_consent_version`, `oauth_client_id`, `oauth_owner_principal_id`
+- `oauth_requested_scopes`, `oauth_granted_scopes`
+- `oauth_revocation_requested_by`, `oauth_revoked_at`
 - `state`
 - `created_at`
 
@@ -351,7 +340,7 @@ Links each credential source secret field to the Namespace Secret that supplied 
 
 ### `credential_withdrawals`
 
-Records one credential source withdrawn from one Agent revision, until the gateway confirms revocation.
+Records a Source withdrawal from one Agent revision until detachment is confirmed.
 
 - `namespace_id`
 - `agent_id`

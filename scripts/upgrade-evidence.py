@@ -108,12 +108,21 @@ def check_compatibility_image(result, role, reference):
         raise ValueError("compatibility image selection does not match")
 
 
+def released_history_unsupported(result):
+    measurements = result.get("measurements")
+    return isinstance(measurements, list) and any(
+        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
+        item.get("status") == "unsupported" for item in measurements
+    )
+
+
 def validate_compatibility_preview(content, candidate):
     result = compatibility_result(json.loads(content.decode("utf-8")))
     check_compatibility_image(result, "candidateController", candidate)
     released = result.get("imageDigests", {}).get("releasedController", "")
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", released):
         raise ValueError("invalid reported released controller digest")
+    return released_history_unsupported(result)
 
 
 def validate_compatibility(path, released, candidate):
@@ -121,11 +130,7 @@ def validate_compatibility(path, released, candidate):
         result = compatibility_result(json.load(source))
     check_compatibility_image(result, "releasedController", released)
     check_compatibility_image(result, "candidateController", candidate)
-    measurements = result.get("measurements")
-    if isinstance(measurements, list) and any(
-        isinstance(item, dict) and item.get("kind") == "released-controller-history" and
-        item.get("status") == "unsupported" for item in measurements
-    ):
+    if released_history_unsupported(result):
         try:
             os.write(
                 2, b"warning: The released controller rejected the candidate migration history. "

@@ -110,12 +110,16 @@ const source = {
   id: id("cs"),
   namespaceId,
   name: "Model credentials",
-  type: "openai",
-  config: {},
-  secrets: { api_key: secretRef },
-  ownerCapability: "credential_gateway",
+  type: "static",
+  config: { provider_preset: "openai" },
   state: "ready",
+  createdAt: time,
   ref: { kind: "credential_source", namespaceId, id: id("cs") },
+};
+const codexAccountSource = {
+  kind: "credential_source",
+  namespaceId,
+  id: "cs_123e4567-e89b-42d3-a456-426614174004",
 };
 const account = { id: id("sa"), namespaceId, name: "Model service account" };
 const role = {
@@ -235,23 +239,23 @@ const inferenceAgent = {
 };
 const oauthClientId = id("ccr");
 const oauthClientInput = {
+  namespaceId,
   displayName: "Example provider client",
   clientId: "example-client",
+  issuer: "https://accounts.example.com",
   tokenEndpointAuthMethod: "client_secret_basic",
 };
 const oauthClient = {
   ...oauthClientInput,
-  issuer: "https://accounts.example.com",
-  tokenUrl: "https://accounts.example.com/token",
+  kind: "oauth2",
   id: oauthClientId,
-  namespaceId,
   createdAt: time,
 };
 const connectionTemplateInput = {
   mode: "manual",
   issuer: oauthClient.issuer,
   authorizationUrl: "https://accounts.example.com/authorize",
-  tokenUrl: oauthClient.tokenUrl,
+  tokenUrl: "https://accounts.example.com/token",
   scopes: ["profile.read"],
   destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
@@ -264,13 +268,14 @@ const createdConnectionTemplate = {
     ...connectionTemplateInput,
     templateId: connectionTemplateId,
     authorizationParameters: {},
+    issuerVerification: { tokenEndpointAuthMethods: ["client_secret_basic"] },
     version: 1,
     createdAt: time,
   },
 };
 const connectionTemplate = {
   ...createdConnectionTemplate,
-  current: { ...createdConnectionTemplate.current, version: 2, oauthClientId },
+  current: { ...createdConnectionTemplate.current, version: 2 },
 };
 const mcpServerUrl = "https://tools.example.com/mcp";
 const discovered = {
@@ -279,26 +284,34 @@ const discovered = {
   issuers: [oauthClient.issuer],
   issuer: oauthClient.issuer,
   authorizationUrl: connectionTemplateInput.authorizationUrl,
-  tokenUrl: oauthClient.tokenUrl,
+  tokenUrl: connectionTemplateInput.tokenUrl,
   requestedScopes: ["profile.read"],
   resourceScopes: ["profile.read"],
   tokenEndpointAuthMethods: ["client_secret_basic"],
 };
 
-const savedAccount = {
-  issuer: oauthClient.issuer,
-  tokenUrl: oauthClient.tokenUrl,
-  oauthClientId,
-  clientId: oauthClient.clientId,
-  destinations: connectionTemplateInput.destinations,
-  requestedScopes: connectionTemplateInput.scopes,
-  grantedScopes: connectionTemplateInput.scopes,
+const oauthSourceId = "cs_123e4567-e89b-42d3-a456-426614174001";
+const oauthSource = {
+  id: oauthSourceId,
   namespaceId,
-  credentialSourceId: source.id,
-  ownerPrincipalId: userId,
+  name: "Example account",
+  type: "oauth2-refresh-token",
+  state: "ready",
   connectionTemplateId,
-  connectionTemplateVersion: 2,
   createdAt: time,
+  ref: { kind: "credential_source", namespaceId, id: oauthSourceId },
+  consent: {
+    kind: "connection_template",
+    version: 2,
+    oauthClientId,
+    ownerPrincipalId: userId,
+    requestedScopes: connectionTemplateInput.scopes,
+    grantedScopes: connectionTemplateInput.scopes,
+    issuer: oauthClient.issuer,
+    tokenUrl: connectionTemplateInput.tokenUrl,
+    clientId: oauthClient.clientId,
+    destinations: connectionTemplateInput.destinations,
+  },
 };
 
 export const parameterExamples = {
@@ -308,6 +321,7 @@ export const parameterExamples = {
   "x-occ-session-key": "s".repeat(43),
   origin: "https://console.example.com",
   oauthClientId,
+  credentialClientId: oauthClientId,
   connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
@@ -368,7 +382,7 @@ export const requestExamples = {
   },
   launchAgentNativeAdmin: {},
   confirmAgentNativeAdmin: { intentId: uuid, challenge: "c".repeat(43) },
-  startNamespaceConnection: { connectionTemplateId },
+  startNamespaceConnection: { connectionTemplateId, oauthClientId },
   createModelProvider: modelProviderSettings,
   updateModelProvider: {
     ...modelProviderSettings,
@@ -381,13 +395,12 @@ export const requestExamples = {
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
-  createOAuthClient: {
+  createCredentialClient: {
+    kind: "oauth2",
     ...oauthClientInput,
-    connectionTemplateId,
-    connectionTemplateVersion: 1,
     clientSecret: "example-client-secret",
   },
-  rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
+  rotateCredentialClient: { kind: "oauth2", clientSecret: "replacement-example-client-secret" },
   deployAgent: {},
   deployAgentFirst: {
     key: "review-1",
@@ -423,10 +436,10 @@ export const requestExamples = {
   createCredentialSource: {
     name: source.name,
     type: source.type,
-    config: {},
-    secrets: source.secrets,
+    config: source.config,
+    secret: "replace-with-your-authorized-model-key",
   },
-  updateCredentialSource: { adoption: "live", secrets: source.secrets },
+  updateCredentialSource: { secret: "replace-with-your-rotated-model-key" },
   pushAgentCredentials: { sources: [source.id] },
   createServiceAccount: { name: account.name },
   createServiceAccountCredential: {},
@@ -451,8 +464,12 @@ export const requestExamples = {
     authMethod: "api_key",
     apiKey: "replace-with-your-authorized-model-key",
   },
-  discoverAgentPlugins: { harnessId: "codex", secretRef },
-  discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
+  discoverAgentPlugins: { harnessId: "codex", credentialSource: codexAccountSource },
+  discoverAgentPluginDetails: {
+    harnessId: "codex",
+    credentialSource: codexAccountSource,
+    pluginId: plugin.id,
+  },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
   lookupChannelDirectory: { kind: "channels", secretId: secret.id, query: "engineering" },
@@ -533,9 +550,8 @@ export const responseExamples = {
     ],
   },
   listUsableConnectionTemplates: [connectionTemplate],
-  listNamespaceConnections: [savedAccount],
+  listEligibleOAuthClients: [oauthClient],
   startNamespaceConnection: {
-    credentialSourceId: source.id,
     authorizationUrl: "https://accounts.example.com/authorize?state=example-state",
     expiresAt: time,
   },
@@ -544,9 +560,9 @@ export const responseExamples = {
   createConnectionTemplate: createdConnectionTemplate,
   updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
   discoverConnectionTemplate: discovered,
-  listOAuthClients: [oauthClient],
-  createOAuthClient: oauthClient,
-  rotateOAuthClientSecret: oauthClient,
+  listCredentialClients: [oauthClient],
+  createCredentialClient: oauthClient,
+  rotateCredentialClient: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {
@@ -801,11 +817,11 @@ export const responseExamples = {
     },
     callerPermissions: { update: true, delete: true },
   },
-  listCredentialSources: [source],
+  listCredentialSources: [source, oauthSource],
   createCredentialSource: source,
-  getCredentialSource: source,
+  getCredentialSource: oauthSource,
   updateCredentialSource: source,
-  rotateCredentialSource: source,
+  rotateCredentialSource: oauthSource,
   deleteServiceAccount: { id: account.id, namespaceId, revocation: "skipped" },
   listServiceAccounts: [account],
   createServiceAccount: account,

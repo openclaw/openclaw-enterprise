@@ -48,6 +48,9 @@ simulated data.
 5. Open each **(phone)** story. The dialog is a full-width sheet on the bottom
    edge with rounded top corners. Stop, Delete and Create Secret are only as tall
    as their content. The drawer header keeps Close beside its title.
+   At short desktop and phone heights, open **Pages / Credentials / Secrets / Create** and
+   **Replace value** and use Tab and Shift+Tab to check that the focused control
+   and its outline are fully visible.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.

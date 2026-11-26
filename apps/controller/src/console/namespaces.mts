@@ -5,6 +5,7 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setDescription,
   setUnavailable,
   statusBlock,
   validateFields,
@@ -297,10 +298,21 @@ export function renderNamespaces(
       "aria-describedby": "create-namespace-description",
     });
     const title = element("h2", { id: "create-namespace-title" }, "Create Namespace");
+    const introduction = element(
+      "span",
+      {},
+      "A Namespace keeps a team's Agents and resources together, with its own access rules.",
+    );
+    const conflict = element("span", {
+      id: "create-namespace-conflict",
+      role: "alert",
+      "aria-hidden": "true",
+    });
     const description = element(
       "p",
       { id: "create-namespace-description", className: "muted" },
-      "A Namespace keeps a team's Agents and resources together, with its own access rules.",
+      introduction,
+      conflict,
     );
     // No maxlength: it counts UTF-16 code units and silently cuts a longer paste, which would
     // then be saved under the cut name. namespaceNameProblem refuses it instead (finding 2046).
@@ -313,10 +325,11 @@ export function renderNamespaces(
       placeholder: "e.g. Support",
     });
     // The name is refused at the field, as the API would refuse it, as soon as it is typed or
-    // pasted (validateFields reports the custom validity). Any edit also clears a server
-    // refusal shown on it.
+    // pasted (validateFields reports the custom validity). Editing also clears a field
+    // error returned by the server.
     const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
     name.addEventListener("input", () => {
+      showConflict();
       checkName();
       // An error already shown is rechecked too, so clearing the name swaps it for "required".
       if (name.validity.customError || name.hasAttribute("aria-invalid")) {
@@ -324,6 +337,14 @@ export function renderNamespaces(
       }
     });
     const feedback = element("div");
+    let rejectedName: string | undefined;
+    function showConflict() {
+      // A conflict describes the submitted name, but does not block another attempt.
+      const matches = name.value.trim() === rejectedName;
+      introduction.setAttribute("aria-hidden", String(matches));
+      conflict.setAttribute("aria-hidden", String(!matches));
+      setDescription(name, conflict.id, matches);
+    }
     const cancel = button("Cancel", close);
     const submit = element(
       "button",
@@ -436,11 +457,8 @@ export function renderNamespaces(
           context.onExpired();
           return;
         }
-        const keepDoneFocus = !initial && document.activeElement === done;
         if (result === "readable") {
-          access.remove();
-          dialog.setAttribute("aria-describedby", description.id);
-          done.removeAttribute("aria-describedby");
+          access.textContent = "This Namespace is in your list.";
           const openAgents = button(
             "Open Agents",
             () => {
@@ -449,8 +467,13 @@ export function renderNamespaces(
             },
             { tone: "primary" },
           );
-          actions.replaceChildren(done, openAgents);
-          (keepDoneFocus ? done : openAgents).focus();
+          // Keep Done connected and focused through a press that spans the read.
+          const retryFocused = document.activeElement === retry;
+          retry.remove();
+          actions.append(openAgents);
+          if (retryFocused) {
+            openAgents.focus();
+          }
         } else if (result === "denied" || result === "omitted") {
           if (result === "denied") {
             const guidance =
@@ -466,7 +489,7 @@ export function renderNamespaces(
             access.textContent = `This Namespace is unavailable to view. ${guidance}`;
           }
           done.classList.add("button", "button--primary");
-          actions.replaceChildren(done);
+          retry.remove();
           done.focus();
         } else {
           access.textContent = "Access could not be confirmed.";
@@ -474,7 +497,10 @@ export function renderNamespaces(
           if (!retry.isConnected) {
             actions.append(retry);
           }
-          (keepDoneFocus ? done : retry).focus();
+          // Offer Retry on the first failure without interrupting a press on Done.
+          if (document.activeElement !== done || (initial && !done.matches(":active"))) {
+            retry.focus();
+          }
         }
       }
     }
@@ -490,11 +516,15 @@ export function renderNamespaces(
       cancel.disabled = true;
       submit.disabled = true;
       submit.textContent = "Creating…";
+      const submittedName = name.value.trim();
+      rejectedName = undefined;
+      showConflict();
+      conflict.textContent = "";
       feedback.replaceChildren();
       try {
         const result = await context.request("/namespaces", {
           method: "POST",
-          body: { name: name.value.trim() },
+          body: { name: submittedName },
           expectedStatus: 201,
         });
         if (!context.isCurrent()) {
@@ -555,6 +585,11 @@ export function renderNamespaces(
           // it is edited (finding 2046).
           feedback.replaceChildren(...requestId);
           name.setCustomValidity(message);
+        } else if (error.status === 409) {
+          feedback.replaceChildren();
+          rejectedName = submittedName;
+          conflict.textContent = message;
+          showConflict();
         } else {
           refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
           feedback.replaceChildren(refusal, ...requestId);

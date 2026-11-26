@@ -363,20 +363,28 @@ export function renderSecrets(
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
     const body = element("div");
     const notice = element("div");
-    const close = button("Close", closeModal);
+    function dismiss() {
+      closeModal();
+      // Native close restores focus without scrolling. The list can reflow
+      // while the dialog is open, leaving the focused row below the viewport.
+      if (context.isCurrent() && !modal) {
+        list.querySelector(".secret-row:has(:focus-visible)")?.scrollIntoView({ block: "nearest" });
+      }
+    }
+    const close = button("Close", dismiss);
     const actions = element("div", { className: "dialog-actions" }, close);
     const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
     const header = element(
       "header",
       { className: "dialog-header" },
-      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Secrets`),
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
       heading,
     );
     dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
-      closeModal();
+      dismiss();
     });
     dismissOnBackdrop(dialog);
     dialog.addEventListener(
@@ -619,6 +627,22 @@ export function renderSecrets(
     const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
     });
+    // Native focus can reveal the caret while clipping the lower part of a multiline field.
+    const scrollValueIntoView = () => value.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (value instanceof HTMLTextAreaElement) {
+      value.addEventListener("keyup", (event) => {
+        if (
+          event.isTrusted &&
+          event.key === "Tab" &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          document.activeElement === value
+        ) {
+          scrollValueIntoView();
+        }
+      });
+    }
     const valueField = field({
       label: "Value",
       control: value,
@@ -655,6 +679,9 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
+    if (replacing && value instanceof HTMLTextAreaElement) {
+      scrollValueIntoView();
+    }
     let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

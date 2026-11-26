@@ -476,6 +476,7 @@ export class OpenShellGitRuntime {
       revision.egressPlan?.repositoryGitAuthorization === "network-policy";
     if (
       !state ||
+      state.authorization === "credential_source" ||
       (state.bindings.length !== 1 &&
         !state.bindings.every((b) => b.profile === "github-repository")) ||
       !binding ||
@@ -656,9 +657,10 @@ export class OpenShellGitRuntime {
 
   /** The prepared owner already caps material at both session and provider expiry. */
   private materialIsLive(revision: Readonly<AgentRevision>, expiresAt: string) {
-    const snapshot = revision.repositoryCredentials!;
+    const snapshot = revision.egressPlan?.repositoryGit;
     const now = Date.now();
     return (
+      snapshot !== undefined &&
       Date.parse(expiresAt) > now &&
       (snapshot.standingApprovalId !== undefined || snapshot.deadlineWallMs > now)
     );
@@ -689,10 +691,11 @@ export class OpenShellGitRuntime {
     ) {
       throw new Error("OpenShell Git requires an exact Sandbox workspace path.");
     }
+    const credentials = revision.repositoryCredentials;
     if (
-      !revision.repositoryCredentials ||
-      (revision.repositoryCredentials.deadlineWallMs <= Date.now() &&
-        !revision.repositoryCredentials.standingApprovalId)
+      !credentials ||
+      credentials.authorization === "credential_source" ||
+      (credentials.deadlineWallMs <= Date.now() && !credentials.standingApprovalId)
     ) {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
@@ -726,7 +729,6 @@ export class OpenShellGitRuntime {
     if (!pending) {
       pending = (async (): Promise<Entry> => {
         // Close a route this worker did not prepare; a failed store read can be retried.
-        const credentials = revision.repositoryCredentials!;
         const persisted = await read(() => routes.adopt(revision.id, this.instance), signal);
         if (persisted !== undefined) {
           // A restart cannot inherit this observation. Taking the fence also closed the route,
@@ -873,11 +875,8 @@ export class OpenShellGitRuntime {
     // `oce-github pr-create --draft` runs from the image's repository client; Landlock and
     // PATH must admit it only where the grant allows a draft.
     const draft = scope.repository?.draftPullRequest;
-    const resuming = revision.repositoryCredentials.deadlineWallMs <= Date.now();
-    if (
-      resuming &&
-      (!entry.opened || !entry.sandboxId || !revision.repositoryCredentials.standingApprovalId)
-    ) {
+    const resuming = credentials.deadlineWallMs <= Date.now();
+    if (resuming && (!entry.opened || !entry.sandboxId || !credentials.standingApprovalId)) {
       throw new OpenShellGitRouteBlockedError("repository_expired");
     }
     const scopedRest = "scopedRest" in scope.delivery ? scope.delivery.scopedRest : undefined;
@@ -1314,7 +1313,7 @@ export class OpenShellGitRuntime {
         observeUntil,
         Date.parse(material.expiresAt),
         Date.parse(entry.binding.expiresAt),
-        entry.revision.repositoryCredentials!.deadlineWallMs,
+        entry.revision.egressPlan!.repositoryGit!.deadlineWallMs,
       );
       expiresAt = deadline;
       policyCurrent = () =>
@@ -1486,7 +1485,12 @@ export class OpenShellGitRuntime {
     signal: AbortSignal,
   ): Promise<OpenShellGitExpiryResult> {
     const credentials = revision.repositoryCredentials;
-    if (!this.routes || !this.owner || !credentials) {
+    if (
+      !this.routes ||
+      !this.owner ||
+      !credentials ||
+      credentials.authorization === "credential_source"
+    ) {
       return "retire-runtime";
     }
     // An endpoint that binds this Provider prevents isolated detach.
@@ -2181,7 +2185,7 @@ export class OpenShellGitRuntime {
                     ? new Date(
                         Math.min(
                           Date.parse(current.expiresAt),
-                          entry.revision.repositoryCredentials!.deadlineWallMs,
+                          entry.revision.egressPlan!.repositoryGit!.deadlineWallMs,
                         ),
                       ).toISOString()
                     : current.expiresAt,

@@ -52,7 +52,10 @@ import {
 import { commandAvailable, execFile } from "./prepare-command.ts";
 import { prepareGatewayRouting } from "./routing.ts";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.ts";
-import { startObservabilityPhase } from "./observability-phase-notice.ts";
+import {
+  startImageRuntimeStartupPhase,
+  startObservabilityPhase,
+} from "./observability-phase-notice.ts";
 import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
 import { ownedName, randomSuffix, slug } from "./resource-names.ts";
 import { registryImage } from "./fixture-support-images.ts";
@@ -196,8 +199,10 @@ async function timedPreparation<Result>(
   lane: string,
   phase: string,
   operation: () => Result | Promise<Result>,
+  noticePhase = phase,
 ) {
-  const finishTiming = startObservabilityPhase(lane, phase);
+  const finishTiming =
+    startObservabilityPhase(lane, phase) ?? startImageRuntimeStartupPhase(lane, noticePhase);
   const started = performance.now();
   let succeeded = false;
   try {
@@ -1558,13 +1563,17 @@ async function prepareLane({
       // Runtime image smoke tests run apart from packaging, in three lanes, to
       // shorten CI wall time. Only the lane whose tests run the Codex sandbox
       // sets codexSeccomp; the others skip the k3d cluster it needs. The
-      // cluster needs no image, so it is created while the image builds.
+      // cluster needs no image, so it is created while the image builds or loads.
       const codexSeccomp = lanePrepare(name).codexSeccomp;
       const [built, cluster] = await timedPreparation(name, "runtime-image-build-cluster", () =>
         prepareTogether([
           () =>
-            timedPreparation(name, "runtime-image-build", () =>
-              buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
+            timedPreparation(
+              name,
+              "runtime-image-build",
+              () =>
+                buildRuntimeImages(resolvedStatePath, state, { runtime: true, runtimeArtifact }),
+              runtimeArtifact ? "image-load" : undefined,
             ),
           ...(codexSeccomp
             ? [

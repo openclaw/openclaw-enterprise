@@ -35,7 +35,7 @@ import {
 import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.ts";
@@ -191,6 +191,8 @@ export function chromiumTrustArg(certs) {
  * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
  * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
  * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
+ * When the ingress must bind first, pass a function for `upstreamPort` that returns
+ * the port once the upstream is ready and undefined otherwise.
  * Returns the leaf and close().
  */
 export async function startHttpsIngress({
@@ -236,10 +238,16 @@ export async function startHttpsIngress({
     }
   }
   const ingress = createHttpsServer({ key, cert }, (incoming, outgoing) => {
+    const targetPort = typeof upstreamPort === "function" ? upstreamPort() : upstreamPort;
+    if (targetPort === undefined) {
+      outgoing.writeHead(503, { connection: "close" });
+      outgoing.end();
+      return;
+    }
     const upstream = httpRequest(
       {
         hostname: "127.0.0.1",
-        port: upstreamPort,
+        port: targetPort,
         method: incoming.method,
         path: incoming.url,
         headers: incoming.headers,
@@ -504,6 +512,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       /** @type {import("../../packages/occ/src/index.ts").ControllerOptions} */
       const controllerOptions = {
+        ...(options.oauthIssuer === undefined ? {} : { oauthIssuer: options.oauthIssuer }),
         state: platformState,
         authenticationStateEncryptionSecret: authSecret,
         namespaceLifecycleBindings:
@@ -513,10 +522,17 @@ export async function createConsoleAppFixture(t, options = {}) {
             : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
-        ...(options.pluginSourceReader === undefined
+        modelCredentialSourcePresets: options.modelCredentialSourcePresets,
+        ...(options.modelCredentialPreset === undefined
           ? {}
-          : { pluginSourceReader: options.pluginSourceReader }),
+          : { modelCredentialPreset: options.modelCredentialPreset }),
+        ...(options.supportsCredentialDeployment === undefined
+          ? {}
+          : { supportsCredentialDeployment: options.supportsCredentialDeployment }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        ...(options.prepareStagedRepositorySource === undefined
+          ? {}
+          : { prepareStagedRepositorySource: options.prepareStagedRepositorySource }),
         ...(options.repositoryNetworkPolicyCeiling === undefined
           ? {}
           : { repositoryNetworkPolicyCeiling: options.repositoryNetworkPolicyCeiling }),
@@ -534,6 +550,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.credentialProxyCapacity === undefined
           ? {}
           : { credentialProxyCapacity: options.credentialProxyCapacity }),
+        ...(options.credentialSourceDelivery === undefined
+          ? {}
+          : { credentialSourceDelivery: options.credentialSourceDelivery }),
       };
       controller =
         options.repositoryAdmission === undefined

@@ -393,7 +393,11 @@ test(
         undefined,
         undefined,
         undefined,
-        [{ repositoryRef: f.binding.repositoryRef, profile: f.binding.profile }],
+        undefined,
+        {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: f.binding.repositoryRef, profile: f.binding.profile }],
+        },
       );
       assert.ok(
         await u.agents.compareAndSetActiveRevision(namespaceId, agentId, revisionId, prior.id),
@@ -488,7 +492,11 @@ test(
         undefined,
         undefined,
         undefined,
-        [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        undefined,
+        {
+          defaultProfile: "git-write",
+          repositories: [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+        },
       );
       return u.repositorySessions.approveStanding({
         id: randomUUID(),
@@ -1120,7 +1128,7 @@ async function assertTerminalRetirement(
         `SELECT f.source, f.enabled, a.id, a.custody, a.sealed IS NULL AS erased,
           s.session_id, s.phase, s.live_revision_id,
           s.deadline_wall_ms > extract(epoch FROM clock_timestamp())*1000 AS unexpired,
-          g.active_revision_id, g.desired_runtime_state, g.repository_bindings
+          g.active_revision_id, g.desired_runtime_state, g.repository_access
          FROM occ.prepared_github_families f
          JOIN occ.prepared_github_attempts a USING (source_id)
          JOIN occ.repository_session_attempts s ON s.admission_id=$2
@@ -1143,7 +1151,10 @@ async function assertTerminalRetirement(
     unexpired: true,
     active_revision_id: revisionId,
     desired_runtime_state: "running",
-    repository_bindings: [{ repositoryRef: "A", profile: "github-repository" }],
+    repository_access: {
+      defaultProfile: "git-write",
+      repositories: [{ repositoryRef: "A", profile: "github-repository" }],
+    },
   });
   assert.deepEqual(original[0].source.session.memberSessions, [
     { repositoryRef: "A", admissionId, sessionId },
@@ -1770,6 +1781,7 @@ async function admitProtectedSession(
           ? "online-request"
           : undefined;
   const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
+  assert.ok(repositoryCredentials && repositoryCredentials.authorization !== "credential_source");
   const admissionId = randomUUID();
   const sessionId = randomUUID();
   const revisionId = "rev_" + randomUUID();
@@ -1794,7 +1806,7 @@ async function admitProtectedSession(
     },
     sandboxDriverId: driver.id,
     egressDriverId: driver.id,
-    repositoryGit: { ...repositoryCredentials!, ...standingApproval, bindings, deadlineWallMs },
+    repositoryGit: { ...repositoryCredentials, ...standingApproval, bindings, deadlineWallMs },
     ...(mode === 7 && { policyReductionVersion: 2 as const }),
     ...(admissionAuthorization !== undefined && {
       repositoryGitAuthorization: admissionAuthorization,
@@ -1867,7 +1879,12 @@ async function admitProtectedSession(
       undefined,
       undefined,
       undefined,
-      bindings.map(({ repositoryRef, profile }) => ({ repositoryRef, profile })),
+      undefined,
+      {
+        defaultProfile: "git-write",
+        repositories:
+          bindings.map(({ repositoryRef, profile }) => ({ repositoryRef, profile })) ?? [],
+      },
     );
     if (nativePolicy && policy) {
       await u.sandboxPolicies.save(
@@ -2145,24 +2162,33 @@ for (const removal of [
             undefined,
             undefined,
             undefined,
-            [],
+            undefined,
+            { defaultProfile: "git-write", repositories: [] },
           ),
         );
       } else {
-        await f.pool.query("UPDATE occ.agents SET repository_bindings=$2::jsonb WHERE id=$1", [
+        await f.pool.query("UPDATE occ.agents SET repository_access=$2::jsonb WHERE id=$1", [
           f.revision.agentId,
           null,
         ]);
       }
       assert.deepEqual(
         (
-          await f.pool.query("SELECT repository_bindings FROM occ.agents WHERE id=$1", [
+          await f.pool.query("SELECT repository_access FROM occ.agents WHERE id=$1", [
             f.revision.agentId,
           ])
-        ).rows[0].repository_bindings,
+        ).rows[0].repository_access,
         removal.startsWith("B ")
-          ? entries.map(({ repositoryRef }) => ({ repositoryRef, profile: "github-repository" }))
-          : null,
+          ? {
+              defaultProfile: "git-write",
+              repositories: entries.map(({ repositoryRef }) => ({
+                repositoryRef,
+                profile: "github-repository",
+              })),
+            }
+          : removal === "empty selection"
+            ? { defaultProfile: "git-write", repositories: [] }
+            : null,
       );
       const denied = await selected.authorize(request(), installed, t.signal);
       const unavailable = await selected.readMaterial(installedRoute, t.signal);
