@@ -134,6 +134,12 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-credential-sources.test.ts",
       "expectedTests": [
+        "Slack Sources validate app and bot and bind Gateway-only fields during provisioning and deployment",
+        "Slack Source provisioning refuses unsupported Harness topology and delivery before custody",
+        "Slack Source provisioning rechecks exact grants after custody",
+        "Slack Source provisioning rechecks target authority before custody and provider use",
+        "Slack Source provisioning refuses a Source deleted during custody before provider use",
+        "Slack Source deployment fences embedded topology and changed Configuration",
         "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
         "standalone activation commits the prepared revision and delivers an active Source PATCH",
         "standalone activation refuses a source grant removed during preparation",

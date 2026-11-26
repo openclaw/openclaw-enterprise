@@ -1,9 +1,4 @@
-import type {
-  HarnessExecutionMode,
-  OpenClawConfigurationDocument,
-  SecretBindings,
-  SecretMetadata,
-} from "../../packages/contracts/src/index.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 
 import { nativeValues } from "./console-agents-browser-helpers.ts";
 
@@ -34,22 +29,4 @@ export function slackAgentValues(
       },
     },
   });
-}
-
-// Create options for a dedicated Agent whose two Slack tokens are bound to the Secrets `app` and
-// `bot` as env vars.
-export function slackTokenBindings(
-  app: Pick<SecretMetadata, "ref">,
-  bot: Pick<SecretMetadata, "ref">,
-): {
-  executionMode: Extract<HarnessExecutionMode, "dedicated">;
-  secretBindings: SecretBindings;
-} {
-  return {
-    executionMode: "dedicated",
-    secretBindings: {
-      SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-      SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-    },
-  };
 }

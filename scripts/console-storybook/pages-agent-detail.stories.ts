@@ -122,6 +122,7 @@ export const PluginApproversDirectoryUnavailable501 = story(
   "pluginApproversDirectoryUnavailable501",
 );
 export const PluginsAdmitted = story("pluginsAdmitted");
+export const NativeSlackSigningBinding = story("nativeSlackSigningBinding");
 export const InvalidConfiguration = {
   ...story("invalidConfiguration"),
   name: "Invalid Configuration JSON",

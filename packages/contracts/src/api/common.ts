@@ -35,6 +35,7 @@ export const ModelProviderId = Type.String({
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
+export const DeviceAuthorizationSessionId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const CredentialClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
@@ -982,14 +983,14 @@ export const UpdateAgentBody = Type.Object(
 );
 
 const ChannelDirectoryLookupFields = {
-  secretId: SecretId,
+  sourceId: CredentialSourceId,
   kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
   query: Type.Optional(Type.String({ maxLength: 200, pattern: "^[^\\u0000]*$" })),
   cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 2048, pattern: "^[^\\u0000]*$" })),
 };
 
 const ChannelDirectoryHydrationFields = {
-  secretId: SecretId,
+  sourceId: CredentialSourceId,
   kind: Type.Union([Type.Literal("users"), Type.Literal("channels")]),
   ids: Type.Array(
     Type.String({ minLength: 1, maxLength: 200, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }),

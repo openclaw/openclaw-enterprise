@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
   AgentResponse,
   ChannelDirectoryLookupResponse,
   ErrorResponse,
-  SecretResponse,
+  CredentialSourceResponse,
   type ChannelDirectoryLookupInput,
   type ChannelDirectoryResult,
   type ChannelDriver,
@@ -30,9 +32,18 @@ type ProviderResult = Omit<ChannelDirectoryResult, "candidates"> & {
   })[];
 };
 
-async function configuredController(secretDriver: ReturnType<typeof createTestSecretDriver>) {
+async function configuredController(
+  secretDriver: ReturnType<typeof createTestSecretDriver>,
+  qualified: () => boolean = () => true,
+) {
   const fixture = await createInjectedControllerFixture(
-    { secretDriver },
+    {
+      secretDriver,
+      gatewayStartupSourceDelivery: (compute, owner) =>
+        compute.id === "compute-integration" &&
+        owner instanceof OCCTokenServiceDriver &&
+        qualified(),
+    },
     {
       wrapPlatformState: (state) => state,
       invokeApplication(factory, { backendSummaries, ...options }) {
@@ -46,15 +57,54 @@ async function configuredController(secretDriver: ReturnType<typeof createTestSe
   return { fixture, request };
 }
 
+async function createDirectorySource(
+  controller: Awaited<ReturnType<typeof configuredController>>,
+  namespaceId: string,
+  secretDriver: ReturnType<typeof createTestSecretDriver>,
+  token: string,
+) {
+  const ownerController = controller.fixture.controller;
+  const state = controller.fixture.platformState;
+  assert(ownerController && state);
+  const instanceId = await ownerController.activateTokenServiceInstance(
+    "directory-owner",
+    randomUUID(),
+  );
+  const owner = new OCCTokenServiceDriver(
+    "directory-owner",
+    ownerController.installation.id,
+    secretDriver.privateSecrets,
+    instanceId,
+    state,
+  );
+  ownerController.registerDriver(owner);
+  ownerController.selectDriver("token_service", owner.id);
+  const created = await controller.request(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources`,
+    {
+      body: {
+        name: "directory-bot",
+        type: "static",
+        secret: token,
+      },
+    },
+  );
+  return checkedInjectedBody(created, 201, CredentialSourceResponse).data;
+}
+
 test("Channel directory accepts Slack's null terminal cursor without losing prior matches", async () => {
+  const secretDriver = createTestSecretDriver();
   const { controller, fixture, namespace } = await readyNamespaceFixture(
-    await configuredController(createTestSecretDriver()),
+    await configuredController(secretDriver),
     "slack-terminal-cursor",
   );
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "directory-bot", value: "xoxb-directory-fixture" },
-  });
-  const { data: secretData } = checkedInjectedBody(secret, 201, SecretResponse);
+  const source = await createDirectorySource(
+    controller,
+    namespace.id,
+    secretDriver,
+    "xoxb-directory-fixture",
+  );
   let terminalCursor: null | number = null;
   const driver = new SlackChannelDriver(async (url) => {
     const request = new URL(url instanceof Request ? url.url : url);
@@ -78,7 +128,7 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("channel", driver.id);
   const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secretData.id, kind: "channels", query: "ann" };
+  const body = { sourceId: source.id, kind: "channels", query: "ann" };
   const found = await controller.request("POST", path, { body });
   assert.deepEqual(checkedInjectedBody(found, 200, ChannelDirectoryLookupResponse).data, {
     workspaceId: "TWORKSPACE",
@@ -97,15 +147,56 @@ test("Channel directory accepts Slack's null terminal cursor without losing prio
   );
 });
 
-test("Channel directory lookup checks the exact edit target and Secret before and after reading", async () => {
+test("Slack directory refuses a non-bot Source before sending its value to Slack", async () => {
+  const secretDriver = createTestSecretDriver();
+  const { controller, fixture, namespace } = await readyNamespaceFixture(
+    await configuredController(secretDriver),
+    "slack-directory-token-role",
+  );
+  const unrelatedValue = `unrelated-static-credential-${randomUUID()}`;
+  const source = await createDirectorySource(
+    controller,
+    namespace.id,
+    secretDriver,
+    unrelatedValue,
+  );
+  let transportRequests = 0;
+  const driver = new SlackChannelDriver(async () => {
+    transportRequests += 1;
+    return Response.json({ ok: false, error: "invalid_auth" });
+  });
+  assert(fixture.controller, "bootstrap must create the controller");
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("channel", driver.id);
+
+  // Exact Source authorization permits its use, but does not identify it as a Slack bot token.
+  const refused = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/channel-directory/lookup`,
+    { body: { sourceId: source.id, kind: "users", query: "member" } },
+  );
+  const error = checkedInjectedBody(refused, 400, ErrorResponse).error;
+  assert.equal(error.code, "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED");
+  assert.equal(
+    error.message,
+    "The channel provider rejected the selected credential. Check it and retry.",
+  );
+  assert.equal(JSON.stringify(refused.body).includes(unrelatedValue), false);
+  assert.equal(transportRequests, 0, "an unrelated credential must never reach Slack transport");
+});
+
+test("Channel directory lookup checks the exact edit target and Source before and after resolution", async () => {
   const token = "synthetic-channel-directory-token";
   const secretDriver = createTestSecretDriver({ id: "secret-directory-integration" });
-  const originalWithValue = secretDriver.withValue.bind(secretDriver);
+  const originalWithValue = secretDriver.privateSecrets.withValue.bind(secretDriver.privateSecrets);
   let revokeOnRead: Restriction | undefined;
-  const controller = await configuredController(secretDriver);
+  let qualified = true;
+  const controller = await configuredController(secretDriver, () => qualified);
   const fixture = controller.fixture;
-  secretDriver.withValue = (secret, use) =>
-    originalWithValue(secret, (value) => {
+  let custodyReads = 0;
+  secretDriver.privateSecrets.withValue = (ref, use) =>
+    originalWithValue(ref, (value) => {
+      custodyReads += 1;
       if (revokeOnRead !== undefined) {
         fixture.state.restrictions.push(revokeOnRead);
         revokeOnRead = undefined;
@@ -116,17 +207,18 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   const namespace = await createNamespace(controller, "channel-directory-api");
   const configuration = await createConfiguration(controller, namespace.id);
   await fixture.markNamespaceReady(namespace.id);
-  const secret = await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "channel-bot", value: token },
-  });
-  const { data: secretData } = checkedInjectedBody(secret, 201, SecretResponse);
+  const source = await createDirectorySource(controller, namespace.id, secretDriver, token);
   const agent = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: { name: "directory-agent", configurationId: configuration.id },
   });
   const { data: agentData } = checkedInjectedBody(agent, 201, AgentResponse);
 
   const path = `/namespaces/${namespace.id}/channel-directory/lookup`;
-  const body = { secretId: secretData.id, kind: "users", query: "mem" };
+  const body = { sourceId: source.id, kind: "users", query: "mem" };
+  const obsoleteBody = await controller.request("POST", path, {
+    body: { secretId: source.id, kind: "users", query: "mem" },
+  });
+  assert.equal(obsoleteBody.status, 400, "the cutover contract accepts sourceId, not secretId");
   const unavailable = await controller.request("POST", path, { body });
   assert.equal(checkedInjectedBody(unavailable, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
 
@@ -168,7 +260,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   assert.equal(JSON.stringify(created.body).includes(token), false);
   assert.equal(providerCalls, 1);
   const hydrated = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123", "U999"] },
+    body: { sourceId: source.id, kind: "users", ids: ["U123", "U999"] },
   });
   assert.deepEqual(
     checkedInjectedBody(hydrated, 200, ChannelDirectoryLookupResponse).data,
@@ -194,7 +286,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   assert.deepEqual(longQueryError.details, [{ path: "/query", code: "TOO_LONG" }]);
   // A string array declared uniqueItems names the rule, not just an unsupported value.
   const repeatedIds = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123", "U123"] },
+    body: { sourceId: source.id, kind: "users", ids: ["U123", "U123"] },
   });
   const repeatedIdsError = checkedInjectedBody(repeatedIds, 400, ErrorResponse).error;
   assert.equal(
@@ -205,7 +297,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   // At most 20 IDs are hydrated in one request.
   const tooManyIds = await controller.request("POST", path, {
     body: {
-      secretId: secretData.id,
+      sourceId: source.id,
       kind: "users",
       ids: Array.from({ length: 21 }, (_, index) => `U${index}`),
     },
@@ -248,20 +340,12 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     expected,
   );
 
-  const selectedSecretReads = () =>
-    secretDriver.calls.filter(
-      (call) =>
-        call.operation === "withValue" &&
-        call.secret.namespaceId === namespace.id &&
-        call.secret.id === secretData.id,
-    ).length;
-
-  // Authorization denials must occur before reading the selected Secret or calling the provider.
+  // Authorization denials must occur before resolving the selected Source or calling the provider.
   for (const [resourceKind, resourceId, action, editTarget] of [
     ["agent", namespace.id, "create", {}],
     ["agent", agentData.id, "update", { agentId: agentData.id }],
     ["configuration", configuration.id, "update", { configurationId: configuration.id }],
-    ["secret", secretData.id, "operate", {}],
+    ["credential_source", source.id, "operate", {}],
   ] as const) {
     const restriction: Restriction = {
       id: `deny-directory-${resourceKind}-${action}`,
@@ -272,19 +356,19 @@ test("Channel directory lookup checks the exact edit target and Secret before an
       effect: "deny",
     };
     fixture.state.restrictions.push(restriction);
-    const readsBefore = selectedSecretReads();
+    const readsBefore = custodyReads;
     const callsBefore: number = providerCalls;
     const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
     assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(selectedSecretReads(), readsBefore);
+    assert.equal(custodyReads, readsBefore);
     assert.equal(providerCalls, callsBefore);
     fixture.state.restrictions.pop();
   }
 
-  // A restriction installed during the selected Secret read must still block the provider.
+  // A restriction installed during TokenService custody resolution must still block the provider.
   for (const [resourceKind, resourceId, action, editTarget] of [
     ["agent", agentData.id, "update", { agentId: agentData.id }],
-    ["secret", secretData.id, "operate", {}],
+    ["credential_source", source.id, "operate", {}],
   ] as const) {
     revokeOnRead = {
       id: `revoke-directory-after-read-${resourceKind}`,
@@ -294,18 +378,26 @@ test("Channel directory lookup checks the exact edit target and Secret before an
       action,
       effect: "deny",
     };
-    const readsBefore = selectedSecretReads();
+    const readsBefore = custodyReads;
     const callsBefore: number = providerCalls;
     const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
     assert.equal(denied.status, 403, JSON.stringify(denied.body));
-    assert.equal(selectedSecretReads(), readsBefore + 1);
+    assert.equal(custodyReads, readsBefore + 1);
     assert.equal(providerCalls, callsBefore);
     fixture.state.restrictions.pop();
   }
 
+  // An unqualified owner/Compute pair is refused before usable Source custody is read.
+  qualified = false;
+  const beforeQualification = { custodyReads, providerCalls };
+  const unqualified = await controller.request("POST", path, { body });
+  assert.equal(unqualified.status, 409, JSON.stringify(unqualified.body));
+  assert.deepEqual({ custodyReads, providerCalls }, beforeQualification);
+  qualified = true;
+
   providerResult = { workspaceId: "T123", candidates: [], complete: false, nextCursor: "more" };
   const incompleteHydration = await controller.request("POST", path, {
-    body: { secretId: secretData.id, kind: "users", ids: ["U123"] },
+    body: { sourceId: source.id, kind: "users", ids: ["U123"] },
   });
   assert.equal(
     checkedInjectedBody(incompleteHydration, 503, ErrorResponse).error.code,

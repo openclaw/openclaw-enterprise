@@ -1,6 +1,6 @@
 # Gateway startup credentials
 
-Kubernetes Compute delivers explicitly selected static OCC TokenService Sources to dedicated Gateways. Configure the exact Source in [Configuration secret bindings](../../configuration/secrets.md#secret-bindings); Slack credential inputs continue to use canonical Namespace Secrets.
+Kubernetes Compute delivers explicitly bound ready static OCC TokenService Credential Sources to dedicated Gateways, including Slack credentials. Configure each exact same-Namespace Source in [Configuration secret bindings](../../configuration/secrets.md#secret-bindings).
 
 The Worker checks the deploying actor's and Agent service principal's exact grants and the revision's selected owner before and after reading TokenService. Compute receives the value and owner version in memory. It creates `gateway-secrets-<agent-hash>-<revision-hash>` in the Gateway Pod namespace, stores values in Kubernetes Secret `data`, and records Source versions by environment destination in the private `openclaw.dev/gateway-source-versions` annotation. The Gateway Deployment uses `env[].valueFrom.secretKeyRef`. The Configuration and Pod template contain no value; base64 encoding is not encryption. Namespace workload managers can mount the Secret and are trusted with its contents.
 
