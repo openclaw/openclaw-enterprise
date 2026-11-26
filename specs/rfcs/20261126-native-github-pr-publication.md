@@ -13,7 +13,7 @@ author: stevenlee-oai
 
 ## Summary
 
-Use stock `gh api` to create a pull request through one explicit GitHub REST allowlist entry. OpenClaw Control Plane (OCC) authorizes the target when it admits the Agent revision; OpenShell enforces the saved rule and Credential Proxy injects the existing shared GitHub App installation token. Publication requires Write access to the target, Namespace permission to create a pull request, and at least Read access to every repository covered by the token.
+Use stock `gh api` to create a pull request through one explicit GitHub REST allowlist entry. OpenClaw Control Plane (OCC) authorizes the target when it admits the Agent revision. OpenShell enforces the saved rule, and Credential Proxy injects the existing shared GitHub App installation token. Publication requires the Agent's Write grant on the target, the Source's verified `pull_requests:write` permission, and Namespace repository policy that allows creation. The Agent needs Read or Write on every repository covered by the token.
 
 ## Motivation
 
@@ -43,6 +43,8 @@ OCC freezes the exact network and credential-injection matches at admission. The
 
 The Agent uses stock `gh api` for the REST operation and the managed Supervisor trust bundle for TLS. Dedicated Codex already projects the binding's inert `GITHUB_TOKEN`, which `gh` accepts. Dedicated OpenClaw can pass the same placeholder from its trusted worker data as `GH_TOKEN` for one command. Credential Proxy substitutes the current installation token from the same Source and Provider used by Git. The token remains in the Proxy. This proposal covers one REST operation.
 
+For revisions using the shared Source, the Gateway makes one managed Repository skill available to Dedicated Codex and Dedicated OpenClaw only when the saved revision admits pull request creation. The skill guides the Agent to the approved `gh api` command and payload.
+
 Stock OpenShell can inject the installation token on matching plaintext HTTP on port 443. Its executable match also includes descendants of `/usr/local/bin/gh`. Both temporary exceptions are accepted for this exact publication route. `gh` uses verified HTTPS in the supported flow. Track removal against native TLS-only and socket-opening executable enforcement. Qualify the selected Proxy against the exact route before enabling it on that pair.
 
 GitHub interprets the request body. This operation also accepts an `issue` field that creates a pull request from an existing issue in the target repository, as it did in the earlier delivery path. Review that operation scope before enabling the route. The Source-wide Read check addresses private fork heads covered by the token.
@@ -61,4 +63,5 @@ Extend the Repo Driver's existing policy compilation to produce an eligible publ
 
 - After [shared Source subset admission](https://github.com/openclaw/openclaw-enterprise/pull/7346) is available, deploy two Agents sharing a finite Source for repositories A and B through the normal Agent workflow. With A Write and B Read, the first Agent's stock `gh api` creates a pull request in A. With only A Write, the second Agent can use admitted Git transport for A, but its publication request is denied before it reaches the origin.
 - A Read target or an effective permission below `pull_requests:write` grants no publication route. After normal Git withdrawal or Stop, the affected Agent has no publication route. A peer Agent can continue to use its authorized route on the same Source.
-- Verify the publication rule with the real Credential Proxy and the bundled `gh` binary. Exercise a wrong repository path, method, host, and a binary outside the accepted executable match. Record the selected pair's behavior for matching plaintext and descendants. Qualify both Dedicated Codex and Dedicated OpenClaw. A live GitHub publication check requires an authorized disposable repository and branches.
+- Verify the publication rule with the real Credential Proxy and the bundled `gh` binary. Exercise a wrong repository path, method, host, and a binary outside the accepted executable match. Record the selected pair's behavior for matching plaintext and descendants. A live GitHub publication check requires an authorized disposable repository and branches.
+- On Dedicated Codex and Dedicated OpenClaw, give an Agent with publication authority only the goal of opening a draft pull request. Verify each Agent discovers the managed skill and creates the draft in the authorized disposable repository through the admitted route. Verify one managed skill is visible with publication authority and zero publication skills are visible in the native Git-only catalog.
