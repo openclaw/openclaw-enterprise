@@ -1,14 +1,15 @@
 import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type { Page } from "playwright";
+import type { Page, Response } from "playwright";
 
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 import type { Restriction } from "../../packages/contracts/src/index.ts";
 
 import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   apiRequests,
@@ -17,6 +18,7 @@ import {
   expectReachableReason,
   fileBrowser,
   holdRequests,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -63,7 +65,7 @@ const AGENT_CONFIGURATION_READ_DENIED =
 // A member who can read the Namespace's Agents and Configurations but change nothing.
 const READER = "save-refusal-reader";
 function createReader(
-  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  fixture: Pick<Awaited<ReturnType<typeof createConsoleAppFixture>>, "createNamespaceMember">,
   namespace: Pick<NamespaceWire, "id">,
 ) {
   return fixture.createNamespaceMember(READER, namespace.id, AGENT_READ);
@@ -71,11 +73,7 @@ function createReader(
 
 async function readOnlyMember(t: TestContext, name: string, slack = false) {
   const prepared = slack ? await createSlackSourceConsoleFixture(t, name) : undefined;
-  const fixture = prepared?.fixture ?? (await createConsoleAppFixture(t));
-  if (!prepared) {
-    await fixture.bootstrap();
-  }
-  const namespace = prepared?.namespace ?? (await fixture.createNamespace(name, { ready: true }));
+  const { fixture, namespace } = prepared ?? (await createReadyConsoleNamespace(t, name));
   const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model-key");
   const app = prepared ? (await prepared.enroll(`${name} app token`, "xapp")).source : undefined;
   const bot = prepared ? (await prepared.enroll(`${name} bot token`, "xoxb")).source : undefined;
@@ -155,10 +153,17 @@ const configurationSaves = [
       const dialog = page.getByRole("dialog", { name: "Edit Slack" });
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
-      return async () => {
+      return async (response: Response, configurationId: string) => {
+        const body: unknown = await response.json();
+        assert.ok(isRecord(body) && isRecord(body.meta));
+        const { requestId } = body.meta;
+        assert.ok(typeof requestId === "string");
+        assert.match(requestId, /^req_\S+$/);
+        assert.match(configurationId, /^cfg_\S+$/);
         await dialog
           .getByText(
-            /^Not authorized: this needs Configuration update on Configuration cfg_.+\. Ask an Installation administrator to grant it\. Request ID: req_/,
+            `Not authorized: this needs Configuration update on Configuration ${configurationId}. Ask an Installation administrator to grant it. Request ID: ${requestId}`,
+            { exact: true },
           )
           .waitFor();
         assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
@@ -180,8 +185,9 @@ for (const c of configurationSaves) {
     );
     const refused = refusedPatch();
     const check = await c.save(page);
-    assert.equal((await refused).status(), 403);
-    await check();
+    const response = await refused;
+    assert.equal(response.status(), 403);
+    await check(response, agent.configurationId);
     const after = (await fixture.request("GET", configurationPath)).data;
     assert.equal(after.generation, before.generation);
   });
@@ -190,9 +196,7 @@ for (const c of configurationSaves) {
 // A member who can only read the Configuration sees what the saved document runs with, but no
 // toggle takes an edit no Save could keep; the reason is linked to each toggle.
 test("a member who can only read the Configuration sees the collaboration and safety settings unavailable", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Safety Reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Safety Reader");
   const agent = await fixture.createAgent(namespace.id, "Safety Reader", {
     ...nativeValues("reader"),
     messages: { queue: { allowCollaborativeSteering: false } },
@@ -595,9 +599,7 @@ const readRefusals: {
 
 for (const c of readRefusals) {
   test(`a refused read before saving the ${c.name} names read access`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Read ${c.tab}`);
     const secret = await fixture.createSecret(
       namespace.id,
       "Protected harness association",
@@ -710,9 +712,7 @@ for (const c of readRefusals) {
 
 // Saving a workspace file is an Agent operate action; its refusal names that grant.
 test("a refused workspace file save names Agent operate", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Workspace Refusal", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Workspace Refusal");
   const agent = await fixture.createAgent(namespace.id, "Workspace Refusal", nativeValues("ws"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
@@ -752,9 +752,7 @@ const OPERATE_REASON = WORKSPACE_SAVE_DENIED;
 // up front, its description names the grant, the files stay readable but not editable, and
 // activating Save sends nothing.
 test("a member without Agent operate sees workspace Saves unavailable with the reason", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Workspace Reader", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Workspace Reader");
   const agent = await fixture.createAgent(namespace.id, "Workspace Reader", nativeValues("ws"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const member = await createReader(fixture, namespace);
@@ -834,9 +832,7 @@ async function expectOperateControls(page: Page, allowed: boolean) {
 // Logs remembers a status denial and every later Logs visit rereads the permission answer from
 // the real API and IAM policy; `operate` grants or removes Agent operate there.
 async function operateScenario(t: TestContext, name: string) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("ws-operate"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const member = await createReader(fixture, namespace);
@@ -1179,9 +1175,7 @@ for (const reply of [
 // and permit one explicit retry after the dependency recovers.
 for (const c of readRefusals) {
   test(`a transient read before saving the ${c.name} retains the editor for explicit retry`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Transient save read", { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Transient save read");
     const agent = await fixture.createAgent(
       namespace.id,
       "Transient save Agent",

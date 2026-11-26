@@ -14,7 +14,8 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 
 import { apiErrorResponse } from "../helpers/api-error-response.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   accessBindingPostRequests,
@@ -25,6 +26,7 @@ import {
   expectNoText,
   expectReachableReason,
   holdRequests,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -50,10 +52,6 @@ type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type Requests = ReturnType<typeof apiRequests>;
 type Viewport = NonNullable<BrowserContextOptions["viewport"]>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function record(value: unknown, message: string): Record<string, unknown> {
   assert.ok(isRecord(value), message);
   return value;
@@ -69,9 +67,10 @@ function stringField(value: unknown, message: string): string {
   return value;
 }
 
-async function createNamespace(fixture: Fixture, name: string) {
-  const namespace = record(await fixture.createNamespace(name, { ready: true }), "Namespace");
-  return { id: stringField(namespace.id, "Namespace ID") };
+async function createRuntimeNamespace(...args: Parameters<typeof createReadyConsoleNamespace>) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(...args);
+  const id = stringField(record(namespace, "Namespace").id, "Namespace ID");
+  return { fixture, namespace: { id } };
 }
 
 async function createAgent(
@@ -152,6 +151,23 @@ async function secretGrants(
   });
 }
 
+async function listAgentSecretGrants(
+  fixture: Fixture,
+  namespaceId: string,
+  principalId: string,
+  secretId: string,
+) {
+  const listed = await fixture.request("GET", `/namespaces/${namespaceId}/iam/access-bindings`);
+  assert.equal(listed.status, 200);
+  return records(listed.data, "IAM access bindings").filter(
+    (binding) =>
+      binding.subjectKind === "identity" &&
+      binding.subjectId === principalId &&
+      binding.resourceKind === "secret" &&
+      binding.resourceId === secretId,
+  );
+}
+
 // A generic environment binding for an existing Namespace Secret consumer.
 const envBinding = (secret: SecretMetadata): SecretBinding => ({
   source: secret.ref,
@@ -159,9 +175,7 @@ const envBinding = (secret: SecretMetadata): SecretBinding => ({
 });
 
 test("draft Agent offers deployment without a generated-credential step", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Runtime credential gate");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Runtime credential gate");
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -254,9 +268,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
 // and stays available, as Create Agent does for the same codes. Any other 503 may have created
 // one: it reads as outcome unknown and Deploy stays disabled until a refresh (finding 1638).
 test("Deploy names a 503 refused before admission and keeps Deploy available", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Deploy refusals");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Deploy refusals");
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -379,9 +391,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Agent redeployment");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Agent redeployment");
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -475,9 +485,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
 });
 
 test("unsaved Configuration blocks deployment from an admitted revision", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Revision draft guard");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Revision draft guard");
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -506,9 +514,7 @@ test("unsaved Configuration blocks deployment from an admitted revision", async 
 });
 
 test("revision deployment blocks unavailable reads and does not replay a lost response", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Revision deployment recovery");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Revision deployment recovery");
   const agent = await createAgent(
     fixture,
     namespace.id,
@@ -655,9 +661,7 @@ async function agentWithoutGrant(
   t: TestContext,
   { name, bindings, ungranted, fixtureOptions }: GrantFixtureOptions,
 ) {
-  const fixture = await createConsoleAppFixture(t, fixtureOptions);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, `${name} grant`);
+  const { fixture, namespace } = await createRuntimeNamespace(t, `${name} grant`, fixtureOptions);
   const secrets = new Map<string, SecretMetadata>();
   const secretBindings: Record<string, SecretBinding> = {};
   for (const key of bindings) {
@@ -691,16 +695,9 @@ async function removeAgentSecretGrant(
   secretId: string,
 ) {
   // Remove that Secret's grant, as an administrator revoking it would.
-  const policyPath = `/namespaces/${namespaceId}/iam`;
-  const listed = await fixture.request("GET", `${policyPath}/access-bindings`);
-  assert.equal(listed.status, 200);
-  const grant = records(listed.data, "IAM access bindings").find(
-    (binding) =>
-      binding.subjectId === principalId &&
-      binding.resourceKind === "secret" &&
-      binding.resourceId === secretId,
-  );
+  const [grant] = await listAgentSecretGrants(fixture, namespaceId, principalId, secretId);
   assert.ok(grant, "createAgent grants its bound Namespace Secret");
+  const policyPath = `/namespaces/${namespaceId}/iam`;
   const removed = await fixture.request(
     "DELETE",
     `${policyPath}/access-bindings/${stringField(grant.id, "Access binding ID")}`,
@@ -1099,6 +1096,9 @@ for (const duringSave of [false, true]) {
       },
     );
     await removeAgentSecretGrant(fixture, namespace.id, agent.servicePrincipalId, plugin.id);
+    const pluginGrants = () =>
+      listAgentSecretGrants(fixture, namespace.id, agent.servicePrincipalId, plugin.id);
+    assert.equal((await pluginGrants()).length, 0, "Revocation leaves no plugin Secret grant");
     const { page } = await newPage(t, fixture);
     await trackSettledFetches(page);
     const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -1131,8 +1131,17 @@ for (const duringSave of [false, true]) {
       .getByText(secretGrantDeployReason(["PLUGIN_API_KEY"], { missing: true }), { exact: true })
       .waitFor();
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    const requests = apiRequests(page, fixture.origin);
     await page.getByRole("button", { name: "Retry Secret access" }).click();
     await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+    assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [plugin.id]);
+    const [post] = accessBindingPostRequests(requests, namespace.id);
+    const { roleId } = record(post?.body, "Retry access binding request");
+    assert.deepEqual(
+      (await pluginGrants()).map((grant) => grant.roleId),
+      [stringField(roleId, "Requested Role ID")],
+      "Retry restores exactly one plugin Secret grant with the requested Role",
+    );
   });
 }
 
@@ -1140,9 +1149,7 @@ for (const duringSave of [false, true]) {
 // denied after Console admission. With `heldList`, the list waits for `list.release()`, so a test
 // can change the method while it is in flight. `denied()` checks the refusal and lifts the denial.
 async function deniedIssuedAccountList(t: TestContext, { heldList = false } = {}) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await createNamespace(fixture, "Issued-account feedback");
+  const { fixture, namespace } = await createRuntimeNamespace(t, "Issued-account feedback");
   const agent = await createAgent(
     fixture,
     namespace.id,
