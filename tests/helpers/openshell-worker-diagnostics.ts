@@ -1,5 +1,6 @@
 import type { Pool, QueryResult, QueryResultRow } from "pg";
 
+import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.ts";
 import { summarizeWorkerEvents, workerDiagnosticLines } from "./k3d-failure-diagnostics.ts";
 import {
   diagnosticDeadlineMs,
@@ -65,6 +66,95 @@ function diagnosticErrorName(error: unknown): string {
   } catch {
     return "Error";
   }
+}
+
+type PrepareTokenSources = {
+  compute: { kubeconfigContext: string; user: string; kind: string; mintedAt: string };
+  sandboxOperator: { kubeconfigContext: string | undefined; kind: string };
+  teardownStarted: boolean;
+};
+
+function prepareErrorField(error: unknown, field: "code" | "message"): unknown {
+  try {
+    if ((typeof error === "object" && error !== null) || typeof error === "function") {
+      return Reflect.get(error, field);
+    }
+  } catch {
+    // The thrown value may have a getter that throws.
+  }
+  return undefined;
+}
+
+function prepareErrorMessage(error: unknown): string | undefined {
+  const message = prepareErrorField(error, "message");
+  return typeof message === "string" ? message : undefined;
+}
+
+export function withFirstPrepareRevisionFailureDiagnostic<
+  Args extends unknown[],
+  Driver extends object,
+>(
+  computeDriver: Driver & { prepareRevision: (...args: Args) => Promise<unknown> },
+  observeScratchEffect?: (stage: "compute-prepare", revision: Args[0]) => void,
+  tokenSources?: () => PrepareTokenSources,
+): Driver {
+  let reportedFailure = false;
+  let reportedUnauthorized = false;
+
+  function reportFailure(error: unknown, preparing: boolean) {
+    let message: string | undefined;
+    if (preparing && !reportedFailure) {
+      reportedFailure = true;
+      message = prepareErrorMessage(error) ?? "error message unavailable";
+      try {
+        const detail =
+          message ===
+          "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
+            ? "waiting for the Gateway node setup projection; Compute will retry."
+            : `initial Compute prepareRevision failed: ${redactLogLine(message, failureSecrets([process.env]), 800)}`;
+        process.stderr.write(`OpenShell integration: ${detail}\n`);
+      } catch {
+        // A diagnostic failure must preserve the original rejection and the 401 attempt.
+      }
+    }
+
+    // A 401 can also come from the scratch observer, before Compute is called.
+    if (
+      tokenSources &&
+      !reportedUnauthorized &&
+      (prepareErrorField(error, "code") === 401 ||
+        /^HTTP-Code: 401$/m.test(message ?? prepareErrorMessage(error) ?? ""))
+    ) {
+      reportedUnauthorized = true;
+      try {
+        process.stderr.write(
+          `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
+        );
+      } catch {
+        // The metadata lookup and write are both best effort.
+      }
+    }
+  }
+
+  return new Proxy(computeDriver, {
+    get(target, property): unknown {
+      if (property !== "prepareRevision") {
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return async (...args: Args) => {
+        let preparing = false;
+        try {
+          observeScratchEffect?.("compute-prepare", args[0]);
+          preparing = true;
+          return await target.prepareRevision(...args);
+        } catch (error) {
+          reportFailure(error, preparing);
+          throw error;
+        }
+      };
+    },
+  });
 }
 
 type RevisionFailureCallbacks = {

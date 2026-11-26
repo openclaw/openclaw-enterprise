@@ -122,8 +122,11 @@ import {
   describeRevisionFailure,
   diagnosticQuery,
   diagnosticQueryTimeoutMs,
+  withFirstPrepareRevisionFailureDiagnostic,
   writeWorkerCompletionDiagnostics,
 } from "./openshell-worker-diagnostics.ts";
+
+export { withFirstPrepareRevisionFailureDiagnostic };
 
 /** @param {unknown} turn */
 function turnMessages(turn) {
@@ -1907,69 +1910,8 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-export function withFirstPrepareRevisionFailureDiagnostic(computeDriver, observeScratchEffect) {
-  let reported = false;
-  return new Proxy(computeDriver, {
-    get(target, property) {
-      if (property === "prepareRevision") {
-        return async (...args) => {
-          observeScratchEffect?.("compute-prepare", args[0]);
-          try {
-            return await target.prepareRevision(...args);
-          } catch (error) {
-            if (!reported) {
-              reported = true;
-              const message =
-                error.message ===
-                "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
-                  ? "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry."
-                  : `OpenShell integration: initial Compute prepareRevision failed: ${redactLogLine(error.message, failureSecrets([process.env]), 800)}`;
-              process.stderr.write(`${message}\n`);
-            }
-            throw error;
-          }
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-// The Kubernetes client's rejection of a request the API server refused to authenticate.
-function isKubernetesUnauthorized(error) {
-  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
-}
-
-// Whether the test's bounded teardown has begun, for the 401 diagnostic below.
+// Whether the test's bounded teardown has begun, for the 401 diagnostic.
 let teardownStarted = () => false;
-
-// Finding 1711: a 401 on prepareRevision names no credential. On the first one, `tokenSources()`
-// names the credentials the call may have used, by name and kind, never a value.
-function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
-  let reported = false;
-  return new Proxy(computeDriver, {
-    get(target, property) {
-      if (property === "prepareRevision") {
-        return async (...args) => {
-          try {
-            return await target.prepareRevision(...args);
-          } catch (error) {
-            if (!reported && isKubernetesUnauthorized(error)) {
-              reported = true;
-              process.stderr.write(
-                `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
-              );
-            }
-            throw error;
-          }
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
 
 async function prepareProductionInstallation(
   context,
@@ -2264,11 +2206,9 @@ async function prepareProductionInstallation(
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
-        computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withFirstPrepareRevisionFailureDiagnostic(
-            replacementNode?.wrap(loaded.computeDriver) ?? loaded.computeDriver,
-            observeScratchEffect,
-          ),
+        computeDriver: withFirstPrepareRevisionFailureDiagnostic(
+          replacementNode?.wrap(loaded.computeDriver) ?? loaded.computeDriver,
+          observeScratchEffect,
           tokenSources,
         ),
       },

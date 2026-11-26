@@ -41,6 +41,7 @@ import {
   outageAttemptRead,
   waitForOpenShellRevisionActivation,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { withFirstPrepareRevisionFailureDiagnostic } from "../helpers/openshell-sandbox-workflows.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { openShellTestDirectory } from "./ci-openshell-fixtures.ts";
 
@@ -306,6 +307,146 @@ test("OpenShell persisted queue records survive the reporter's per-line limit", 
   const last = lines.at(-1);
   assert.ok(last);
   assert.match(last, /ACCESS_DENIED/);
+});
+
+const prepareTokenSources = {
+  compute: {
+    kubeconfigContext: "compute-context",
+    user: "compute-account",
+    kind: "ServiceAccount token",
+    mintedAt: "2026-01-01T00:00:00.000Z",
+  },
+  sandboxOperator: { kubeconfigContext: "operator-context", kind: "test operator kubeconfig" },
+  teardownStarted: false,
+};
+
+function capturePrepareDiagnostics(t: TestContext) {
+  const lines: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    lines.push(String(line));
+    return true;
+  });
+  return lines;
+}
+
+test("OpenShell Compute diagnostics preserve the first 401 when stderr throws", async (t) => {
+  const original = Object.assign(new Error("prepare refused"), { code: 401 });
+  const effects: string[] = [];
+  t.mock.method(process.stderr, "write", (line: string | Uint8Array) => {
+    effects.push(String(line));
+    throw new Error("diagnostic output failed");
+  });
+  const driver = { prepareRevision: () => Promise.reject(original) };
+
+  // Exercise the export with the same one-argument call supported by the earlier wrapper.
+  const firstFailureOnly = withFirstPrepareRevisionFailureDiagnostic(driver);
+  await assert.rejects(firstFailureOnly.prepareRevision(), (error) => error === original);
+  const initial =
+    "OpenShell integration: initial Compute prepareRevision failed: prepare refused\n";
+  assert.deepEqual(effects.splice(0), [initial]);
+
+  const compute = withFirstPrepareRevisionFailureDiagnostic(driver, undefined, () => {
+    effects.push("read token sources");
+    return prepareTokenSources;
+  });
+
+  await assert.rejects(compute.prepareRevision(), (error) => error === original);
+  await assert.rejects(compute.prepareRevision(), (error) => error === original);
+  assert.equal(effects.length, 3);
+  assert.equal(effects[0], initial);
+  assert.equal(effects[1], "read token sources");
+  assert.match(effects[2] ?? "", /got HTTP 401; token sources:/);
+});
+
+test("OpenShell Compute diagnostics redact the first failure and report a later 401 once", async (t) => {
+  const marker = "invented preparation secret";
+  setEnvironment(t, { OCE_TEST_PREPARE_DIAGNOSTIC_SECRET: marker });
+  const effects = capturePrepareDiagnostics(t);
+  const revision = { id: "test-revision" };
+  const prepared = { ready: true };
+  const ordinary = Object.assign(new Error(`prepare refused (${marker})\nHTTP-Code: 4010`), {
+    code: "401",
+  });
+  const unauthorized = new Error("request refused\nHTTP-Code: 401\nrequest ended");
+  class Compute {
+    #prepared = prepared;
+
+    async prepareRevision(input: typeof revision, failure?: Error) {
+      assert.equal(input, revision);
+      effects.push("prepare");
+      if (failure) {
+        throw failure;
+      }
+      return this.#prepared;
+    }
+  }
+  const compute = withFirstPrepareRevisionFailureDiagnostic(
+    new Compute(),
+    (stage, input) => {
+      assert.equal(input, revision);
+      effects.push(stage);
+    },
+    () => {
+      effects.push("read token sources");
+      return prepareTokenSources;
+    },
+  );
+
+  assert.equal(await compute.prepareRevision(revision), prepared);
+  for (const failure of [ordinary, unauthorized, unauthorized]) {
+    await assert.rejects(compute.prepareRevision(revision, failure), (error) => error === failure);
+  }
+  const [initial = "", unauthorizedLine = ""] = effects.filter((effect) =>
+    effect.startsWith("OpenShell integration:"),
+  );
+  const attempt = ["compute-prepare", "prepare"];
+  assert.deepEqual(effects, [
+    ...attempt,
+    ...attempt,
+    initial,
+    ...attempt,
+    "read token sources",
+    unauthorizedLine,
+    ...attempt,
+  ]);
+  assert.match(initial, /initial Compute prepareRevision failed: prepare refused/);
+  assert.ok(!initial.includes(marker), "initial diagnostic must redact the environment secret");
+  assert.match(unauthorizedLine, /^OpenShell integration: Compute prepareRevision got HTTP 401;/);
+  assert.deepEqual(
+    jsonObject(unauthorizedLine.slice(unauthorizedLine.indexOf("{"))),
+    prepareTokenSources,
+  );
+});
+
+test("OpenShell Compute diagnostics support a lone Driver and an absent error message", async (t) => {
+  const lines = capturePrepareDiagnostics(t);
+  const waiting = Object.assign(
+    new Error(
+      "The OpenShell compatibility proof is waiting for the Gateway node setup projection.",
+    ),
+    { code: 401 },
+  );
+  const unreadable = {
+    get message(): never {
+      throw new Error("message unavailable");
+    },
+  };
+  for (const original of [waiting, undefined, unreadable]) {
+    const compute = withFirstPrepareRevisionFailureDiagnostic({
+      prepareRevision: () => Promise.reject(original),
+    });
+    await compute.prepareRevision().then(
+      () => assert.fail("prepareRevision must reject"),
+      (error: unknown) => assert.equal(error, original),
+    );
+  }
+  const missing =
+    "OpenShell integration: initial Compute prepareRevision failed: error message unavailable\n";
+  assert.deepEqual(lines, [
+    "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry.\n",
+    missing,
+    missing,
+  ]);
 });
 
 test("OpenShell activation diagnostics share one deadline and preserve the original failure", async (t) => {
