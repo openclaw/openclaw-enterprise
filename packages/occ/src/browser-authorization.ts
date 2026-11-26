@@ -58,6 +58,7 @@ export async function exchangeAuthorizationCode(
   code: string,
   clientSecret: string | undefined,
   signal: AbortSignal,
+  fetchToken?: (init: RequestInit) => Promise<Response>,
 ): Promise<OAuthConnectionGrant> {
   if (!isNonEmptyString(code)) {
     throw new BrowserAuthorizationError("missing_code", "retry");
@@ -74,6 +75,7 @@ export async function exchangeAuthorizationCode(
     request,
     clientSecret,
     signal,
+    fetchToken,
   );
   if (!tokens.refreshToken) {
     throw new BrowserAuthorizationError("no_refresh_token", "fix_configuration");

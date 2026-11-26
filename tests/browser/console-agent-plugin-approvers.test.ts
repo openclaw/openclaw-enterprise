@@ -2154,6 +2154,7 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
     current: {
       mode: "mcp_discovery",
       issuer: issuers[0],
+      issuerVerification: { tokenEndpointAuthMethods: ["none"] },
       mcp: { serverUrl: recipient.serverUrl, resource: recipient.resource },
       scopes: [],
     },
@@ -2164,7 +2165,14 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
   await page.route(`**/namespaces/${namespace.id}/connections/oauth-clients?*`, (route) =>
     route.fulfill({
       json: {
-        data: [{ kind: "oauth2", id: fakeClientId, displayName: "Controlled client" }],
+        data: [
+          {
+            kind: "oauth2",
+            id: fakeClientId,
+            displayName: "Controlled client",
+            tokenEndpointAuthMethod: "none",
+          },
+        ],
         meta: {},
       },
     }),

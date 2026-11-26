@@ -2,7 +2,13 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Credentials" };
 
-export const CredentialSources = { ...story("credentialsSourceInventory"), name: "Credentials" };
+export const CredentialSources = {
+  ...story("credentialsSourceInventory", {
+    instructions:
+      "Open Create Source. If you Tab to Cancel while templates load, focus should stay there when the form appears. Press Enter to close the dialog.",
+  }),
+  name: "Credentials",
+};
 export const CredentialSourcesMobile = story("credentialsSourceInventory", {
   name: "Credentials on mobile",
   frameWidth: "390px",

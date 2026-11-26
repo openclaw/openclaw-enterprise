@@ -30,7 +30,7 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "Connection templates",
     steps: [
-      "Compare the authentication method, availability, details, and version for Google OAuth, Support MCP, and the static Bearer Reporting API template.",
+      "Compare the authentication method, availability, issuer verification, and version for Google OAuth, Support MCP, and the static Bearer Reporting API template.",
       "Open Edit on Reporting API to inspect its HTTP method, host, port, and exact path or subtree. Static templates do not have OAuth clients.",
       "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
@@ -101,7 +101,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Register client")],
     description:
-      "Register an OAuth client with its own scope, issuer, endpoints, and authentication method, independently of a Template.",
+      "Register an OAuth client with its own scope, issuer, client ID, and authentication method, independently of a Template.",
   },
   credentialsRegisterGoogleClient: {
     group: "Pages/Credentials",
@@ -111,10 +111,9 @@ export const connectionTemplateScenarios = {
     actions: [
       click("Register client"),
       { selector: "#credential-client-issuer", value: "https://accounts.google.com" },
-      { selector: "#credential-client-token-url", value: "https://oauth2.googleapis.com/token" },
     ],
     description:
-      "OAuth registration owns its provider endpoints. The authentication method controls whether a write-only secret is required.",
+      "The Client identifies the issuer and provider-issued registration. The authentication method controls whether a write-only secret is required.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
@@ -124,7 +123,6 @@ export const connectionTemplateScenarios = {
     actions: [
       click("Register client"),
       { selector: "#credential-client-issuer", value: "https://identity.example.com" },
-      { selector: "#credential-client-token-url", value: "https://identity.example.com/token" },
     ],
     description:
       "An MCP OAuth client can be registered before selecting it for consent against a compatible Template.",
@@ -184,7 +182,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [editGoogle],
     description:
-      "Edit the Installation-wide Google template. Expand API destinations to change its HTTPS routes. This preview includes sample Gmail, Calendar and Drive routes.",
+      "The Google starter is unverified. Edit and save a new version to simulate issuer verification before using it for consent. This preview includes sample Gmail, Calendar and Drive routes.",
   },
   credentialsUnconfirmedTemplate: {
     group: "Pages/Credentials",
@@ -206,7 +204,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: openTemplate,
     description:
-      "Enter the authorization server, add each destination as a host, port and path, then associate a compatible OAuth client or save a draft. Reopen a saved manual template to edit the destinations for accounts using that issuer.",
+      "Enter the authorization server and endpoints, then add each destination as a host, port and path. Saving simulates verification against issuer metadata. Client registration remains independent.",
   },
   credentialsTemplateWithoutNamespace: {
     group: "Pages/Credentials",

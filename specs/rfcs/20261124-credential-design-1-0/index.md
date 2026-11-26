@@ -16,8 +16,8 @@ This target consolidates amendments to [RFC-0023](../0023-egress-proxy-credentia
 
 | Resource            | Purpose and owner                                                                                                                                                 |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Connection Template | Defines approved OAuth consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                                       |
-| OAuth2Client        | OCC records the application's issuer, ID, endpoints, and authentication method. TokenService holds any confidential client secret.                                |
+| Connection Template | Defines verified OAuth endpoints and approved consent and lifecycle settings, static HTTP destinations, or an MCP server endpoint.                                |
+| OAuth2Client        | OCC records the application's issuer, ID, and authentication method. TokenService holds any confidential client secret.                                           |
 | GitHubAppClient     | OCC records the App ID. TokenService uses its signing key to mint installation tokens.                                                                            |
 | CredentialSource    | Identifies an enrolled credential in a Namespace. TokenService owns its lifecycle and any Template or client references. OCC exposes metadata and authorizes use. |
 
@@ -140,6 +140,7 @@ Companions preserve earlier decisions, including the Codex held-launcher release
 
 - [TokenService cutover contract](tokenservice-cutover-contract.md) and the [original client registration, custody, and rotation proposal](client-registration-and-custody.md)
 - [OAuth client selection and consent](oauth-client-associations.md)
+- [OAuth endpoint authority](../20261125-oauth-endpoint-authority.md) supersedes the earlier client endpoint binding.
 - [Initial OAuth grant scopes and renewal](../0027-agent-oauth-connections/contracts.md#client-authentication-and-account-custody)
 - [Installation ownership and delivery](installation-credential-ownership.md) and [TokenService identity and updates](token-service-instance-and-updates.md)
 - [Source registration and lifecycle](credential-source-ownership.md)
