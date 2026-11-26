@@ -60,16 +60,20 @@ qualified image separately from private workspace ingress.
 Each enabled Agent receives its own actual listener port. OCC uses a separate
 listener for credential validation and directory lookup. The Harness receives
 neither grant. No Slack token belongs in Helm values or Envoy configuration.
-Customer upstream proxies are not supported.
+On single-cluster Kubernetes Compute, you can [select an upstream proxy](../deploy/channel-egress.md#select-an-agent-proxy)
+configured by the Installation for this Agent's Gateway channel traffic.
+OCC keeps its separate route.
 
 Verify both consumers before handing off the setup:
 
 1. In the Console, select the bot Secret and search for a known user and channel.
 2. Deploy the Agent. Require its Gateway and Harness to be Ready and confirm
    that Slack Socket Mode connected. Complete the message proof below.
-3. Verify that the same Gateway cannot reach another Agent's listener, an
-   unlisted destination or a private upstream address. Direct internet fallback
-   must remain denied.
+3. Verify that the Gateway cannot reach another Agent's listener or an
+   unlisted destination. Without an upstream proxy, verify that Envoy denies
+   private destination addresses. With a proxy, verify that the
+   [proxy denies private final destination addresses](../../reference/agents/network-proxy.md#compute-and-trust-boundary).
+   Direct internet fallback must remain denied.
 
 A directory `503` can mean the OCC listener or Slack is unavailable. An absent
 managed route makes credential validation return a configuration conflict.

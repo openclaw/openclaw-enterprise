@@ -1,7 +1,7 @@
 ---
 created: 2026-11-19
-updated: 2026-11-21
-last_updated_session: authoring-run/b9e0b8fc-0057-44bd-b184-c3de7be3267b
+updated: 2026-11-23
+last_updated_session: authoring-run/fbe7e744-822d-470c-aca7-20edc8b0b8a2
 ---
 
 # Channel egress flow
@@ -31,14 +31,14 @@ upgrades do not replay it.
 - `apps/controller/src/drivers/compute/kubernetes/channel-egress.ts:KubernetesChannelEgress.prepare`
 
 The worker holds its live PostgreSQL work claim and reauthorizes the original
-actor before Compute effects. The managed fleet and enforcing NetworkPolicies
-must be installed. See [controller work](controller-worker.md).
+actor before Compute effects. Revisions with enabled channels require the
+managed fleet and enforcing NetworkPolicies. See [controller work](controller-worker.md).
 
 ## Flow
 
 ```mermaid
 graph TD
-  I["Explicit one-off upgrade"] --> J["Validate channel-only patch and current drafts"]
+  I["Explicit one-off upgrade"] --> J["Validate channel-only patch"]
   J --> K{"Legacy channels enabled?"}
   K -->|no| O["Checked OCC and Helm upgrade"]
   K -->|yes| L["Verify Envoy dependencies and patch delivery"]
@@ -49,15 +49,20 @@ graph TD
   C0 -->|no| W
   C0 -->|yes| M["Compare and Stop on old controller"]
   M --> N{"Stops settled and expected inventory?"}
-  N -->|no| X
+  N -->|no| CHECK["Inspect Stops and inventory<br/>before continuing"]
   N -->|yes| O
   O --> P{"Channels were enabled?"}
   P -->|no| Q["Finish without Agent transitions"]
-  P -->|yes| Y["Deploy saved drafts and record responses"]
-  Y -->|unknown response| X
+  P -->|yes| PRE{"Agent stopped and original<br/>overrides recoverable?"}
+  PRE -->|no| HOLD["Leave Deploy unsent"]
+  PRE -->|yes| Y["Record sending and invoke Deploy"]
+  Y -->|unknown outcome| REC["Keep journal and reconcile<br/>without replaying Deploy"]
   Y -->|accepted| A
-  A["Worker reads saved Agent revision"] --> B["Resolve current Channel Drivers"]
-  B --> C{"Rules supported and fleet available?"}
+  DEP["Ordinary Agent deployment or retry"] --> A
+  A["Worker reads saved Agent revision"] --> CH{"Channels enabled?"}
+  CH -->|no| FREE["Continue without a channel binding"]
+  CH -->|yes| B["Resolve current Channel Drivers"]
+  B --> C{"Routing supported and fleet available?"}
   C -->|no| X["Fail activation without direct fallback"]
   C -->|yes| D["Reserve a port using resourceVersion"]
   D --> E["Install the binding's Envoy policy"]
@@ -161,15 +166,22 @@ those IDs and `canRetainHarnessOverrides: true`, without override values.
 Each Stop still compares the original active revision. Completion requires the
 Agent to be stopped with no active revision. `stopped_inventory` checks the
 expected selection changes before OCC writer shutdown. While both writers are
-quiesced, resume verifies the recorded inventory offline. After access to the
-same Installation and channel fleet recovers, Deploy repeats that check for each
-Agent before recording `sending`, so a failed read leaves that Deploy unsent and a
-later run resumes it. Deploy then rereads each original
-revision through `--retain-harness-overrides` and submits its requested overrides
-with the current saved draft. An empty object uses current Installation defaults.
-The script waits for each accepted deployment and checks the recorded new
-revision. An uncertain submission requires manual inspection and is not replayed.
-Disabled channels skip Agent transitions. Follow [One Off
+quiesced, resume verifies the recorded inventory offline. Once access to the
+same Installation and fleet recovers, the script checks that the Agent is
+fully stopped and its original revision’s Harness overrides can be retained.
+If either check fails, Deploy stays `unsent`. Resolve the failure before
+resuming.
+
+The script records `sending` and invokes Deploy with
+`--retain-harness-overrides`. The CLI rereads the original revision before
+submitting its requested overrides with the current saved draft. An empty
+overrides object uses current Installation defaults. Even if this second
+read fails before submission, the journal still says `sending`. Preserve
+the journal and [reconcile the outcome](../guides/deploy/one-off-upgrades.md#recover-and-verify)
+before resuming. Never replay an uncertain request.
+
+The script waits for each accepted deployment and verifies the recorded
+new revision. Disabled legacy channels skip Agent transitions. Follow [One Off
 Upgrades](../guides/deploy/one-off-upgrades.md) for commands and recovery.
 
 ### 1. Resolve one coherent set of requirements
@@ -296,6 +308,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-23 22:56: Distinguish uncertain upgrades, ordinary deployments and revisions without channels. (authoring-run/fbe7e744-822d-470c-aca7-20edc8b0b8a2 - a4d2b07e7f0efd28e1e2f1fe70d6ab3fde2703ee)
 
 - 2026-11-23 16:55: Check the original revision again before recording each one-off Deploy as sending.
 
