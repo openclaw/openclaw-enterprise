@@ -395,7 +395,7 @@ test(
       let arrivals = 0;
       const both = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
-      const { controller, path, intent, work, recover, secretDriver, providerCalls } =
+      const { controller, path, intent, work, recover, secretDriver, sourceReads, providerCalls } =
         await slackFirstDeploymentFixture(true, async () => {
           if (++arrivals === 2) {
             both.resolve();
@@ -428,10 +428,17 @@ test(
           assert.deepEqual(results[0]?.data, results[1]?.data);
         }
         assert.equal(providerCalls(), 2);
-        assert.equal(secretDriver.calls.filter((call) => call.operation === "withValue").length, 2);
-        assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 2);
+        assert.equal(sourceReads(), 2);
+        assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 1);
         t.diagnostic(
-          JSON.stringify({ matching, sender: 2, withValue: 2, resolve: 2, work: 1, audit: 1 }),
+          JSON.stringify({
+            matching,
+            sender: 2,
+            sourceReads: 2,
+            harnessResolves: 1,
+            work: 1,
+            audit: 1,
+          }),
         );
       } finally {
         release.resolve();
@@ -590,6 +597,8 @@ test("guarded first deployment rechecks Agent and Configuration authority before
           intent,
           work,
           secretDriver,
+          sourceOwner,
+          sourceReads,
           providerCalls,
         } = await slackFirstDeploymentFixture();
         const fixture = controller.fixture;
@@ -603,7 +612,7 @@ test("guarded first deployment rechecks Agent and Configuration authority before
             effect: "deny",
           });
         if (stage === "before-backend") {
-          // The Secret metadata lookup yields to a concurrent policy change. Native IAM
+          // The Source metadata lookup yields to a concurrent policy change. Native IAM
           // still makes every decision; the wrapper only schedules the restriction.
           const read = fixture.platformState.read.bind(fixture.platformState);
           fixture.platformState.read = async (operation) => {
@@ -620,12 +629,12 @@ test("guarded first deployment rechecks Agent and Configuration authority before
           };
         } else {
           // Model revocation while the backend was reading, before OCC receives its value.
-          const withValue = secretDriver.withValue.bind(secretDriver);
-          secretDriver.withValue = (secret, use) =>
-            withValue(secret, (value) => {
-              revoke();
-              return use(value);
-            });
+          const resolve = sourceOwner.resolveCredential.bind(sourceOwner);
+          sourceOwner.resolveCredential = async (...args) => {
+            const result = await resolve(...args);
+            revoke();
+            return result;
+          };
         }
         const app = fixture.createApp(undefined, createFastifyApp);
         try {
@@ -637,14 +646,14 @@ test("guarded first deployment rechecks Agent and Configuration authority before
           const revisions = await fixture.platformState.read((unit) =>
             unit.revisions.listRevisionMetadata(namespace.id, agent.id),
           );
-          const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+          const reads = sourceReads();
           t.diagnostic(
             JSON.stringify({
               authority,
               stage,
               status: result.status,
               sender: providerCalls(),
-              withValue: reads,
+              sourceReads: reads,
               revisions: revisions.length,
               work: work().length,
             }),
@@ -660,7 +669,7 @@ test("guarded first deployment rechecks Agent and Configuration authority before
           assert.equal(
             reads,
             stage === "after-backend" ? 1 : 0,
-            "revocation before backend access must prevent the Secret read",
+            "revocation before backend access must prevent the Source read",
           );
           assert.equal(secretDriver.calls.filter((call) => call.operation === "resolve").length, 0);
         } finally {
@@ -675,21 +684,31 @@ test("guarded first deployment refuses deleting Agents before validation", async
   for (const stage of ["before-valid-token", "before-wrong-role-token", "after-validation-error"]) {
     await t.test(stage, async (t) => {
       const deployment = await slackFirstDeploymentFixture();
-      const { controller, namespace, bot, path, intent, work, secretDriver, providerCalls } =
-        deployment;
+      const {
+        controller,
+        namespace,
+        bot,
+        path,
+        intent,
+        work,
+        secretDriver,
+        sourceReads,
+        channelDriver,
+        providerCalls,
+      } = deployment;
       const fixture = controller.fixture;
       const app = fixture.createApp(undefined, createFastifyApp);
       try {
         const url = await app.listen({ host: "127.0.0.1", port: 0 });
         if (stage !== "before-valid-token") {
-          // Store a real wrong-role value through the supported Secret mutation route.
+          // Store a real wrong-role value through the supported Source mutation route.
           const changed = await request(
             url,
             "PATCH",
-            `/namespaces/${namespace.id}/secrets/${bot.id}`,
+            `/namespaces/${namespace.id}/credential-sources/${bot.id}`,
             {
               session: app.defaultSession,
-              body: { value: "xoxp-synthetic-user" },
+              body: { secret: "xoxp-synthetic-user" },
             },
           );
           assert.equal(changed.status, 200, JSON.stringify(changed.body));
@@ -705,13 +724,16 @@ test("guarded first deployment refuses deleting Agents before validation", async
           deletionWork = fixture.platformState.pendingOperations();
         };
         if (stage === "after-validation-error") {
-          const withValue = secretDriver.withValue.bind(secretDriver);
-          secretDriver.withValue = async (secret, use) => {
+          const validate = channelDriver.validateCredentials.bind(channelDriver);
+          channelDriver.validateCredentials = async (...args) => {
             // Let the actual Slack validator reject the stored token, then accept deletion
             // before OCC carries the saved validation error into locked admission.
-            const outcome = await withValue(secret, use);
-            await remove();
-            return outcome;
+            try {
+              await validate(...args);
+            } catch (error) {
+              await remove();
+              throw error;
+            }
           };
         } else {
           await remove();
@@ -721,14 +743,14 @@ test("guarded first deployment refuses deleting Agents before validation", async
           body: intent,
         });
         const revisions = await deployment.listRevisionMetadata();
-        const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+        const reads = sourceReads();
         t.diagnostic(
           JSON.stringify({
             stage,
             status: result.status,
             code: checkedInjectedBody(result, 409, ErrorResponse).error.code,
             sender: providerCalls(),
-            withValue: reads,
+            sourceReads: reads,
             revisions: revisions.length,
             work: work().length,
           }),

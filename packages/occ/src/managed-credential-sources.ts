@@ -752,7 +752,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
       const blocking = await state.credentialSources.findBlockingReference(namespaceId, source.id);
       if (blocking === "reference") {
         throw new ResourceStateConflictError(
-          "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+          "A Configuration, Agent, active revision, pending deployment, or provisioning request still references the credential source.",
         );
       }
       if (blocking === "withdrawal_work") {
@@ -763,7 +763,7 @@ export function createManagedCredentialSources(dependencies: ManagedCredentialSo
         (await savedPluginsReferenceSource(state, namespaceId, source.id))
       ) {
         throw new ResourceStateConflictError(
-          "An Agent, active revision, pending deployment, or provisioning request still references the credential source.",
+          "A Configuration, Agent, active revision, pending deployment, or provisioning request still references the credential source.",
         );
       }
       const deleting =

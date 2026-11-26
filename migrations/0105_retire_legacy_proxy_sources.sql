@@ -21,8 +21,8 @@ BEGIN
           AND NOT i.retired
       )
     )
-    -- A protected Git-only revision can retain an enrollment without a Source.
-    SELECT 1 FROM referenced_revisions r WHERE (r.admitted_spec->'egress_plan') ? 'repositoryGit'
+    -- The legacy Proxy can own a protected execution even without Sources or routes.
+    SELECT 1 FROM referenced_revisions r WHERE r.admitted_spec ? 'egress_plan'
     UNION ALL
     SELECT 1 FROM legacy s WHERE
       EXISTS (

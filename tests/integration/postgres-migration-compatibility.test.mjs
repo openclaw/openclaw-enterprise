@@ -1581,7 +1581,9 @@ test(
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
-      [98, "preLegacyProxySourceRetirement"],
+      [98, "preGatewayStartupCredentials"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preLegacyProxySourceRetirement"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2022,7 +2024,9 @@ test(
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
-      [98, "preLegacyProxySourceRetirement"],
+      [98, "preGatewayStartupCredentials"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preLegacyProxySourceRetirement"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3253,7 +3257,9 @@ test(
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
-      [98, "preLegacyProxySourceRetirement"],
+      [98, "preGatewayStartupCredentials"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preLegacyProxySourceRetirement"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3394,7 +3400,9 @@ test(
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
-      [98, "preLegacyProxySourceRetirement"],
+      [98, "preGatewayStartupCredentials"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preLegacyProxySourceRetirement"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3806,6 +3814,35 @@ async function assertLegacyProxySourceRetirement(context, db) {
     )
   ).rows;
 
+  // The former protected execution could enroll even without a Source or Git route.
+  const emptyRevision = `rev_${randomUUID()}`;
+  const emptyPlan = {
+    ...plan,
+    id: randomUUID(),
+    execution: { ...plan.execution, revisionId: emptyRevision, executionId: randomUUID() },
+    routes: [],
+  };
+  const emptySnapshot = (
+    await db.app.query(
+      `INSERT INTO occ.agent_revisions
+          (id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+       SELECT $1,namespace_id,agent_id,4,(admitted_spec - 'credential_sources' - 'repository_credentials') ||
+          jsonb_build_object('egress_plan', $2::jsonb),backend_id,now()
+       FROM occ.agent_revisions WHERE id=$3
+       RETURNING admitted_spec`,
+      [emptyRevision, emptyPlan, protectedRevision],
+    )
+  ).rows;
+  await db.app.query(
+    "UPDATE occ.agents SET active_revision_id=$2,desired_runtime_state='running' WHERE id=$1",
+    [agent, emptyRevision],
+  );
+  await assertRetirementBlocked();
+  await db.app.query(
+    "UPDATE occ.agents SET active_revision_id=NULL,desired_runtime_state='stopped' WHERE id=$1",
+    [agent],
+  );
+
   assert.deepEqual(await runHistoryMigration(db, "production"), {
     ok: true,
     history: "preLegacyProxySourceRetirement",
@@ -3831,11 +3868,11 @@ async function assertLegacyProxySourceRetirement(context, db) {
   assert.deepEqual(
     (
       await db.app.query(
-        "SELECT admitted_spec FROM occ.agent_revisions WHERE id IN ($1,$2) ORDER BY revision_number",
-        [protectedRevision, gitRevision],
+        "SELECT admitted_spec FROM occ.agent_revisions WHERE id IN ($1,$2,$3) ORDER BY revision_number",
+        [protectedRevision, gitRevision, emptyRevision],
       )
     ).rows,
-    [...snapshot, gitSnapshot],
+    [...snapshot, gitSnapshot, ...emptySnapshot],
   );
   await context.test("The cleaned Namespace accepts deletion", async (httpContext) => {
     const controller = await startController(httpContext, { databaseUrl: db.applicationUrl });
@@ -3913,7 +3950,9 @@ test(
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
       [97, "preSharedGitSourceRepositoryGrants"],
-      [98, "preLegacyProxySourceRetirement"],
+      [98, "preGatewayStartupCredentials"],
+      [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preLegacyProxySourceRetirement"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

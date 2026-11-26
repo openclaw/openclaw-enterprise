@@ -66,6 +66,7 @@ import {
   NamespaceResponse,
   AgentListResponse,
   ConfigurationResponse,
+  CredentialSourceResponse,
   SecretDetailResponse,
   SecretListResponse,
   InstallationResponse,
@@ -2250,24 +2251,65 @@ async function setDesiredRepositoryPolicy(
   });
 }
 
-test("deployment delivers a Channel Secret only through the captured validator", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+async function enrollChannelSource(
+  fixture: Fixture,
+  state: PlatformStateStore,
+  secretDriver: ReturnType<typeof createTestSecretDriver>,
+  namespaceId: string,
+  value: string,
+) {
+  const controller = fixture.controller;
+  assert.ok(controller && secretDriver.privateSecrets);
+  const instance = await controller.activateTokenServiceInstance("channel-tokens", randomUUID());
+  const owner = new OCCTokenServiceDriver(
+    "channel-tokens",
+    controller.installation.id,
+    secretDriver.privateSecrets,
+    instance,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const response = await fixture.request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    body: { name: "Channel credential", type: "static", secret: value },
+  });
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+  return { owner, source: checkedResponse(fixture, response, CredentialSourceResponse, 201).data };
+}
+
+test("deployment delivers a Channel Source only through the captured validator", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  let state: PlatformStateStore | undefined;
+  const fixture = await createConsoleAppFixture(t, {
+    secretDriver,
+    stateOwnedIAM: true,
+    gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
+      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
+  });
   await fixture.bootstrap();
   const controller = fixture.controller;
   assert.ok(controller);
   const namespace = await fixture.createNamespace("Channel validator identity", { ready: true });
   const marker = `synthetic-channel-${randomUUID()}`;
-  const secret = await fixture.createSecret(namespace.id, "Channel credential", marker);
+  assert.ok(state);
+  const { source } = await enrollChannelSource(fixture, state, secretDriver, namespace.id, marker);
   const agent = await fixture.createAgent(
     namespace.id,
     "Channel validation Agent",
-    createHarnessConfiguration("openclaw", "gpt-4.1"),
-    { secretBindings: { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } } },
+    createHarnessConfiguration("codex", "gpt-4.1"),
+    {
+      executionMode: "dedicated",
+      secretBindings: { CHANNEL_TOKEN: { source: source.ref, delivery: { type: "env" } } },
+    },
   );
 
   const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
   const accepted = t.mock.fn(async (value: string) => {
-    assert.ok(value === marker, "the selected validator must receive the bound Secret");
+    assert.ok(value === marker, "the selected validator must receive the bound Source value");
   });
   const diverted = t.mock.fn(async () => {});
   async function validate(
@@ -2300,16 +2342,26 @@ test("deployment delivers a Channel Secret only through the captured validator",
       expectedGeneration: 1,
     },
   });
-  assert.equal(first.status, 202);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  const delegated = await state.read((view) => view.iamPolicy.listAccessBindings(namespace.id));
+  assert.ok(
+    delegated.some(
+      (binding) =>
+        binding.subjectId === agent.servicePrincipalId &&
+        binding.resourceKind === "credential_source" &&
+        binding.resourceId === source.id,
+    ),
+    "deployment must delegate the exact Source to the Agent principal",
+  );
   assert.equal(
     diverted.mock.callCount(),
     0,
-    "the validator's own call must never receive a Secret",
+    "the validator's own call must never receive the Source value",
   );
   assert.equal(accepted.mock.callCount(), 1);
 
   // After the capability's two method checks, snapshot lookup installs an alternate validator
-  // that restores the original before Secret handoff.
+  // that restores the original before Source handoff.
   const contractReads = [validate, validate];
   Object.defineProperty(channel, "validateCredentials", {
     configurable: true,
@@ -2330,7 +2382,7 @@ test("deployment delivers a Channel Secret only through the captured validator",
     },
   });
   const later = await fixture.request("POST", `${path}/deploy`);
-  assert.equal(diverted.mock.callCount(), 0, "the alternate callback must never receive a Secret");
+  assert.equal(diverted.mock.callCount(), 0, "the alternate callback must never receive the value");
   assert.equal(later.status, 202);
   assert.equal(accepted.mock.callCount(), 2);
 });
@@ -2556,11 +2608,19 @@ test("Console hides foreign Repository delegation and checks saved policy author
   );
 });
 
-test("Channel deployment guards the bound Secret across policy refusal and receipt replay", async (t) => {
+test("Channel deployment guards the bound Source across policy refusal and receipt replay", async (t) => {
   const secretDriver = createTestSecretDriver({ id: "console-secret" });
+  let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
     secretDriver,
     ...repositoryPolicySandboxFixture(),
+    stateOwnedIAM: true,
+    gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
+      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
+    wrapState(current: PlatformStateStore) {
+      state = current;
+      return current;
+    },
   });
   await fixture.bootstrap();
   const controller: OpenClawController | undefined = fixture.controller;
@@ -2574,11 +2634,15 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
     getAgentRuntimeCredentialStatus: credentialStatus,
     provisionAgentRuntimeCredentials: provisionCredentials,
   });
-  const token = await fixture.createSecret(
+  assert.ok(state);
+  const { owner, source: token } = await enrollChannelSource(
+    fixture,
+    state,
+    secretDriver,
     namespace.id,
-    "Channel credential",
     "synthetic-channel-value",
   );
+  const resolutions = t.mock.method(owner, "resolveCredential");
   const createBoundAgent = (name: string) =>
     fixture.createAgent(namespace.id, name, createHarnessConfiguration("openclaw", "gpt-4.1"), {
       executionMode: "dedicated",
@@ -2645,7 +2709,7 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
     return reply;
   };
 
-  // Prove the error crossed the bound Secret reader after the Secret backend opened it.
+  // Prove the error crossed the bound Source reader after TokenService resolved it.
   // A failure in an earlier preflight could give the same HTTP response.
   const privateDiagnostic = "private gateway location hidden from deploy logs";
   const validateGatewaySettings = t.mock.fn(() => {});
@@ -2655,9 +2719,9 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
     for (const guarded of [false, true]) {
       const route = guarded ? "/deploy-first" : "/deploy";
       await t.test(
-        `${route} preserves a sanitized bound Secret policy preview outage`,
+        `${route} preserves a sanitized bound Source policy preview outage`,
         async () => {
-          const previousSecretOperations = secretDriver.calls.length;
+          const previousResolutions = resolutions.mock.callCount();
           const previousRefusals = channelRefusals.length;
           const previousCalls = warn.mock.callCount();
           validateGatewaySettings.mock.mockImplementationOnce(() => {
@@ -2669,13 +2733,8 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
             503,
             "DEPENDENCY_UNAVAILABLE",
           );
-          assert.deepEqual(
-            secretDriver.calls
-              .slice(previousSecretOperations)
-              .filter((call) => call.operation === "withValue")
-              .map(({ secret }) => secret.id),
-            [token.id],
-          );
+          assert.equal(resolutions.mock.callCount(), previousResolutions + 1);
+          assert.deepEqual(resolutions.mock.calls.at(-1)?.arguments[0].sourceRef, token.ref);
           const refusals = channelRefusals.slice(previousRefusals);
           assert.equal(refusals.length, 1);
           const [refusal] = refusals;
@@ -2708,7 +2767,7 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
   );
   assert.match(JSON.stringify(incompatibleTopology.body), /Compute Driver cannot enforce/);
 
-  const denied = restrict(fixture.policy, "operate", "secret", {
+  const denied = restrict(fixture.policy, "operate", "credential_source", {
     namespaceId: namespace.id,
     resourceId: token.id,
   });
@@ -2720,8 +2779,12 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
   const first = await deployBound(true);
   assert.equal(first.status, 202);
   assert.equal(provider.mock.callCount(), 1);
+  const admitted = await controller.transact((unit) =>
+    unit.revisions.findRevision(namespace.id, bound.id, first.data.revisionId),
+  );
+  assert.deepEqual(admitted?.secretBindings?.CHANNEL_TOKEN?.source, token.ref);
   // Receipt replay must bypass a later Channel outage and return the original result.
-  const refuseUse = restrict(fixture.policy, "operate", "secret", {
+  const refuseUse = restrict(fixture.policy, "operate", "credential_source", {
     namespaceId: namespace.id,
     resourceId: token.id,
   });
@@ -2734,7 +2797,7 @@ test("Channel deployment guards the bound Secret across policy refusal and recei
     liftRestriction(fixture.policy, refuseUse);
   }
 
-  // The Channel provider may see the Secret. Its thrown error is never an admission error.
+  // The Channel provider may see the resolved value. Its error is never an admission error.
   provider.mock.mockImplementationOnce(async () => {
     throw new DependencyUnavailableError("private Channel provider request detail");
   });

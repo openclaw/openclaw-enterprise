@@ -105,6 +105,7 @@ export function createDeviceLogin({
   initial,
   onChange,
   onStartSettled,
+  onStateChange,
   hint,
 }: {
   context: AgentAccessContext;
@@ -113,6 +114,7 @@ export function createDeviceLogin({
   onChange?(source: CredentialSourceReference | null): void;
   // Called once a start's outcome is settled, so a form no longer shown can record it.
   onStartSettled?(): void;
+  onStateChange?(login: DeviceLogin | null, busy: boolean): void;
   hint: string;
 }) {
   const base = `${namespacePath(context.namespaceId)}/agents${agentId ? `/${encodeURIComponent(agentId)}` : ""}/device-authorizations`;
@@ -207,6 +209,7 @@ export function createDeviceLogin({
     if (active && !disabled && !busy && !error && login?.status === "pending") {
       timer = window.setTimeout(() => void poll(), login.intervalSeconds * 1_000);
     }
+    onStateChange?.(login, busy);
   }
 
   function accept(result: unknown) {

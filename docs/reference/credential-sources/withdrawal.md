@@ -9,7 +9,7 @@ Withdrawal revokes a source from an Agent's selected version while the version
 keeps running. Send
 `POST /namespaces/:namespaceId/agents/:agentId/credential-sources/:credentialSourceId/withdraw`.
 The caller needs `agent:operate`, and the selected version must have been
-saved with that Source as Harness authentication, an explicit Source, or a selected Plugin credential. A Plugin selection requires no separate Agent attachment. A supported request returns `202` with the withdrawal in state `pending`. OCC records that denial before the Worker starts, so the Agent cannot use the Source for another admitted or routed operation.
+saved with that Source as Harness authentication, an explicit Source, a Gateway binding, or a selected Plugin credential. A Plugin selection requires no separate Agent attachment. A supported request returns `202` with the withdrawal in state `pending`. OCC records that denial before the Worker starts, so the Agent cannot use the Source for another admitted or routed operation.
 A saved version with the source that is not yet selected gets its own
 withdrawal, so it never attaches the Source. A withdrawn required model fails
 that deployment with `CREDENTIAL_WITHDRAWN`. A pending optional Plugin withdrawal blocks activation; after confirmed revocation, retry or maintenance can configure the remaining bindings. The frozen Agent revision does not change. An earlier version
@@ -17,6 +17,8 @@ that still runs because the selected version's deployment has not finished
 replacing it gets its own withdrawal too. A replay returns the
 same withdrawal and makes the caller its `requestedBy`. It queues another
 attempt only if none is queued or running; a queued attempt runs at once.
+
+For a Source bound to Gateway startup, withdrawal blocks another managed start of that revision, but cannot erase the running Gateway's environment or confirm revocation while its staged Secret may remain. The status stays `pending` with `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`. Stop or retire the revision to remove its staged copy. If the Source is also used through Credential Proxy, the Worker withdraws that use separately and still waits for Gateway retirement before confirming the whole withdrawal. Once Stop clears the selected version, the status endpoint returns `404`; the revision's revocation record and audit event remain.
 
 For a staged TokenService Source, the Worker rechecks the requester's exact `agent:operate`
 authority. Compute asks the selected native Credential Proxy to remove the binding from the saved

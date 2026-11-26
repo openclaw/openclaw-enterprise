@@ -5,7 +5,11 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
+import {
+  installTokenServiceDriver,
+  scheduleTokenServiceMaintenance,
+  gatewayStartupSourceDelivery,
+} from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -189,6 +193,7 @@ export async function composePostgresDevelopment(
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation, drivers?.repositoryRegistry),
         credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
+        gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),

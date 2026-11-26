@@ -1,4 +1,5 @@
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -974,18 +975,34 @@ export async function verifyScopedDeploymentTransition(fixture: PolicyApp) {
   }
 }
 
+const testChannelToken = "xoxb-synthetic-channel";
+
 async function createChannelDeployment(fixture: PolicyApp) {
-  const { inject } = fixture;
+  const { controller, inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
   const root = "/namespaces/" + namespace.id;
   const config = await inject("GET", root + "/configurations/" + starter.agent.configurationId);
   assert.equal(config.statusCode, 200);
-  const credential = await inject("POST", root + "/secrets", {
+  const store = controller.selectedDriver("secret").privateSecrets;
+  assert.ok(store);
+  const ownerId = "policy-source-owner";
+  const instanceId = await controller.activateTokenServiceInstance(ownerId, "policy-fixture-store");
+  const owner = new OCCTokenServiceDriver(
+    ownerId,
+    controller.installation.id,
+    store,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const credential = await inject("POST", root + "/credential-sources", {
     name: "synthetic-channel",
-    value: "synthetic",
+    type: "static",
+    secret: testChannelToken,
   });
-  assert.equal(credential.statusCode, 201);
+  assert.equal(credential.statusCode, 201, credential.body);
   const source = credential.json().data.ref;
   const bound = await inject("POST", root + "/configurations", {
     kind: "agent",
@@ -1005,13 +1022,14 @@ async function createChannelDeployment(fixture: PolicyApp) {
     namespace,
     agent,
     source,
+    owner,
     deploy: () => inject("POST", root + "/agents/" + agent.id + "/deploy"),
   };
 }
 
 export async function verifyChannelPolicyHandoff(t: TestContext, fixture: PolicyApp) {
   const { state, controller } = fixture;
-  const { namespace, agent, source, deploy } = await createChannelDeployment(fixture);
+  const { namespace, agent, source, owner, deploy } = await createChannelDeployment(fixture);
   const { pool } = fixture;
   const writer = await pool.connect();
   const pid = (await writer.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")).rows[0]!.pid;
@@ -1024,7 +1042,7 @@ export async function verifyChannelPolicyHandoff(t: TestContext, fixture: Policy
       await writer.query("SET LOCAL lock_timeout = '10s'");
       await writer.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespace.id]);
       await writer.query(
-        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','secret',$3,'deny')",
+        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','credential_source',$3,'deny')",
         ["restriction-" + randomUUID(), namespace.id, source.id],
       );
       await writer.query("COMMIT");
@@ -1036,7 +1054,8 @@ export async function verifyChannelPolicyHandoff(t: TestContext, fixture: Policy
   };
   const channel = new SlackChannelDriver(async () => assert.fail("Unexpected provider request"));
   channel.validateCredentials = async (_values, use) => {
-    await use("CHANNEL_TOKEN", "channel", async () => {
+    await use("CHANNEL_TOKEN", "channel", async (value) => {
+      assert.equal(value, testChannelToken);
       calls.push(revoked ? "after revocation" : "before revocation");
       // A provider waiting on this writer must not keep the Namespace locked.
       await revocation;
@@ -1044,8 +1063,15 @@ export async function verifyChannelPolicyHandoff(t: TestContext, fixture: Policy
   };
   controller.registerDriver(channel);
   controller.selectDriver("channel", channel.id);
-  // Start the writer after the real query has locked this Namespace. Delaying its
-  // result controls the ordering without changing the controller unit of work.
+  let sourceResolved = false;
+  const resolve = owner.resolveCredential.bind(owner);
+  t.mock.method(owner, "resolveCredential", async (...args: Parameters<typeof resolve>) => {
+    const result = await resolve(...args);
+    sourceResolved = true;
+    return result;
+  });
+  // Let TokenService resolve the Source first. Start the writer once the later
+  // provider handoff has locked this Namespace, using the real lock to order it.
   type Query = (this: pg.Client, ...args: unknown[]) => unknown;
   const query: Query = pg.Client.prototype.query as Query;
   const lock = t.mock.method(pg.Client.prototype, "query", function (
@@ -1055,6 +1081,7 @@ export async function verifyChannelPolicyHandoff(t: TestContext, fixture: Policy
     const [statement, values] = args;
     const result = query.apply(this, args);
     if (
+      sourceResolved &&
       !revocation &&
       typeof statement === "string" &&
       /FROM occ\.namespaces\s+WHERE id = \$1 AND deleted_at IS NULL\s+FOR UPDATE/.test(statement) &&
@@ -1083,7 +1110,7 @@ export async function verifyChannelPolicyHandoff(t: TestContext, fixture: Policy
       return await tx(work, options);
     } finally {
       // If the controller delays the handoff until after releasing the lock, the writer
-      // commits before it can send the Secret. The callback must start under the lock.
+      // commits before it can send the credential. The callback must start under the lock.
       await revocation;
     }
   };
@@ -1169,7 +1196,9 @@ export async function verifyDeploymentAuthorityAfterWait(
       return rowCount === 1 || undefined;
     });
     const [action, kind, id] =
-      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+      boundary === "channel"
+        ? ["operate", "credential_source", source.id]
+        : ["deploy", "agent", agent.id];
     await writer.query(
       `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $2, $3, $4, $5, 'deny')`,

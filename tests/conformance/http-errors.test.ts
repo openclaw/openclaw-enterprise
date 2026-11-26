@@ -587,7 +587,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_ROLE_MISMATCH",
-      message: "The selected Secret has the wrong token role for this field.",
+      message: "The selected credential has the wrong token role for this field.",
       details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -597,7 +597,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED",
-      message: "The channel provider rejected this credential. Check the selected Secret.",
+      message: "The channel provider rejected the selected credential. Check it and retry.",
       details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -607,7 +607,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
-      message: "Select an environment-backed Secret for this channel credential.",
+      message: "Select a bound environment credential for this channel field.",
       details: [{ path: "/channels/slack/appToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -620,7 +620,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
-      message: "Select an environment-backed Secret for this channel credential.",
+      message: "Select a bound environment credential for this channel field.",
       details: [{ path: "/channels/slack/accounts", code: "INVALID_VALUE" }],
     },
   ],
@@ -640,7 +640,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
-      message: "The channel provider rejected the selected credential. Check the Secret and retry.",
+      message: "The channel provider rejected the selected credential. Check it and retry.",
     },
   ],
   [

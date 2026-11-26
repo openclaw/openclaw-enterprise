@@ -320,6 +320,10 @@ const RESOURCE_KINDS = new Set<string>(PLATFORM_RESOURCE_KINDS);
 const AUDIT_METADATA_KEY = "__occAuditMetadata";
 const SECRET_IDENTIFIER =
   /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const CREDENTIAL_SOURCE_IDENTIFIER =
+  /^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const TOKEN_SERVICE_INSTANCE_IDENTIFIER =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NAMESPACE_IDENTIFIER =
   /^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -930,6 +934,7 @@ function revisionFromRow(
     execution_admission: StoredExecutionAdmission;
     secret_driver_id?: AgentRevision["secretDriverId"];
     secret_bindings?: AgentRevision["secretBindings"];
+    gateway_token_service_instance_id?: AgentRevision["gatewayTokenServiceInstanceId"];
     plugins?: AgentRevision["plugins"];
     plugin_approvers?: AgentRevision["pluginApprovers"];
     repository_credentials?: AgentRevision["repositoryCredentials"];
@@ -1004,6 +1009,19 @@ function revisionFromRow(
       : configurationRead("secretBindings", () =>
           secretBindingsFromJson(admitted.secret_bindings, metadata.namespaceId),
         );
+  const hasGatewaySource = Object.values(secretBindings ?? {}).some(
+    ({ source }) => source.kind === "credential_source",
+  );
+  if (
+    hasGatewaySource !== (admitted.gateway_token_service_instance_id !== undefined) ||
+    (admitted.gateway_token_service_instance_id !== undefined &&
+      !TOKEN_SERVICE_INSTANCE_IDENTIFIER.test(admitted.gateway_token_service_instance_id))
+  ) {
+    throw new SavedConfigurationReadError(
+      "secretBindings",
+      "Persisted AgentRevision Gateway credential owner is inconsistent.",
+    );
+  }
   if (!validPluginRevisionState(admitted.plugins)) {
     throw new SavedConfigurationReadError(
       "plugins",
@@ -1050,6 +1068,9 @@ function revisionFromRow(
       ? {}
       : { secretDriverId: admitted.secret_driver_id }),
     ...(secretBindings === undefined ? {} : { secretBindings }),
+    ...(admitted.gateway_token_service_instance_id === undefined
+      ? {}
+      : { gatewayTokenServiceInstanceId: admitted.gateway_token_service_instance_id }),
     ...(admitted.plugins === undefined ? {} : { plugins: admitted.plugins }),
     ...(admitted.plugin_approvers === undefined
       ? {}
@@ -1101,8 +1122,11 @@ function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBind
     throw new PersistedStateInvalidError("Persisted Secret bindings are invalid.");
   }
   for (const { source } of Object.values(normalized)) {
-    if (source.namespaceId !== namespaceId || !SECRET_IDENTIFIER.test(source.id)) {
-      throw new PersistedStateInvalidError("Persisted Secret bindings reference invalid Secrets.");
+    const identifier = source.kind === "secret" ? SECRET_IDENTIFIER : CREDENTIAL_SOURCE_IDENTIFIER;
+    if (source.namespaceId !== namespaceId || !identifier.test(source.id)) {
+      throw new PersistedStateInvalidError(
+        "Persisted Secret bindings reference invalid resources.",
+      );
     }
   }
   return Object.keys(normalized).length === 0 ? undefined : immutableCopy(normalized);
@@ -1131,9 +1155,10 @@ function serializeSecretBindings(
   return normalized === undefined ? null : JSON.stringify(normalized);
 }
 
-function referencedSecretIds(
+function referencedBindingIds(
   namespaceId: string,
   bindings: SecretBindings | undefined,
+  kind: "secret" | "credential_source",
 ): readonly string[] {
   const normalized =
     bindings === undefined ? undefined : secretBindingsFromState(bindings, namespaceId);
@@ -1141,7 +1166,13 @@ function referencedSecretIds(
     return Object.freeze([]);
   }
   return Object.freeze(
-    Array.from(new Set(Object.values(normalized).map(({ source }) => source.id))),
+    Array.from(
+      new Set(
+        Object.values(normalized)
+          .filter(({ source }) => source.kind === kind)
+          .map(({ source }) => source.id),
+      ),
+    ),
   );
 }
 
@@ -2814,21 +2845,39 @@ export class PostgresPlatformState implements PlatformStateStore {
     const validateSecretBindingsAvailable = async (
       namespaceId: string,
       bindings: SecretBindings | undefined,
+      gatewayTokenServiceInstanceId?: string,
     ): Promise<void> => {
-      const secretIds = referencedSecretIds(namespaceId, bindings);
-      if (secretIds.length === 0) {
-        return;
+      const secretIds = referencedBindingIds(namespaceId, bindings, "secret");
+      if (secretIds.length > 0) {
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id FROM occ.secrets
+               WHERE namespace_id = $1 AND id = ANY($2::text[])
+               ORDER BY id`,
+            [namespaceId, secretIds],
+          ),
+        );
+        if (found.length !== secretIds.length) {
+          throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
+        }
       }
-      const found = decodeQueryRows(
-        await client.query(
-          `SELECT id FROM occ.secrets
-             WHERE namespace_id = $1 AND id = ANY($2::text[])
-             ORDER BY id`,
-          [namespaceId, secretIds],
-        ),
-      );
-      if (found.length !== secretIds.length) {
-        throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
+      const sourceIds = referencedBindingIds(namespaceId, bindings, "credential_source");
+      if (sourceIds.length > 0) {
+        const found = decodeQueryRows(
+          await client.query(
+            `SELECT id FROM occ.credential_sources
+               WHERE namespace_id = $1 AND id = ANY($2::text[])
+                 AND type = 'static' AND state = 'ready' AND owner_capability = 'token_service'
+                 AND ($3::text IS NULL OR token_service_instance_id = $3)
+               ORDER BY id FOR SHARE`,
+            [namespaceId, sourceIds, gatewayTokenServiceInstanceId ?? null],
+          ),
+        );
+        if (found.length !== sourceIds.length) {
+          throw new ScopeViolationError(
+            "Secret bindings reference unavailable static CredentialSources.",
+          );
+        }
       }
     };
 
@@ -3583,9 +3632,21 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND ((r.admitted_spec #>> '{harness_auth,method}' = 'credential_source'
                          AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
                      OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
-                          jsonb_build_object('sourceId', $2::text)))
+                          jsonb_build_object('sourceId', $2::text))
+                     OR EXISTS (
+                       SELECT 1 FROM jsonb_each(COALESCE(r.admitted_spec->'secret_bindings', '{}'::jsonb)) AS binding(env, value)
+                       WHERE binding.value #>> '{source,kind}' = 'credential_source'
+                         AND binding.value #>> '{source,namespaceId}' = $1
+                         AND binding.value #>> '{source,id}' = $2
+                     ))
                )
                SELECT EXISTS (
+                 SELECT 1 FROM occ.configurations AS c,
+                   jsonb_each(COALESCE(c.secret_bindings, '{}'::jsonb)) AS binding(env, value)
+                 WHERE c.namespace_id = $1 AND binding.value #>> '{source,kind}' = 'credential_source'
+                   AND binding.value #>> '{source,namespaceId}' = $1
+                   AND binding.value #>> '{source,id}' = $2
+               ) OR EXISTS (
                  SELECT 1 FROM occ.agents
                  WHERE namespace_id = $1 AND harness_auth_credential_source_id = $2
                ) OR EXISTS (
@@ -3599,13 +3660,52 @@ export class PostgresPlatformState implements PlatformStateStore {
                    AND ((r.admitted_spec #>> '{harness_auth,method}' = 'credential_source'
                          AND r.admitted_spec #>> '{harness_auth,sourceId}' = $2)
                      OR r.admitted_spec->'credential_sources' @> jsonb_build_array(
-                          jsonb_build_object('sourceId', $2::text)))
+                          jsonb_build_object('sourceId', $2::text))
+                     OR EXISTS (
+                       SELECT 1 FROM jsonb_each(COALESCE(r.admitted_spec->'secret_bindings', '{}'::jsonb)) AS binding(env, value)
+                       WHERE binding.value #>> '{source,kind}' = 'credential_source'
+                         AND binding.value #>> '{source,namespaceId}' = $1
+                         AND binding.value #>> '{source,id}' = $2
+                     ))
                ) OR EXISTS (
-                 -- Before an Agent exists, its queued plan still holds the model source.
+                 -- A published replacement may still owe retirement of older revisions. Only
+                 -- successful activation proves retirement; superseded success does not.
+                 SELECT 1 FROM occ.agents AS a
+                 JOIN occ.agent_revisions AS active ON active.namespace_id = a.namespace_id
+                   AND active.agent_id = a.id AND active.id = a.active_revision_id
+                 JOIN occ.agent_revisions AS predecessor ON predecessor.namespace_id = a.namespace_id
+                   AND predecessor.agent_id = a.id AND predecessor.revision_number < active.revision_number
+                 WHERE a.namespace_id = $1
+                   AND EXISTS (
+                     SELECT 1 FROM jsonb_each(COALESCE(predecessor.admitted_spec->'secret_bindings', '{}'::jsonb)) AS binding(env, value)
+                     WHERE binding.value #>> '{source,kind}' = 'credential_source'
+                       AND binding.value #>> '{source,namespaceId}' = $1
+                       AND binding.value #>> '{source,id}' = $2
+                   )
+                   AND NOT EXISTS (
+                     SELECT 1 FROM occ.agent_revisions AS retired_by
+                     JOIN occ.controller_work AS completed ON completed.namespace_id = retired_by.namespace_id
+                       AND completed.agent_id = retired_by.agent_id AND completed.revision_id = retired_by.id
+                       AND completed.idempotency_key = 'agent_revision:' || retired_by.id || ':reconcile'
+                       AND completed.state = 'succeeded'
+                       AND completed.reason_code IN ('REVISION_ACTIVATED', 'REVISION_ALREADY_ACTIVE')
+                     WHERE retired_by.namespace_id = predecessor.namespace_id
+                       AND retired_by.agent_id = predecessor.agent_id
+                       AND retired_by.revision_number > predecessor.revision_number
+                       AND retired_by.revision_number <= active.revision_number
+                   )
+               ) OR EXISTS (
+                 -- Before an Agent exists, its queued plan still holds selected Sources.
                  SELECT 1 FROM occ.agent_provisioning_work AS p
                  WHERE p.namespace_id = $1 AND p.status IN ('queued', 'running')
-                   AND p.plan #>> '{harnessAuth,method}' = 'credential_source'
-                   AND p.plan #>> '{harnessAuth,sourceId}' = $2
+                   AND ((p.plan #>> '{harnessAuth,method}' = 'credential_source'
+                         AND p.plan #>> '{harnessAuth,sourceId}' = $2)
+                     OR EXISTS (
+                       SELECT 1 FROM jsonb_each(COALESCE(p.plan #> '{configuration,secretBindings}', '{}'::jsonb)) AS binding(env, value)
+                       WHERE binding.value #>> '{source,kind}' = 'credential_source'
+                         AND binding.value #>> '{source,namespaceId}' = $1
+                         AND binding.value #>> '{source,id}' = $2
+                     ))
                ) OR EXISTS (SELECT 1 FROM held_work WHERE NOT withdrawal) AS referenced,
                EXISTS (SELECT 1 FROM held_work WHERE withdrawal) AS withdrawal_work`,
             [namespaceId, credentialSourceId, CREDENTIAL_WITHDRAWAL_TARGET],
@@ -4461,7 +4561,11 @@ export class PostgresPlatformState implements PlatformStateStore {
           revision.secretBindings === undefined
             ? undefined
             : secretBindingsFromState(revision.secretBindings, revision.namespaceId);
-        await validateSecretBindingsAvailable(revision.namespaceId, secretBindings);
+        await validateSecretBindingsAvailable(
+          revision.namespaceId,
+          secretBindings,
+          revision.gatewayTokenServiceInstanceId,
+        );
         if (!validPluginRevisionState(revision.plugins)) {
           throw new ScopeViolationError("The AgentRevision plugin state is invalid.");
         }
@@ -4502,6 +4606,9 @@ export class PostgresPlatformState implements PlatformStateStore {
                 ? {}
                 : { secret_driver_id: revision.secretDriverId }),
               ...(secretBindings === undefined ? {} : { secret_bindings: secretBindings }),
+              ...(revision.gatewayTokenServiceInstanceId === undefined
+                ? {}
+                : { gateway_token_service_instance_id: revision.gatewayTokenServiceInstanceId }),
               ...(revision.plugins === undefined ? {} : { plugins: revision.plugins }),
               ...(revision.pluginApprovers === undefined
                 ? {}

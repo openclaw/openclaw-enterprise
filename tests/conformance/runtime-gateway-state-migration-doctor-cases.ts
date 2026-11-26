@@ -200,11 +200,10 @@ test("Gateway state migration runs Doctor for an older shared state database bes
 
 test("Gateway state migration waits for the settled Doctor result and preserves warnings", async (t) => {
   // These are the settled agent and shared schemas written by the preceding Runner.
-  const directory = await stateDirectory(t, { main: 43, current: CURRENT }, { shared: 40 });
+  const directory = await stateDirectory(t, { main: 44, current: CURRENT }, { shared: 42 });
   const warning = "Warning: Gateway is not configured";
   const outcome = await migrate(directory, async (child) => {
     setVersion(databasePath(directory, "main"), CURRENT);
-    setVersion(sharedPath(directory), STATE_CURRENT);
     // Let any exit-driven decision settle before delivering the final output.
     child.emit("exit", 0, null);
     await nextTurn();
@@ -238,10 +237,7 @@ test("Gateway state migration waits for the settled Doctor result and preserves 
   assert.equal(outcome.holds, 0);
   assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
   assert.deepEqual(outcome.stdout, [warning + "\n"]);
-  assert.match(
-    outcome.errors.join("\n"),
-    new RegExp(`from schema 40 to ${STATE_CURRENT}, 43 to ${CURRENT}`),
-  );
+  assert.match(outcome.errors.join("\n"), /from schema 44 to 45 with openclaw doctor --fix/);
 });
 
 test("Gateway state migration refuses incomplete maintenance even after schemas advance", async (t) => {

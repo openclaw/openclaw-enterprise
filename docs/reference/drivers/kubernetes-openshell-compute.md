@@ -51,6 +51,15 @@ The workspace node uses the [Envoy route](../gateway-routing.md#native-node-endp
 The Gateway admits the Envoy Pods, and activation removes obsolete direct
 workspace-node policies. Separate-cluster connectivity remains unqualified.
 
+Set `server.workspaceStorageClass` in the OpenShell Helm values to select the
+StorageClass for Sandbox workspace volumes. When the workspace StorageClass is
+unset, Kubernetes uses the cluster default.
+
+In a fresh Dedicated OpenClaw Sandbox, run `stat -c '%a %n' /sandbox` after
+Kubernetes applies `fsGroup`. Mode `2777` fails the
+[worker's storage permissions check](#lifecycle-and-retained-files) because it lacks
+the sticky bit.
+
 For an OpenShell-managed namespace, allow its supervisor Pods to reach both
 the OpenShell gateway (TCP 8080) and the Envoy HTTPS listener (default target
 10443). The default OCE development policies select operator-owned namespaces.

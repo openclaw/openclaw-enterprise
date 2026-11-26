@@ -157,6 +157,9 @@ record an overrides object or certify that none were recorded. Missing or invali
 evidence, denied reads, an unsupported CLI, or a receipt with different Namespace,
 Agent or revision IDs refuses the pass before another Stop. The receipt contains
 those IDs and `canRetainHarnessOverrides: true`, without override values.
+Before Stop, the helper also reads each Agent and its current Configuration through
+the OCC CLI. It refuses the pass if enabled Slack settings reference a binding
+whose source is a public Namespace Secret. It reads no credential values.
 
 Each Stop still compares the original active revision. Completion requires the
 Agent to be stopped with no active revision. `stopped_inventory` checks the

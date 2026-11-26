@@ -4273,6 +4273,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           environment: {
             HOME: this.harnessHome,
             OPENCLAW_STATE_DIR: `${this.harnessHome}/.openclaw`,
+            OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF: "1",
             OPENCLAW_WORKSPACE_DIR: this.workspaceInitializationPath(context),
             OPENCLAW_EXECUTABLE: "/app/openclaw.mjs",
           },

@@ -102,7 +102,7 @@ function agentOperateSources(
     referenced.set(`${kind}\u0000${id}`, { kind, namespaceId: agent.namespaceId, id });
   };
   for (const binding of Object.values(secretBindings)) {
-    add("secret", binding.source.id);
+    add(binding.source.kind, binding.source.id);
   }
   if (isSecretHarnessAuth(agent.harnessAuth)) {
     add("secret", agent.harnessAuth.source.id);

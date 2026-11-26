@@ -42,6 +42,7 @@ type ControllerTopologyManifestInputs = {
   nativeAdminDomain: string;
   nativeAdminEnabled: boolean;
   platformNamespace: string;
+  installationSecretNamespace?: string;
   workerOptions: {
     pollIntervalMs: number;
     leaseDurationMs: number;
@@ -73,6 +74,7 @@ export function buildControllerTopologyManifests({
   nativeAdminDomain,
   nativeAdminEnabled,
   platformNamespace,
+  installationSecretNamespace,
   workerOptions,
   workspaceGateway,
 }: ControllerTopologyManifestInputs) {
@@ -124,6 +126,9 @@ export function buildControllerTopologyManifests({
   ];
   const apiEnvironment: EnvironmentVariable[] = [
     { name: "NODE_ENV", value: "production" },
+    ...(installationSecretNamespace === undefined
+      ? []
+      : [{ name: "OCC_INSTALLATION_SECRET_NAMESPACE", value: installationSecretNamespace }]),
     ...(controlPlaneAuditEnabled
       ? [{ name: "OCC_CONTROL_PLANE_AUDIT_ENABLED", value: "true" }]
       : []),
@@ -334,6 +339,7 @@ export function buildControllerTopologyManifests({
                     "OCC_CONFIG_PATH",
                     "OCC_CONTROL_PLANE_AUDIT_ENABLED",
                     "OCC_DATABASE_URL",
+                    "OCC_INSTALLATION_SECRET_NAMESPACE",
                     "OCC_GATEWAY_API_KEY_PATH",
                     "NODE_EXTRA_CA_CERTS",
                   ].includes(name),

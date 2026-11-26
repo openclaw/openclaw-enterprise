@@ -30,10 +30,10 @@ export const provisionableForm: StoryAction[] = [
 
 export const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 
-export const createSlackBotSecret: StoryAction[] = [
-  { selector: "#slack-secret-slack-bot-token", value: "__openclaw_create_secret__" },
-  { selector: "#create-slack-secret-slack-bot-token-value", value: "simulated-bot-token" },
-  click("Create Secret"),
+export const addSlackBotSource: StoryAction[] = [
+  { selector: "#slack-source-slack-bot-token", value: "new" },
+  { selector: "#slack-source-slack-bot-token-name", value: "New Slack bot token (simulated)" },
+  { selector: "#slack-source-slack-bot-token-value", value: "xoxb-storybook-demo" },
 ];
 
 export const allowEveryoneInSlackChannels: StoryAction[] = [

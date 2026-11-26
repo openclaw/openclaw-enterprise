@@ -258,13 +258,13 @@ Otherwise the gateway validates it before launch, and incompatibility prevents
 launch; see the
 [compatibility check](../flows/agent-plugin-approvals.md#3-check-the-selected-gateway-before-launch).
 
-The Console resolves display names with the selected same-Namespace bot Secret,
+The Console resolves display names with the selected same-Namespace bot Credential Source,
 which stays on the server. Selecting a person shows their name and handle; the policy
 stores their workspace-qualified Slack user ID. A saved name the Console cannot resolve
-shows **Name unavailable** and stays selected. During Agent creation, choose a Secret
+shows **Name unavailable** and stays selected. During Agent creation, choose a Source
 beside the approver field; this search-only selection does not bind it to the Agent.
 An existing Slack channel binding supplies the initial selection. Lookup requires
-Agent create or edit and Secret `operate`; operators can paste user IDs instead. The
+Agent create or edit and Source `operate`; operators can paste user IDs instead. The
 [Slack Channel Driver](drivers/slack-channel.md) describes workspace display,
 scopes, and pagination.
 

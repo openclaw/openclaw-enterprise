@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { defaultAgentModel } from "../../../apps/controller/src/console/agents/starter-model.mts";
 import { createHarnessConfiguration } from "../../../tests/helpers/harness-configuration.mjs";
 import {
+  channelProxyDeploymentStep,
   log,
   minute,
   observeAgentStop,
@@ -15,6 +16,7 @@ import {
   run,
   waitFor,
   type AgentStopState,
+  type ChannelProxyDeploymentTiming,
   type RunOptions,
 } from "./process.ts";
 import {
@@ -359,18 +361,28 @@ export async function stopAgent(stack: SmokeStack, agent: SmokeAgent) {
   }
 }
 
-export async function deployAgent(stack: SmokeStack, agent: SmokeAgent): Promise<string> {
-  const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
-  const revisionId = wireField(revision, "id") as string | null | undefined;
-  assert.match(revisionId ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
-  await waitForDeployment(stack, agent.id, revisionId!, agent.label);
-  const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
-  assert.equal(
-    wireField(current, "desiredRuntimeState"),
-    "running",
-    `${agent.label}: not running after deploy`,
-  );
-  return revisionId!;
+export async function deployAgent(
+  stack: SmokeStack,
+  agent: SmokeAgent,
+  timing?: ChannelProxyDeploymentTiming,
+): Promise<string> {
+  const measure = channelProxyDeploymentStep(timing);
+  const revisionId = await measure("submit", async () => {
+    const revision = await cliJson(stack, ["agent", "deploy", agent.id]);
+    const id = wireField(revision, "id") as string | null | undefined;
+    assert.match(id ?? "", /^rev_/, `${agent.label}: deploy returned no revision`);
+    return id!;
+  });
+  await measure("wait", () => waitForDeployment(stack, agent.id, revisionId, agent.label));
+  await measure("verify", async () => {
+    const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
+    assert.equal(
+      wireField(current, "desiredRuntimeState"),
+      "running",
+      `${agent.label}: not running after deploy`,
+    );
+  });
+  return revisionId;
 }
 
 export async function runFirstAgent(stack: SmokeStack, modelCredential: string) {

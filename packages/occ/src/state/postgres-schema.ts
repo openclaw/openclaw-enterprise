@@ -59,6 +59,8 @@ const identifierPatterns = {
   agent: "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   revision: "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   secret: "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  deviceAuthorizationSession:
+    "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   credentialSource: "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   audit: "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 } as const;
@@ -948,7 +950,7 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec}
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
-          - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
+          - 'secret_driver_id' - 'secret_bindings' - 'gateway_token_service_instance_id' - 'harness_auth' - 'credential_sources' - 'plugins'
           - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission' - 'credential_deployment') = '{}'::jsonb
     AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
@@ -1027,6 +1029,15 @@ export const agentRevisions = occSchema.table(
           NOT (${table.admittedSpec} ? 'credential_sources')
           OR occ.credential_source_snapshots_are_valid(${table.admittedSpec}->'credential_sources')
         )`.inlineParams(),
+    ),
+    check(
+      "agent_revisions_gateway_token_service_owner",
+      sql`CASE WHEN COALESCE(jsonb_path_exists(${table.admittedSpec}->'secret_bindings',
+        '$.* ? (@.source.kind == "credential_source")'), false)
+      THEN jsonb_typeof(${table.admittedSpec}->'gateway_token_service_instance_id') = 'string'
+        AND ${table.admittedSpec}->>'gateway_token_service_instance_id'
+          ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      ELSE NOT (${table.admittedSpec} ? 'gateway_token_service_instance_id') END IS TRUE`,
     ),
   ],
 );
@@ -2879,7 +2890,7 @@ export const authenticationStates = occSchema.table(
     check(
       "authentication_states_device_shape",
       sql`${table.kind} <> 'device_authorization' OR ((
-      ${table.id} ~ ${identifierPatterns.secret}
+      ${table.id} ~ ${identifierPatterns.deviceAuthorizationSession}
       AND ${table.connectionTemplateId} IS NULL
       AND ${table.connectionTemplateVersion} IS NULL AND ${table.createdAt} IS NULL AND ${table.version} > 0
       AND jsonb_typeof(${table.binding}) = 'object'

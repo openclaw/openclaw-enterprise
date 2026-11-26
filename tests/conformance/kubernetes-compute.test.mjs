@@ -48,6 +48,8 @@ import {
 import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
 import { buildSandboxInstallation } from "../integration/sandbox-driver-installation-fixture.ts";
+import { githubPullRequestCreationRequest } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
 import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
@@ -135,6 +137,7 @@ import { checkManagedReleaseDelivery } from "./kubernetes-managed-release-cases.
 import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
 import {
   checkCanonicalGatewayChannelSecret,
+  checkGatewayCredentialAggregateLimit,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
   checkPodModelCredentialPlacement,
@@ -921,10 +924,10 @@ for (const { name, ...auth } of [
 }
 
 test("staged Repository Compute freezes and revalidates only inspected dedicated Harness releases", async (t) => {
-  for (const [harnessId, mode] of [
-    ["codex", "legacy"],
-    ["codex", "service"],
-    ["openclaw", "service"],
+  for (const [harnessId, mode, publicationAllowed] of [
+    ["codex", "legacy", false],
+    ["codex", "service", true],
+    ["openclaw", "service", true],
   ]) {
     await t.test(`${harnessId} ${mode}`, async (t) => {
       const base = buildSandboxInstallation().drivers.sandbox.configuration;
@@ -1016,15 +1019,14 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         },
       };
       const grants = [
-        { repository: "octo/project", access: "read" },
+        { repository: "octo/project", access: publicationAllowed ? "write" : "read" },
         { repository: "octo/second", access: "read" },
       ];
-      const repositoryRequests = grants.map(({ repository }) => ({
-        binary: "/usr/bin/git",
-        host: "github.com",
-        ports: [{ from: 443, to: 443 }],
-        requestPolicy: { type: "http", method: "GET", path: `/${repository}.git/info/refs` },
-      }));
+      const repositoryRequests = [
+        ...openShellRepositoryCredentialRequests(grants),
+        ...(publicationAllowed ? [githubPullRequestCreationRequest("octo/project")] : []),
+      ];
+      const configuration = createHarnessConfiguration(harnessId, "gpt-5");
       const makeFixture = () =>
         dedicatedFirstDeployFixture({
           images: { ...fixtureRelease, requireImmutableDigest: true },
@@ -1043,7 +1045,14 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
           revision: {
             ...nativeSandboxRevision(sandbox.id),
             harness: { id: harnessId, version: "1.0.0", mode: "dedicated", overrides: {} },
-            configuration: createHarnessConfiguration(harnessId, "gpt-5"),
+            configuration: {
+              ...configuration,
+              agents: {
+                ...configuration.agents,
+                defaults: { ...configuration.agents.defaults, skills: ["github", "slack"] },
+              },
+              skills: { entries: { github: { enabled: true } } },
+            },
             harnessAuth: auth,
             credentialSources: [
               {
@@ -1142,13 +1151,24 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       );
       fixture.revision.compute.runtimeInputs = originalInputs;
       assert.equal((await fixture.prepare()).ready, false);
+      const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
+      const [gateway] = pod.containers;
+      const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
+      const baseConfig = JSON.parse(
+        fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
+      );
+      // The Gateway replaces generic GitHub instructions only with a skill the Agent can use.
+      assert.equal(baseConfig.skills.entries.github.enabled, false);
+      if (publicationAllowed) {
+        assert.deepEqual(baseConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
+        assert.deepEqual(baseConfig.skills.load.extraDirs, [
+          "/usr/local/lib/oce/skills/github-repository-rest",
+        ]);
+      } else {
+        assert.equal(baseConfig.skills.entries["github-repository-rest"]?.enabled, false);
+        assert.doesNotMatch(JSON.stringify(baseConfig.skills.load ?? {}), /github-repository-rest/);
+      }
       if (browserEnabled) {
-        const pod = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
-        const [gateway] = pod.containers;
-        const config = pod.volumes.find(({ name }) => name === "openclaw-configuration");
-        const baseConfig = JSON.parse(
-          fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
-        );
         assert.equal(gateway.volumeMounts.find(({ name }) => name === config.name)?.readOnly, true);
         assert.equal(
           gateway.volumeMounts.find(({ name }) => name === config.name)?.mountPath,
@@ -3249,10 +3269,6 @@ test("activation waits for the Gateway to report the node preparation handed it"
 test("an unacknowledged workspace node binding costs at most one bounded wait across activations", () =>
   checkBoundedAcknowledgementAcrossActivations(dedicatedFirstDeployFixture));
 
-// The worker issues a version's first prepared Git token once the version is active, and
-// OpenShell resets every Sandbox connection when it installs it, the workspace node's
-// included (finding 2141). Activation names that wait, then the node's reconnection, so the
-// deployment does not report success a moment before the node drops.
 test("Kubernetes Compute confirms repository-free Worker restart disposition only for owned revisions", async () => {
   const { state, driver, revision, objects, prepare, markWorkloadsReady } =
     dedicatedFirstDeployFixture();
@@ -4910,7 +4926,7 @@ test(
   checkChannelPolicyDiagnostic,
 );
 
-test("native channel settings require readable Secret bindings", async () => {
+test("native channel settings require readable Credential Source bindings", async () => {
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -4942,24 +4958,24 @@ test("native channel settings require readable Secret bindings", async () => {
   const secretBindings = Object.freeze({
     SLACK_APP_TOKEN: {
       source: {
-        kind: "secret",
+        kind: "credential_source",
         namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000001",
+        id: "cs_00000000-0000-4000-8000-000000000001",
       },
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
       source: {
-        kind: "secret",
+        kind: "credential_source",
         namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000002",
+        id: "cs_00000000-0000-4000-8000-000000000002",
       },
       delivery: { type: "env" },
     },
   });
 
-  // Real Gateway/Harness projection and revocation now run in the credentialed
-  // Kubernetes workflow. These cases retain the distinct Secret parsing boundary.
+  // Real Gateway/Harness projection and revocation run in the credentialed
+  // Kubernetes workflow. This case checks credential-reference admission only.
   await assert.rejects(
     driver.prepareRevision({
       ...revision,
@@ -4987,6 +5003,31 @@ test("native channel settings require readable Secret bindings", async () => {
     },
   });
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+
+  // A Configuration stored before the cutover cannot start another revision with a
+  // public Namespace Secret in a Slack credential field.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
+        {
+          ...appBinding,
+          SLACK_BOT_TOKEN: {
+            source: {
+              kind: "secret",
+              namespaceId: tenant.id,
+              id: "sec_00000000-0000-4000-8000-000000000002",
+            },
+          },
+        },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+    },
+  );
 
   assert.throws(
     () =>
@@ -5035,7 +5076,7 @@ test("native channel settings require readable Secret bindings", async () => {
         assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
         assert.ok(
           error.message.endsWith(
-            ` references ${shown} without a Configuration Secret binding: bind ${shown} in secretBindings to an environment-backed Secret, or remove the reference.`,
+            ` references ${shown} without a Credential Source binding: bind ${shown} to a Credential Source in secretBindings, or remove the reference.`,
           ),
           error.message,
         );
@@ -7115,6 +7156,12 @@ for (const embedded of [true, false]) {
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
     assert.equal(initializer.image, driver.options.images.gateway);
     assert.deepEqual(initializer.resources, driver.options.resources.gateway);
+    for (const container of [initializer, gateway.spec.template.spec.containers[0]]) {
+      assert.deepEqual(
+        container.env.filter(({ name }) => name === "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF"),
+        [{ name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" }],
+      );
+    }
     // Container restarts do not rerun initContainers; the workspace owner checks its marker.
     assert.equal(containerProgram(pod.containers[0]).includes(setup.id), true);
     assert.equal(
@@ -7302,6 +7349,11 @@ test(
 test(
   "dedicated Gateway references canonical CP channel Secrets and rejects a replaced source",
   checkCanonicalGatewayChannelSecret,
+);
+
+test(
+  "Gateway credential staging refuses aggregate Secret data above 1 MiB",
+  checkGatewayCredentialAggregateLimit,
 );
 
 test(

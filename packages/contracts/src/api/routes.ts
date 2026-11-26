@@ -61,7 +61,7 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
-  SecretId,
+  DeviceAuthorizationSessionId,
   AgentProvisioningParams,
   PresetParams,
   CreatePresetBody,
@@ -278,7 +278,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, sessionId: SecretId },
+        { namespaceId: NamespaceId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -298,7 +298,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, sessionId: SecretId },
+        { namespaceId: NamespaceId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -340,7 +340,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -360,7 +360,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -1544,9 +1544,9 @@ export const occApiRoutes = [
     path: "/namespaces/:namespaceId/channel-directory/lookup",
     action: "openclaw.channel_directory.lookup",
     iamAction: "operate",
-    resourceKind: "secret",
+    resourceKind: "credential_source",
     authorizationTarget: "namespace_collection",
-    summary: "Search a channel directory using an authorized Namespace Secret",
+    summary: "Search a channel directory using an authorized Credential Source",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

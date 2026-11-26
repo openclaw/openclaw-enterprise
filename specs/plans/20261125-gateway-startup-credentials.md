@@ -5,7 +5,7 @@ rfc: ../rfcs/20261125-gateway-startup-credentials.md
 # Implementation plan: Gateway startup credentials
 
 - **ID:** RFC-20261125-gateway-startup-credentials
-- **Delivery status:** Planned; Source delivery is not enabled.
+- **Delivery status:** Implementation candidate for OCC TokenService and Kubernetes Compute; not released.
 - **Owner:** Gateway startup delivery maintainers
 - **Authority:** [Gateway startup credentials](../rfcs/20261125-gateway-startup-credentials.md)
 - **Source baseline:** `986e04b3123f7bdbcb782596875045d628e46bf3`
@@ -39,7 +39,9 @@ At this baseline, OpenShell accepts generic static Sources, but Gateway delivery
 
 ## Delivery record
 
-Planning only. Exposure, explicit reuse, and freshness decisions are accepted. No implementation candidate, runtime test, PR, or deployment exists for this plan.
+The local candidate implements the Configuration binding, immutable owner, Worker authorization and resolution, and revision-owned Kubernetes delivery and cleanup. Current behavior belongs to [Configuration secret bindings](../../docs/reference/configuration/secrets.md#secret-bindings) and [Gateway startup credentials](../../docs/reference/drivers/kubernetes-compute/gateway-credentials.md).
+
+Focused API, PostgreSQL Worker, and disposable Kubernetes fixture checks cover authorization, version restaging, rotation, withdrawal, and cleanup. The Kubernetes fixture runs a process that reports credential digests; it is not native Gateway or model execution. Genuine Gateway QA and OpenShell-owned Source qualification remain outstanding. The candidate has not been deployed.
 
 ## Manual Notes
 
@@ -49,3 +51,4 @@ Planning only. Exposure, explicit reuse, and freshness decisions are accepted. N
 - 2026-11-26 06:38 Asia/Taipei: Recorded the accepted workload-manager exposure and managed-redeploy freshness decisions; retained the revocation deployment outcome as an open question.
 - 2026-11-26 06:49 Asia/Taipei: Accepted explicit Source reuse with exact IAM and Gateway Configuration permissions; removed the proposed profile and field allowlist.
 - 2026-11-26 06:51 Asia/Taipei: Retained the submitted RFC's refusal of unauthorized managed starts; credential omission is outside the approved behavior.
+- 2026-11-26 09:05 Asia/Taipei: Recorded the unpublished OCC TokenService/Kubernetes implementation candidate and its remaining qualification limits.

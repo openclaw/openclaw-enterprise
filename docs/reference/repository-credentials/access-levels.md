@@ -1,10 +1,11 @@
 # GitHub access levels
 
 For Credential Design 1.0, choose repository **Read** or **Read/write**.
-TokenService supplies credentials for admitted Git operations. OpenShell can also
-admit a [public metadata request](#public-repository-metadata) for the same
-repository. Pull request creation requires separate authority. Branch protection
-and the prepared broker are outside 1.0.
+TokenService supplies credentials for admitted Git operations. Either access
+level can permit [public repository metadata](#public-repository-metadata).
+Read/write can also authorize [pull request creation](#pull-request-creation)
+subject to the Source's Repository coverage. Branch protection and the separate
+prepared broker are outside Credential Design 1.0.
 
 ## Registry profiles
 
@@ -23,7 +24,8 @@ whose profile is not allowed by the Namespace policy.
 For `github-repository`, `profiles` must contain only that value and the Namespace
 policy must include the GitHub App token `permissions`, such as `contents: write`
 and `metadata: read`. These permissions set the scope of the App's installation
-token. GitHub applies its repository and branch rules.
+token. OCE admits Agent requests within that scope. GitHub enforces repository
+and branch rules.
 
 For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
@@ -100,8 +102,8 @@ list, conflicts with the selection and blocks deployment. Use an Agent draft
 without that list. [Repository network policy](../sandbox-policies.md#repository-network-policy)
 
 TokenService holds the installation token. Credential Proxy injects it only
-on each Agent's admitted Git requests. Read-only permits Git discovery, clone,
-and fetch. Read/write also permits push.
+on the Agent's admitted Git and pull request creation requests. Read-only permits
+Git discovery, clone, and fetch. Read/write also permits push.
 
 Stop a running Agent before deploying changed grants. Removing repositories
 can [withdraw running Git access](../../guides/credential-proxy.md#withdraw-repository-access) without
@@ -133,10 +135,28 @@ grant to remove the rule.
 <a id="preview-namespace-limits"></a>
 <a id="issue-creation"></a>
 <a id="cut-over-existing-registrations"></a>
-<a id="pull-request-creation"></a>
 <a id="known-limits"></a>
 
-Earlier OpenShell REST routes, API limits, and issue and pull request behavior
+### Pull request creation
+
+The GitHub App and Namespace registration must allow `pull_requests: write`.
+Namespace `apiLimits` can withhold creation while Git Write remains available.
+`pull_requests: read` or `none` withholds creation. `default: none` also
+withholds it unless `pull_requests: write` overrides the default.
+The Agent needs Write on the target and at least Read on every repository
+covered by the Source token. GitHub can read a fork head named in the request
+body, so a missing Read grant withholds publication for the entire Source.
+
+The Proxy rule covers `/usr/local/bin/gh` and one operation at
+`api.github.com:443`, `POST /repos/{owner}/{repo}/pulls`. Use `gh api` with
+an authorized head and base. The GitHub endpoint also accepts an `issue` field
+to create a pull request from an issue in the target repository.
+
+Stock OpenShell can inject the token on matching plaintext HTTP port 443 and
+match descendants of `gh`. These temporary exceptions apply to the exact
+publication route. Stock `gh` uses verified TLS. [RFC](https://github.com/openclaw/openclaw-enterprise/pull/7447)
+
+Earlier OpenShell REST routes, Agent-level API limits, and issue and pull request behavior
 are documented in the [historical REST reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery).
 The separate [prepared native Git broker](prepared-native-git.md) is outside 1.0;
 its draft-PR feature is not equivalent to a Source-backed Git grant.

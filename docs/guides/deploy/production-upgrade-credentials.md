@@ -25,7 +25,7 @@ unchanged. Follow the [controller upgrade safeguards](production-upgrade.md#upgr
 Select [TokenService and Credential Proxy](../../reference/drivers/selection.md#supported-selections).
 The migration drops Gateway Source records and clears their draft assignments;
 it does not transfer credentials or clean external Providers. Keep the OpenShell
-gateway service and unrelated Channel Secrets. After upgrade, enroll replacement
+gateway service and unrelated credential material. After upgrade, enroll replacement
 Sources, grant Agent access, deploy, and verify a model turn and each required
 allowed and denied Git operation. Issue fresh ServiceAccount PATs as needed.
 Remove only the old Providers and profiles identified by the inventory and

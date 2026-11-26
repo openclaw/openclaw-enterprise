@@ -62,11 +62,9 @@ graph TD
 The API, worker, and Helm Installation check validate and construct the bundled
 OpenShell Drivers only when selected. Kubernetes Compute also imports managed
 OpenShell classes to select the Harness runtime. These imports do not load gRPC.
-`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:startListener`
-and `apps/controller/src/drivers/egress-proxy/openshell-exchange-binding.ts:bindOpenShellMiddleware`
-load the authority transport when starting their selected listeners. An
-Installation without OpenShell can therefore pass startup and the Helm upgrade
-check when the OpenShell transport is unavailable.
+The selected [OpenShell Backend](../reference/backends.md#openshell-gateway)
+supplies the Gateway transport. The signed request guard starts separately for
+[managed Plugins](agent-plugins.md).
 
 Each process reads the same trusted startup YAML. Configuration, IAM, Compute,
 and optional Sandbox selections may name an operator-installed package;

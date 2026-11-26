@@ -7,7 +7,7 @@ import type { agentSaveGap } from "../../../../apps/controller/src/console/agent
 import type { StoryAction } from "../../story-action.mts";
 import type { configurationValues } from "../configuration-fixture.mts";
 import type { createFixtureFetch } from "../preview-rules.mts";
-import { click, presetSecretsPath } from "../create-agent-form-data.mts";
+import { click } from "../create-agent-form-data.mts";
 
 type CredentialScenario = Pick<
   Parameters<typeof configurationValues>[0],
@@ -38,7 +38,6 @@ type CredentialScenario = Pick<
   secretOperateDenied?: readonly string[];
   serviceAccountsEmpty?: boolean;
   slackBindings?: false | "app" | readonly string[];
-  slackGrantMissing?: string;
   unreadableSecretId?: string;
 };
 
@@ -52,7 +51,7 @@ export const credentialsThemeScenario = [
   "authMissing",
   "Custom missing credentials",
   "custom",
-] satisfies [string, keyof ReturnType<typeof credentialsRecoveryScenarios>, string, "custom"];
+] satisfies [string, keyof ReturnType<typeof credentialsScenarios>, string, "custom"];
 
 export function credentialsOAuthScenarios({ draft }: Pick<CredentialDependencies, "draft">) {
   return {
@@ -260,7 +259,7 @@ export function credentialsScenarios({
       },
       slackBindings: ["SLACK_APP_TOKEN"],
       description:
-        "The bot token reads ACME_SLACK_BOT, which the token pickers do not bind, so the tab lists each key the tokens read without pickers. Deploy waits until ACME_SLACK_BOT is bound through the Configuration API.",
+        "The bot token reads ACME_SLACK_BOT. The Credentials tab offers a Source picker for that exact key, and deployment waits until it is bound.",
     },
     credentialsSlackHttp: {
       group: "Components/Credentials",
@@ -275,80 +274,53 @@ export function credentialsScenarios({
     },
     credentialsSlackReader: {
       group: "Components/Credentials",
-      name: "Slack tokens, viewer can only read",
+      name: "Slack Sources, viewer can only read",
       path: `${draft}&tab=credentials`,
       slack: true,
-      slackBindings: false,
       readOnlyPermissionSummary: true,
       description:
-        "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel Secrets is not offered, and a note says why.",
-      gap: "The permission answer is simulated; the API still authorizes every save.",
+        "The viewer can read the saved Slack Source bindings but cannot edit the Configuration. Each unavailable selector remains in the keyboard Tab order and names that editing restriction.",
+      steps: [
+        "Tab to Slack app token and Slack bot token. Each selector receives focus and is described by the Configuration read-only reason.",
+        "Press an arrow key or Enter. The saved Source selection does not change, and Save channel credentials is not offered.",
+      ],
+      gap: "This preview simulates the permission answer and Source metadata; it does not prove API authorization or credential delivery.",
     },
-    credentialsSlackSecretsOperateDenied: {
+    credentialsSlackSwappedKeys: {
       group: "Components/Credentials",
-      name: "Slack tokens, editor cannot operate the bound Secrets",
+      name: "Slack credential roles use swapped environment keys",
       path: `${draft}&tab=credentials`,
       slack: true,
-      agentPermissionSummary: {
-        update: true,
-        deploy: true,
-        operate: true,
-        delete: true,
-        administer: true,
-        configurationUpdate: true,
-        configurationRead: true,
-        configurationSecretsOperate: false,
-        configurationSecretsOperateDeniedBindings: [],
-        agentSourcesOperate: false,
-        sandboxPolicyRead: false,
+      slackTokens: {
+        appToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        botToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       },
       description:
-        "The permission answer allows Configuration update but not Secret operate on every Secret the Configuration binds, which each Configuration save needs. The Slack token pickers are disabled, Save channel Secrets is not offered, and a note names the missing grant. Each Agent update checks the same Secrets, so Save authentication source is disabled too.",
-      steps: [
-        "Tab to Slack app token and Slack bot token. Each takes focus and looks unavailable, its description is its status line, and an arrow key or typing opens no list and changes nothing.",
-      ],
-      gap: "The permission answer is simulated; the API still authorizes every save.",
+        "The app setting reads SLACK_BOT_TOKEN and the bot setting reads SLACK_APP_TOKEN. The Source selectors show the exact environment keys instead of assigning the wrong app or bot role to either binding.",
+      gap: "This preview simulates Source metadata and Configuration values; it does not validate token roles with Slack.",
     },
-    credentialsSlackReplaceDenied: {
+    credentialsSlackSourceOperateDenied: {
       group: "Components/Credentials",
-      name: "Slack tokens, editor must replace the bot token Secret",
+      name: "Slack Credential Source operate denied",
       path: `${draft}&tab=credentials`,
       slack: true,
-      agentPermissionSummary: {
-        update: true,
-        deploy: true,
-        operate: true,
-        delete: true,
-        administer: true,
-        configurationUpdate: true,
-        configurationRead: true,
-        configurationSecretsOperate: false,
-        configurationSecretsOperateDeniedBindings: ["SLACK_BOT_TOKEN"],
-        agentSourcesOperate: false,
-        sandboxPolicyRead: true,
-      },
-      description:
-        "The permission answer lists the bot token binding as the only one whose Secret the editor cannot operate. A save is checked on the Secrets it submits, so the Slack token pickers stay editable and a note says to choose another Secret for the bot token. A save that keeps it is refused before any request.",
-      steps: [
-        "Choose the Slack backup token for the app token and select Save channel Secrets. The panel says the save keeps Slack bot token and sends nothing.",
-        "Choose the Slack backup token for the bot token too, then Save channel Secrets. The save goes through; do not deploy.",
+      rules: [
+        {
+          suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+          method: "PATCH",
+          status: 403,
+          code: "FORBIDDEN",
+          message:
+            "Not authorized: this needs CredentialSource operate on cs_00000000-0000-4000-8000-000000000043.",
+        },
       ],
-      gap: "The permission answer is simulated; the API still authorizes every save and the Secrets it binds.",
-    },
-    credentialsSlackOperateDenied: {
-      group: "Components/Credentials",
-      name: "Slack tokens, editor cannot operate one readable Secret",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      secretOperateDenied: ["sec_demo_slack_backup_token"],
-      description:
-        "The Secret answer lists the Slack backup token as readable but not operable for this editor. Each Secret field lists it disabled with the reason and never stages it, since a save that binds it would be refused. Secret operate is then granted per Secret, so each field lists Create new Secret... disabled with the reason too.",
-      steps: [
-        "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing and Save channel Secrets stays disabled.",
-        "Type backup in API key Secret: the same option is listed the same way.",
-        "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+        click("Save channel credentials"),
       ],
-      gap: "The Secret answer is simulated; the API still authorizes every save and the Secrets it binds.",
+      description:
+        "The simulated Configuration save refuses exact operate on the selected Source. The existing binding remains saved and the replacement remains an unsaved choice.",
+      gap: "This preview simulates the refusal; it does not prove the backend authorization boundary.",
     },
     credentialsSlackStored: {
       group: "Components/Credentials",
@@ -356,9 +328,9 @@ export function credentialsScenarios({
       path: `${draft}&tab=credentials`,
       slack: true,
       description:
-        "Readable Secret names show existing bindings. The console does not retrieve stored token values.",
+        "Readable Credential Source names show existing bindings. The console does not retrieve stored token values.",
       steps: [
-        "Tab to Save channel Secrets. It takes focus, looks unavailable and is described by No channel Secret changes to save.; Enter submits nothing.",
+        "Tab to Save channel credentials. It takes focus, looks unavailable and is described by No channel credential changes to save.; Enter submits nothing.",
       ],
     },
     credentialsSlackReplacement: {
@@ -366,44 +338,35 @@ export function credentialsScenarios({
       name: "Slack token switch",
       path: `${draft}&tab=credentials`,
       slack: true,
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+      ],
       description:
-        "A different app Secret is selected but not saved. Deploy would use the saved Secret, not the one shown in the picker.",
+        "A different app Credential Source is selected but not saved. Deploy would use the saved Credential Source, not the one shown in the picker.",
       steps: [
         "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
-        "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
-      ],
-    },
-    credentialsDiscardSecretChoice: {
-      group: "Components/Credentials",
-      name: "Discard an unsaved Secret choice",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      unreadableSecretId: "sec_demo_slack_bot_token",
-      description:
-        "The saved Slack bot token is not readable. After choosing a different Secret, you can discard that unsaved choice without finding the original in the picker.",
-      steps: [
-        "Slack bot token shows “Bound Secret”. Choose “Slack backup token (simulated)”; Deploy is disabled until you save or reload.",
-        "Choose Reset story to reopen the saved configuration, as a page reload would. The bot token again shows “Bound Secret” and Deploy is available. Do not deploy.",
+        "Choose the Slack backup token, then Save channel credentials. Deploy becomes available when the save succeeds; do not deploy.",
       ],
     },
     credentialsSaveProvisioningReserved: {
       group: "Components/Credentials",
-      name: "Secret choices after a refused save",
+      name: "Credential Source choices after a refused save",
       path: `${draft}&tab=credentials`,
       slack: true,
       rules: [reservedConfigurationWrite],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+      ],
       description:
         "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
       steps: [
-        "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+        "Press Save channel credentials. The Console explains why the Configuration cannot be saved.",
         "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
       ],
     },
     credentialsSaveChannelRefused: {
       group: "Components/Credentials",
-      name: "Channel Secret save refused for a channel setting",
+      name: "Channel credential save refused for a channel setting",
       path: `${draft}&tab=credentials`,
       slack: true,
       rules: [
@@ -416,40 +379,19 @@ export function credentialsScenarios({
             "Configuration setting channels.slack.botToken holds a SecretRef the Slack Channel Driver cannot read: use an env SecretRef with provider default, or one whole ${NAME}, bound in secretBindings.",
         },
       ],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+      ],
       description:
-        "The stored Configuration holds a Slack token form that save now refuses, so saving channel Secrets, which resends the stored values, is refused for that setting.",
+        "The stored Configuration holds a Slack token form that save now refuses, so saving channel credentials, which resends the stored values, is refused for that setting.",
       gap: "The refusal is simulated; the API refuses the stored form on the bundled Kubernetes Compute.",
       steps: [
-        "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
-      ],
-    },
-    credentialsSaveChannelBindingRefused: {
-      group: "Components/Credentials",
-      name: "Channel Secret save refused for a missing binding",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      rules: [
-        {
-          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-          method: "PATCH",
-          status: 400,
-          code: "INVALID_REQUEST",
-          message:
-            "Configuration setting channels.slack.signingSecret references SLACK_SIGNING_SECRET without a Configuration Secret binding: bind SLACK_SIGNING_SECRET in secretBindings to an environment-backed Secret, or remove the reference.",
-        },
-      ],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-      description:
-        "The stored Configuration references a name that has no Secret binding, so saving channel Secrets, which resends the stored values, is refused for that setting.",
-      gap: "The refusal is simulated; the API refuses the unbound reference on the bundled Kubernetes Compute.",
-      steps: [
-        "Press Save channel Secrets. The Console shows the API's message, which names the setting, and says where the console binds a Secret: this tab for SLACK_APP_TOKEN and SLACK_BOT_TOKEN, the Configuration API for other names.",
+        "Press Save channel credentials. The Console shows the API's message, which names the setting, and says to fix it in the Configuration JSON on the Configuration tab.",
       ],
     },
     credentialsSaveConflict: {
       group: "Components/Credentials",
-      name: "Secret choices after a conflict",
+      name: "Credential Source choices after a conflict",
       path: `${draft}&tab=credentials`,
       slack: true,
       rules: [
@@ -458,11 +400,13 @@ export function credentialsScenarios({
           message: "The requested platform resource already exists.",
         },
       ],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+      ],
       description:
-        "A save meets a generic conflict. The Console explains that the Secret choices conflict with saved state, without claiming a duplicate or a stale generation.",
+        "A save meets a generic conflict. The Console explains that the Credential Source choices conflict with saved state, without claiming a duplicate or a stale generation.",
       steps: [
-        "Press Save channel Secrets. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
+        "Press Save channel credentials. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
         "Choose the saved Slack app token again. Deploy becomes available; no deployment or second save is needed.",
       ],
     },
@@ -473,288 +417,12 @@ export function credentialsScenarios({
       slack: true,
       configurationChangedElsewhere: true,
       actions: [
-        { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save channel Secrets"),
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+        click("Save channel credentials"),
         click("Reload draft"),
       ],
       description:
-        "Another browser saved this Configuration first. The chosen app token stays shown, and Reload draft applies it over the reread bindings for Save channel Secrets.",
-    },
-    credentialsSecretListDenied: {
-      group: "Components/Credentials",
-      name: "Secret list denied",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      rules: [
-        {
-          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
-          method: "GET",
-          status: 403,
-        },
-      ],
-      description:
-        "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
-    },
-    credentialsSecretListRefresh: {
-      group: "Components/Credentials",
-      name: "Refresh Secret list without saving",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-      // Setup makes three exact collection reads; the permission endpoint is separate.
-      rules: [{ path: presetSecretsPath, method: "GET", skip: 3, once: true, delayMs: 3000 }],
-      description:
-        "The first explicit refresh waits three seconds, preserving query, focus and the staged app token. Save channel Secrets applies the choices.",
-      steps: [
-        "Type a nonmatching name in Slack bot token. ArrowDown highlights Create; a second ArrowDown highlights Refresh Secret list. Press Enter.",
-        "Loading Secrets is disabled during the three-second read. Check that query, focus and staged app token remain. Afterward, choose a Secret; only Save channel Secrets saves bindings. Existing access restrictions still apply.",
-      ],
-      gap: "The delay is simulated. Real two-tab persistence, races and grants require the browser test; no provider readiness is established.",
-    },
-    credentialsSecretListRetry: {
-      group: "Components/Credentials",
-      name: "Retry Secret list without losing a choice",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-      // Fail the first explicit collection read, after the three successful setup reads.
-      rules: [
-        {
-          path: presetSecretsPath,
-          method: "GET",
-          skip: 3,
-          once: true,
-          status: 503,
-          code: "UNAVAILABLE",
-        },
-      ],
-      description:
-        "The first explicit refresh fails; retry succeeds without clearing the query or staged app token, or saving bindings.",
-      steps: [
-        "Type a nonmatching name in Slack bot token. Press ArrowDown twice to pass Create and highlight Refresh Secret list, then Enter. Check Secrets unavailable, retained query/focus and the staged app token.",
-        "Choose Refresh Secret list again. The read succeeds with query, focus and staged app token intact. Clear the query to choose a Secret; Save channel Secrets alone persists the choices.",
-      ],
-      gap: "The one-shot failure is simulated. Real staged-choice preservation, late responses and grants require the browser test; no provider readiness is established.",
-    },
-    credentialsSecretListScrolling: {
-      group: "Components/Credentials",
-      name: "Scrolling Secret list",
-      path: `${draft}&tab=credentials`,
-      extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
-        id: `sec_story_scroll_${index}`,
-        name: `Scrolling Secret ${index} (simulated)`,
-      })),
-      description:
-        "With more readable Secrets than fit, the open API key Secret list scrolls. It is not a Tab stop: focus stays in the field and moves on with Tab.",
-      steps: [
-        "Click API key Secret. The list opens and scrolls.",
-        "Press Tab. The list closes and focus moves to the metadata link below the field, not to the page.",
-        "Click the field, type Scrolling, then drag the list's scrollbar. The list stays open with the search kept, and the field keeps focus.",
-      ],
-    },
-    credentialsSecretListFailsAfterStaging: {
-      group: "Components/Credentials",
-      name: "Secret list fails after a staged Secret",
-      path: `${draft}&tab=credentials`,
-      rules: [
-        {
-          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
-          method: "GET",
-          delayMs: 4000,
-          status: 503,
-        },
-      ],
-      actions: [
-        { selector: "#harness-auth-secret", value: "__openclaw_create_secret__" },
-        {
-          selector: "#create-harness-auth-secret-name",
-          value: "Created while loading (simulated)",
-        },
-        { selector: "#create-harness-auth-secret-value", value: "synthetic-demo-key" },
-        click("Create Secret"),
-      ],
-      description:
-        "A Secret created while the list loads is staged. The list read then fails, and the hint still says the binding is staged instead of showing a list error.",
-      steps: [
-        "Wait four seconds for the simulated list failure. The hint under API key Secret still reads Secret binding staged. Save changes to apply it.",
-        "Choose Reset story to replay it.",
-      ],
-      gap: "The list failure is simulated; a lost session (401) still ends the session as before.",
-    },
-    credentialsSlackGrantDenied: {
-      group: "Components/Credentials",
-      name: "Slack grant denied",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      actions: [
-        { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save channel Secrets"),
-      ],
-      rules: [
-        {
-          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
-          method: "POST",
-          status: 403,
-        },
-      ],
-      description:
-        "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
-    },
-    credentialsSlackGrantMissing: {
-      group: "Components/Credentials",
-      name: "Slack Secret bound without an Agent grant",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      description:
-        "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
-      steps: [
-        "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
-        "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
-      ],
-    },
-  } satisfies Record<string, CredentialScenario>;
-}
-
-export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependencies, "draft">) {
-  return {
-    credentialsSavedRetryReadDenied: {
-      group: "Components/Credentials",
-      name: "Saved channel bindings, retry read denied",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      rules: [
-        { method: "POST", suffix: "/iam/access-bindings", status: 403, once: true },
-        {
-          method: "GET",
-          suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
-          skip: 2,
-          status: 403,
-          once: true,
-        },
-      ],
-      actions: [
-        { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save channel Secrets"),
-      ],
-      description:
-        "Bindings saved, but their grant failed. Retry then loses Configuration read access. A sanitized receipt preserves the successful save while removing binding metadata.",
-      steps: [
-        "Select Retry Secret access. The receipt says bindings are saved and the Configuration could not be read. No additional PATCH or grant starts.",
-        "Select Refresh, then Retry Secret access after reads recover. The saved replacement remains and only its missing grant is retried.",
-      ],
-    },
-    credentialsBindingReadDenied: {
-      group: "Components/Credentials",
-      name: "Channel binding read denied",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      rules: [
-        {
-          path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-          method: "GET",
-          skip: 1,
-          status: 403,
-          once: true,
-        },
-      ],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
-      description:
-        "The binding preflight is refused once. Its receipt remains visible, but the saved bindings and staged choice are removed. Refresh reads the saved state without repeating a write.",
-      steps: [
-        "Select Save channel Secrets. Check Access denied and the failed preflight receipt; no token picker or saved binding remains.",
-        "Select Refresh. The simulated read succeeds again and restores the saved bindings, without applying the staged choice.",
-        "Select Slack backup token (simulated) again, then Save channel Secrets once. A fresh preflight and one PATCH save that replacement. See unreadable-configuration-workflow.md for the complete walkthrough.",
-      ],
-    },
-    credentialsSlackLeftoverGrantMissing: {
-      group: "Components/Credentials",
-      name: "Slack key left bound without an Agent grant",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackMode: "http",
-      slackTokens: { botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" } },
-      slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      description:
-        "HTTP mode reads no app token, but SLACK_APP_TOKEN is still bound from Socket Mode and its Secret has no Agent grant. Deploy checks every bound Secret, so the tab lists the key as read by no Slack setting, marks it, blocks Deploy, and offers Retry Secret access.",
-      steps: [
-        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; the warning says deploying would be refused.",
-        "Select Retry Secret access. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy.",
-      ],
-    },
-    credentialsSlackOffGrantMissing: {
-      group: "Components/Credentials",
-      name: "Slack off with a bound Secret without an Agent grant",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackOff: true,
-      slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      description:
-        "Disable Slack kept both token bindings, and the app token Secret has no Agent grant. Deploy checks every bound Secret, so with Slack off the tab still lists the bound keys as read by no Slack setting, marks the app token, blocks Deploy, and offers Retry Secret access (finding 3018).",
-      steps: [
-        "SLACK_APP_TOKEN reads Bound · not read by the Slack settings · Agent access not confirmed; Deploy new version names SLACK_APP_TOKEN and says to select Retry Secret access.",
-        "Select Retry Secret access. The section says Secret access granted. This Agent can use its bound Secrets. Deploy the new version to deliver them. The row reads Bound · not read by the Slack settings and Deploy new version is available; do not deploy (finding 3021).",
-      ],
-    },
-    credentialsSlackOffRetryUnconfirmed: {
-      group: "Components/Credentials",
-      name: "Slack off Retry with an unconfirmed grant",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackOff: true,
-      slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
-      actions: [click("Retry Secret access")],
-      description:
-        "With Slack off, Retry Secret access sends the app token Secret's grant, and the IAM API is unavailable (503), so the grant is not confirmed. A Retry saves no Configuration, so the warning names only the grant and what to do next (finding 3023).",
-      gap: "The unavailable IAM API is simulated.",
-      steps: [
-        "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator. It does not say Configuration saved.",
-        "Select Retry Secret access again. The section says Secret access granted and Deploy new version is available; do not deploy.",
-      ],
-    },
-    credentialsSlackOffRetryAnswerLost: {
-      group: "Components/Credentials",
-      name: "Slack off Retry whose answer is lost",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackOff: true,
-      slackBindings: ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"],
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      rules: [{ suffix: "/iam/access-bindings", method: "POST", lostAnswer: true, once: true }],
-      // Another browser saves the Configuration after the first Retry, so the second one asks for
-      // Reload draft.
-      configurationChangedElsewhere: {
-        afterReads: 2,
-        values: { channels: { slack: { allowFrom: ["UOTHER99"] } } },
-      },
-      actions: [click("Retry Secret access")],
-      description:
-        "With Slack off, Retry Secret access makes the app token Secret's grant, but its answer is lost, so the grant is not confirmed. Reload draft rebuilds the section, and its grant read finds the grant: the section says that access is confirmed and takes focus, instead of disappearing (finding 3030).",
-      gap: "The lost answer and the other browser's save are simulated; the simulated API keeps the grant.",
-      steps: [
-        "The section says Secret access grants could not be confirmed. Select Retry Secret access again; if it is refused, ask an Installation administrator.",
-        "Select Retry Secret access: another browser changed the Configuration, so the section asks for Reload draft.",
-        "Select Reload draft. Once the grant read lands, the section says Secret access confirmed. This Agent can use its bound Secrets. Deploy the new version to deliver them. Focus is on that message, and Deploy new version is available; do not deploy.",
-      ],
-    },
-    credentialsSlackGrantReadPending: {
-      group: "Components/Credentials",
-      name: "Slack grant read in progress",
-      path: `${draft}&tab=credentials`,
-      slack: true,
-      slackGrantMissing: "SLACK_APP_TOKEN",
-      rules: [{ suffix: "/iam/access-bindings", method: "GET", delayMs: 4000 }],
-      description:
-        "An Installation administrator opens an Agent while the console still reads the Namespace IAM policy for the bound Slack Secrets' grants. Deploy waits for that read, then stays blocked because the app token Secret has no Agent grant.",
-      gap: "The slow policy read is simulated.",
-      steps: [
-        "While the read is held, Prepare says Checking this Agent's credential access before deploying. and Deploy new version is disabled.",
-        "After the read lands, the Slack app token reads Bound · Agent access not confirmed and Deploy stays disabled until Retry Secret access grants it.",
-      ],
+        "Another browser saved this Configuration first. Reload draft reapplies the chosen app Source over the reread bindings. The notice remains after Source discovery confirms the selection and clears when you change it.",
     },
     credentialsSlackSigningSecretMissing: {
       group: "Components/Credentials",
@@ -767,11 +435,11 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         signingSecret: "${SLACK_SIGNING_SECRET}",
       },
       description:
-        "Both token pickers are bound, but the signing secret reads SLACK_SIGNING_SECRET, which has no binding. Save and deployment refuse that, so the tab lists the key as Missing below the pickers and Deploy waits until it is bound through the Configuration API.",
+        "The app and bot Source bindings are saved. Select a ready static Credential Source for the additional SLACK_SIGNING_SECRET key before saving channel credentials and deploying.",
     },
     credentialsSavePending: {
       group: "Components/Credentials",
-      name: "Channel Secret save pending",
+      name: "Channel credential save pending",
       path: `${draft}&tab=credentials`,
       slack: true,
       rules: [
@@ -783,15 +451,15 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
         },
       ],
       actions: [
-        { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
-        click("Save channel Secrets"),
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+        click("Save channel credentials"),
       ],
       description:
-        "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
+        "Saving and deployment stay blocked while the channel Credential Source binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
     },
     credentialsSaveUnknown: {
       group: "Components/Credentials",
-      name: "Channel Secret save outcome unknown",
+      name: "Channel credential save outcome unknown",
       path: `${draft}&tab=credentials`,
       slack: true,
       rules: [
@@ -802,9 +470,11 @@ export function credentialsRecoveryScenarios({ draft }: Pick<CredentialDependenc
           once: true,
         },
       ],
-      actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+      actions: [
+        { selector: "#runtime-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000043" },
+      ],
       description:
-        "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
+        "Press Save channel credentials to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
     },
     credentialsSlackPartial: {
       group: "Components/Credentials",

@@ -122,6 +122,7 @@ export const PluginApproversDirectoryUnavailable501 = story(
   "pluginApproversDirectoryUnavailable501",
 );
 export const PluginsAdmitted = story("pluginsAdmitted");
+export const NativeSlackSigningBinding = story("nativeSlackSigningBinding");
 export const InvalidConfiguration = {
   ...story("invalidConfiguration"),
   name: "Invalid Configuration JSON",
@@ -192,6 +193,9 @@ export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDepl
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
 export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
 export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
+export const DeploymentFailedGatewayCredentialDelivery = story(
+  "deploymentFailedGatewayCredentialDelivery",
+);
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",

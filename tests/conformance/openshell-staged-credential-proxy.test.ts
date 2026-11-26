@@ -1719,7 +1719,8 @@ test("OpenShell Source retry updates each owned copy in workspace inventory", as
   const firstReceipt = f.state.statusReads.find(({ receipt_id }) => receipt_id)?.receipt_id;
   assert.ok(firstReceipt);
   const observedUpdates = f.state.statusReads.length;
-  await f.notify("source-v2");
+  // An Agent's explicit delivery retry does not name a saved version and can repair every copy.
+  await f.notify();
   assert.equal(f.resolutions(), 3, "each Source push resolves once regardless of copy count");
   for (const updates of [f.state.updates.slice(0, 2), f.state.updates.slice(2)]) {
     assert.deepEqual(
@@ -2041,20 +2042,34 @@ test("OpenShell Source notification rejects stale readiness and can retry the pe
       assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "12");
 
       if (readiness === "stale-ready") {
-        const providerId = f.state.provider!.metadata.id;
+        const provider = structuredClone(f.state.provider!);
         const failedReceiptId = record(f.state.providerStatus!.receipt).receipt_id;
-        f.state.updateReadiness = "converge";
 
-        // Source custody is already at v2. A manual delivery retry reuses the Provider and
-        // succeeds only after a new UPDATE receipt confirms that its serving target caught up.
+        // Matching Source and Provider versions do not prove the current environment is serving.
+        await assert.rejects(f.notify("source-v2"), DependencyUnavailableError);
+        assert.equal(f.state.updates.length, 1);
+
+        // The supervisor can catch up to the existing generation while the Proxy polls its receipt.
+        f.state.providerStatus!.state = "PROVIDER_READINESS_STATE_PENDING";
+        f.state.updateReadiness = "converge";
+        const statusReadsBeforeRetry = f.state.statusReads.length;
         await f.notify("source-v2");
 
-        assert.equal(f.state.updates.length, 2);
+        assert.equal(f.state.updates.length, 1);
         assert.equal(f.state.creates.length, 1);
-        assert.equal(f.state.provider!.metadata.id, providerId);
-        assert.equal(f.state.provider!.config.oce_source_version, "source-v2");
-        assert.notEqual(record(f.state.providerStatus!.receipt).receipt_id, failedReceiptId);
-        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "14");
+        assert.deepEqual(f.state.provider, provider);
+        const observation = record(f.state.providerStatus!.receipt);
+        assert.equal(observation.kind, "PROVIDER_MUTATION_KIND_OBSERVE");
+        assert.notEqual(observation.receipt_id, failedReceiptId);
+        assert.equal(record(f.state.providerStatus!.observed).provider_env_revision, "13");
+        const [initialRead, ...receiptPolls] = f.state.statusReads.slice(statusReadsBeforeRetry);
+        assert.ok(initialRead);
+        assert.equal(initialRead.receipt_id, undefined);
+        assert.ok(receiptPolls.length > 0);
+        assert.deepEqual(
+          [...new Set(receiptPolls.map(({ receipt_id }) => receipt_id))],
+          [observation.receipt_id],
+        );
       }
     });
   }
@@ -2996,7 +3011,13 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     { repository: "fixture/repository", access: "read" },
     { repository: "fixture/write", access: "write" },
   ] as const;
-  const requests = openShellRepositoryCredentialRequests(grants);
+  const publish: DeploymentRequestMatch = {
+    binary: "/usr/local/bin/gh",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: "/repos/fixture/write/pulls" },
+  };
+  const requests = [...openShellRepositoryCredentialRequests(grants), publish];
   const repository = {
     bindingRef: "repository",
     sourceRef: { kind: "credential_source", id: "cs_github", namespaceId: namespace.id },
@@ -3087,6 +3108,37 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     },
   };
   await assert.rejects(f.proxy.configureDeployment(overlapping, input), DependencyUnavailableError);
+  // Even a matching network and injection request cannot add publication to a Read repository.
+  const readPublish = {
+    ...publish,
+    requestPolicy: {
+      type: "http" as const,
+      method: "POST",
+      path: "/repos/fixture/repository/pulls",
+    },
+  };
+  const readRequests = [...requests.slice(0, -1), readPublish];
+  const readInjections = [
+    { ...repositoryInjection, allowedRequests: readRequests },
+    pluginInjection,
+  ];
+  await assert.rejects(
+    f.proxy.configureDeployment(
+      {
+        ...context,
+        revision: {
+          ...context.revision,
+          credentialDeployment: {
+            ...context.revision.credentialDeployment!,
+            networkAccessPolicy: { allowed: [...readRequests, pluginRequest] },
+            injectionPolicies: readInjections,
+          },
+        },
+      },
+      { ...input, injectionPolicies: readInjections },
+    ),
+    DependencyUnavailableError,
+  );
   const configure = () => f.proxy.configureDeployment(context, input);
   const pending = { name: ActivationPendingError.name, code: "CREDENTIAL_ACTIVATION_PENDING" };
   const initial = record(f.state.policyStatus.revision);
@@ -3146,7 +3198,7 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   const repoRules = Object.values(record(source.network_policies)).filter(
     (rule) => record(rule).name !== "baseline",
   );
-  assert.equal(repoRules.length, 25);
+  assert.equal(repoRules.length, 26);
   assert.deepEqual(
     [
       ...new Set(
@@ -3159,6 +3211,7 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
       "/usr/lib/git-core/git-remote-https",
       "/usr/libexec/git-core/git-remote-http",
       "/usr/libexec/git-core/git-remote-https",
+      "/usr/local/bin/gh",
     ],
   );
   const discovery = repoRules
@@ -3170,6 +3223,28 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     query: { service: { glob: "git-upload-pack" } },
   });
   assert.match(String(record(discovery.credential_binding).provider), /^oce-cs-/);
+  // The publication endpoint uses the same Provider as smart Git and grants one stock gh request.
+  assert.deepEqual(
+    repoRules.flatMap((rule) =>
+      (record(rule).endpoints as Wire[])
+        .filter(({ host }) => host === "api.github.com")
+        .map((endpoint) => ({ binaries: record(rule).binaries, endpoint })),
+    ),
+    [
+      {
+        binaries: [{ path: "/usr/local/bin/gh" }],
+        endpoint: {
+          host: "api.github.com",
+          ports: [443],
+          path: "/repos/fixture/write/pulls",
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          rules: [{ allow: { method: "POST", path: "/repos/fixture/write/pulls" } }],
+          credential_binding: discovery.credential_binding,
+        },
+      },
+    ],
+  );
   assert.equal(
     repoRules.some((rule) =>
       JSON.stringify(rule).includes("/fixture/repository.git/git-receive-pack"),
@@ -3283,9 +3358,10 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   assert.equal(refreshResolutions, 1);
   assert.equal(f.state.updates.length, updates);
   f.state.sandboxInventoryMode = "normal";
-  // A Provider receipt alone cannot prove injection when the effective endpoint lacks its native marker.
+  // Same-version observation still checks the effective endpoint's native injection marker.
   Reflect.deleteProperty(effectiveDiscovery, "provider_credentialed");
-  await assert.rejects(refresh("github-uncredentialed"), DependencyUnavailableError);
+  await assert.rejects(refresh("github-v2"), DependencyUnavailableError);
+  assert.equal(f.state.updates.length, updates);
   effectiveDiscovery.provider_credentialed = true;
   assert.deepEqual(resolvedRevisions, Array(5).fill(context.revision.id));
   assert.deepEqual(f.sandbox.spec.policy, baseline);
@@ -3371,6 +3447,10 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   const peerPolicy = structuredClone(peer.spec.policy!);
   const peerEndpoints = Object.values(record(peerPolicy.network_policies)).flatMap(
     (rule) => record(rule).endpoints as Wire[],
+  );
+  assert.equal(
+    peerEndpoints.some(({ host }) => host === "api.github.com"),
+    false,
   );
   const peerDiscovery = peerEndpoints.find(
     (endpoint) => endpoint.path === "/fixture/write.git/info/refs",

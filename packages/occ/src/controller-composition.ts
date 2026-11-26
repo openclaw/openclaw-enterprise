@@ -78,6 +78,7 @@ import type {
   ResourceKind,
   SandboxDriver,
   SecretBindings,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isName, NAME_RULE, normalizeLoggingLevel } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -163,6 +164,11 @@ export interface ControllerOptions {
         signal: AbortSignal,
       ) => Promise<void>)
     | undefined;
+  /** Code-only qualification of the selected Gateway Source delivery composition. */
+  readonly gatewayStartupSourceDelivery?: (
+    compute: ComputeDriver,
+    owner: TokenServiceDriver,
+  ) => boolean;
   readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
@@ -293,8 +299,7 @@ function createComputeConfigurationPolicy(
     }
   }
 
-  // On the bundled Kubernetes Compute, which delivers channel credentials only from bindings, the
-  // channel credential rule its deployment admission applies (finding 2319).
+  // Configuration writes and Kubernetes admission apply the same channel binding rule.
   function requireBundledChannelBindings(
     values: OpenClawConfigurationDocument,
     secretBindings: SecretBindings,
@@ -303,7 +308,9 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name) => Object.hasOwn(secretBindings, name),
+        (name, requiresSource) =>
+          Object.hasOwn(secretBindings, name) &&
+          (!requiresSource || secretBindings[name]?.source.kind === "credential_source"),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -493,7 +500,7 @@ function createCredentialServices({
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,
     cipher: deviceCipher,
-    nextSessionId: () => resourceValues.nextIdentifier("secret"),
+    nextSessionId: resourceValues.nextDeviceAuthorizationSessionId,
     timestamp: resourceValues.timestamp,
     transactions,
     authority,
@@ -633,6 +640,8 @@ export function createControllerComposition(
     validateComputeConfiguration,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
@@ -870,7 +879,8 @@ export function createControllerComposition(
       publicController.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
     selectCompute: selectedCompute,
     selectChannel: () => publicController.selectedDriver("channel"),
-    secretDriver: secretOperations.secretDriver,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const runtimeCredentials: AgentRuntimeCredentials = new AgentRuntimeCredentials({
     transactions,
@@ -945,7 +955,9 @@ export function createControllerComposition(
     selectedChannel: () => publicController.selectedDriver("channel"),
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
-    ownedSecretDriver: secretOperations.ownedSecretDriver,
+    selectedCompute,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const provisioningRequests = createProvisioningRequests({
     installationId: admittedInstallation.id,
@@ -1003,6 +1015,7 @@ export function createControllerComposition(
     backendId: (requested) => resolveAgentBackendId(backendMap, requested),
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,
