@@ -70,13 +70,8 @@ export function selectBundledRepositoryGitCustody(
 }
 
 /** Select custody for the worker-owned native Repository broker. */
-export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
-  const { tokenService, repositoryOwner } = drivers;
-  if (!tokenService) {
-    throw new Error("Prepared repository Git requires the installed Token Service.");
-  }
-  const repositoryGitCustody: RepositoryGitCustody = {
-    kind: repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
+export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers): RepositoryGitCustody {
+  return {
+    kind: drivers.repositoryOwner?.controlSocket === undefined ? "unavailable" : "native-broker",
   };
-  return { tokenService, repositoryGitCustody };
 }

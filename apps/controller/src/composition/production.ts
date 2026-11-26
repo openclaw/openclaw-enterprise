@@ -146,7 +146,6 @@ export async function composeProduction(
   try {
     const state = new PostgresPlatformState(pool, {
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
-      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
     });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {

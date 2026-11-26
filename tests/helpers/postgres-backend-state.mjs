@@ -9,6 +9,11 @@ import pg from "pg";
 import { NativeIAMDriver, createAuthPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
+import { DEFAULT_LOGGING_CONFIGURATION } from "../../apps/controller/src/logging.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
+import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createDevelopmentComputeDriver } from "./development.mjs";
 import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
@@ -201,24 +206,55 @@ export function createBackendWorkerDrivers(
   backends = [backendDefinition()],
   options = {},
 ) {
-  const installation = createInstallationDriverConfiguration();
-  installation.backend = backends;
-  installation.drivers.compute.id = computeDriver.id;
-  if (options.secretDriver !== undefined) {
-    installation.drivers.secret.id = options.secretDriver.id;
-  }
-  if (options.tokenServiceDriverId !== undefined) {
-    installation.drivers.token_service = { id: options.tokenServiceDriverId };
-  }
-  if (backends.length > 0) {
-    installation.drivers.service_account = {
-      id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
-    };
-  }
+  const configuration = createInstallationDriverConfiguration();
+  const selections = configuration.drivers;
+  const installation = {
+    ...configuration,
+    backend: backends,
+    logging: DEFAULT_LOGGING_CONFIGURATION,
+    drivers: {
+      configuration: {
+        ...selections.configuration,
+        implementation: "occ/kubernetes-configmap",
+        definition: KubernetesConfigurationDriver,
+      },
+      iam: {
+        ...selections.iam,
+        implementation: "occ/native-iam",
+        definition: NativeIAMDriver,
+      },
+      compute: {
+        ...selections.compute,
+        id: computeDriver.id,
+        implementation: "occ/kubernetes",
+        definition: KubernetesComputeDriver,
+      },
+      secret: {
+        ...selections.secret,
+        id: options.secretDriver?.id ?? selections.secret.id,
+        implementation: "occ/kubernetes-secret",
+        definition: KubernetesSecretDriver,
+      },
+      ...(options.tokenServiceDriverId === undefined
+        ? {}
+        : {
+            token_service: {
+              id: options.tokenServiceDriverId,
+              implementation: OCCTokenServiceDriver.implementation,
+              configuration: {},
+              definition: OCCTokenServiceDriver,
+            },
+          }),
+      ...(backends.length === 0
+        ? {}
+        : {
+            service_account: { id: backends[0]?.drivers.service_account ?? serviceAccountDriverId },
+          }),
+    },
+  };
   return {
     installation,
     computeDriver,
-    ...(options.tokenService && { tokenService: options.tokenService }),
     configurationDriver: createTestConfigurationDriver({
       id: installation.drivers.configuration.id,
     }),

@@ -129,7 +129,6 @@ export async function composePostgresDevelopment(
     closeResources(drivers?.credentialDeliveryRegistration, database);
   try {
     const state = new PostgresPlatformState(pool, {
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
       ...(auditEnabled ? { auditWriteTimeoutMs: CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS } : {}),
     });
     const persistedInstallation = await state.loadInstallation();

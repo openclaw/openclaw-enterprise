@@ -524,7 +524,6 @@ export async function createConsoleAppFixture(t, options = {}) {
             ? []
             : [sandboxNamespaceLifecycleBinding(appOptions.computeDriver, options.sandboxDriver)]),
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
-        preparedTokens: options.preparedTokens,
         modelCredentialSourcePresets: options.modelCredentialSourcePresets,
         ...(options.modelCredentialPreset === undefined
           ? {}

@@ -55,7 +55,6 @@ export type {
   EgressSelectionEvidence,
   EgressRefusal,
   EgressResponse,
-  ProxyWiring,
   ProxyRevisionContext,
   CredentialProviderDefinition,
   CredentialSourceControl,
@@ -153,7 +152,6 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
-  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -1743,7 +1741,6 @@ export type {
   ExternalChatgptAuth,
   HarnessExecutionModeSupport,
   SandboxDriver,
-  ProtectedRepositoryNetworkPolicyContext,
   SandboxRepositoryAccess,
   KubernetesNamespacedResource,
   SandboxWorkspaceMount,
@@ -1779,7 +1776,6 @@ export type {
   RepositoryWorkerRestartDisposition,
   ComputeDriver,
   CredentialAttachmentStatus,
-  ProtectedRepositoryNetworkPolicySaveContext,
   AgentChatCompletionsEndpoint,
   AgentChatCompletionsResolution,
   ComputeRevisionContext,

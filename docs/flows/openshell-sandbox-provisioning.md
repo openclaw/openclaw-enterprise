@@ -280,10 +280,6 @@ permits replacement. Each Harness has one unnamed bearer-passthrough
 [`withdrawHarnessExposure`](../../apps/controller/src/worker/harness-exposure-sweep.ts)
 confirms withdrawal, or after adoption or recreation with `workspaceNodeEnrolled`.
 
-HTTP `400` or `404` requires a recorded release acknowledgment and authenticated
-WebSocket in `observeHeldRepositoryGitPreview` and `enrollHarness`. Other
-non-`200` responses stay pending or refuse enrollment without upgrading.
-
 The Backend reuses clients and retries setup. Cancellation follows
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline.
 After dispatch it stops local gRPC, but remote mutations may require recovery.

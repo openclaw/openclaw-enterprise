@@ -1156,7 +1156,6 @@ async function repositoryPolicyConsole(
     validateRepositoryCredentials() {},
     validateHarnessAuth() {},
     validateExecutionAdmission() {},
-    validateProtectedRepositoryNetworkPolicy() {},
     // This custom Compute fixture has no bundled native Git runtime inputs to freeze.
     snapshotRuntimeInputs() {
       return undefined;
@@ -1166,16 +1165,11 @@ async function repositoryPolicyConsole(
     | "validateRepositoryCredentials"
     | "validateHarnessAuth"
     | "validateExecutionAdmission"
-    | "validateProtectedRepositoryNetworkPolicy"
     | "snapshotRuntimeInputs"
   >);
   Object.assign(sandbox, {
     admitRepositoryNetworkPolicy: (_policy, network) => network.defaults,
-    validateProtectedRepositoryNetworkPolicy() {},
-  } satisfies Pick<
-    SandboxDriver,
-    "admitRepositoryNetworkPolicy" | "validateProtectedRepositoryNetworkPolicy"
-  >);
+  } satisfies Pick<SandboxDriver, "admitRepositoryNetworkPolicy">);
 
   const namespace = await fixture.createNamespace("Repository grants", { ready: true });
   assert.equal(namespace.id, namespaceId);

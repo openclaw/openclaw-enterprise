@@ -103,7 +103,6 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
-import { TokenService } from "../backends/token-service/service.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
@@ -274,7 +273,6 @@ export interface InstallationRuntimeDrivers {
   readonly credentialDeliveryRegistration?: InstalledDriver;
   readonly openShellTokenServiceBackend?: Backend<OpenShellGateway>;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[];
-  readonly tokenService?: TokenService;
   readonly pluginDrivers?: readonly PluginDriver[];
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly repositoryAdmission?: Awaited<
@@ -1290,7 +1288,6 @@ async function composeInstallationConfiguration(
       installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
     },
   );
-  const tokenService = new TokenService();
   const createCredentialDeliveryProxy = (
     pairedSandbox: SandboxDriver,
     tokenServiceImplementation: string,
@@ -1483,7 +1480,6 @@ async function composeInstallationConfiguration(
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialDeliveryRegistration === undefined ? {} : { credentialDeliveryRegistration }),
     ...(selectsOpenShellTokenService && { openShellTokenServiceBackend: openShell! }),
-    tokenService,
     createIAMDriver,
     pluginDrivers: plugins.map(({ driver }) => driver),
     ...repositoryServices,

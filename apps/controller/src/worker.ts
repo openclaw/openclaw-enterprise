@@ -1390,7 +1390,6 @@ export class ControllerWorker {
   private get credentialDeploymentProxy(): CredentialProxyDriver | undefined {
     return this.credentialDeliveryRegistration?.require("credential_proxy");
   }
-  private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly tokenServiceDrivers: InstallationRuntimeDrivers | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
@@ -1492,7 +1491,6 @@ export class ControllerWorker {
     };
     this.state = new PostgresPlatformState(options.pool, {
       workQueue: this.queueOptions,
-      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
     });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
     this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
@@ -1541,7 +1539,6 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.credentialDeliveryRegistration = drivers?.credentialDeliveryRegistration;
-    this.preparedTokens = drivers?.tokenService;
     this.tokenServiceDrivers = drivers;
     this.sandbox =
       this.credentialDeliveryRegistration?.require("sandbox") ??
@@ -1676,7 +1673,6 @@ export class ControllerWorker {
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
       gatewayStartupSourceDelivery: qualifyGatewayDelivery,
-      preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       driverConfigurations: this.driverConfigurations,

@@ -115,10 +115,6 @@ interface ComputeFixturePorts {
     ownership: ReturnType<ComputeFixturePorts["pluginRuntimeOwnership"]>,
     namespace: { name: string; plane: "execution" },
   ): Omit<FixtureSecret, "data">;
-  validateRevisionExecution(
-    revision: AgentRevision,
-    context?: Pick<ComputeRevisionContext, "currentEgressInstallation">,
-  ): void;
   codexLaunch(revision: AgentRevision, sandbox: SandboxDriver | undefined): CodexLaunch;
   pluginRuntimeSnapshot(
     revision: AgentRevision,
@@ -136,10 +132,6 @@ export function computeFixturePorts(driver: KubernetesComputeDriver): ComputeFix
     "pluginRuntimeOwnership" in instance && typeof instance.pluginRuntimeOwnership === "function",
   );
   assert.ok("manifest" in instance && typeof instance.manifest === "function");
-  assert.ok(
-    "validateRevisionExecution" in instance &&
-      typeof instance.validateRevisionExecution === "function",
-  );
   assert.ok("codexLaunch" in instance && typeof instance.codexLaunch === "function");
   assert.ok(
     "pluginRuntimeSnapshot" in instance && typeof instance.pluginRuntimeSnapshot === "function",

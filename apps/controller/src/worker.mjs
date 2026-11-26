@@ -209,7 +209,7 @@ try {
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,
-      ...repositoryGitAuthority(drivers),
+      repositoryGitCustody: repositoryGitAuthority(drivers),
       report: (code, context, severity = "error") =>
         emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });

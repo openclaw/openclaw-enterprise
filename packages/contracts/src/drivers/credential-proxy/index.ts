@@ -374,12 +374,6 @@ export interface CredentialSourceControl {
   >;
 }
 
-export interface ProxyWiring {
-  readonly plan: ProxyPlan;
-  /** Nonsecret adapter-owned configuration; only the paired Sandbox interprets it. */
-  readonly configuration: Readonly<Record<string, unknown>>;
-}
-
 export interface ProxyRevisionContext {
   readonly namespace: Readonly<Namespace>;
   readonly revision: Readonly<AgentRevision>;

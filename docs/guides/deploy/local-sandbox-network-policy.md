@@ -37,14 +37,7 @@ Supplied rules append to the generated rules. Model Credential Source profiles,
 workspace transport, filesystem/process policy, and Kubernetes NetworkPolicies
 retain their existing owners. These rules are Driver defaults. Per-Agent grants
 have a separate policy. The file passed to `--sandbox-network-policy-file`
-accepts only `networkPolicies`. Protected executions use their admitted policy.
-To select [Codex artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules)
-for protected, dedicated Codex repository execution, use the Installation policy
-setting `codexArtifactRuleNames`. Selected rules must pass admission checks. For
-the shipped `codex-plugin-artifacts` rule, follow the full matching OpenShell
-[local quickstart](local-setup.md) and complete its configuration and reload
-before provisioning an Agent. Adding a Node or npm rule here alone does not
-grant protected executions package access.
+accepts only `networkPolicies`.
 
 The parsed rules are saved in private `state.json` and rendered into
 `installation.yaml`, which supplies the same configuration to OCC API and worker.
