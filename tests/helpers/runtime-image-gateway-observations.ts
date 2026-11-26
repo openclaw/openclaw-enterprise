@@ -1,9 +1,9 @@
 import { availableParallelism, loadavg } from "node:os";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
-import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
-import { jsonLines } from "./json-lines.mjs";
-import { commandOutput, failureTail, runDocker } from "./runtime-image-docker.ts";
+import { cpuScaledImageTimeoutMs, imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.ts";
+import { jsonLines } from "./json-lines.ts";
+import { commandOutput, failureTail, runDocker, waitForDockerLog } from "./runtime-image-docker.ts";
 
 type DockerFailure = Error & { stdout?: string | Buffer; stderr?: string | Buffer };
 
@@ -171,6 +171,16 @@ export async function listGatewayPlugins(containerName: string): Promise<unknown
 
 export function jsonLogEntries(output: string): Record<string, unknown>[] {
   return jsonLines(output, { lenient: true });
+}
+
+// OpenClaw's /readyz turns green before it logs "gateway ready": each place that logs it first
+// awaits a fresh readiness check (and, at the end of startup, worker pool metrics), so a
+// `docker logs` read right after waitForGatewayReady can end before that line. A case that
+// asserts on startup log entries follows the logs until the line is there and reads them from
+// that output.
+export async function gatewayLogsThroughReady(containerName: string) {
+  const logs = await waitForDockerLog(containerName, /"gateway ready"/);
+  return { logs, entries: jsonLogEntries(logs) };
 }
 
 // Merges a container's newest `lines` log lines from both streams in time order, newest last,

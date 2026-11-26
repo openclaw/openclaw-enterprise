@@ -10,7 +10,7 @@ status: Proposed
 
 This proposal requires human review and merge.
 
-The proposed [Installation credential ownership amendment](installation-credential-ownership.md) revises the v1 custody, delivery and deployment decisions below.
+[Credential Design 1.0](../20261124-credential-design-1-0/index.md) consolidates the later amendments to custody, delivery, deployment, and shared GitHub App tokens.
 
 ## Decision
 

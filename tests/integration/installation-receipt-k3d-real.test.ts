@@ -58,7 +58,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "occ-receipt-production-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const occ = join(directory, "occ");
-    execFileSync("go", ["build", "-o", occ, "./cmd/occ"]);
+    execFileSync("go", ["build", "-trimpath", "-o", occ, "./cmd/occ"]);
 
     // This proxy forwards real Kubernetes requests with the selected fixture
     // credentials. Holding a Secret create or the observer's successful GET
@@ -207,36 +207,41 @@ test(
           throw new Error(redact(error));
         }
       };
-      const prepared = await prepareProductionHelmControlPlane({
-        selection,
-        images,
-        repositoryCredentials: undefined,
-        gatewayRouting: undefined,
-        controlPlane: undefined,
-        executionCluster: undefined,
-        metrics: undefined,
-        namespace,
-        release,
-        directory: working,
-        suffix,
-        configuration: createKubernetesInstallationConfiguration({
-          authentication: { mode: "inCluster" },
-          codexSeccompProfile: undefined,
-          platformNamespace: namespace,
-          gatewayImage: images.runtime,
-          codexImage: images.runtime,
-          cluster: namespace,
-        }),
-        authBaseURL: "https://occ.example.invalid",
-        agentNativeAdminDomain: "agents.example.invalid",
-        installationName: `Receipt ${capture}`,
-        bootstrapCredentials: capture === "secret" ? "generate" : "existing",
-        apiClients: [{ namespace, podLabels: { app: "operator" } }],
-        run,
-        kubernetes,
-        createSecretValue: secret,
-        record: async () => {},
-      });
+      // The Secret interruption happens before Helm dispatch and only needs valid chart inputs.
+      let valuesPath = "deploy/examples/production/values.yaml";
+      if (capture !== "secret") {
+        const prepared = await prepareProductionHelmControlPlane({
+          selection,
+          images,
+          repositoryCredentials: undefined,
+          gatewayRouting: undefined,
+          controlPlane: undefined,
+          executionCluster: undefined,
+          metrics: undefined,
+          namespace,
+          release,
+          directory: working,
+          suffix,
+          configuration: createKubernetesInstallationConfiguration({
+            authentication: { mode: "inCluster" },
+            codexSeccompProfile: undefined,
+            platformNamespace: namespace,
+            gatewayImage: images.runtime,
+            codexImage: images.runtime,
+            cluster: namespace,
+          }),
+          authBaseURL: "https://occ.example.invalid",
+          agentNativeAdminDomain: "agents.example.invalid",
+          installationName: `Receipt ${capture}`,
+          bootstrapCredentials: "existing",
+          apiClients: [{ namespace, podLabels: { app: "operator" } }],
+          run,
+          kubernetes,
+          createSecretValue: secret,
+          record: async () => {},
+        });
+        valuesPath = prepared.valuesPath;
+      }
       const receipt = join(working, "receipt");
       const target = [
         "--kubeconfig",
@@ -267,7 +272,7 @@ test(
           "--chart",
           "deploy/helm/openclaw-enterprise",
           "--values",
-          prepared.valuesPath,
+          valuesPath,
           "--receipt",
           receipt,
         ],
@@ -480,7 +485,7 @@ test(
       // settled by that replacement.
       const render = await renderProductionChart(
         {},
-        { namespace, release, isUpgrade: false, valuesFiles: [prepared.valuesPath] },
+        { namespace, release, isUpgrade: false, valuesFiles: [valuesPath] },
       );
       const replacement = findChartJob(await parseProductionChart(render.stdout));
       const annotations = asRecord(replacement.metadata.annotations);

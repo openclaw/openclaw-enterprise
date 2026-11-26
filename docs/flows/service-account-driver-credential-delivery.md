@@ -1,232 +1,73 @@
 ---
 created: 2026-08-24
-updated: 2026-11-11
-last_updated_session: authoring-run/18242737-895e-484c-a1a9-29c2cd289d43
+updated: 2026-11-20
+last_updated_session: authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34
 ---
 
 # Service Account Driver Credential Delivery Flow
 
-## Overview
-
-OCC starts with Installation Backend composition, then creates a
-Namespace-owned account, separately issues its provider-backed credential, and
-deploys an associated dedicated Codex Agent. The API owns the Backend client
-and upstream account calls; worker reconciliation repeats metadata checks before
-Compute projects the account token to Codex. This flow stops after Codex starts
-with the projected access token.
+OCC creates the provider account and issues its Codex PAT in separate
+operations. The selected TokenService stores the PAT as a static Source.
+The ServiceAccount Driver records the provider credential ID for revocation.
+The Agent receives a Proxy placeholder tied to the Source.
 
 ## Entry Points
 
-- Trigger: `POST /namespaces/:namespaceId/service-accounts`, then
-  `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`,
-  Agent association, and deployment.
-- Sources: `apps/controller/src/api-startup.ts:startApi`,
-  `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
-  `packages/occ/src/index.ts:OpenClawController`.
-- Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
-  ChatGPT Backend and member ServiceAccount Driver, an API-only credential for
-  the configured ChatGPT workspace, and a dedicated Codex runtime for managed
-  access-token deployment.
+- Create the account with `POST /namespaces/:namespaceId/service-accounts`.
+- Issue the PAT with `POST /namespaces/:namespaceId/service-accounts/:id/credentials`.
+- Bind the returned Source to the Agent and deploy through the ordinary Agent API.
 
 ## Flow
 
 ```mermaid
-graph TD
-  subgraph Composition["Installation composition"]
-    A["Validate Backend and selected Driver"] --> B["API builds ChatGPT client"]
-    B --> C["Inject Backend into ServiceAccount Driver"]
-    A --> D["Worker keeps nonsecret Backend metadata"]
-  end
-  subgraph API["OCC API"]
-    C --> E["Authorize and create OCC account"]
-    E --> F["Create upstream account and private binding"]
-    F --> G["Authorize separate credential issuance"]
-    G --> H["Issue token and store account Secret"]
-    H --> I["Persist credential ID and Secret reference"]
-    I --> J["Save nullable Agent backendId"]
-    J --> K["Validate binding and freeze Agent revision"]
-  end
-  subgraph Worker["Worker and Compute"]
-    D --> L["Reauthorize deployment actor"]
-    K --> L
-    L --> M["Recheck Backend and binding metadata"]
-    M -->|valid dedicated Codex| N["Project account token into Codex"]
-    M -->|mismatch| O["Fail candidate"]
-    N --> P["Codex authenticates token and starts app server"]
-  end
+flowchart TD
+  A["Authorize account update and Namespace Source create"] --> B["ChatGPT issues a new PAT"]
+  B --> C["TokenService enrolls a static Codex PAT Source"]
+  C --> D["OCC saves the Source reference and issuer receipt"]
+  D --> E["Agent admission authorizes and freezes the Source"]
+  E --> F["Worker delivers through native Credential Proxy"]
+  F --> G["Dedicated Codex starts with the placeholder"]
 ```
 
-## Execution Trace
+## Issue and store the PAT
 
-### 1. Compose the Backend and its ServiceAccount Driver
+The API composes the selected ChatGPT ServiceAccount Driver with the Backend
+client and mounted admin key. Account creation stores the exact upstream
+account, workspace and Driver in a private binding. The Worker has only
+nonsecret Backend configuration.
 
-`apps/controller/src/api-startup.ts:startApi`
+[Account operations](../../packages/occ/src/service-account-operations.ts)
+check the exact account update grant, the Namespace Source create grant,
+Namespace readiness and selected TokenService support before minting.
+The [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
+passes the fresh bearer in-process to the selected TokenService, which commits
+static `codex-pat` custody in its own Namespace transaction. OCC checks the
+returned ready Source, binds the creator's Source grants, and finalizes the
+account reference and issuance audit. If enrollment or finalization fails
+with a known outcome, the Driver revokes the exact new issuer credential and
+OCC cleans up the unfinished Source when one was enrolled.
 
-`loadInstallationConfiguration` validates the singular `backend` array and
-requires each ChatGPT Backend to declare the selected `service_account` member
-Driver. `api-startup.ts:startApi` then reads the mounted `apiKeyPath`, constructs
-`Backend<ChatGPTClient>`, and injects it into the bundled
-`ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
-side. The worker receives only nonsecret Backend definitions so it can reject
-stale or mismatched deployment snapshots before Compute effects.
+## Bind the Source and deploy
 
-### 2. Create the account and private Backend binding
+The Agent saves `harnessAuth: { method: "credential_source", sourceId }`.
+Admission and the Worker authorize that Source and use the ordinary
+[native credential delivery flow](credential-source-lifecycle.md).
+Dedicated Codex uses the PAT login mode and a Credential Proxy placeholder.
+Only configured HTTPS requests from the admitted Codex executable qualify for
+substitution.
 
-`packages/occ/src/index.ts:OpenClawController.createServiceAccount`
+## Revoke and retire
 
-`OpenClawController.createServiceAccount` authorizes the exact Namespace and
-allocates its `sa_*` identity. `ChatGPTServiceAccountDriver.create` creates the
-upstream account, registers rollback, and persists its private Backend binding
-in the same PostgreSQL transaction, including Backend, Driver, Namespace,
-account, and workspace identity.
+Deleting the ServiceAccount revokes the exact issuer credential and removes
+the upstream account. A saved Source binding can still exist on the Agent.
+Withdraw or retire the Source separately through the ordinary Source API.
 
-`apps/controller/src/backends/chatgpt.ts:ChatGPTClient.request` owns each
-upstream HTTP response. It consumes successful replies and the structured 404
-replies needed to confirm already-absent resources. Before rejecting another
-HTTP status or a response declared larger than its 4 MiB allowance, it cancels
-the unused body. That releases transport capacity before the next operation;
-a cancellation failure does not replace the sanitized Backend error.
-Successful and structured 404 response bodies are read incrementally. A
-chunked body is cancelled as soon as received bytes cross the same 4 MiB
-allowance, before parsing or retaining the overflowing chunk.
+## Verification
 
-Account creation and credential issuance are separate operations. Creating the
-account does not issue a token, and later issuance or deletion requires that
-exact binding to match the current configured Backend and member Driver.
-
-Before deletion, OCC locks the Namespace and account, then checks Agent drafts,
-selected versions, queued or claimed Agent revision work, and queued or running Agent
-provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
-before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
-check with draft changes and deployment admission; the PostgreSQL reference
-query observes active pointers and pending work together during worker cutover.
-With no ServiceAccount Driver selected (no ChatGPT Backend), an account holding
-an issued access token answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`
-naming the fix and stays, since nothing can revoke its token. With `?force=true`
-OCC instead reads the binding's Backend, workspace, account, and credential IDs, removes
-the token Secret through `KubernetesComputeDriver.deleteServiceAccountCredential`
-and the account, and audits `revocation: "skipped"`; with a Driver selected,
-force is ignored and revocation runs.
-
-### 3. Issue the credential and create one account Secret
-
-`apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver.createCredential`
-
-`OpenClawController.createServiceAccountCredential` authorizes account `update`
-before `ChatGPTServiceAccountDriver.createCredential` issues a Codex-scoped
-token and registers one rollback callback. The callback first confirms revocation
-of that exact provider credential, then removes only the account-owned Secret
-whose token and credential ID both match. Unconfirmed revocation leaves the
-Secret available for recovery. The callback runs after PostgreSQL releases the
-account lock, so deletion uses uid and resourceVersion preconditions to protect
-a later issuance.
-
-`KubernetesComputeDriver.storeServiceAccountCredential` stores the token in one
-account-owned control-plane Secret. If the create reply is lost, an exact
-readback of ownership, token, credential ID, uid, and resourceVersion confirms
-the stored state without repeating or deleting the Secret. An absent or
-mismatched object leaves the create failure in force; an unreadable or
-unidentified object remains an unknown outcome. The Driver owns compensation
-after either storage failure or a later known transaction failure.
-
-The private Backend binding retains workspace metadata. The private credential
-ID, internal credential reference, and audit changes commit together.
-The Secret also records the provider credential ID. A crash or an unknown
-COMMIT that failed runs no compensation, so before issuing, and when deleting an
-account with no recorded credential, the Driver reads the Secret through
-`KubernetesComputeDriver.findServiceAccountCredential`, revokes the credential it
-records, and deletes it only while it still records that credential.
-With no ServiceAccount Driver selected (no ChatGPT Backend), issuance answers
-`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix after the grant and
-account lookup; a selected Driver that fails stays `503`.
-
-<span id="4-save-agent-backend-intent-and-admit-the-revision" class="anchor-alias"></span>
-
-### 4. Save Agent Backend intent and admit the Agent revision
-
-`packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
-
-Agent `backendId` is nullable. Create omission saves `null`; PATCH omission
-preserves the current value; explicit `null` clears it; and a nonnull ID must
-name a configured Backend. Saving or changing the draft Agent reference makes
-no upstream call. The Agent selects the issued account through
-`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`.
-
-`deployAgent` authorizes the Agent, Configuration, and associated account, then
-validates `access_token` ownership with
-`validateServiceAccountBackendBinding`. Managed access-token deployment requires
-the exact nonnull Backend, selected member Driver, workspace, account, recorded
-credential issuance, and dedicated Codex execution. An account without an issued
-credential cannot deploy; without a ChatGPT Backend that refusal is
-`409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`. Admission freezes the account identity, exact credential
-reference, private Backend binding, and Agent `backendId` in the Agent revision.
-Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
-through an OCC Secret; native account references are not model-auth selectors.
-
-### 5. Recheck metadata and project the account Secret
-
-`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
-
-`ControllerWorker.resolveRevisionBackend` runs after IAM reauthorization and
-before Compute reconciliation. It rejects a missing configured Backend as
-`BACKEND_UNAVAILABLE` and a metadata mismatch as
-`SERVICE_ACCOUNT_BACKEND_MISMATCH`. Only Backend, Driver, workspace, account,
-and issuance metadata leave the repository; upstream account IDs, admin keys,
-and credential values stay private.
-
-`KubernetesComputeDriver.prepareRevision` uses its internal `prepareHarnessAuth`
-rendering step and `CODEX_LOGIN_MODE=codex_pat`, then delivers the account token
-into a data-plane Secret for that Agent revision. Only dedicated Codex receives it. Embedded execution
-is rejected for managed access tokens. The Gateway receives no model credential.
-The trusted worker reads the CP source and manages the DP projection; workload
-ServiceAccounts receive no Secret API permission. Workspace ownership remains
-part of control-plane validation, without a runtime workspace override.
-
-### 6. Authenticate Codex with the account token
-
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
-
-`AGENT_RUNTIME_ENTRYPOINT` uses the same native login for Driver-issued account
-tokens and directly supplied `codex_pat` credentials:
-
-```sh
-codex -c cli_auth_credentials_store=file login --with-access-token
-```
-
-Codex derives account identity from the token. The entrypoint clears the token
-environment and starts its authenticated app server.
-Refresh, rotation, and automated reconciliation remain deferred.
-
-## Debugging and Verification
-
-- Run `node --test tests/conformance/service-account-driver.test.ts` for
-  controller lifecycle coverage and native HTTPS response-release regressions.
-  The latter call the actual Backend with built-in fetch, a single-connection
-  pool and a loopback TLS server. They prove recovery after rejected 429, 503 and
-  oversized declared responses. The same suite checks that an oversized
-  chunked body is cancelled at its byte limit. These cases do not prove live
-  provider accounts or model execution.
-- Run the focused `postgres-platform` CI selection for
-  `tests/integration/postgres-service-account-compensation.test.ts` with the
-  [PostgreSQL prerequisites](../testing/postgresql.md). It exercises the real
-  Controller HTTP routes, PostgreSQL transactions, ChatGPT Backend, and
-  Kubernetes Compute through owned loopback TLS fixtures. It covers retained
-  recovery receipts, exact deletion, account-lock races, and unknown COMMIT
-  outcomes. This component proof does not qualify a live provider or cluster.
-- Verify the provider account, private credential ID, exact-account Secret,
-  Codex-only projection for that Agent revision, and genuine model response. For ownership,
-  compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
-  and [security model](../reference/security.md).
-
-## Related docs
-
-- [Backends](../reference/backends.md)
-- [Service accounts](../reference/service-accounts.md)
-- [Service Account Driver specification](../../specs/.archive/11-service-account-driver.md)
-- [Platform design](../design.md)
-- [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)
-- [Harness authentication binding](native-service-account-credential-delivery.md)
-- [Harness execution topology](harness-execution-topology.md)
+Run the focused ServiceAccount issuance test in the `postgres-platform` lane.
+It covers the real account route and selected TokenService with a controlled
+issuer. Use the [native Agent verification](../testing/manual-tests.md) for
+a model turn in an installed runtime.
 
 ## Manual Notes
 
@@ -234,6 +75,10 @@ Refresh, rotation, and automated reconciliation remain deferred.
 
 ## Changelog
 
+- 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)
+- 2026-11-20 16:54: Point to Agent draft operations. (authoring-run/1d1eaa12-f12f-4086-bf6e-c99b882c7f39 - 193c5644e642321ea5c5f626cdf1d49729637cab)
+
+- 2026-11-20 16:31: Update OCC ServiceAccount operation source pointers. (authoring-run/458791ca-cb2c-4838-b771-39a35c8aa29c - 8eb97c71e0aa0b84779e19f9bbacc2d37f22fa14)
 - 2026-11-11 02:28: Confirm exact Secret readback and revoke provider credentials before deleting failed-issuance recovery receipts. (authoring-run/18242737-895e-484c-a1a9-29c2cd289d43 - 7fed115af7b57060bba5c6e276ad4cf316b9b58d)
 - 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)

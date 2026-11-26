@@ -1,0 +1,322 @@
+name: Release OCE
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Reviewed main commit (original commit for recovery)
+        type: string
+        required: true
+      image_tag:
+        description: Image alias to move after verification (defaults to latest)
+        type: string
+      publish:
+        description: Publish the release (default rehearses without public writes)
+        type: boolean
+        default: false
+      images_only:
+        description: Publish only native-tested images and skip Full Integration (requires publish)
+        type: boolean
+        default: false
+      recovery_run_id:
+        description: Original interrupted Release OCE publish run, to reuse its qualified bytes
+        type: string
+
+permissions: {}
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+  PUBLISH: ${{ inputs.publish }}
+  IMAGES_ONLY: ${{ inputs.images_only }}
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.destination.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Validate the protected main dispatch and source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/release-oce.ts admit
+      - name: Check the destination and show the release for approval
+        if: ${{ !inputs.images_only }}
+        id: destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/cli-release.ts preflight
+      - name: Show version, source and image alias for approval
+        if: ${{ !inputs.images_only }}
+        env:
+          VERSION: ${{ steps.destination.outputs.version }}
+        run: |
+          printf 'Version %s, commit %s, alias %s, publish=%s.\n' \
+            "$VERSION" "$SOURCE_SHA" "${IMAGE_TAG:-latest}" "$PUBLISH" >> "$GITHUB_STEP_SUMMARY"
+      - name: Show image-only publication for approval
+        if: inputs.images_only
+        run: |
+          printf 'Images only. Full Integration is skipped. Source %s, alias %s.\n' \
+            "$SOURCE_SHA" "${IMAGE_TAG:-latest}" >> "$GITHUB_STEP_SUMMARY"
+
+  approve:
+    name: Approve release
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: integration-main-approval
+    steps:
+      - run: echo "Approval received."
+
+  approval:
+    name: Verify approval
+    needs: approve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Verify the dispatcher's team approval and environment policy
+        env:
+          INPUT_LANE: all
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/full-integration-preflight.ts
+
+  integration:
+    name: Full Integration
+    if: ${{ !inputs.images_only && inputs.recovery_run_id == '' }}
+    needs: approval
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    uses: ./.github/workflows/full-integration-execution.yml
+    with:
+      lane: all
+      source_sha: ${{ inputs.source_sha }}
+    secrets: inherit
+
+  prepare:
+    name: Prepare images
+    if: inputs.recovery_run_id == ''
+    needs: [validate, approval]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/container-check.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      assemble_images: true
+      prepare_chart: ${{ !inputs.images_only }}
+
+  cli:
+    name: Prepare CLI
+    if: ${{ !inputs.images_only && inputs.recovery_run_id == '' }}
+    needs: approval
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/cli-release-prepare.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+
+  qualify:
+    name: Record qualified release
+    if: ${{ !cancelled() && !inputs.images_only && inputs.recovery_run_id == '' && needs.approval.result == 'success' }}
+    needs: [validate, approval, integration, prepare, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - name: Require completed tests, prepared bytes and the positive full-suite result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+          IMAGE_RESULT: ${{ needs.prepare.result }}
+          CLI_RESULT: ${{ needs.cli.result }}
+          FULL_SUITE: ${{ needs.integration.outputs.full_suite }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          IMAGE_VERSION: ${{ needs.prepare.outputs.version }}
+          CLI_VERSION: ${{ needs.cli.outputs.version }}
+          IMAGE_CONTROLLER: ${{ needs.prepare.outputs.controller_digest }}
+          IMAGE_RUNTIME: ${{ needs.prepare.outputs.runtime_digest }}
+          CHART_SHA256: ${{ needs.prepare.outputs.chart_sha256 }}
+          CLI_SHA256SUMS_DIGEST: ${{ needs.cli.outputs.sha256sums_digest }}
+        run: |
+          test "$INTEGRATION_RESULT" = success
+          test "$IMAGE_RESULT" = success
+          test "$CLI_RESULT" = success
+          node scripts/ci/release-oce.ts record "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qualified-release-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/release.json
+          if-no-files-found: error
+          retention-days: 30
+
+  rehearse:
+    name: Verify registry destinations
+    if: ${{ !inputs.publish }}
+    needs: [validate, qualify]
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    uses: ./.github/workflows/release-registry.yml
+    with:
+      phase: preflight
+      source_sha: ${{ inputs.source_sha }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ github.run_id }}
+      producer_attempt: "1"
+
+  rehearsal-cli:
+    name: Verify CLI destination bytes
+    if: ${{ !inputs.publish }}
+    needs: [validate, qualify, cli]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: ${{ needs.cli.outputs.artifact_name }}
+          path: ${{ runner.temp }}/cli
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CLI_SHA256SUMS_DIGEST: ${{ needs.cli.outputs.sha256sums_digest }}
+        run: node scripts/ci/cli-release.ts preflight "$RUNNER_TEMP/cli"
+
+  publish:
+    name: Publish
+    if: >-
+      !cancelled() && inputs.publish && !inputs.images_only && needs.validate.result == 'success' && needs.approval.result == 'success' &&
+      ((inputs.recovery_run_id == '' && needs.qualify.result == 'success') ||
+      (inputs.recovery_run_id != '' && needs.qualify.result == 'skipped'))
+    needs: [validate, approval, qualify]
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+      packages: write
+    uses: ./.github/workflows/release-oce-publish.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      version: ${{ needs.validate.outputs.version }}
+      image_tag: ${{ inputs.image_tag }}
+      producer_run_id: ${{ inputs.recovery_run_id || github.run_id }}
+
+  publish-images:
+    name: Publish images only (Full Integration skipped)
+    if: >-
+      !cancelled() && inputs.images_only && inputs.publish && needs.approval.result == 'success' &&
+      ((inputs.recovery_run_id == '' && needs.prepare.result == 'success') ||
+      (inputs.recovery_run_id != '' && needs.prepare.result == 'skipped'))
+    needs: [approval, prepare]
+    concurrency:
+      group: enterprise-container-publish
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: container-publish
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    env:
+      PRODUCER_RUN_ID: ${{ inputs.recovery_run_id || github.run_id }}
+      PRODUCER_ATTEMPT: "1"
+      GHCR_CONTROLLER_IMAGE: ${{ vars.GHCR_CONTROLLER_IMAGE }}
+      GHCR_RUNTIME_IMAGE: ${{ vars.GHCR_RUNTIME_IMAGE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.22.1"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: container-*-${{ env.PRODUCER_RUN_ID }}-1
+          run-id: ${{ env.PRODUCER_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared
+      - uses: ./.github/actions/setup-registry
+      - name: Record expected image digests and original alias state
+        if: inputs.recovery_run_id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_CONTROLLER: ${{ needs.prepare.outputs.controller_digest }}
+          IMAGE_RUNTIME: ${{ needs.prepare.outputs.runtime_digest }}
+        run: node scripts/ci/release-registry.ts image-baseline "$RUNNER_TEMP/prepared"
+      - name: Retain the baseline before the first registry write
+        if: inputs.recovery_run_id == ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release-image-baseline-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/prepared/image-baseline.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Download the original image publication baseline
+        if: inputs.recovery_run_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-image-baseline-${{ env.PRODUCER_RUN_ID }}-1
+          run-id: ${{ env.PRODUCER_RUN_ID }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/prepared
+      - name: Publish the two verified images and move their aliases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/release-registry.ts publish-images "$RUNNER_TEMP/prepared"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: container-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared/publication.json
+          if-no-files-found: error
+          retention-days: 30

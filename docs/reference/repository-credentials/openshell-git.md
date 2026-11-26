@@ -2,8 +2,10 @@
 
 <a id="git-and-draft-pull-requests-through-openshell"></a>
 
-Use the current [OpenShell adapter reference](protected-openshell-git.md).
-This page preserves earlier section links.
+Use [native TokenService Git](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
+for new access. The [deprecated protected OpenShell adapter](protected-openshell-git.md)
+remains only while qualified protected exchanges depend on it. This page preserves
+earlier section links.
 
 <a id="prerequisites"></a>
 

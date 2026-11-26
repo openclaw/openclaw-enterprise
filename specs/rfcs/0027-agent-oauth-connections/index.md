@@ -17,7 +17,8 @@ author: mrunalp
   [RFC-0010 personal access](../0010-agent-access.md#access-contract);
   [credential sources](../../../docs/reference/credential-sources.md);
   [per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md);
-  [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and its [credential ownership amendment](../0023-egress-proxy-credential-lifecycle/installation-credential-ownership.md)
+  [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md) and its [credential ownership amendment](../20261124-credential-design-1-0/installation-credential-ownership.md);
+  [Client selection](../20261124-credential-design-1-0/oauth-client-associations.md)
 
 ## Summary
 
@@ -151,6 +152,8 @@ previous policy until reconciliation completes. Changing the default client
 applies to future connections. Changing the issuer, setup method or MCP target
 requires a new grant for that target. OCC refuses to delete a template while a
 saved account references it.
+
+> [Supersession](../20261124-credential-design-1-0/index.md#template-policy-changes)
 
 When an administrator rotates the secret for the same OAuth client, the next
 code exchange or token refresh uses its current secret. An existing account
@@ -319,8 +322,8 @@ integration, real-cluster, and live-provider outcomes.
 ## References
 
 - [Credential sources](../../../docs/reference/credential-sources.md)
-- [Current Credential Refresh Driver contract](../../../docs/reference/drivers/credential-refresh.md)
-- [OpenShell Credential Gateway](../../../docs/reference/drivers/openshell-credential-gateway.md)
+- [Historical Credential Refresh contract](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/credential-refresh.md)
+- [Historical OpenShell Credential Gateway](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/openshell-credential-gateway.md)
 - [Console Agent creation](../../../docs/reference/console/create-and-deploy.md)
 - [Per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md)
 - [Shared Driver contracts](../../../packages/contracts/src/index.ts)

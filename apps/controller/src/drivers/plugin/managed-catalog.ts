@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
-  type CredentialSource,
+  pathCovered,
+  type ConnectionEndpoint,
+  type ConnectionTemplateVersion,
+  type StoredCredentialSource as CredentialSource,
   type PluginCatalogEntry,
   type PluginDesiredState,
   type PluginDeploymentContract,
@@ -48,7 +51,7 @@ function loadManagedInstall(packageName: string) {
       ? /^occ-plugin:([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/u.exec(extension.id)?.[1]
       : undefined;
   if (
-    policyScope !== "enablement_only" ||
+    (policyScope !== "enablement_only" && policyScope !== "tool_human_approval") ||
     extension?.release !== "./ai.openclaw.oce/release.json" ||
     !runtimeName ||
     !isNonEmptyString(extension.displayName) ||
@@ -116,6 +119,7 @@ function loadManagedCliInstall(install: ReturnType<typeof loadManagedInstall>) {
   const credentials = release?.credentials;
   const gatewayCapabilities = asRecord(release?.capabilities)?.gateway;
   if (
+    install.policyScope !== "enablement_only" ||
     !Check(
       Type.Record(Type.String({ pattern: "^[a-z][a-z0-9-]*$" }), credentialSlot, {
         minProperties: 1,
@@ -194,6 +198,7 @@ function loadManagedMcpInstall(install: ReturnType<typeof loadManagedInstall>) {
   const slots = release?.credentials;
   const capabilities = asRecord(release?.capabilities);
   if (
+    install.policyScope !== "tool_human_approval" ||
     !Check(mcpSlots, slots) ||
     !Array.isArray(capabilities?.harness) ||
     !capabilities.harness.includes("mcp") ||
@@ -276,6 +281,28 @@ export const managedInstalls = Object.freeze(
 );
 export const managedCliInstalls = managedInstalls.filter((install) => install.kind === "cli");
 export const managedMcpInstalls = managedInstalls.filter((install) => install.kind === "mcp");
+
+function managedMcpToolNameFits(install: ManagedMcpInstall, name: unknown): name is string {
+  return (
+    typeof name === "string" &&
+    /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
+    `oce_mcp_${install.server}_${name}`.length <= 64
+  );
+}
+
+/** Discovery must offer only tool names that the reviewed Plugin can actually deploy. */
+export function deployableManagedMcpToolNames(
+  install: ManagedMcpInstall,
+  names: readonly string[],
+) {
+  const candidates = [...new Set(names)].filter((name) => managedMcpToolNameFits(install, name));
+  const counts = new Map<string, number>();
+  for (const name of candidates) {
+    const folded = name.toLowerCase();
+    counts.set(folded, (counts.get(folded) ?? 0) + 1);
+  }
+  return new Set(candidates.filter((name) => counts.get(name.toLowerCase()) === 1));
+}
 
 // CLI request semantics belong to each reviewed connector; the catalog owns iteration.
 const cliCredentialPolicies = [googleWorkspaceCredentialPolicy];
@@ -373,19 +400,30 @@ export function managedMcpCredentialBinding(
   // Literal names keep the OpenClaw alias stable and the OpenShell glob exact.
   if (
     !Array.isArray(selected) ||
-    !selected.every(
-      (name) =>
-        typeof name === "string" &&
-        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
-        `oce_mcp_${install.server}_${name}`.length <= 64,
-    ) ||
+    !selected.every((name) => managedMcpToolNameFits(install, name)) ||
     new Set(selected.map((name) => name.toLowerCase())).size !== selected.length
   ) {
     throw new ConfigurationHarnessError(
       `Select distinct literal ${install.entry.name} tool names whose OpenClaw aliases fit within 64 characters.`,
     );
   }
-  return { install, sourceId, toolNames: selected as string[] };
+  const selectedNames = selected as string[];
+  const approvalToolNames: string[] = [];
+  for (const [name, tool] of Object.entries(selection.tools ?? {})) {
+    if (
+      !selectedNames.includes(name) ||
+      Object.keys(tool).length !== 1 ||
+      (tool.approval !== "none" && tool.approval !== "all_actions")
+    ) {
+      throw new ConfigurationHarnessError(
+        `Select an enabled ${install.entry.name} tool and choose no approval or human approval for each override.`,
+      );
+    }
+    if (tool.approval === "all_actions") {
+      approvalToolNames.push(name);
+    }
+  }
+  return { install, sourceId, toolNames: selectedNames, approvalToolNames };
 }
 
 export function managedMcpCredentialBindings(
@@ -423,7 +461,7 @@ export function managedMcpCredentialBindings(
 }
 
 export function managedMcpInstallForSourceConfig(
-  config: CredentialSource["config"],
+  config: Readonly<Record<string, string>>,
 ): ManagedMcpInstall | undefined {
   if (config.protocol !== "mcp") {
     return undefined;
@@ -440,10 +478,42 @@ export function managedMcpInstallForSourceConfig(
 export function managedMcpSlotAcceptsSource(
   install: ManagedMcpInstall,
   source: CredentialSource,
+  template?: ConnectionTemplateVersion,
 ): boolean {
+  if (source.ownerCapability === "token_service") {
+    if (
+      source.state !== "ready" ||
+      !source.connectionTemplateId ||
+      template?.templateId !== source.connectionTemplateId
+    ) {
+      return false;
+    }
+    const endpoint = install.endpoint;
+    const destinationMatches = ({ host, port, path }: ConnectionEndpoint) =>
+      host === endpoint.host && port === endpoint.port && pathCovered(endpoint.path, path);
+    if (source.type === "static") {
+      return (
+        template.mode === "static_bearer" &&
+        template.destinations.some(
+          (destination) => destination.method === "POST" && destinationMatches(destination),
+        )
+      );
+    }
+    const slot = install.credentials[install.slotId]!;
+    return (
+      source.consent.kind === "connection_template" &&
+      source.consent.revocationRequestedBy === undefined &&
+      source.consent.revokedAt === undefined &&
+      template.mode === "mcp_discovery" &&
+      template.issuer === slot.issuer &&
+      template.mcp?.serverUrl === install.url &&
+      template.mcp.resource === slot.mcp.resource &&
+      template.destinations.some(destinationMatches)
+    );
+  }
   return (
-    source.state === "ready" &&
     source.ownerCapability === "credential_gateway" &&
+    source.state === "ready" &&
     source.egress === undefined &&
     source.type === "bearer-token" &&
     source.secrets.token?.namespaceId === source.namespaceId &&
@@ -455,26 +525,53 @@ function acceptsManagedSource(
   install: ManagedCliInstall | ManagedMcpInstall,
   requirement: string,
   source: CredentialSource,
+  template?: ConnectionTemplateVersion,
 ): boolean {
   if (install.kind === "mcp") {
-    return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source);
+    return requirement === install.slotId && managedMcpSlotAcceptsSource(install, source, template);
   }
   const slot = install.credentials[requirement];
-  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source) === true;
+  return !!slot && cliCredentialPolicy(install)?.accepts(install, slot, source, template) === true;
 }
 
 export function managedPluginCredentials(
   driver: PluginDeploymentContract,
 ): NonNullable<PluginDriver["credentials"]> {
   return {
-    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
+    selectedBindings({ pluginId, selection }) {
+      const credentials = selection.driverPolicy?.credentials;
+      if (credentials === undefined) {
+        return {};
+      }
+      const slots = asRecord(credentials);
+      if (!selection.enabled || !slots) {
+        throw new ConfigurationHarnessError(`Invalid credential selection for ${pluginId}.`);
+      }
+      return Object.fromEntries(
+        Object.entries(slots).map(([slot, sourceId]) => {
+          if (
+            !/^[a-z][a-z0-9-]*$/.test(slot) ||
+            typeof sourceId !== "string" ||
+            !sourceId.startsWith("cs_")
+          ) {
+            throw new ConfigurationHarnessError(`Invalid credential binding for ${pluginId}.`);
+          }
+          return [slot, { default: sourceId }];
+        }),
+      );
+    },
+    mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource, template) {
       const install = managedMcpInstalls.find(({ id }) => id === pluginId);
-      if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
+      if (
+        !install ||
+        slotId !== install.slotId ||
+        !managedMcpSlotAcceptsSource(install, source, template)
+      ) {
         return undefined;
       }
       return { endpoint: install.url };
     },
-    choices(sources: readonly CredentialSource[]) {
+    choices(sources: readonly CredentialSource[], templates) {
       return managedInstalls.flatMap((install) =>
         Object.entries(install.credentials).map(([id, slot]) => ({
           pluginId: install.id,
@@ -482,26 +579,64 @@ export function managedPluginCredentials(
           id,
           label: slot.label,
           ...(install.kind === "mcp" && { toolDiscovery: true as const }),
+          issuers: [slot.issuer],
+          recipient:
+            install.kind === "mcp"
+              ? {
+                  mode: "mcp_discovery" as const,
+                  serverUrl: install.url,
+                  resource: slot.mcp.resource,
+                }
+              : { mode: "manual" as const, tokenUrl: slot.tokenEndpoint },
           sources: sources
-            .filter((source) => acceptsManagedSource(install, id, source))
+            .filter((source) =>
+              acceptsManagedSource(install, id, source, templates?.get(source.id)),
+            )
             .map(({ id, name }) => ({ id, name })),
         })),
       );
     },
-    async validate(selections, sources, modelSourceId) {
-      const attached = new Map(sources.map((source) => [source.id, source]));
+    async validate(selections, sources, modelSourceId, templates) {
+      const sourcesById = new Map(sources.map((source) => [source.id, source]));
       for (const [pluginId, selection] of Object.entries(selections)) {
         const install = managedInstalls.find(({ id }) => id === pluginId);
         const unavailable = () =>
           new ConfigurationHarnessError(
-            `Select a ready ${install?.entry.name ?? pluginId} account attached to this Agent that matches the reviewed credential slot.`,
+            `Select a ready ${install?.entry.name ?? pluginId} account that matches the reviewed credential slot.`,
           );
+        if (install) {
+          const selected = { [pluginId]: selection };
+          const binding =
+            install.kind === "cli"
+              ? managedCredentialBinding(selected, install)
+              : managedMcpCredentialBinding(selected, install);
+          if (binding) {
+            const slot = Object.keys(asRecord(selection.driverPolicy?.credentials) ?? {})[0];
+            const source = sourcesById.get(binding.sourceId);
+            if (
+              !slot ||
+              !source ||
+              source.id === modelSourceId ||
+              !acceptsManagedSource(install, slot, source, templates?.get(source.id))
+            ) {
+              throw unavailable();
+            }
+            const conflict =
+              install.kind === "cli"
+                ? cliCredentialPolicy(install)?.conflict(source, sources)
+                : undefined;
+            if (conflict) {
+              throw new ConfigurationHarnessError(conflict);
+            }
+            continue;
+          }
+        }
         // Existing Agent selections name one source per slot. Only OCC's authorized
         // source records can supply the Namespace and identity for its default connection.
         const connections = Object.fromEntries(
           Object.entries(asRecord(selection.driverPolicy?.credentials) ?? {}).map(
             ([requirement, id]) => {
-              const source = typeof id === "string" ? attached.get(id) : undefined;
+              const source = typeof id === "string" ? sourcesById.get(id) : undefined;
               if (!source) {
                 throw unavailable();
               }
@@ -523,26 +658,10 @@ export function managedPluginCredentials(
           selection,
           connections,
         });
-        for (const [requirement, accounts] of Object.entries(deployment.credentials)) {
-          for (const { sourceRef } of Object.values(accounts)) {
-            const source = attached.get(sourceRef.id);
-            if (
-              !install ||
-              !source ||
-              source.id === modelSourceId ||
-              source.namespaceId !== sourceRef.namespaceId ||
-              !acceptsManagedSource(install, requirement, source)
-            ) {
-              throw unavailable();
-            }
-            const conflict =
-              install.kind === "cli"
-                ? cliCredentialPolicy(install)?.conflict(source, sources)
-                : undefined;
-            if (conflict) {
-              throw new ConfigurationHarnessError(conflict);
-            }
-          }
+        if (
+          Object.values(deployment.credentials).some((accounts) => Object.keys(accounts).length)
+        ) {
+          throw unavailable();
         }
       }
     },

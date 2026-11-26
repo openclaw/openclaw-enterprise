@@ -1,90 +1,49 @@
+import { installManagedChannelEgressFixture } from "./managed-channel-egress-k3d.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { asRecord } from "../../packages/utils/src/objects.ts";
-import { dumpYaml, loadYaml, yamlDocuments, yamlMapping } from "./kubernetes-yaml.ts";
 import { waitFor } from "./qa-wait.ts";
 import { protectedText, grantQaSecret } from "./qa-secrets.ts";
 import { slackApi } from "./slack-web-api.ts";
-import { allMessages, assertSlackBotAuthor, verifySingleSlackDelivery } from "./slack-delivery.ts";
+import {
+  allMessages,
+  assertSlackBotAuthor,
+  verifySlackChannelAccess,
+  verifySingleSlackDelivery,
+} from "./slack-delivery.ts";
+import { createControlledChannelProxy } from "./channel-upstream-proxy.ts";
 import { parseGatewayObservation } from "./normal-agent-observation-receipts.ts";
 import { sessionEvidenceScript } from "./normal-agent-gateway-evidence.ts";
 
-export async function prepareQaSlack(f) {
+export async function prepareQaSlack(f, proxy) {
+  assert.equal(
+    f.controlPlane,
+    "kubernetes",
+    "live channel egress proof requires the Helm-installed Kubernetes control plane",
+  );
   const configuration = f.configuration.drivers.compute.configuration;
-  if (f.controlPlane === "compose") {
-    const path = join(f.stateDirectory, "compose.yaml");
-    const compose = loadYaml(await readFile(path, "utf8"));
-    const services = yamlMapping(compose, "services");
-    services["slack-proxy"] = {
-      image: f.controllerDockerImage,
-      entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
-      environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
-      networks: { development: {} },
-      read_only: true,
-      cap_drop: ["ALL"],
-      security_opt: ["no-new-privileges:true"],
-      mem_limit: "128m",
-    };
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-    await f.compose("up", "-d", "--no-deps", "slack-proxy");
-    const id = (await f.compose("ps", "-q", "slack-proxy")).trim();
-    const ip = JSON.parse(await f.run("docker", ["inspect", id]))[0].NetworkSettings.Networks[
-      `${f.cluster}_development`
-    ].IPAddress;
-    const proxyUrl = `http://${ip}:3128`;
-    configuration.runtime.channels = { proxyUrl };
-    yamlMapping(services, "controller", "environment").OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
-    await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-  } else {
-    const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
-    configuration.runtime.channels = {
-      proxyUrl: `http://${hostname}:3128`,
-      managedProxy: {
-        hostname,
-        namespace: f.state.platformNamespace,
-        podLabels: {
-          "app.kubernetes.io/name": "openclaw-enterprise",
-          "app.kubernetes.io/instance": "openclaw-enterprise",
-          "app.kubernetes.io/component": "slack-proxy",
-        },
-        port: 3128,
-      },
-    };
-    const path = join(f.stateDirectory, "helm-values.json");
-    const values = JSON.parse(await readFile(path, "utf8"));
-    values.slackProxy = { enabled: true };
-    await writeFile(path, JSON.stringify(values), { mode: 0o600 });
-    const manifests = await f.run("helm", [
-      "template",
-      "openclaw-enterprise",
-      "deploy/helm/openclaw-enterprise",
-      "-n",
-      f.state.platformNamespace,
-      "-f",
-      path,
-    ]);
-    const selected = yamlDocuments(manifests)
-      .filter((doc) => {
-        const object = asRecord(loadYaml(doc));
-        const name = asRecord(object?.metadata)?.name;
-        return (
-          (typeof name === "string" && name.includes("slack-proxy")) ||
-          ((object?.kind === "Deployment" || object?.kind === "NetworkPolicy") &&
-            name === "openclaw-enterprise-api")
-        );
-      })
-      .join("\n---\n");
-    await f.kubectl(
-      "-n",
-      f.state.platformNamespace,
-      "apply",
-      "-f",
-      await f.write("slack-resources.yaml", selected),
-    );
-  }
+  const path = join(f.stateDirectory, "helm-values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  const { channelEgress } = await installManagedChannelEgressFixture({
+    upstreamProxies: [{ url: proxy.url, addresses: [`${proxy.address}/32`] }],
+    namespace: f.state.platformNamespace,
+    controllerImage: values.images.controller,
+    workspaceGateway: {
+      apiPodLabels: { "app.kubernetes.io/instance": "openclaw-enterprise" },
+      routing: configuration.gatewayRouting,
+    },
+    controller: { account: "openclaw-enterprise-worker", apiAccount: "openclaw-enterprise-api" },
+    resource: async (kind, name, namespace) =>
+      JSON.parse(await f.kubectl("get", kind, name, "--namespace", namespace, "-o", "json")),
+    kubectl: (...args) => f.kubectl(...args),
+    applyManifest: async (manifest) =>
+      f.kubectl("apply", "-f", await f.write("channel-egress-resources.json", manifest)),
+  });
+  configuration.runtime.channelEgress = channelEgress;
+  values.channelEgress = { ...channelEgress, enabled: true };
+  await writeFile(path, JSON.stringify(values), { mode: 0o600 });
   await f.saveInstallation(f.configuration);
 }
 
@@ -107,13 +66,15 @@ export async function verifyQaSlack(f, agent) {
   const senderIdentity = await slackApi("auth.test", slack.senderBotToken);
   assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
-  for (const token of [slack.botToken, slack.senderBotToken]) {
-    assert.equal(
-      (await slackApi("conversations.info", token, { channel: slack.channelId })).channel.is_member,
-      true,
-    );
-  }
-  await prepareQaSlack(f);
+  await verifySlackChannelAccess({
+    channelId: slack.channelId,
+    gatewayToken: slack.botToken,
+    senderToken: slack.senderBotToken,
+    gatewayIdentity,
+    senderIdentity,
+  });
+  const proxy = await createControlledChannelProxy(f.resources, { cluster: f.state.cluster });
+  await prepareQaSlack(f, proxy);
   const base = `/namespaces/${agent.namespaceId}`;
   const configuration = await f.api("GET", `${base}/configurations/${agent.configurationId}`);
   const bindings = { ...configuration.secretBindings };
@@ -156,13 +117,35 @@ export async function verifyQaSlack(f, agent) {
     values,
     secretBindings: bindings,
   });
+  const proxySecret = await f.api("POST", `${base}/secrets`, {
+    name: `${agent.name} Gateway proxy credential`,
+    value: proxy.authorization,
+  });
+  await grantQaSecret(f, agent, proxySecret.id, `${agent.name}-gateway-proxy`);
+  await f.api("PATCH", `${base}/agents/${agent.id}`, {
+    networkProxy: { url: proxy.url, credentialSecretId: proxySecret.id },
+  });
   await f.deployAndWait(agent);
   const gateway = await f.pod(agent, "gateway");
   const logs = () =>
     f.kubectl("-n", gateway.metadata.namespace, "logs", gateway.metadata.name, "-c", "gateway");
-  await waitFor("Slack Socket Mode authentication", async () =>
-    /\[?slack\]?\s+socket mode connected/i.test(await logs()),
+  await waitFor(
+    "Slack Socket Mode authentication",
+    async () =>
+      /\[?slack\]?\s+socket mode connected/i.test(await logs()) &&
+      proxy.observations.filter((item) => item.connected).length >= 2,
   );
+  assert.equal(
+    proxy.observations.every((item) => item.authenticated),
+    true,
+  );
+  await f.record("Codex-channel-upstream-proxy", {
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    credentialSecretId: proxySecret.id,
+    authorities: [...new Set(proxy.observations.map((item) => item.authority))],
+    authenticatedConnections: proxy.observations.filter((item) => item.connected).length,
+  });
   const nativeEvidence = async (nonce) => {
     // Locate the actual Slack-created session, then use the common decompressed
     // transcript observer to verify the same Codex prompt/assistant turn.
@@ -230,6 +213,7 @@ export async function verifyQaSlack(f, agent) {
   } finally {
     // Stop this Socket Mode consumer before the next installation can connect.
     values.channels.slack.enabled = false;
+    await f.api("PATCH", `${base}/agents/${agent.id}`, { networkProxy: null });
     await f.api("PATCH", `${base}/configurations/${configuration.id}`, {
       values,
       secretBindings: bindings,

@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { withEnvironment } from "../helpers/environment.ts";
 import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 // An owner whose cleanups the test runs itself, so it can observe the removal.
 function ownerFor(t: TestContext) {

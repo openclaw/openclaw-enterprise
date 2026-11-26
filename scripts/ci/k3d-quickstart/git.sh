@@ -56,7 +56,7 @@ for ((i=0;i<90;i++)); do if stopped; then break; fi; sleep 2; done
 stopped
 kube -n "$TENANT_NAMESPACE" apply -f "$RUN_DIR/git-egress.json"
 upgrade_installation
-helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.8.tgz" \
+helm upgrade openshell-gateway "$OCC_DEVELOPMENT_STATE_DIRECTORY/openshell/chart/helm-chart-0.1.9.tgz" \
   "${helmopts[@]}" -f "$RUN_DIR/openshell-git-values.json" --wait
 kube -n "$PLATFORM_NS" rollout status statefulset/openshell-gateway --timeout=3m
 kube -n "$PLATFORM_NS" exec -i deployment/openclaw-enterprise-worker -c worker -- \
@@ -121,7 +121,7 @@ if ! deploy_and_wait; then
   checking ownership
   request GET "$base/agents/$agent" | jq -e --arg r "$failed_read" --arg ref "$ref" '
     .data | (.activeRevisionId==null or .activeRevisionId==$r) and
-    .repositoryBindings==[{repositoryRef:$ref,profile:"github-repository"}]' >/dev/null
+    .repositoryAccess | .defaultProfile=="github-repository" and .repositories==[{repositoryRef:$ref}]' >/dev/null
   request GET "$base/agents/$agent/repository-approvals" | jq -e '.data==[]' >/dev/null
   checking stop
   request POST "$base/agents/$agent/stop" > "$RUN_DIR/git-stop.json"

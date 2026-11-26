@@ -1,7 +1,7 @@
 ---
 created: "2026-10-28"
-updated: "2026-11-10"
-last_updated_session: "authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2"
+updated: "2026-11-22"
+last_updated_session: "authoring-run/bbd0e4a6-5fef-4a44-b20f-79d416f1af28"
 ---
 
 # Tenant restore flow
@@ -36,10 +36,11 @@ graph TD
     G --> H["Remap and create Preset templates"]
     H --> I["Restore Roles, Agents and access bindings"]
     I --> J["Attempt selected deployments"]
+    I -->|Agent create refused| P["Stop and preserve map<br/>Exit 1"]
     I -->|Ambiguous write response| O["Stop; preserve map and reconcile write"]
     J -->|Ambiguous write response| O
-    J --> K{"Manual recovery needed?"}
-    K -->|Yes| L["Report failed deployments or unrecovered bindings; exit 4"]
+    J --> K{"Deployments failed or bindings reported<br/>for manual recovery?"}
+    K -->|Yes| L["Report results<br/>Exit 4"]
     K -->|No| M["Exit 0; old Agent revision bindings may be omitted"]
 ```
 
@@ -75,11 +76,11 @@ refuses defining source IDs shared across resource kinds or Namespaces, includin
 skipped tenants whose mappings may remain from an earlier run;
 ordinary references to one identity may repeat. Discard applies the same check
 before any request, preserving resources the importer cannot restore. Export
-still preserves those opaque identities for recovery. It checks required
+still preserves those opaque identities for recovery. The importer checks required
 Secret values and refuses selected sources that share a destination name or
 saved destination ID. Saved destinations remain
 reserved even when their sources are skipped. Every saved ID must be a nonempty
-string before any API request. It creates missing Namespaces or
+string before any API request. The importer creates missing Namespaces or
 reuses eligible empty ones, records each ID, and waits for readiness. Pending
 provisioning Namespaces return an incomplete result; `main` exits 3 without
 importing children. Failed, deleting, or invalid Namespace states stop the import
@@ -95,7 +96,9 @@ accounts follow Configurations and precede Presets, so their new IDs exist when
 `remap` rewrites a Preset's Harness authentication source. A released
 `chatgpt_service_account` selection first becomes `codex_pat` with a
 `service_account` source. Both its Namespace and account ID are remapped.
-A service-account record is restored without issued provider credentials.
+This preserves a legacy direct account selection in the Preset. The importer
+restores the ServiceAccount without issued provider credentials and does not
+enroll a PAT Source for it.
 
 Saved IDs skip completed creates. An existing named resource can be adopted and
 is left unchanged; moving this order does not rewrite a Preset already created
@@ -107,34 +110,40 @@ by an earlier import. Inspect such a template before retrying a historical impor
 
 Roles and service accounts exist before Agent creation. Agent IDs and service
 principal IDs enter the map before access bindings are restored. The helper logs
-and omits bindings to old Agent revisions for every subject. It reports other
-unsupported bindings, including group, Installation-wide, and resource-less
-bindings, for manual recovery without creating grants.
+and omits bindings to old Agent revisions for every subject, even when the import
+exits 0. It reports other unsupported bindings, including group, Installation-wide,
+and resource-less bindings, for manual recovery without creating grants.
+
+The current controller returns `409 RESOURCE_CONFLICT` when the importer tries
+to create an Agent with a direct ServiceAccount PAT binding. Import exits `1`
+before it restores that Namespace's access bindings or attempts deployment.
+`--no-deploy` still sends the create request. See [manual restore for legacy ServiceAccount PATs](../guides/deploy/split-layout-upgrade.md#restore-agents-with-legacy-serviceaccount-pats).
 
 Running source Agents are deployed unless `--no-deploy` was selected. Failed
-deployments or bindings that require manual recovery cause `main` to exit 4.
-Only a valid OCC error envelope with the operation's known refusal status and
-code can be reported this way, including unsupported repository Git profiles.
-Creates require HTTP 201; deploy requires HTTP 202 with the requested Agent's
+deployments or bindings reported for manual recovery cause `main` to exit 4.
+For a binding create or deployment request, the importer reports an OCC refusal
+only when the response has a valid error envelope and the expected status and
+code. An unsupported repository Git profile is one such deployment refusal.
+Creates require HTTP 201. Deployment requires HTTP 202 with the requested Agent's
 revision identity. Returned resource IDs and Namespace ownership must match the
 operation before a mapping is saved. An ambiguous write response, including a
-malformed Namespace refusal, stops the import before later work; reconcile the
+malformed Namespace refusal, stops the import before later work. Reconcile the
 write before resuming.
-The map does not record reported bindings, so each rerun reports them again and
-exits 4, also after the operator re-creates them by hand. Exit 0 does not mean
-old Agent revision bindings were restored. Workspace recovery
-and issuing service-account credentials remain operator steps in the migration
-guide.
+
+The importer leaves reported bindings out of the map. On a rerun, it can match a
+live binding of a supported kind even if the API previously refused to create it.
+It reports unsupported kinds before that lookup, so exit 4 can recur after manual
+restoration. Workspace recovery and issuing service-account credentials remain
+operator steps in the migration guide.
 
 ## Debugging and Verification
 
-Compare a restored Preset's `template.agent.harnessAuth.source` with the saved
-Namespace and service-account IDs. Read that account in the destination Namespace;
-a stale source ID returns 404 even when the import command completed successfully.
-The conformance workflow exercises real controller HTTP handlers with in-memory
-state, including current and released authentication spellings, resumed imports,
-and the `import` command's exit codes over loopback HTTP.
-It does not establish PostgreSQL persistence, issued credentials, or live deployment.
+To inspect a legacy Preset, compare `template.agent.harnessAuth.source` with the
+saved Namespace and ServiceAccount IDs. A mapped account ID can identify the
+restored ServiceAccount even though it cannot serve as the Agent's model binding.
+Earlier conformance coverage exercised the import spellings, resumed imports,
+and exit codes over loopback HTTP with in-memory OCC state. It did not verify
+PostgreSQL persistence, provider-issued credentials, or live deployment.
 
 ## Related docs
 
@@ -147,6 +156,8 @@ It does not establish PostgreSQL persistence, issued credentials, or live deploy
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-22 20:08: Correct the import exit decision and name the importer in destination checks and Namespace creation. (authoring-run/bbd0e4a6-5fef-4a44-b20f-79d416f1af28 - bc82a1499fa335fa57e96634a0ff64ff5b82fede)
 
 - 2026-11-10 17:23: Clarify route ID validation, source isolation and confirmed write responses. (authoring-run/288b94a6-271e-40a0-b2e0-20e938ee9df2 - fe8766253c5c614d856bebe64c59f903687ce949)
 

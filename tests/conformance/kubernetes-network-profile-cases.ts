@@ -78,7 +78,6 @@ export function profileNetworkDriver() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.15:3128" },
       },
     }),
   );
@@ -147,24 +146,30 @@ export function profileNetworkWorkload(
           servicePrincipalId: revision.servicePrincipalId,
           revisionId: revision.id,
         };
-  return driver["deployment"](
-    `network-${role}`,
+  return driver["deployment"]({
+    name: `network-${role}`,
     ownership,
     namespace,
-    { runtime: `${role}:local`, workspaceSetup: "openclaw-enterprise/gateway-fixture:local" },
-    `network-${role}`,
+    images: {
+      runtime: `${role}:local`,
+      workspaceSetup: "openclaw-enterprise/gateway-fixture:local",
+    },
+    serviceAccountName: `network-${role}`,
     role,
-    {},
-    "info",
-    role === "gateway"
-      ? driver["gatewayConfiguration"](revision, undefined, executionNamespace)
-      : undefined,
-    role === "gateway" && embedded,
-    role === "gateway" && embedded ? revision.servicePrincipalId : undefined,
-    role === "agent" || embedded
-      ? preparedAuth(driver, executionNamespace.name, embedded)
-      : undefined,
-  );
+    environment: {},
+    loggingLevel: "info",
+    configuration:
+      role === "gateway"
+        ? driver["gatewayConfiguration"](revision, undefined, executionNamespace)
+        : undefined,
+    embedded: role === "gateway" && embedded,
+    workloadServicePrincipalId:
+      role === "gateway" && embedded ? revision.servicePrincipalId : undefined,
+    harnessAuth:
+      role === "agent" || embedded
+        ? preparedAuth(driver, executionNamespace.name, embedded)
+        : undefined,
+  });
 }
 
 export function checkWorkloadTemplateProfiles() {

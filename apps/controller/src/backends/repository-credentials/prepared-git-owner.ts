@@ -307,13 +307,16 @@ export async function startPreparedGitHubGitOwner(
           grant: { ...grant, profile: "github-installation" },
         };
       }
+      if (repo?.repositoryId === undefined) {
+        return;
+      }
       return {
         ...common,
         adoption: selected ? protectedGitAdoption : "prepared_repository_git",
         grant: {
           ...grant,
-          repositoryId: repo!.repositoryId,
-          repository: repo!.repository,
+          repositoryId: repo.repositoryId,
+          repository: repo.repository,
           profile: base ? "git-ref-draft-pr" : "git-ref-write",
           ...(base ? { pullRequestBase: base } : {}),
           pushRef: pushRef!,
@@ -424,7 +427,10 @@ export async function startPreparedGitHubGitOwner(
       store.inspectTokenAttempt(familyId, attemptId),
     // Deployment-only observation for the native broker; protected delivery observes its install.
     ...(custodySelection.kind === "native-broker" && options.controlSocket !== undefined
-      ? { revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId) }
+      ? {
+          revisionMaterial: (revisionId: string) => store.revisionMaterial(revisionId),
+          observeNativeWithdrawal: store.observeNativeWithdrawal.bind(store),
+        }
       : {}),
     maintain: () => maintenance.maintain(),
     async close() {

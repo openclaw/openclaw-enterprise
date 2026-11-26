@@ -41,7 +41,7 @@ Qualify your actual production configuration before use.
 
 Prepare the [guarded OIDC profile](oidc-sign-in.md#requirements): one serving
 controller, PostgreSQL State, native IAM, and one canonical HTTPS Console origin.
-OIDC supports native Agent access. Rolling or mixed-version serving is unsupported.
+OIDC supports [native Agent access](native-admin.md). Rolling or mixed-version serving is unsupported.
 Verify access to a password recovery administrator before making changes. Configure
 [trusted proxy settings](../../reference/settings/production.md#external-sign-in-and-trusted-proxies) when
 the API otherwise sees a shared proxy address, so sign-in admission limits use the
@@ -70,11 +70,8 @@ For a private CA, set `auth.oidc.caSecretName` and `auth.oidc.caSecretKey`; see
 the Keycloak root with any selected Gateway CA for the API only. Do not set
 `NODE_EXTRA_CA_CERTS` separately.
 
-The chart's OIDC NetworkPolicy permits API egress on TCP 443. For an in-cluster
-Keycloak endpoint behind a Service with a non-443 `targetPort`, add a separate
-[egress policy](oidc-sign-in.md#configure-the-chart) for the destination Pod port;
-`auth.oidc.egressCidrs` alone cannot change that port. Verify the selected topology
-and policy in your deployment.
+The API has unrestricted control-plane egress. Verify the Keycloak endpoint's
+DNS, route, TLS trust, and destination-side ingress in the selected topology.
 
 ## Create the OCE client
 

@@ -2,7 +2,7 @@
 
 [`container-promote.yml`](../../.github/workflows/container-promote.yml) copies the exact
 controller and runtime digests already published by
-[Enterprise Containers](containers.md). It never builds images, creates a
+[Release OCE](README.md) or [Enterprise Containers](containers.md). It never builds images, creates a
 repository, changes visibility, or falls back to an alternate destination.
 
 Promotion requires an ordinary successful publication from the public Enterprise
@@ -25,7 +25,9 @@ closed. No private-code bootstrap is attempted.
 
 1. Merge the reviewed promotion workflow to `main`.
 2. From a successful GHCR publication, record its full source SHA, run ID, and
-   exact attempt. Its publication receipt must still be retained.
+   exact attempt. Its publication receipt must still be retained. For a
+   completed Release OCE recovery, select the successful recovery run. Its final
+   alias job and the original preparation evidence must be available.
 3. Under an explicit publication request, manually dispatch **Promote Enterprise
    Containers to Docker Hub** on `main` with those three inputs after checking
    the producer, destinations, and
@@ -34,8 +36,12 @@ closed. No private-code bootstrap is attempted.
    with `--all --preserve-digests`; the copied digest is verified at Docker Hub.
    Existing identical tags are left unchanged; conflicting tags are rejected.
 
-Source must be in the selected main workflow's history and retain successful
-exact CI. The receipt's base digest must still match `CONTAINER_NODE_BASE_IMAGE`.
+The source must be in the selected `main` workflow's history. For Release OCE,
+promotion verifies the qualification record and full-suite aggregate for the
+source and original qualifying workflow. Image-only Release OCE runs are
+ineligible for this promotion. For Enterprise Containers, promotion
+checks the successful push CI run for the source. The receipt's base digest
+must still match `CONTAINER_NODE_BASE_IMAGE`.
 The two images are not an atomic transaction. Inspect the remote digests after
 partial failure; do not remove or replace tags automatically.
 
@@ -51,17 +57,24 @@ For a runtime-only upgrade, use the previous controller receipt and commit when
 checking the unchanged controller. Use a trusted checkout containing the
 verifier and release producers. The source repository may be a separate local
 checkout and need not be at the verifier's commit. Set `UPGRADE_EVIDENCE` to an
-existing private directory for the result.
+existing private directory. Replace `<fresh-attempt>` with a new identifier each
+time. Bash refuses to overwrite an existing regular file.
 
 ```bash
 umask 077
 export CONTROLLER_SOURCE_SHA='<full-lowercase-source-commit>'
 export UPGRADE_EVIDENCE='/secure/occ/upgrades/<private-directory>'
-cd /secure/tools/openclaw-enterprise # trusted checkout containing the verifier
-node scripts/verify-console-release.ts /secure/src/openclaw-enterprise \
-  "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
-  > "$UPGRADE_EVIDENCE/console-verification.json"
+(
+  set -C
+  node /secure/tools/openclaw-enterprise/scripts/verify-console-release.ts \
+    /secure/src/openclaw-enterprise \
+    "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
+    > "$UPGRADE_EVIDENCE/console-verification-<fresh-attempt>.json"
+)
 ```
+
+Require both exit 0 and a `verified` result. If redirection or Node startup
+fails, there is no new verdict.
 
 To verify the entry module too, add `--entry-sha256 "$CONTROLLER_ENTRY_SHA256"`
 after the URL. Set `CONTROLLER_ENTRY_SHA256` to the 64-character lowercase

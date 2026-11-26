@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
-import type { PlatformUnitOfWork } from "./platform-state.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { PostgresPlatformState } from "./postgres-state.ts";
 
 export interface NativeBrowserTarget {

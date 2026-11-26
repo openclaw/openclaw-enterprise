@@ -1,7 +1,7 @@
 import { asRecord } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
+import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.ts";
 import { agentClients } from "../helpers/egress-custody-observations.mjs";
 import { mutualTls } from "./openshell-gateway-wire-tls-cases.ts";
 import {
@@ -100,8 +100,10 @@ export function registerWorkloadCases(): void {
     const clients: (
       options: { inAgent: (...command: string[]) => Promise<string> },
       origin: string,
+      path: string,
     ) => { curl(): unknown; throughFin(): unknown } = agentClients;
-    const { curl, throughFin } = clients({ inAgent }, new URL(target).origin);
+    const { origin, pathname } = new URL(target);
+    const { curl, throughFin } = clients({ inAgent }, origin, pathname);
     assert.deepEqual(await Promise.all([curl(), throughFin()]), [
       "recipient-bytes",
       "recipient-bytes",

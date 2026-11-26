@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 // scripts/ci/go-test.ts gates the Go CLI tests in CI. These cases run it over a
 // scratch module, one package directory at a time: the script tests "./...", so

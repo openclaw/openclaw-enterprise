@@ -11,10 +11,10 @@ import {
   authenticatedHeaders,
   createTestAuthPrincipal,
   signInToControllerApp,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 
 export interface ControllerReady {

@@ -8,6 +8,7 @@ import {
   createRunnerFixture,
   laneArgs,
   runRunnerSync,
+  writeCleanupFixture,
   writeJson,
   writeRunnerManifest,
 } from "../helpers/ci-runner-fixture.ts";
@@ -82,16 +83,7 @@ test("unknown selection options fail before running tests or writing receipts", 
 test("focused runs retain case enforcement and cleanup but cannot complete a full lane", async (t) => {
   const root = await createRunnerFixture(t);
   // Keep an independent witness of cleanup for the selected file.
-  await writeFile(
-    join(root, "scripts/ci/prepare.ts"),
-    [
-      'import { appendFile } from "node:fs/promises";',
-      "export function prepareFile({ file, statePath }) {",
-      '  return { cleanup: () => appendFile(statePath, file.path + "\\n") };',
-      "}",
-      "",
-    ].join("\n"),
-  );
+  await writeCleanupFixture(root, "sync");
   const selectedPath = "tests/integration/first.test.mjs";
   const selected = { path: selectedPath, expectedTests: ["required case"] };
   await writeFile(

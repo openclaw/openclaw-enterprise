@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -98,10 +99,6 @@ type ServingPodSpec = {
     secret: { secretName: unknown; items: { key: unknown; path: string }[] };
   }[];
 };
-
-function installationValue(values: unknown, key: string): unknown {
-  return optionalField(optionalField(values, "installation"), key);
-}
 
 function optionalResourceField(resource: unknown, key: string): unknown {
   return resource == null ? undefined : field(field(resource, "metadata"), key);
@@ -204,16 +201,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       }
     } else if (tool === "helm") {
       if (args[0] === "status") {
-        if (
-          state.api === 0 &&
-          state.worker === 0 &&
-          existsSync(join(root, "fail-before-helm-intent")) &&
-          installationValue(await yamlFile(join(root, "values.json")), "upgradeAttemptId") !==
-            installationValue(await yamlFile(join(root, "live-values")), "upgradeAttemptId") &&
-          take("fail-before-helm-intent")
-        ) {
-          return fail(9);
-        }
         out(
           args.includes("json")
             ? {
@@ -423,7 +410,18 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           log("certificate-admission");
         }
         if (take("refuse-certificate-admission")) {
-          return fail(1, "certificate webhook refused dry-run");
+          const timeout = args.find((argument) => argument.startsWith("--request-timeout="));
+          const seconds = Number(timeout?.match(/^--request-timeout=([1-9][0-9]*)s$/u)?.[1]);
+          assert.ok(
+            seconds > 0 && seconds <= 60,
+            "Certificate admission must have a bounded timeout",
+          );
+          // Model a webhook exhausting its 30-second admission deadline before the
+          // API server returns the diagnostic. No test clock needs to wait 30 seconds.
+          return fail(
+            1,
+            seconds > 30 ? "certificate webhook call timed out" : "kubectl request timed out",
+          );
         }
         return io.exit(0);
       }
@@ -442,6 +440,9 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             resource: "deployments",
             name: "openclaw-enterprise-worker",
           });
+          if (state.channelStopCase) {
+            log("worker-patch-access-review");
+          }
           if (state.reviewUnavailable) {
             return fail(1, "private self-review diagnostic");
           }
@@ -449,6 +450,34 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             record(attributes, "worker review attributes").name = "openclaw-enterprise-api";
           }
           out({ ...properties(review), status: { allowed: !state.denyWorkerPatch } });
+          return io.exit(0);
+        }
+        if (field(attributes, "verb") === "get") {
+          const values = await yamlFile(join(root, "live-values"));
+          const database = field(values, "database");
+          const name = field(attributes, "name");
+          assert.ok(
+            name === (optionalField(database, "secretName") ?? "occ-database") ||
+              (typeof name === "string" && name === optionalField(database, "caSecretName")),
+          );
+          assert.deepEqual(review, {
+            apiVersion: "authorization.k8s.io/v1",
+            kind: "SelfSubjectAccessReview",
+            spec: {
+              resourceAttributes: {
+                namespace: "system",
+                verb: "get",
+                group: "",
+                version: "v1",
+                resource: "secrets",
+                name,
+              },
+            },
+          });
+          if (state.reviewUnavailable) {
+            return fail(1, "private self-review diagnostic");
+          }
+          out({ ...properties(review), status: { allowed: !take("deny-migrator-secret-get") } });
           return io.exit(0);
         }
         const expectedReview: unknown = {
@@ -714,6 +743,22 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           );
         }
         save();
+        if (fault === "migration-apply-ack-staging") {
+          // The API has accepted the Job and its child before local receipt publication fails.
+          const attempt = join(root, "evidence", "migration-deploy-apply");
+          assert.equal(
+            realpathSync(source),
+            realpathSync(join(attempt, "preflight-migration-job.json")),
+          );
+          assert.equal(kind, "job.batch");
+          assert.equal(fileArg("-o"), "jsonpath={.metadata.uid}");
+          writeFileSync(join(attempt, ".preflight-migration-identity.json.tmp"), uid + "\n", {
+            flag: "wx",
+            mode: 0o600,
+          });
+          out(uid);
+          return io.exit(0);
+        }
         if (fault === "lost") {
           out(uid);
           return fail(9, "create acknowledgement lost: private-response-marker");
@@ -732,6 +777,8 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         const raw = args.find((arg) => arg.startsWith("--raw="));
         let named = resource;
         let uid: unknown;
+        let options: unknown;
+        let propagationPolicy: unknown;
         if (raw) {
           const match =
             /^--raw=\/(api\/v1|apis\/networking\.k8s\.io\/v1|apis\/batch\/v1)\/namespaces\/system\/(pods|secrets|networkpolicies|jobs)\/([a-z0-9.-]+)$/.exec(
@@ -750,20 +797,23 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           assert.equal(fileArg("-f"), "-");
           // An empty raw body is a real unguarded DELETE, not a fixture rejection.
           const body = await io.readInput();
-          const options: unknown = body ? JSON.parse(body) : {};
+          options = body ? JSON.parse(body) : {};
           uid = optionalField(field(options, "preconditions"), "uid");
-          if (uid) {
-            assert.equal(field(options, "apiVersion"), "v1");
-            assert.equal(field(options, "kind"), "DeleteOptions");
-            assert.equal(
-              field(options, "propagationPolicy"),
-              plural === "jobs" ? "Foreground" : "Background",
-            );
-          }
+          propagationPolicy = field(options, "propagationPolicy");
           named = `${resourceType.kind}/${name}`;
         }
         assert.ok(named, "delete must identify a preflight resource");
+        // Record requests before applying faults, including refused and already-absent deletes.
+        appendFileSync(
+          join(root, "delete-requests.jsonl"),
+          JSON.stringify({ resource: named, uid, propagationPolicy }) + "\n",
+        );
         const { kind, name } = resourceAddress(named);
+        if (uid) {
+          assert.equal(field(options, "apiVersion"), "v1");
+          assert.equal(field(options, "kind"), "DeleteOptions");
+          assert.equal(propagationPolicy, kind === "job.batch" ? "Foreground" : "Background");
+        }
         const inventory = record(field(preflight, collections[kind]), collections[kind]);
         const target =
           kind === "job.batch"
@@ -941,6 +991,12 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           return fail(1, `Error from server (NotFound): ${resource} not found`);
         }
         if (args.includes("logs")) {
+          const selected = requiredArg("--container");
+          assert.deepEqual(
+            args.slice(args.indexOf("logs")),
+            ["logs", resource, "--container", selected],
+            "kubectl logs takes one Pod and its exact container selector",
+          );
           const component = requiredContainerName(field(object, "spec"));
           assert.ok(typeof component === "string", "logs require a preflight container");
           list(
@@ -973,7 +1029,6 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               "installation-startup-ready\nunbound-log-sentinel\n";
           }
           save();
-          const selected = fileArg("--container");
           if (selected !== component) {
             const initContainers = field(field(object, "spec"), "initContainers");
             if (
@@ -1053,31 +1108,51 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
       } else if (args.includes("scale") || args.includes("patch")) {
         const component = servingComponent(args);
+        const preview = args.includes("--dry-run=server");
+        if (preview) {
+          if (state.channelStopCase) {
+            log("writer-preview-" + component);
+          }
+          assert.ok(args.includes("patch"));
+          assert.ok(args.includes("deployment/openclaw-enterprise-" + component));
+          assert.equal(fileArg("--namespace"), "system");
+          assert.equal(fileArg("--context"), "selected");
+          assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
+          assert.equal(state[component], 1);
+          if (component === "worker") {
+            appendFileSync(join(root, "worker-patch-previews"), "worker\n");
+          }
+        } else if (state.channelStopCase && args.includes("patch")) {
+          log("writer-patch-" + component);
+        }
         if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
           return fail(1, "Forbidden: cannot patch the worker Deployment");
         }
-        if (take("fail-scale-" + component)) {
+        if (!preview && take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
           }
           return fail(9);
         }
-        // Simulate another actor between the helper's GET and its mutation. Keep
-        // scale support so the same scenario demonstrates the unguarded baseline.
         const identities = record((state.deploymentIdentities ??= {}), "Deployment identity table");
         const identity = record(
           (identities[component] ??= { uid: component + "-deployment-uid", resourceVersion: "1" }),
           "selected Deployment identity",
         );
-        if (component === "worker" && take("replace-worker-before-scale")) {
-          identity.uid = "replacement-worker-uid";
-          identity.resourceVersion = "2";
-          state.worker = 1;
+        if (!preview) {
+          // Apply the other actor's change only at the live patch so the case
+          // exercises a conflict even after a successful preview.
+          if (component === "worker" && take("replace-worker-before-scale")) {
+            identity.uid = "replacement-worker-uid";
+            identity.resourceVersion = "2";
+            state.worker = 1;
+          }
+          if (component === "worker" && take("edit-worker-before-scale")) {
+            identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
+          }
+          save();
         }
-        if (component === "worker" && take("edit-worker-before-scale")) {
-          identity.resourceVersion = "2";
-        }
-        save();
+        const priorReplicas = state[component];
         if (args.includes("patch")) {
           assert.equal(fileArg("--type"), "json");
           const patch: unknown = JSON.parse(readFileSync(requiredArg("--patch-file"), "utf8"));
@@ -1107,14 +1182,43 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             typeof replicas === "number" && Number.isSafeInteger(replicas) && replicas >= 0,
             "expected a nonnegative replica count",
           );
+          const denyAdmission =
+            component === "worker" ? state.denyWorkerAdmission : state.denyApiAdmission;
+          if (replicas === 0 && denyAdmission) {
+            const writer = component === "worker" ? "Worker" : "API";
+            return fail(1, `admission webhook "writer-policy.test" denied the ${writer} stop`);
+          }
+          if (preview) {
+            if (component !== "worker" || !take("empty-worker-patch-preview")) {
+              const nonzero = component === "worker" && take("nonzero-worker-patch-preview");
+              out(String(nonzero ? state.worker : replicas));
+            }
+            return io.exit(0);
+          }
           Object.assign(identity, document.metadata);
           state[component] = replicas;
         } else {
           state[component] = 0;
         }
         identity.resourceVersion = String(Number(identity.resourceVersion) + 1);
+        if (state[component] !== priorReplicas) {
+          identity.generation =
+            journalInteger(identity.generation ?? 1, "Deployment generation", 1) + 1;
+        }
         save();
         log("scale-" + component);
+        if (component === "worker" && args.includes("--output")) {
+          assert.equal(
+            fileArg("--output"),
+            'jsonpath={.metadata.uid}{"\\t"}{.metadata.generation}{"\\t"}{.spec.replicas}',
+          );
+          out([identity.uid, identity.generation, state[component]].join("\t"));
+        }
+        // Persist the stop before dropping the final acknowledgement. The client
+        // can receive response bytes and still see a failed command.
+        if (component === "worker" && take("lost-worker-stop-response")) {
+          return fail(9);
+        }
       } else if (args.includes("replace")) {
         const secret: unknown = JSON.parse(await io.readInput());
         if (state.denyInstallationUpdate) {
@@ -1261,18 +1365,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               .join(" "),
           );
         } else {
+          const identity = optionalField(state.deploymentIdentities, component);
+          const generation = optionalField(identity, "generation") ?? 1;
           out({
             metadata: {
               name: "openclaw-enterprise-" + component,
-              uid:
-                optionalField(optionalField(state.deploymentIdentities, component), "uid") ??
-                component + "-deployment-uid",
-              resourceVersion:
-                optionalField(
-                  optionalField(state.deploymentIdentities, component),
-                  "resourceVersion",
-                ) ?? "1",
-              generation: 1,
+              uid: optionalField(identity, "uid") ?? component + "-deployment-uid",
+              resourceVersion: optionalField(identity, "resourceVersion") ?? "1",
+              generation,
               labels: {
                 "app.kubernetes.io/instance": state.release,
                 "app.kubernetes.io/component": component,
@@ -1286,7 +1386,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
               },
             },
             status: {
-              observedGeneration: 1,
+              observedGeneration: generation,
               replicas: 1,
               updatedReplicas: 1,
               availableReplicas: 1,
@@ -1443,6 +1543,38 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             ],
           });
         } else {
+          if (
+            state.api === 0 &&
+            state.worker === 0 &&
+            args.includes(
+              `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${state.release}`,
+            ) &&
+            take("edit-stopped-api-after-drain")
+          ) {
+            // Another actor updates the stopped API Deployment's spec without starting Pods.
+            const api = record(field(state.deploymentIdentities, "api"), "API Deployment identity");
+            api.generation = journalInteger(api.generation, "API Deployment generation", 1) + 1;
+            api.resourceVersion = String(Number(api.resourceVersion) + 1);
+            save();
+          }
+          if (
+            state.api === 0 &&
+            state.worker === 0 &&
+            args.includes(
+              `app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${state.release}`,
+            ) &&
+            take("drift-worker-generation-after-drain")
+          ) {
+            // Another actor edits the stopped Worker Deployment's spec without starting Pods.
+            const worker = record(
+              field(state.deploymentIdentities, "worker"),
+              "Worker Deployment identity",
+            );
+            worker.generation =
+              journalInteger(worker.generation, "Worker Deployment generation", 1) + 1;
+            worker.resourceVersion = String(Number(worker.resourceVersion) + 1);
+            save();
+          }
           out({
             items:
               initialization && state.initActive
@@ -1452,6 +1584,11 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                   : [],
           });
         }
+      } else if (
+        args.includes("get") &&
+        args.includes("deployments,statefulsets,pods,persistentvolumeclaims")
+      ) {
+        out({ items: state.workloadInventory ?? [] });
       } else if (args.includes("get")) {
         out({ items: [] });
       } else if (args.includes("exec") && args.includes("/sys/fs/cgroup/memory.max")) {
@@ -1575,6 +1712,82 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
       }
     } else if (tool === "occ") {
       if (
+        state.channelStopCase &&
+        args.includes("agent") &&
+        args.includes("revision") &&
+        args.includes("--check-retain-harness-overrides")
+      ) {
+        // The channel helper checks access to the original revision before Stop and Deploy.
+        assert.deepEqual(args.slice(4), [
+          "--namespace",
+          "ns_test",
+          "agent",
+          "revision",
+          "agt_test",
+          "rev_old",
+          "--check-retain-harness-overrides",
+        ]);
+        out({
+          namespaceId: "ns_test",
+          agentId: "agt_test",
+          id: "rev_old",
+          canRetainHarnessOverrides: true,
+        });
+      } else if (state.channelStopCase && args.includes("agent") && args.includes("stop")) {
+        log("channel-agent-stop");
+        assert.deepEqual(args.slice(0, 3), ["--output", "json", "--timeout-seconds"]);
+        assert.match(args[3] ?? "", /^[1-9][0-9]*$/u);
+        assert.deepEqual(args.slice(4), [
+          "--namespace",
+          "ns_test",
+          "agent",
+          "stop",
+          "agt_test",
+          "--if-active-revision",
+          "rev_old",
+        ]);
+        assert.equal(state.api, 1);
+        assert.equal(state.channelAgentStopped, undefined);
+        const identities = record(state.deploymentIdentities, "Deployment identities");
+        const api = record(identities.api, "API Deployment identity");
+        const worker = record(identities.worker, "worker Deployment identity");
+        // Status updates can advance the resource versions while Stop is pending.
+        api.resourceVersion = "2";
+        worker.resourceVersion = "2";
+        if (state.channelStopCase === "worker-zero") {
+          state.worker = 0;
+          worker.generation = 2;
+        } else if (state.channelStopCase === "worker-uid") {
+          worker.uid = "replacement-worker-uid";
+        } else if (state.channelStopCase === "worker-generation") {
+          worker.generation = 2;
+        } else if (state.channelStopCase === "api-generation") {
+          api.generation = 2;
+        }
+        if (state.channelStopCase === "late-worker-access-denial") {
+          state.denyWorkerPatch = true;
+        } else if (state.channelStopCase === "late-worker-admission-denial") {
+          state.denyWorkerAdmission = true;
+        }
+        state.channelAgentStopped = true;
+        save();
+        if (state.channelStopCase === "unknown-agent-stop") {
+          return fail(9, "Stop response lost after the Agent stopped");
+        }
+        out({ id: "agt_test", namespaceId: "ns_test", desiredRuntimeState: "stopped" });
+      } else if (state.channelStopCase && args.includes("agent") && args.includes("get")) {
+        assert.equal(fileArg("--namespace"), "ns_test");
+        assert.equal(args.at(-1), "agt_test");
+        out({
+          id: "agt_test",
+          namespaceId: "ns_test",
+          status: "active",
+          name: "Mail triage",
+          configurationId: "cfg_agt_test",
+          desiredRuntimeState: state.channelAgentStopped ? "stopped" : "running",
+          activeRevisionId: state.channelAgentStopped ? null : (state.activeRevision ?? "rev_old"),
+        });
+      } else if (
         state.continuity &&
         args.includes("agent") &&
         (args.includes("get") || args.includes("runtime"))
@@ -1636,11 +1849,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
                     {
                       id: "agt_test",
                       status: "active",
-                      desiredRuntimeState: "running",
+                      desiredRuntimeState: state.channelAgentStopped ? "stopped" : "running",
                       executionMode: "embedded",
-                      activeRevisionId: "rev_old",
                       deploymentInProgress: false,
-                      repositoryWorkerRestart: "reverification-supported",
+                      ...(state.channelAgentStopped
+                        ? {}
+                        : {
+                            activeRevisionId: "rev_old",
+                            repositoryWorkerRestart: "reverification-supported",
+                          }),
                     },
                   ]
                 : [],
@@ -1736,6 +1953,9 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         delete state.nextDeployment;
         if (status === "succeeded") {
           state.activeRevision = id;
+          if (state.channelStopCase) {
+            state.channelAgentStopped = false;
+          }
         }
         const deployment = [fileArg("--namespace"), agentId, id].join("/");
         if (state.deployments == null) {
@@ -1750,7 +1970,7 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         if (take("lost-agent-response")) {
           return fail(9);
         }
-        out({ id });
+        out(state.channelStopCase ? { id, agentId, namespaceId: fileArg("--namespace") } : { id });
       } else if (args.includes("agent") && args.includes("get")) {
         out({
           id: "agt_test",

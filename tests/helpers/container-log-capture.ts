@@ -5,6 +5,10 @@ import { join } from "node:path";
 import type { TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
+import {
+  CONTAINER_LOG_BUFFER_CHARS,
+  CONTAINER_LOG_ERROR_CHARS,
+} from "../../scripts/ci/k3d-container-log.ts";
 import { projectContainerLog } from "../../scripts/ci/k3d-diagnostics.ts";
 
 // The CI runner sets this for k3d lanes (scripts/ci/k3d-diagnostics.ts) and
@@ -14,8 +18,8 @@ export const containerLogDirectoryVariable = "OPENCLAW_CI_CONTAINER_LOG_DIR";
 
 // The runner publishes at most the last 1,500 lines of 1,000 characters.
 const maxBufferedLines = 1_500;
-const maxBufferedChars = 2 * 1024 * 1024;
-const maxErrorChars = 2_048;
+const maxBufferedChars = CONTAINER_LOG_BUFFER_CHARS;
+const maxErrorChars = CONTAINER_LOG_ERROR_CHARS;
 const stopTimeoutMs = 5_000;
 
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;

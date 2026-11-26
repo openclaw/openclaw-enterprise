@@ -9,7 +9,7 @@ import {
   NamespaceListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { grantRole } from "../helpers/iam-grants.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { tenantANamespaceId, tenantRequest as request } from "../helpers/tenant-reader-app.ts";
 import {
   bootstrap,
@@ -396,13 +396,13 @@ export function registerExactResourceCases() {
         "POST",
         "credential-sources",
         ["create", "credential_source"],
-        { name: "probe", type: "openai" },
+        { name: "probe", type: "static", secret: "probe-value" },
       ],
       [
         "PATCH",
         `credential-sources/${child("cs")}`,
         ["update", "credential_source", child("cs")],
-        {},
+        { secret: "probe-value" },
       ],
       ["DELETE", `credential-sources/${child("cs")}`, ["delete", "credential_source", child("cs")]],
       ["POST", "presets", ["create", "preset"], { name: "probe", template: {} }],

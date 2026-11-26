@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   validateFullIntegrationPreflight,
@@ -168,6 +173,34 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       },
     );
   }
+
+  await t.test("a coverage outage cannot change cooldown into a failed tick", async (t) => {
+    const now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    // A long run is eligible exactly 15 minutes after finishing.
+    for (const finishedAgo of [14, 15]) {
+      const previous = previousRun({ startedAgo: 120, finishedAgo });
+      let coverageReads = 0;
+      const github: GithubReader = async (request) => {
+        if (request.path.startsWith("/actions/artifacts?name=full-integration-exercised-v1-")) {
+          coverageReads++;
+          throw new Error(sentinel);
+        }
+        return previous(request);
+      };
+      const result = validateFullIntegrationPreflight({ env, github });
+      if (finishedAgo === 14) {
+        assert.deepEqual(await result, { selectedLane: "skip", runAll: false, reason: "cooldown" });
+        assert.equal(coverageReads, 0);
+      } else {
+        await assert.rejects(result, {
+          message:
+            "Full Integration schedule could not verify admission metadata (coverage-markers: request-failed).",
+        });
+        assert.equal(coverageReads, 1);
+      }
+    }
+  });
 
   // A superseded split push can retain a started-at timestamp on its queued
   // reusable preflight even though no execution runner acquired the lock.
@@ -531,9 +564,96 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       "/actions/artifacts?name=full-integration-admitted-v1&per_page=100",
     ]);
   }
-  for (const [name, kind, response] of [
+  const markers = "/actions/artifacts?name=full-integration-admitted-v1&per_page=100";
+  for (const [scenario, status] of [
+    ["healthy", undefined],
+    ["admit", 503],
+    ["moved main", 502],
+    ["second outage", 504],
+  ] as const) {
+    await t.test(`scheduled metadata recovers once: ${scenario}`, async (t) => {
+      const lastSha = scenario === "moved main" ? "b".repeat(40) : sha;
+      const fixture = fixtures([sha, sha, lastSha]);
+      const calls: string[] = [];
+      t.mock.method(globalThis, "fetch", async (url: string) => {
+        const path = url.slice(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}`.length);
+        calls.push(path);
+        if (
+          status !== undefined &&
+          path === markers &&
+          calls.filter((item) => item === markers).length === 1
+        ) {
+          // A gateway can send its status before the connection breaks mid-body.
+          const body = new ReadableStream({
+            start(controller) {
+              controller.error(new Error(sentinel));
+            },
+          });
+          return new Response(body, { status });
+        }
+        if (scenario === "second outage" && path === "/environments/integration-main") {
+          return new Response(sentinel, { status: 503 });
+        }
+        return Response.json(
+          await fixture.github({
+            path,
+            repository: env.GITHUB_REPOSITORY,
+            token: env.GITHUB_TOKEN,
+          }),
+        );
+      });
+      const result = validateFullIntegrationPreflight({ env });
+      if (scenario === "second outage") {
+        await assert.rejects(result, {
+          message: "GitHub API /environments/integration-main returned 503.",
+        });
+        assert.equal(calls.filter((path) => path === "/environments/integration-main").length, 1);
+      } else {
+        assert.deepEqual(
+          await result,
+          scenario === "moved main"
+            ? skipped("stale-event")
+            : { selectedLane: "all", runAll: true },
+        );
+        assert.equal(fixture.calls.at(-1), "/git/ref/heads/main");
+      }
+      if (scenario === "healthy") {
+        assert.deepEqual(calls, clean.calls);
+      } else {
+        assert.deepEqual(calls.slice(0, 3), ["/git/ref/heads/main", markers, markers]);
+      }
+    });
+  }
+  await t.test("manual approval does not retry an unavailable GitHub read", async (t) => {
+    const fetch = t.mock.method(
+      globalThis,
+      "fetch",
+      async () => new Response(null, { status: 503 }),
+    );
+    await assert.rejects(
+      validateFullIntegrationPreflight({
+        env: { ...mainRun, GITHUB_EVENT_NAME: "workflow_dispatch" },
+      }),
+      { message: "GitHub API /environments/integration-main-approval returned 503." },
+    );
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+  for (const [name, kind, response, attempts] of [
     ["malformed JSON", "invalid-metadata", () => new Response(sentinel)],
-    ["HTTP failure", "request-failed", () => new Response(sentinel, { status: 503 })],
+    ["persistent outage", "request-failed", () => new Response(sentinel, { status: 503 }), 2],
+    ["unauthorized", "request-failed", () => new Response(sentinel, { status: 401 })],
+    ["forbidden", "request-failed", () => new Response(sentinel, { status: 403 })],
+    ["rate limit", "request-failed", () => new Response(sentinel, { status: 429 })],
+    [
+      "retry later",
+      "request-failed",
+      () => new Response(sentinel, { status: 503, headers: { "Retry-After": "60" } }),
+    ],
+    [
+      "quota exhausted",
+      "request-failed",
+      () => new Response(sentinel, { status: 503, headers: { "X-RateLimit-Remaining": "0" } }),
+    ],
     [
       "transport SyntaxError",
       "request-failed",
@@ -569,7 +689,7 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
       });
       assert.deepEqual(calls, [
         "/git/ref/heads/main",
-        "/actions/artifacts?name=full-integration-admitted-v1&per_page=100",
+        ...Array<string>(attempts ?? 1).fill(markers),
       ]);
     });
   }
@@ -580,4 +700,57 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
     }),
     /Scheduled integration reruns are refused/,
   );
+});
+
+test("failed scheduled preflight reports the final read outcome without authorizing execution", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "preflight-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cli = fileURLToPath(
+    new URL("../../scripts/ci/full-integration-preflight.ts", import.meta.url),
+  );
+  const privateText = "synthetic-private-response";
+  for (const [name, retryOutcome, failure] of [
+    ["original transport failure", null, "request-failed"],
+    ["malformed retry JSON", "new Response(privateText)", "invalid-metadata"],
+    ["forbidden retry", `new Response(privateText, { status: 403 })`, "request-failed-http-403"],
+    ["failed retry transport", "transportFailure()", "request-failed"],
+    [
+      "persistent gateway failure",
+      `new Response(privateText, { status: 504 })`,
+      "request-failed-http-504",
+    ],
+  ] as const) {
+    await t.test(name, () => {
+      const output = join(dir, name);
+      const stub = `
+        const privateText = ${JSON.stringify(privateText)};
+        const transportFailure = () => { throw new Error(privateText); };
+        let calls = 0;
+        globalThis.fetch = async () => {
+          if (++calls === 1 && ${retryOutcome !== null}) {
+            return new Response(privateText, { status: 503 });
+          }
+          return ${retryOutcome ?? "transportFailure()"};
+        };
+      `;
+      const child = spawnSync(
+        process.execPath,
+        ["--import", "data:text/javascript," + encodeURIComponent(stub), cli],
+        {
+          env: {
+            ...mainRun,
+            GITHUB_EVENT_NAME: "schedule",
+            GITHUB_SHA: "a".repeat(40),
+            GITHUB_OUTPUT: output,
+          },
+          timeout: 10_000,
+          encoding: "utf8",
+        },
+      );
+      assert.equal(child.status, 1);
+      assert.doesNotMatch(child.stdout + child.stderr, new RegExp(privateText));
+      assert.match(child.stderr, /Full Integration schedule could not verify admission metadata/);
+      assert.equal(readFileSync(output, "utf8"), `failure_stage=history-main-ref-${failure}\n`);
+    });
+  }
 });

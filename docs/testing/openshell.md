@@ -8,8 +8,7 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Use official OpenShell `v0.1.8` from the repository root. See [images and trust](openshell-oauth.md#prepare-images-and-trust)
-for versions and qualification limits.
+From the repository root, use official OpenShell `v0.1.9`. See [qualification limits](openshell-oauth.md#prepare-images-and-trust).
 
 ## Start a reusable development environment
 
@@ -37,52 +36,15 @@ Stop, including after partial startup:
 ```
 
 This deletes only the owned cluster and database. For Compose, set
-`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; otherwise the control
-plane follows the Compute Driver, selecting Kubernetes here.
+`OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup; the default follows the
+Compute Driver (Kubernetes here).
 
-## Finite repository removal
+## Model and Git on the same Agent
 
-To qualify one Agent after repository-binding removal, set `file` to
-`tests/integration/openshell-git-finite-removal-real.test.ts`. Follow the lane
-prerequisites below; pass `--selected-file "$file"` to
-`scripts/ci/prepare.ts --lane openshell`, then `--file "$file"` to
-`scripts/ci/run-tests.ts run openshell`, using the same private `--state "$state"`.
-Always run `node scripts/ci/cleanup.ts --state "$state"`, even after preparation
-or execution fails. The fixture owns a disposable Kubernetes control plane and
-PostgreSQL, a real OpenShell deployment, and a controlled HTTPS Git issuer. It requires
-authorized model credentials and immutable controller/runtime images matching
-the candidate checkout; relabeling an earlier image is not sufficient.
-
-The case first reads Git with the admitted credential and starts a real model
-conversation. It removes the binding before the original ten-minute deadline.
-The issuer refuses retirement of that exact credential with HTTP 503; direct
-HTTP 200 witnesses bracket each subsequent Git attempt. This keeps issuer
-validity separate from OpenShell's revocation of the Git provider.
-
-If the first denied request reaches the worker, it must receive a fresh signed
-`access_withdrawn` decision for the original revision. If provider detachment wins
-that race, the case requires the supervisor's ordered pre-HTTP policy refusal and
-records the signer as unexercised. It does not delay cleanup to force a signature.
-The signed-request PostgreSQL integration remains separate evidence for that boundary.
-After detachment and worker replacement, the case requires successful
-`REPOSITORY_ACCESS_WITHDRAWN` maintenance, Git revocation and model readiness on
-the same reduced supervisor generation, another ordered Git refusal without
-origin traffic or new issuance, and a reply in the original conversation and
-runtime. Finally, withdrawing required model authority must clear the active
-revision and remove the original Sandbox and Agent Pods before the same deadline.
-Queued retirement and fixture teardown do not satisfy this final assertion.
-
-`openshell-git-retention-real.test.ts` tests natural expiry separately. In its
-two-Agent case, B reads with its original grant after A's live denial, before
-worker replacement. After replacement, A must remain denied before origin and
-continue its conversation on the same runtime. This case does not qualify B's
-grant after replacement. Exact-scope `retire-runtime` fails expiry immediately;
-retain the selected image digests, case results and cleanup evidence.
-
-Finite-removal and two-Agent failures identify the failed conversation check:
-`execution identity`, `target discovery`, `gateway identity`, `model turn`, or
-`persisted reply`. These labels do not diagnose the cause. Raw command
-arguments, output, and error causes remain withheld.
+Use the [prepared TokenService Git Agent lane](manual-tests.md) to deploy a
+Dedicated Codex Agent with both its model Source and a scoped GitHub grant.
+The case checks the active revision, native policy readback, a model turn, and
+stock Git access to one approved repository while refusing the other.
 
 ## Codex plugin installation
 
@@ -165,12 +127,11 @@ needs no model credential or call. Docker is default; set
 
 For prepared Docker Compose images, set `OCC_TEST_DEV_UP_COMPOSE_CONTROLLER_IMAGE`
 to an immutable development-controller reference under
-`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller`, and
-`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Both must be
-locally inspectable, built from this checkout, and labeled with its revision.
-Retain provenance; never relabel images. The extra Compose file replaces
-all five services' builds, excluding build coverage but preserving assertions.
-Unset both image variables for full source-build coverage.
+`127.0.0.1:<port>/openclaw-ci-first-images-<id>/controller` and
+`OCC_KUBERNETES_RUNTIME_IMAGE` to an immutable runtime reference. Use locally
+inspectable images built from and labeled with this checkout's revision. Never
+relabel images. Retain provenance. The override replaces all five builds and preserves assertions.
+Unset both variables for source-build coverage.
 
 For Kubernetes, `OCC_TEST_NATIVE_BROWSER_RECEIPT` selects a new file in an existing
 directory for source, image identities, and assertions; otherwise a temporary
@@ -181,9 +142,11 @@ separately requires screenshots and video.
 
 ## OpenShell Sandbox
 
-The real Sandbox suite checks Codex Gateway access, model/tool turns, credentials,
-filesystem/network restrictions, replacement and cleanup. Local fixtures alone
-are insufficient; see [OpenShell coverage](openshell-coverage.md).
+This legacy suite checks Gateway access, model/tool turns, credentials, and
+Sandbox lifecycle. Run it only on a matching pre-cutover release: current
+startup rejects its Credential Gateway fixture. Use [Model and Git on the same
+Agent](#model-and-git-on-the-same-agent) for current Source-backed verification.
+See [historical coverage](openshell-coverage.md) for the older assertions.
 
 If the credential-route check's allowed endpoint fails, the suite captures one
 bounded tail from the Harness's exact supervisor before cleanup: source type,
@@ -260,13 +223,11 @@ with preparation `--selected-file` and execution `--file`. Both require
 `OPENAI_API_KEY`, and `OCC_TEST_OPENAI_MODEL`.
 The case checks writes, frozen selection, and claim refusals. NVMe and node loss are separate.
 
-The [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
-checks finite-grant expiry and worker restart after installation.
+The [prepared TokenService Git Agent lane](manual-tests.md) checks a model turn and scoped Git on the same Agent.
 
-Codex Sandbox and guided native OpenClaw first-Agent tests use production
+Codex Sandbox and staged native OpenClaw first-Agent tests use production
 Drivers. Neither qualifies a production installation. Run the separate native
-Sandbox test with the k3d helper below. It uses a test-only compatibility
-bridge. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
+Sandbox test with the k3d helper below. See [Sandbox Driver qualification limits](../reference/drivers/openshell-sandbox.md#qualification-contract).
 
 Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
 across a worker restart, isolation from another Agent, and disabling edits while
@@ -275,8 +236,8 @@ preserving access. Suggestions and decorated logs are read through OCC.
 ### Native OpenClaw with k3d
 
 The [k3d helper](kubernetes.md#develop-with-local-containers-and-k3d) prepares
-the native test and builds the sibling `../openclaw` checkout. Set
-`OCC_K3D_OPENCLAW_SOURCE` to use another absolute checkout path.
+the native test with the [pinned runtime image](../../deploy/runtime/README.md),
+the only image the dedicated Gateway accepts. It needs no OpenClaw checkout.
 
 ```sh
 ./scripts/k3d test --harness openclaw
@@ -299,11 +260,11 @@ bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_T
 Full OpenShell lane preparation still requires a token for its dedicated PAT cases.
 The local helper retains its destination through resource preparation and reset.
 In CI, custom endpoints require focused upstream, refresh, withdrawal, or Gateway
-tool-policy tests; native provider files require a guided first-Agent test.
-Whole-lane CI preparation rejects either override before setup.
+tool-policy tests. The staged first-Agent test uses the built-in TokenService
+OpenAI preset. Whole-lane CI preparation rejects endpoint overrides before setup.
 
-Both commands use the test-only bridge. `test` requires an authorized
-`OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
+Both commands disable ServiceAccount token projection for the OpenShell Harness.
+`test` requires an authorized `OPENAI_API_KEY`. `demo` prompts for one if it is unset. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.
 It leaves the dedicated worker slot free for the first browser session.
 Run `./scripts/k3d down --harness openclaw` to remove it. Codex and native OpenClaw
@@ -341,26 +302,17 @@ revision, Namespace, and model. [CI results](ci/openshell-execution.md#interpret
 retain stage timings.
 
 After checking Local Setup's ready default Namespace, the test runs distinct
-Codex and native Agents concurrently with separate `openai` sources using
-`OPENAI_API_KEY`. Native OpenClaw uses the pinned runtime,
-and production Drivers without the k3d helper's compatibility bridge. Both
-operations drain before shared denial checks and teardown.
-
-For a custom service, set
-`OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
-`baseUrl`, `api` (`openai-responses` or `openai-completions`), and native `models`
-metadata. The first model selects the native Agent and can differ from Codex.
-Supply that service's key as
-`OPENAI_API_KEY`; this custom-provider case requires a separate
-`CODEX_ACCESS_TOKEN` and `codex-pat` source for Codex.
-Configure the Installation `runtime.modelProvider` with that URL and API first.
-The native source authorizes that destination. Provisioning, model-and-exec,
-and retained-session assertions still run;
-changing only the embedded QA preset does not exercise this path.
+Codex and native Agents concurrently with separate static TokenService Sources
+using the `openai` preset and `OPENAI_API_KEY`. Native OpenClaw uses the pinned
+runtime and production Drivers. A test-owned Installation authorizes the pinned
+OpenClaw Node executable to reach `api.openai.com:443`. If the test uses an
+existing Installation, configure that ceiling before running it. Both operations
+drain before shared denial checks and teardown.
 
 The case edits `USER.md` through the workspace API, verifies its marker through
 real model execution and `exec`. That turn writes a unique session-worktree file. It
-waits for the enrolled node's actual setup expiry before normal redeployment,
+waits for the enrolled node's actual setup expiry, stops the first revision,
+and then uses normal staged deployment,
 adding up to ten minutes. The successor must retain the owned setup Secret,
 credential, expiry and device identity while recording its own enrolled revision.
 Completion receipts must match while present. Empty status is allowed only after
@@ -378,7 +330,12 @@ for the merged images, guided Codex, or ChatGPT OAuth.
 
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
-an API-key Secret; the Codex PAT used by the starter is a separate credential.
+a TokenService API-key Source for the native Agent.
+
+<a id="managed-compute-prototype"></a>
+<a id="provider-replacement"></a>
+
+[Managed OpenShell and Provider replacement tests](openshell-managed.md).
 
 ## Troubleshooting
 

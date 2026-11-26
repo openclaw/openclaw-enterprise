@@ -1,0 +1,41 @@
+import type {
+  DeviceAuthenticationState,
+  DeviceAuthorizationSession,
+} from "../device-authorization.ts";
+import type { ConnectionSession } from "@openclaw-enterprise/contracts";
+
+export type OAuthAuthenticationState = Omit<ConnectionSession, "stateHash"> & {
+  readonly kind: "oauth_connection";
+  readonly id: string;
+  /** Set atomically at callback consumption; the Client pin remains until terminal release. */
+  readonly consumedAt?: string;
+};
+
+export type AuthenticationState = OAuthAuthenticationState | DeviceAuthenticationState;
+
+export type DeviceAuthenticationChanges = Pick<
+  DeviceAuthorizationSession,
+  "phase" | "expiresAt" | "nextPollAt" | "privateState" | "encryptedChallenge" | "sourceId"
+>;
+
+export interface AuthenticationStateReadRepository {
+  findDevice(namespaceId: string, id: string): Promise<DeviceAuthenticationState | undefined>;
+}
+
+export interface AuthenticationStateRepository extends AuthenticationStateReadRepository {
+  create(state: AuthenticationState): Promise<void>;
+  replaceDevice(
+    namespaceId: string,
+    id: string,
+    version: number,
+    changes: DeviceAuthenticationChanges,
+  ): Promise<boolean>;
+  consumeOAuth(
+    id: string,
+    actorId: string,
+    sessionId: string,
+    at: string,
+  ): Promise<OAuthAuthenticationState | undefined>;
+  releaseOAuth(id: string): Promise<void>;
+  expire(at: string, limit: number): Promise<void>;
+}

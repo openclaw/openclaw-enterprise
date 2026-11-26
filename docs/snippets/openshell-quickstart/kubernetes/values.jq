@@ -31,7 +31,6 @@
     "port": 5432
   },
   "api": {
-    "modelDiscoveryCidrs": [],
     "clients": [
       {
         "namespace": "oce-system",
@@ -66,7 +65,7 @@
   "repositoryCredentials": {
     "enabled": false
   },
-  "slackProxy": {
+  "channelEgress": {
     "enabled": false
   },
   "metrics": {

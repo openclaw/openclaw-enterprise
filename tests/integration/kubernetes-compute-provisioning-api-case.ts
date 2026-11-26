@@ -10,12 +10,9 @@ import type {
   kubernetesNamespaceName as namespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import type { SecretReference } from "../../packages/contracts/src/index.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentDeploymentStatusResponse,
-  AgentPluginCatalogResponse,
-  AgentPluginDetailsResponse,
   AgentProvisioningResponse,
   AgentProvisioningStatusResponse,
   AgentReadResponse,
@@ -142,152 +139,6 @@ function observeDriverCall(
   };
 }
 
-async function verifyPluginDiscovery(
-  context: ProvisioningContext,
-  fixture: Awaited<ReturnType<typeof createProvisioningApiFixture>>,
-  namespaceId: string,
-  secretRef: SecretReference,
-  discoveryPat: string,
-  rotatedPat: string,
-) {
-  // The Driver reads Kubernetes-backed PATs. Only the upstream provider is controlled.
-  const whoami = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami";
-  const catalogBase = "https://chatgpt.com/backend-api/ps/";
-  const catalogPath = new URL(catalogBase).pathname;
-  const originalFetch = globalThis.fetch;
-  let expectedPat = discoveryPat;
-  const observations: {
-    endpoint: string;
-    method: string;
-    account: string | null;
-    expectedToken: boolean;
-  }[] = [];
-  const plugin = {
-    id: "fixture-plugin",
-    name: "fixture",
-    scope: "GLOBAL",
-    status: "ENABLED",
-    installation_policy: "AVAILABLE",
-    release: {
-      display_name: "Fixture",
-      interface: {},
-      requires_local_executor: false,
-      app_ids: ["fixture-app"],
-      app_manifest: null,
-      skills: [],
-      mcp_servers: [],
-    },
-  };
-  const provider = context.mock.method(
-    globalThis,
-    "fetch",
-    async (...[input, init]: Parameters<typeof fetch>) => {
-      const request = new Request(input, init);
-      const address = new URL(request.url);
-      if (address.origin !== "https://auth.openai.com" && !request.url.startsWith(catalogBase)) {
-        return originalFetch(input, init);
-      }
-      // Assert after the call because the Driver can catch and translate fetch failures.
-      const endpoint =
-        request.url === whoami
-          ? "whoami"
-          : request.url.startsWith(catalogBase)
-            ? address.pathname.slice(catalogPath.length)
-            : "unexpected";
-      observations.push({
-        endpoint,
-        method: request.method,
-        account: request.headers.get("ChatGPT-Account-ID"),
-        expectedToken: request.headers.get("Authorization") === `Bearer ${expectedPat}`,
-      });
-      switch (endpoint) {
-        case "whoami":
-          return Response.json({
-            chatgpt_account_id: "fixture-account",
-            chatgpt_account_is_fedramp: false,
-          });
-        case "plugins/list":
-          return Response.json({ plugins: [plugin], pagination: { next_page_token: null } });
-        case "plugins/fixture-plugin":
-          return Response.json(plugin);
-        case "apps/batch":
-          return Response.json({
-            apps: [{ id: "fixture-app", status: "ENABLED", tools: [{ name: "search" }] }],
-          });
-        default:
-          return new Response(null, { status: 404 });
-      }
-    },
-  );
-  const discoveryPath = `/namespaces/${namespaceId}/agents/plugins`;
-  const discoveryBody = { harnessId: "codex", secretRef };
-  const expectedIdentity = {
-    endpoint: "whoami",
-    method: "GET",
-    account: null,
-    expectedToken: true,
-  };
-  const expectedList = {
-    endpoint: "plugins/list",
-    method: "GET",
-    account: "fixture-account",
-    expectedToken: true,
-  };
-  try {
-    const catalog = await fixture.requestChecked(
-      AgentPluginCatalogResponse,
-      200,
-      "POST",
-      discoveryPath,
-      discoveryBody,
-    );
-
-    assert.equal(catalog.data.plugins[0]?.remoteId, "fixture-plugin");
-    const detail = await fixture.requestChecked(
-      AgentPluginDetailsResponse,
-      200,
-      "POST",
-      `${discoveryPath}/details`,
-      {
-        ...discoveryBody,
-        pluginId: "fixture-plugin",
-      },
-    );
-
-    assert.equal(detail.data.tools?.[0]?.id, "fixture-app/search");
-    assert.deepEqual(observations, [
-      expectedIdentity,
-      expectedList,
-      expectedIdentity,
-      { ...expectedList, endpoint: "plugins/fixture-plugin" },
-      { ...expectedList, endpoint: "apps/batch", method: "POST" },
-    ]);
-    const rotated = await fixture.request(
-      "PATCH",
-      `/namespaces/${namespaceId}/secrets/${secretRef.id}`,
-      { value: rotatedPat },
-    );
-    assert.equal(rotated.status, 200);
-    expectedPat = rotatedPat;
-    observations.length = 0;
-    const refreshed = await fixture.requestChecked(
-      AgentPluginCatalogResponse,
-      200,
-      "POST",
-      discoveryPath,
-      discoveryBody,
-    );
-
-    assert.deepEqual(observations, [expectedIdentity, expectedList]);
-    assert.doesNotMatch(
-      JSON.stringify([catalog, detail, refreshed]),
-      /at-kubernetes-(fixture|rotated)-/,
-    );
-  } finally {
-    provider.mock.restore();
-  }
-}
-
 export async function runProvisioningApiCase(
   context: ProvisioningContext,
   {
@@ -365,8 +216,7 @@ export async function runProvisioningApiCase(
   });
   await fixture.stopWorker();
 
-  const discoveryPat = `at-kubernetes-fixture-${randomUUID()}`;
-  const rotatedPat = `at-kubernetes-rotated-${randomUUID()}`;
+  const modelPat = `at-kubernetes-fixture-${randomUUID()}`;
   const modelSecret = await fixture.requestChecked(
     SecretResponse,
     201,
@@ -374,7 +224,7 @@ export async function runProvisioningApiCase(
     `${namespacePath}/secrets`,
     {
       name: `Provisioning model key ${randomUUID().slice(0, 8)}`,
-      value: discoveryPat,
+      value: modelPat,
     },
   );
 
@@ -387,15 +237,6 @@ export async function runProvisioningApiCase(
       name: `Provisioning Slack bot token ${randomUUID().slice(0, 8)}`,
       value: `xoxb-${randomUUID()}`,
     },
-  );
-
-  await verifyPluginDiscovery(
-    context,
-    fixture,
-    namespaceOwner.id,
-    modelSecret.data.ref,
-    discoveryPat,
-    rotatedPat,
   );
 
   // The regular provisioning API must admit separately identified proxy users
@@ -414,14 +255,28 @@ export async function runProvisioningApiCase(
       "oidc:maintainer-02": ["operator.admin"],
     },
   };
-  const body = provisioningRequestBody({
+  const requestedBody = provisioningRequestBody({
     modelSecretRef: modelSecret.data.ref,
     slackBotSecretRef: slackBotSecret.data.ref,
     authMethod: "codex_pat",
     gatewayAuth,
   });
+  // This fixture proves provisioning and retained storage. Enabled channels
+  // require the separate real Envoy/runtime workflow, not a synthetic provider.
+  const body = {
+    ...requestedBody,
+    configuration: {
+      ...requestedBody.configuration,
+      values: {
+        ...requestedBody.configuration.values,
+        channels: {
+          slack: { ...requestedBody.configuration.values.channels.slack, enabled: false },
+        },
+      },
+    },
+  };
   assert.equal(
-    JSON.stringify(body).includes(rotatedPat),
+    JSON.stringify(body).includes(modelPat),
     false,
     "provisioning must carry only saved Secret references, not Secret values",
   );
@@ -523,7 +378,7 @@ export async function runProvisioningApiCase(
   await handoffWorkerStop;
   await fixture.stopWorker();
   assert.equal(provisioned.status, "queued");
-  assert.ok(fixture.slackValidations.length > 0 && fixture.slackValidations.every(Boolean));
+  assert.equal(fixture.slackValidations.length, 0);
   assert.ok(provisioned.agentId);
   assert.ok(provisioned.configurationId);
   assert.ok(provisioned.revisionId);

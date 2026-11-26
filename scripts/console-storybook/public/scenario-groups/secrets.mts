@@ -20,7 +20,7 @@ type SecretRule = ({ path: SecretListPath } | { suffix: `/secrets/${string}` }) 
   );
 
 type SecretScenario = {
-  group: "Pages/Secrets";
+  group: "Pages/Credentials/Secrets";
   name: string;
   path: "/console/secrets" | `/console/secrets?${string}`;
   description: string;
@@ -47,18 +47,19 @@ export function secretsScenarios({
 }) {
   return {
     secrets: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Populated",
       path: "/console/secrets",
       description:
         "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
       steps: [
         "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
-        "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
+        "Create a Secret with a dummy value. Search for it and select part of the query. Switch windows and return. The search keeps its selection when the library reloads.",
+        "Open the result, replace the value, then delete the Secret. Switch Namespace and check that the search stays with its own library.",
       ],
     },
     secretsMobile: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Mobile",
       path: "/console/secrets",
       mobile: true,
@@ -71,42 +72,43 @@ export function secretsScenarios({
       ],
     },
     secretsSearch: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "No search matches",
       path: "/console/secrets",
       actions: [{ selector: '[aria-label="Search Secrets"]', value: "no-such-secret" }],
       description: "Clear the search to see the Secrets in this Namespace again.",
     },
     secretsEmpty: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Empty",
       path: "/console/secrets",
       emptySecrets: true,
       description: "An authorized list without Secrets offers creation.",
     },
     secretsLoading: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Loading",
       path: "/console/secrets",
       rules: [{ path: presetSecretsPath, hold: true }],
       description: "Namespace admission succeeds while the Secret list is still loading.",
     },
     secretsUnavailable: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Read unavailable",
       path: "/console/secrets",
       rules: [{ path: presetSecretsPath, status: 503 }],
-      description: "A failed Secret collection read shows recovery, with no stale rows.",
+      description:
+        "A failed Secret collection read shows recovery without stale Secret rows. The independent Source inventory can still load.",
     },
     secretsNoNamespace: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "No readable Namespace",
       path: "/console/secrets",
       emptyNamespaces: true,
       description: "Secret requests require an admitted Namespace selection.",
     },
     secretsNamespaceNotReady: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Namespace provisioning",
       path: "/console/secrets",
       namespaceStatus: "provisioning",
@@ -114,19 +116,20 @@ export function secretsScenarios({
         "Metadata stays readable; creation and replacement wait for Namespace readiness.",
     },
     secretsCreate: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Create",
       path: "/console/secrets",
       actions: [click("Create Secret")],
       description:
         "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
       steps: [
+        "At short desktop and phone heights, use Tab and Shift+Tab through the form. Check that each focused control, including Value, and its outline are fully visible.",
         "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
         "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
       ],
     },
     secretsMissingValue: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Missing value",
       path: "/console/secrets",
       actions: [
@@ -137,18 +140,18 @@ export function secretsScenarios({
       description: "Required-value errors remain beside their field; no request is sent.",
     },
     secretsCreateNotPermitted: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Create not permitted",
       path: "/console/secrets",
       secretCreateNotPermitted: true,
       description:
-        "The caller's access does not include Secret creation. Create Secret is disabled and the note under the toolbar names the reason.",
+        "Create Secret is disabled. The note under the toolbar names Secret create in this Namespace and asks the caller to check their access.",
       steps: [
         "Tab to Create Secret. It takes focus and looks unavailable, a screen reader names the note as its description, and Enter, Space or a click opens nothing.",
       ],
     },
     secretsCreateDenied: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Create denied",
       path: "/console/secrets",
       denySecretCreate: true,
@@ -159,14 +162,14 @@ export function secretsScenarios({
         { selector: 'dialog button[type="submit"]', click: true },
       ],
       description:
-        "The permission answer allowed creation, but the API refuses it (for example, a grant removed after the page loaded). The form clears the value, disables editing, and focuses Close.",
+        "The simulated permission answer allowed creation and the simulated write refuses it. The form names the required access, clears the value, disables editing, and focuses Close.",
       steps: [
         "Tab to Secret name, Show value, Value and Create Secret. Each takes focus and looks unavailable, described by the refusal; typing, Enter, Space or a click sends nothing and the value stays masked (finding 2935).",
         "Close the dialog. The page's Create Secret looks unavailable, described by the note under the toolbar that asks to select Refresh after access changes.",
       ],
     },
     secretsUnknownSave: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Unknown save outcome",
       path: "/console/secrets",
       rules: [{ path: presetSecretsPath, method: "POST", bodyError: true }],
@@ -180,7 +183,7 @@ export function secretsScenarios({
         "An unreadable reply leaves an amber warning that the outcome is unknown. The value is erased and this dialog cannot resubmit.",
     },
     secretsConsumers: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Consumers and restricted references",
       path: "/console/secrets",
       secretConsumers: {
@@ -199,10 +202,11 @@ export function secretsScenarios({
         "The inspector says “This Secret is referenced.” The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. The hidden count and incomplete-list warning remain.",
       steps: [
         "Tab to Delete Secret. It looks unavailable and its accessible description is “This Secret is referenced.” Inspecting usage does not ask you to remove references.",
+        "In the standalone preview, close the inspector and search for sec_demo_model. Reopen the result, then follow Research assistant under Consumers. Use the keyboard shortcut for browser Back. The filter remains and the inspector stays closed. After revalidation, focus returns to the Secret row if it is still visible. Press Enter to reopen it.",
       ],
     },
     secretsReadOnly: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Read only for this caller",
       path: "/console/secrets",
       secretCallerPermissions: { update: false, delete: false },
@@ -223,22 +227,25 @@ export function secretsScenarios({
       gap: "The answer is advisory. The controller still authorizes each write.",
     },
     secretsLinkUnlisted: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Link to an unlisted Secret",
       path: "/console/secrets?secret=sec_not_listed",
       description:
         "A link to a Secret the readable list leaves out opens no dialog. For a member, a note says it may not exist or the caller may not read it, and who grants read. This simulated caller administers the Installation, so the note says only that no such Secret is in the readable list. Nothing reads the Secret.",
     },
     secretsReplace: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Replace value",
       path: "/console/secrets",
       actions: [click("Demo model API key (simulated)"), click("Replace value")],
       description:
         "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
+      steps: [
+        "At short desktop and phone heights, use Tab and Shift+Tab through Show value, Value, Close and Replace value. Check that each focused control and its outline are fully visible.",
+      ],
     },
     secretsReplaceDenied: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Replace denied",
       path: "/console/secrets",
       rules: [
@@ -253,7 +260,7 @@ export function secretsScenarios({
       description: "A denied replacement clears the value, disables editing, and focuses Close.",
     },
     secretsDelete: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Delete confirmation",
       path: "/console/secrets",
       actions: [click("Demo model API key (simulated)"), click("Delete Secret")],
@@ -261,7 +268,7 @@ export function secretsScenarios({
         "Permanent storage deletion requires confirmation and explains upstream revocation and previously delivered values.",
     },
     secretsDeleteConflict: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Concurrent reference conflict",
       path: "/console/secrets",
       rules: [
@@ -284,7 +291,7 @@ export function secretsScenarios({
       ],
     },
     secretsDeletionUnconfirmed: {
-      group: "Pages/Secrets",
+      group: "Pages/Credentials/Secrets",
       name: "Deletion could not be confirmed",
       path: "/console/secrets",
       rules: [

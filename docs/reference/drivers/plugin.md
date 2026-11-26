@@ -28,17 +28,19 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
-  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
-  sets `enabled: true`. The next deployment applies that selection.
+  `policyScopeByPlugin` limits each catalog entry: `enablement_only` exposes its
+  master switch; `tool_human_approval` also permits `all_actions` or `none` on
+  individual selected tools. Unlisted entries use Driver-wide capabilities.
+  The next deployment applies saved selections.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
 - `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
   (optional): check whether the selected packages can run on this Harness and
-  Compute Driver. `credentialRuntime` gives the implementations of the selected
-  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
-  undefined. A plugin that needs a bound credential can refuse an Installation
-  that cannot deliver it. OCC checks placement before saving selections and
-  again when it admits deployment.
+  Compute Driver. OCC passes the Sandbox implementation as `sandbox` and reports
+  eligible managed credential selections as `stagedPluginIds`. The shared
+  `gateway` field remains in the interface and OCC passes `undefined`. The
+  Plugin Driver can refuse placements that cannot deliver its credential. OCC
+  checks placement on save and deployment.
 - `describeDeployment({plugin, selection, connections})` (optional) returns
   [deployment requirements](../../../packages/contracts/src/drivers/plugin/deployment.ts)
   for one admitted catalog identity. The OpenClaw Driver accepts
@@ -57,12 +59,21 @@ The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) 
 - `credentials` (optional): credential slots for plugins that use an Agent's
   [credential sources](../credential-sources.md). The Driver receives only source
   metadata that OCC authorized, never credential values.
-  `choices(sources)` returns each slot with the attached ready sources that
-  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
-  capabilities. `validate(selections, sources, modelSourceId)` refuses a
-  binding that names no matching attached source, or the source that
-  authenticates the model. OCC calls it at Agent create, update, provisioning,
-  and deployment.
+  OCC passes `choices(sources, templates)` qualified ready Namespace Sources whose
+  metadata the caller can read; the Driver filters them for slot compatibility. Namespace
+  catalog discovery and saved-Agent capabilities return these choices in
+  `credentialSlots`. A saved slot can separately report `boundSourceId` after OCC
+  validates the current Driver release, selection, Source, Template and Agent grant;
+  this does not make that Source caller-selectable. A caller needs exact Source
+  `operate` when saving a new selection or discovering tools for a new connection.
+  `selectedBindings({pluginId, selection})` reports Source IDs keyed by requirement
+  and connection. The OpenClaw Driver uses the `default` connection for each
+  selected slot. OCC uses these IDs to authorize and resolve each Source before
+  it asks the Driver to validate the selection or describe deployment.
+  `validate(selections, sources, modelSourceId, templates)` checks the reviewed release and
+  slot and refuses the Source that authenticates the model. OCC checks the
+  [Template and consent](../credential-sources.md#bind-a-source-to-an-agent) for
+  credential-bearing requests.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a
@@ -105,37 +116,32 @@ Agent runtime's discovery path.
 
 Two optional methods serve pre-Agent discovery: `discoverCatalog({accessToken?,
 cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
-`getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
+`getCatalogPlugin({accessToken?, pluginId, discoveredMcpToolNames?}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
 and its `/details` child. Include the target `harnessId` in each request.
-OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
-in Installation capabilities as `required` or `none`. When required, supply
-exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
-use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
-For credential-free discovery, omit all three.
-For details also provide `pluginId`; for discovery you can provide `q` (up to
-1,024 characters) and `cursor`. The Driver searches the complete catalog; an
-empty query lists it. Keep the same query while paging and omit the cursor when
-changing the query.
-Both routes require Agent `create` in the Namespace. Stored references must
-belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets. For CredentialSources, the trusted
-bundled OpenShell Backend reader performs ordinary metadata lookup and
-operator-mTLS export; an external Credential Gateway retains its optional
-`withSourceToken` callback. Both paths require the same exact Gateway owner
-match and Namespace checks, with no fallback to another Gateway or tenant.
-OCC checks authorization, source readiness, attachment where required, and the
-selected catalog before retrieval, then rechecks before catalog dispatch.
-Credentials pass to the PluginDriver in server memory; refresh remains with
-its owner. For PAT discovery, the bundled Codex Driver derives the
-account ID from the PAT. Clients do not provide an account ID. A Secret reference
-to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,
-a missing Secret returns `404`. A missing or non-ready explicitly selected
-CredentialSource returns `409 RESOURCE_CONFLICT`. A Secret backend ownership
-mismatch returns `404`, a denied grant returns
-`403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
-`PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
+OCC resolves the catalog before it reads a credential. The selected Driver reports
+`pluginDiscovery.credential` in Installation capabilities as `required` or `none`.
+When required, provide `credentialSource: {kind: "credential_source", namespaceId, id}`
+for a ready Codex account Source in that Namespace. For credential-free discovery,
+omit it. Managed MCP details instead require `managedConnection: {slot, sourceId}`;
+OCC checks caller Source `operate` or, for saved discovery, the verified saved
+binding and Agent grant before using it. The supported slot flow accepts only
+TokenService Sources. An MCP bearer must contain visible ASCII without spaces or control
+characters.
+
+For managed MCP, OCC lists upstream tool names through its credential-authorized transport, then passes `discoveredMcpToolNames` to the selected Driver without the bearer. The Driver returns the catalog entry and omits names that cannot map to distinct reviewed OpenClaw aliases. OCC rejects tools that are duplicated, absent from the upstream inventory, or owned by another plugin.
+For details, provide `pluginId`; for catalog discovery, supply `q` (up to 1,024 characters) or
+`cursor` as needed. Keep the same query while paging.
+
+Both pre-Agent routes require Agent `create` in the Namespace. OCC authorizes the
+exact Source, resolves fresh material through its owning TokenService, and rechecks
+access and Source state before dispatch. Hosted Codex discovery passes the
+credential and trusted account metadata to the PluginDriver only in server
+memory. Managed MCP discovery keeps the bearer in OCC's transport and sends the
+Driver only discovered names. Refresh remains with TokenService.
+A wrong-Namespace reference returns `400 INVALID_REQUEST`; a missing or non-ready
+Source returns `409 RESOURCE_CONFLICT`, and denied Source access returns `403`.
 For details of an ID that a bundled catalog (`occ-plugin` or the curated
 `codex-plugin` catalog) does not offer, the Driver throws the `unknownPlugin`
 refusal that admission uses. OCC returns `400 INVALID_REQUEST` that names the ID
@@ -149,8 +155,7 @@ The controller signals the selected Plugin Driver when the HTTP client
 disconnects during a catalog or detail request for a new or saved Agent.
 Credential values do not appear in catalog responses or audit events; responses
 that echo a credential are rejected. A missing PluginDriver method reports
-unsupported discovery, and a SecretDriver without transient value use cannot
-serve Secret-backed requests. These methods do not require an existing Agent,
+unsupported discovery. These methods do not require an existing Agent,
 plugin installation, or runtime connection.
 See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalogs).
 
@@ -159,9 +164,9 @@ See [bundled selection and catalog setup](plugin-bundled.md#selection-and-catalo
 OCC authorizes the exact Agent operation. Reading or changing Agent selections
 does not grant provider access, plugin permissions, or approval to perform a
 plugin action. Plugin approval settings are separate from platform IAM, workload
-isolation, and the external provider's authentication. Runtime credentials use
-the existing Harness and ServiceAccount path; never put credential values or
-native command output in startup diagnostics. The Driver supplies no sandbox,
+isolation, and the external provider's authentication. Runtime Plugin
+credentials use admitted [Source bindings](../credential-sources.md#bind-a-source-to-an-agent).
+Keep credential values and native command output out of startup diagnostics. The Driver supplies no sandbox,
 egress grant, filesystem grant, approval service, OAuth interface, or IAM hook.
 See [Agent plugin permissions](../agent-plugins.md) and [authorization](../authorization.md).
 

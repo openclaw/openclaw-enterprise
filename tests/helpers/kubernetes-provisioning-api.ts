@@ -1,3 +1,4 @@
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
@@ -27,7 +28,7 @@ import {
 import type { SecretReference } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState, type ControllerWorkState } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "./auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "./auth-session.ts";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -248,7 +249,12 @@ export async function createProvisioningApiFixture(
     { authentication },
     { id: "secret-kubernetes-provisioning" },
   );
-  const drivers = runtimeDrivers(computeDriver, configurationDriver, secretDriver);
+  const drivers = {
+    ...runtimeDrivers(computeDriver, configurationDriver, secretDriver),
+    // This storage/handoff fixture substitutes only provider HTTP responses. The
+    // credentialed channel lane separately proves Envoy and actual Slack access.
+    channelDrivers: [{ provider: "slack", driver: new SlackChannelDriver(globalThis.fetch) }],
+  };
   context.signal.throwIfAborted();
   const startingApp = composePostgresDevelopment(
     {

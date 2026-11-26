@@ -1,3 +1,4 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
@@ -15,7 +16,7 @@ import type {
   RepositorySessionRepository,
 } from "../../packages/occ/src/ports/repository-sessions.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/state/platform-state.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import {
   repositoryBinding,
   repositoryCredentials,
@@ -30,7 +31,7 @@ type SessionRevision = AgentRevision & { readonly repositoryCredentials: Reposit
 interface SeededSessionRevision {
   readonly namespace: Pick<Namespace, "id">;
   readonly configuration: Pick<Configuration, "id">;
-  readonly agent: Pick<Agent, "id" | "repositoryBindings">;
+  readonly agent: Pick<Agent, "id" | "repositoryAccess">;
   readonly revision: SessionRevision;
 }
 
@@ -85,7 +86,7 @@ export async function verifyRepositorySessionCases(
           agent.id,
           configuration.id,
         );
-        assert.deepEqual(preserved?.repositoryBindings, [
+        assert.deepEqual(repositoryAccessSelections(preserved?.repositoryAccess), [
           { repositoryRef: "source", profile: "git-read" },
         ]);
         const replaced = await unit.agents.updateConfiguration(
@@ -96,9 +97,13 @@ export async function verifyRepositorySessionCases(
           undefined,
           undefined,
           undefined,
-          [{ repositoryRef: "replacement", profile: "write" }],
+          undefined,
+          {
+            defaultProfile: "git-write",
+            repositories: [{ repositoryRef: "replacement", profile: "write" }],
+          },
         );
-        assert.deepEqual(replaced?.repositoryBindings, [
+        assert.deepEqual(repositoryAccessSelections(replaced?.repositoryAccess), [
           { repositoryRef: "replacement", profile: "write" },
         ]);
         const cleared = await unit.agents.updateConfiguration(
@@ -109,10 +114,11 @@ export async function verifyRepositorySessionCases(
           undefined,
           undefined,
           undefined,
-          [],
+          undefined,
+          { defaultProfile: "git-write", repositories: [] },
         );
         assert.ok(cleared);
-        assert.equal(Object.hasOwn(cleared, "repositoryBindings"), false);
+        assert.deepEqual(cleared?.repositoryAccess?.repositories, []);
       });
       const unchanged = await store.read((view) =>
         view.revisions.findRevision(namespace.id, agent.id, revision.id),
@@ -120,7 +126,7 @@ export async function verifyRepositorySessionCases(
       assert.deepEqual(unchanged?.repositoryCredentials, expectedCredentials);
       const current = await store.read((view) => view.agents.findAgent(namespace.id, agent.id));
       assert.ok(current);
-      assert.equal(Object.hasOwn(current, "repositoryBindings"), false);
+      assert.deepEqual(current?.repositoryAccess?.repositories, []);
 
       // Revisions without a repository snapshot remain valid and gain no implicit admission.
       const { repositoryCredentials: _credentials, ...withoutCredentials } = revision;
@@ -170,7 +176,8 @@ export async function verifyRepositorySessionCases(
               undefined,
               undefined,
               undefined,
-              [],
+              undefined,
+              { defaultProfile: "git-write", repositories: [] },
             );
             await unit.repositorySessions.withdrawFinite(owner, later);
           });
@@ -190,7 +197,10 @@ export async function verifyRepositorySessionCases(
         await assert.rejects(remove(), scopeError);
         const unchanged = await store.read((view) => view.agents.findAgent(namespace.id, agent.id));
         assert.ok(unchanged);
-        assert.deepEqual(unchanged.repositoryBindings, agent.repositoryBindings);
+        assert.deepEqual(
+          repositoryAccessSelections(unchanged.repositoryAccess),
+          repositoryAccessSelections(agent.repositoryAccess),
+        );
         assert.equal(
           (await store.read((v) => v.repositorySessions.findAttempt(attempt.admissionId)))?.phase,
           "opening",
@@ -239,7 +249,8 @@ export async function verifyRepositorySessionCases(
             undefined,
             undefined,
             undefined,
-            agent.repositoryBindings,
+            undefined,
+            agent.repositoryAccess,
           );
         });
         if (intent === "stopped") {
@@ -299,7 +310,8 @@ export async function verifyRepositorySessionCases(
                 undefined,
                 undefined,
                 undefined,
-                bindings,
+                undefined,
+                { defaultProfile: "git-write", repositories: bindings ?? [] },
               ),
             ),
             scopeError,

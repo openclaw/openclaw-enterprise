@@ -1,4 +1,4 @@
-import type { ChatGPTBackendDefinition, ComputeDriver } from "@openclaw-enterprise/contracts";
+import type { ChatGPTBackendDefinition } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
@@ -15,6 +15,7 @@ import {
 } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { closeResources } from "./composition/close-resources.ts";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
@@ -60,15 +61,7 @@ type SharedApiSettings = HumanLoginConfiguration & {
 
 type ApiSettings = SharedApiSettings &
   (
-    | Pick<
-        ProductionConfig,
-        | "mode"
-        | "host"
-        | "clientAddress"
-        | "channelDirectoryProxyUrl"
-        | "channelDirectoryManagedProxyHost"
-        | "apiHttpsEgressOpen"
-      >
+    | Pick<ProductionConfig, "mode" | "host" | "clientAddress">
     | Pick<
         PostgresDevelopmentConfig,
         "mode" | "host" | "trustedDevelopmentBridgeCidr" | "trustedDevelopmentForwarderCidr"
@@ -77,23 +70,6 @@ type ApiSettings = SharedApiSettings &
 
 type MeasuredStartupPhase =
   "modules" | "configuration" | "composition" | "ready" | "listen" | ProductionStartupPhase;
-
-type ServiceAccountCompute = Parameters<
-  typeof import("./drivers/service-account/chatgpt.ts").createChatGPTServiceAccountDriverFactory
->[1];
-
-function supportsServiceAccountCredentials(
-  compute: ComputeDriver & {
-    readonly storeServiceAccountCredential?: unknown;
-    readonly findServiceAccountCredential?: unknown;
-  },
-): compute is ComputeDriver & ServiceAccountCompute {
-  return (
-    typeof compute.storeServiceAccountCredential === "function" &&
-    typeof compute.findServiceAccountCredential === "function" &&
-    typeof compute.deleteServiceAccountCredential === "function"
-  );
-}
 
 function startupFailureCode(error: unknown): string {
   if (error instanceof ConsoleThemeError) {
@@ -273,8 +249,15 @@ function configuration(env: ApiEnvironment): ApiSettings {
   }
 
   const gatewayApiKeyPath = env.OCC_GATEWAY_API_KEY_PATH;
-  const channelDirectoryProxyUrl = env.OCC_CHANNEL_DIRECTORY_PROXY_URL;
-  const channelDirectoryManagedProxyHost = env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST;
+  if (
+    env.OCC_CHANNEL_DIRECTORY_PROXY_URL !== undefined ||
+    env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST !== undefined ||
+    env.OCC_API_HTTPS_EGRESS_OPEN !== undefined
+  ) {
+    throw new Error(
+      "Legacy channel proxy settings are unsupported; configure managed channel egress.",
+    );
+  }
   if (gatewayApiKeyPath !== undefined) {
     validateGatewayApiKeyPath(gatewayApiKeyPath);
   }
@@ -354,12 +337,6 @@ function configuration(env: ApiEnvironment): ApiSettings {
       ...settings,
       ...listener,
       ...(clientAddress === undefined ? {} : { clientAddress }),
-      ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
-      ...(channelDirectoryManagedProxyHost === undefined
-        ? {}
-        : { channelDirectoryManagedProxyHost }),
-      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
-      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 
@@ -422,15 +399,23 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     environment: env,
     startupConfiguration,
   });
+  let app: Awaited<ReturnType<typeof composeProduction>>;
+  // Composition owns cleanup once it returns an app. InstalledDriver.close is idempotent.
+  await using _startupCleanup = {
+    async [Symbol.asyncDispose]() {
+      if (app === undefined) {
+        await closeResources(
+          drivers?.protectedDriver,
+          drivers?.credentialDeliveryRegistration,
+        ).catch(() => undefined);
+      }
+    },
+  };
   let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
   const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
   if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
     if (settings.databaseUrl === undefined) {
       throw new Error("Backend-managed ServiceAccounts require PostgreSQL persistence.");
-    }
-    const compute = drivers.computeDriver;
-    if (!supportsServiceAccountCredentials(compute)) {
-      throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
     }
     const backendDefinition = drivers.installation.backend.find(
       (backend): backend is ChatGPTBackendDefinition =>
@@ -464,14 +449,13 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
           : { credentialTtlSeconds: configuration.credentialTtlSeconds }),
       }),
     };
-    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend, compute);
+    serviceAccountDriverFactory = createChatGPTServiceAccountDriverFactory(backend);
   }
   const databaseUrl = settings.databaseUrl;
   if (databaseUrl === undefined) {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
   }
   phaseCompleted("configuration");
-  let app: Awaited<ReturnType<typeof composeProduction>>;
   if (settings.mode === "production") {
     if (drivers === undefined) {
       throw new Error("Production Driver configuration is unavailable.");

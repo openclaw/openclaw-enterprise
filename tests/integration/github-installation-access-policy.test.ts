@@ -10,7 +10,7 @@ import {
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
-import { normalizedRepositoryAccess } from "../../packages/occ/src/state/repository-credential-state.ts";
+import { normalizedRepositoryAccess } from "../../packages/occ/src/repository-credential-validation.ts";
 
 // Runtime policy decisions cannot detect accidental widening of this constructor input.
 // @ts-expect-error Repository policy receives identity fields, never a transport client.
@@ -121,13 +121,11 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
   assert.throws(() => resolve([{ ...selection, repositoryRef: "example" }]), /not permitted/);
   assert.throws(
     () =>
-      normalizedRepositoryAccess({ defaultProfile: profile, repositories: [{ repositoryRef }] }, [
-        selection,
-      ]),
-    /intent does not match/,
+      normalizedRepositoryAccess({ defaultProfile: profile, repositories: [{ repositoryRef }] }),
+    /repository access is invalid/,
   );
   const intent = { defaultProfile: "git-write", repositories: [selection] };
-  assert.deepEqual(normalizedRepositoryAccess(intent, [selection]), intent);
+  assert.deepEqual(normalizedRepositoryAccess(intent), intent);
 
   // The existing repository grant is a compatibility vector, including in a registry with both scopes.
   assert.equal(

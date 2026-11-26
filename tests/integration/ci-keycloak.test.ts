@@ -7,7 +7,7 @@ import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.ts");
@@ -165,13 +165,16 @@ test("cleanup removes the owned Keycloak container and its private directory", a
   await assert.rejects(stat(statePath), { code: "ENOENT" });
 });
 
-test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6-only answers", async (t) => {
-  for (const [addresses, accepted] of [
-    [["127.0.0.1", "::1"], true],
-    [["127.0.0.1", "192.0.2.1"], false],
-    [["::1"], false],
-  ] satisfies [string[], boolean][]) {
-    await t.test(addresses.join(","), async (t) => {
+test("Keycloak preparation uses loopback DNS with Docker and a loopback high port with Podman", async (t) => {
+  for (const [docker, addresses, accepted] of [
+    ["docker", ["127.0.0.1", "::1"], true],
+    ["docker", ["127.0.0.1", "192.0.2.1"], false],
+    ["docker", ["::1"], false],
+    ["podman", [], true],
+  ] satisfies [string, string[], boolean][]) {
+    const podman = docker === "podman";
+    const hostPort = podman ? 18443 : 443;
+    await t.test(`${docker}: ${addresses.join(",") || "no DNS lookup"}`, async (t) => {
       const root = await fixture(t);
       const commands: string[] = [];
       // Exercise real certificate preparation and host gating, stopping at the
@@ -180,12 +183,19 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
         prepareKeycloak({
           stateDirectory: root,
           name: "openclaw-ci-kc-dns-test-0123456789ab",
+          docker,
           ensureImage: async () => {},
-          portAccepts: async () => false,
+          portAccepts: async (port) => {
+            assert.equal(port, hostPort);
+            return false;
+          },
           reservePort: async () => 40443,
           registerResource: async (details) => details,
           saveState: async () => {},
-          lookupAll: async () => addresses.map((address) => ({ address })),
+          lookupAll: async () => {
+            assert.equal(podman, false, "Podman connects to the loopback socket directly");
+            return addresses.map((address) => ({ address }));
+          },
           log: () => {},
           execFile: async (command: string, args: string[]) => {
             commands.push(command);
@@ -195,6 +205,9 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
             if (command === "sudo") {
               return { stdout: "", stderr: "" };
             }
+            assert.equal(command, docker);
+            assert.equal(args[args.indexOf("--publish") + 1], `127.0.0.1:${hostPort}:8443`);
+            assert.ok(args.includes("--hostname=https://keycloak.oce.localhost"));
             throw new Error("test container boundary");
           },
         }),
@@ -203,7 +216,7 @@ test("Keycloak preparation accepts dual loopback DNS but rejects remote and IPv6
           : /Keycloak hosts step failed:.*not restricted to loopback/,
       );
       assert.equal(commands.includes("sudo"), !accepted);
-      assert.equal(commands.includes("docker"), accepted);
+      assert.equal(commands.includes(docker), accepted);
     });
   }
 });

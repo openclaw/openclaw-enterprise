@@ -12,7 +12,7 @@ import {
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 import { registerTopologyLaunchCases } from "./topology-launch-cases.ts";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
@@ -24,22 +24,30 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test("preset admission reports repositoryBindings paths and rejects duplicate refs", () => {
+test("preset admission reports repositoryAccess paths and rejects duplicate refs", () => {
   assert.throws(
     () =>
       validatePresetTemplate({
         agent: {
-          repositoryBindings: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+          repositoryAccess: {
+            defaultProfile: "git-write",
+            repositories: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+          },
         },
       }),
     (error) =>
       error instanceof PresetValidationError &&
-      error.message.startsWith("Preset agent.repositoryBindings:"),
+      error.message.startsWith("Preset agent.repositoryAccess:"),
   );
   assert.throws(
     () =>
       validatePresetTemplate({
-        agent: { repositoryBindings: [{ repositoryRef: "app" }, { repositoryRef: "app" }] },
+        agent: {
+          repositoryAccess: {
+            defaultProfile: "git-write",
+            repositories: [{ repositoryRef: "app" }, { repositoryRef: "app" }],
+          },
+        },
       }),
     (error) =>
       error instanceof PresetValidationError &&
@@ -321,7 +329,10 @@ test("invalid variable programs and inputs fail before producing launch settings
     [
       {
         agent: {
-          repositoryBindings: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+          repositoryAccess: {
+            defaultProfile: "git-write",
+            repositories: Array.from({ length: 17 }, (_, i) => ({ repositoryRef: `r${i}` })),
+          },
         },
       },
       {},
@@ -330,20 +341,25 @@ test("invalid variable programs and inputs fail before producing launch settings
     [
       {
         agent: {
-          repositoryAccess: { defaultProfile: "read", repositories: [] },
-          repositoryBindings: [],
+          repositoryAccess: {
+            defaultProfile: "git-write",
+            repositories: [{ repositoryRef: "app" }, { repositoryRef: "app" }],
+          },
         },
       },
-      {},
-      /cannot be combined/,
-    ],
-    [
-      { agent: { repositoryBindings: [{ repositoryRef: "app" }, { repositoryRef: "app" }] } },
       {},
       /repository references must be unique/,
     ],
     [
-      { ...base, agent: { repositoryBindings: [{ repositoryRef: "{{ vars.value }}" }] } },
+      {
+        ...base,
+        agent: {
+          repositoryAccess: {
+            defaultProfile: "git-write",
+            repositories: [{ repositoryRef: "{{ vars.value }}" }],
+          },
+        },
+      },
       { value: "owner/app" },
       /requires a repository selector/,
     ],

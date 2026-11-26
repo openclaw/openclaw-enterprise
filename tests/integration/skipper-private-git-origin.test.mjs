@@ -12,7 +12,6 @@ import {
   startSkipperPrivateGitOrigin,
   withdrawDuringFetchCommand,
 } from "../fixtures/skipper-private-git-origin.mjs";
-import { createSkipperPreparedComputeEvents } from "../fixtures/skipper-prepared-compute-model.mjs";
 import { cleanEnvironment, run } from "../fixtures/repository-credentials/process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.ts";
@@ -70,6 +69,26 @@ function api(
     }
   });
 }
+
+test("private origin reports a denied process-group probe before starting Git", async (t) => {
+  const kill = process.kill;
+  t.mock.method(process, "kill", (pid, signal) => {
+    if (pid < 0 && signal === 0) {
+      throw Object.assign(new Error("restricted runner detail"), { code: "EPERM" });
+    }
+    return kill(pid, signal);
+  });
+  // The invalid ref bounds startup even where the group probe must not run.
+  const message =
+    process.platform === "win32"
+      ? "fixture requires POSIX process groups"
+      : process.pid === 1
+        ? "command failed (exit 1)"
+        : "Private Git process-group probe denied (EPERM). Run this fixture on a worker that permits process-group signals.";
+  await assert.rejects(startSkipperPrivateGitOrigin({ approvalRef: "refs/heads/invalid.." }), {
+    message,
+  });
+});
 
 test("private Git witness remains reachable from direct and nested temporary roots", async (t) => {
   const shortRoot = await mkdtemp("/tmp/skipper-test-");
@@ -432,7 +451,7 @@ test(
     };
     const held = run("sh", ["-c", command], {
       cwd: client,
-      env: { ...env, ...envAuth },
+      env: { ...env, ...envAuth, TMPDIR: join(client, "absent-temp-dir") },
       allowFailure: true,
     }).then(
       (result) => ({ result }),
@@ -467,9 +486,63 @@ test(
       allowFailure: true,
     });
     assert.equal(refused.code, 0, "new authenticated Git process sees the explicit refusal");
+    const incorrectStatus = await run("sh", ["-c", fetchAfterWithdrawalCommand(".", 503)], {
+      cwd: client,
+      env: { ...env, ...envAuth },
+      allowFailure: true,
+    });
+    assert.equal(incorrectStatus.code, 43, "an authenticated 401 cannot satisfy a 503 oracle");
     assert.ok(fixture.snapshot().requests > beforeFresh);
     const uncredentialed = await run("sh", ["-c", fresh], { cwd: client, env, allowFailure: true });
-    assert.notEqual(uncredentialed.code, 0, "anonymous refusal must fail the withdrawal oracle");
+    assert.equal(uncredentialed.code, 42, "anonymous refusal must fail the withdrawal oracle");
+    // Check the content-free return codes even when a process reports only exit 128.
+    const trace = (method, status, basic = true) => [
+      "=> Send header: " +
+        method +
+        " /fixture/repo.git/" +
+        (method === "GET" ? "info/refs?service=git-upload-pack" : "git-upload-pack") +
+        " HTTP/1.1",
+      ...(basic ? ["=> Send header: Authorization: Basic <redacted>"] : []),
+      ...(status === undefined ? [] : ["<= Recv header: HTTP/1.1 " + status]),
+    ];
+    const discovery = trace("GET", 200);
+    for (const [cmd, lines, code] of [
+      [fresh, [...trace("GET", 401), ...trace("GET", 401)], 0],
+      [fresh, [...trace("GET", 200), ...trace("GET", 401)], 43],
+      [command, trace("GET", undefined), 41],
+      [command, ["oce-fixture-git-ready-failed"], 57],
+      [command, discovery, 42],
+      [command, [...discovery, ...trace("POST", 401, false)], 47],
+      [command, [...discovery, ...trace("POST", 401)], 0],
+      [command, [...discovery, ...trace("POST", 503)], 48],
+      [command, [...discovery, ...trace("POST", 403)], 43],
+    ]) {
+      const git =
+        "git() { printf '%s\\n' " +
+        lines.map((line) => "'" + line + "'").join(" ") +
+        " >&2; return 128; }";
+      const result = await run("sh", ["-c", git + "\n" + cmd], {
+        cwd: client,
+        env,
+        allowFailure: true,
+      });
+      assert.equal(result.code, code);
+    }
+    const marker = ".oce-git-withdrawal-0123456789abcdef";
+    const failedCleanup = await run(
+      "sh",
+      [
+        "-c",
+        "git() { if [ \"$1\" = remote ]; then printf '%s\\n' 'https://fixture.invalid/repo'; return; fi; " +
+          ": > " +
+          marker +
+          "/unexpected; return 128; }\n" +
+          withdrawDuringFetchCommand(".", 401, marker),
+      ],
+      { cwd: client, env, allowFailure: true },
+    );
+    assert.equal(failedCleanup.code, 41, "cleanup must preserve the original Git oracle result");
+    assert.ok((await stat(join(client, marker, "unexpected"))).isFile());
     assert.notEqual(
       (await git(["clone", fixture.cloneUrl, "revoked"], token, { allowFailure: true })).code,
       0,
@@ -605,236 +678,3 @@ test(
     assert.ok(endpoints["upload-pack:200"] >= 1);
   },
 );
-
-// These are the ordinary function-tool envelopes from Codex 0.164.0's
-// ExecCommandToolOutput::response_text (core/src/tools/context.rs), not the
-// separate JSON envelope used by code-mode tools. These adapter checks do not
-// execute native tools.
-function nativeToolOutput({ session, exit, output = "", tokenCount = 12 }) {
-  return [
-    "Chunk ID: abc123",
-    "Wall time: 0.2500 seconds",
-    ...(exit === undefined ? [] : ["Process exited with code " + exit]),
-    ...(session === undefined ? [] : ["Process running with session ID " + session]),
-    ...(tokenCount === null ? [] : ["Original token count: " + tokenCount]),
-    "Output:",
-    output,
-  ].join("\n");
-}
-
-async function controlledModel(t) {
-  const directory = await temporaryDirectory(t, "skipper-model-");
-  const path = join(directory, "command.json");
-  const command = {
-    cmd: "set -eu; printf 'private git task'",
-    id: "skipper-test",
-    expiresAt: Date.now() + 170_000,
-  };
-  await writeFile(path, JSON.stringify(command));
-  let respond = createSkipperPreparedComputeEvents(path);
-  const observations = [];
-  const input = [{ type: "message", role: "user", content: command.id }];
-  const next = () =>
-    respond({
-      model: "test",
-      request: JSON.stringify({ input }),
-      answerEvents: (_model, text) => text,
-      emit: (event) => observations.push(event),
-    });
-  const result = (call, output, delta = false) => {
-    if (delta) {
-      input.length = 0;
-    }
-    input.push(call, { type: "function_call_output", call_id: call.call_id, output });
-    return next();
-  };
-  const restart = () => {
-    respond = createSkipperPreparedComputeEvents(path);
-  };
-  return { path, command, observations, next, result, restart };
-}
-
-function toolCall(events) {
-  return events.find((event) => event.type === "response.output_item.done").item;
-}
-
-test("the installed Skipper model waits for the same native session without replaying its command", async (t) => {
-  const model = await controlledModel(t);
-  const initial = toolCall(model.next());
-  assert.equal(initial.name, "exec_command");
-  assert.equal(JSON.parse(initial.arguments).yield_time_ms, 30_000);
-  // Held discovery can outlive exec_command's first yield. Poll the returned
-  // process, even if earlier output already contains part of the success marker.
-  const first = toolCall(
-    model.result(initial, nativeToolOutput({ session: 42, output: "SKIPPER_COMPUTE_" })),
-  );
-  assert.equal(first.name, "write_stdin");
-  assert.equal(first.call_id, model.command.id + "-wait-1");
-  assert.equal(model.observations.at(-1).exitCode, null);
-  assert.equal(model.observations.at(-1).status, "running");
-  assert.equal(model.observations.at(-1).sessionPresent, true);
-  assert.deepEqual(JSON.parse(first.arguments), {
-    session_id: 42,
-    chars: "",
-    yield_time_ms: 30_000,
-  });
-  // Reconstruct from replayed full history after callback state is lost.
-  model.restart();
-  // A process may have exited while its output still drains. The session ID
-  // remains authoritative until Codex reports that collection has finished.
-  const second = toolCall(
-    model.result(first, nativeToolOutput({ session: 42, exit: 0, output: "DONE_" })),
-  );
-  assert.equal(second.name, "write_stdin");
-  assert.equal(second.call_id, model.command.id + "-wait-2");
-  assert.equal(model.observations.at(-1).exitCode, 0);
-  assert.equal(model.observations.at(-1).sessionPresent, true);
-  // The same full history must not append either result again.
-  assert.equal(toolCall(model.next()).call_id, second.call_id);
-  assert.deepEqual(JSON.parse(second.arguments), {
-    session_id: 42,
-    chars: "",
-    yield_time_ms: 30_000,
-  });
-  assert.equal(
-    model.result(
-      second,
-      nativeToolOutput({ exit: 0, output: "skipper-test\n", tokenCount: null }),
-      true,
-    ),
-    "SKIPPER_COMPUTE_DONE_skipper-test",
-  );
-  assert.equal(
-    model.observations.filter((event) => event.event === "skipper-native-request").length,
-    1,
-  );
-  assert.equal(model.observations.at(-1).status, "completed");
-  assert.equal(model.observations.at(-1).exitCode, 0);
-});
-
-test("the installed Skipper model requires terminal success and keeps failure diagnostics content-free", async (t) => {
-  const completed = await controlledModel(t);
-  assert.equal(
-    completed.result(
-      toolCall(completed.next()),
-      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test\n" }),
-    ),
-    "SKIPPER_COMPUTE_DONE_skipper-test",
-  );
-  for (const output of [
-    nativeToolOutput({
-      exit: 1,
-      output: "SKIPPER_COMPUTE_DONE_skipper-test\nprivate-error-canary",
-    }),
-    nativeToolOutput({
-      exit: 0,
-      output: "Process running with session ID 99\nprivate-error-canary",
-    }),
-    "private-error-canary",
-  ]) {
-    const model = await controlledModel(t);
-    const initial = toolCall(model.next());
-    assert.equal(model.result(initial, output), "SKIPPER_INCOMPLETE_skipper-test");
-    assert.equal(model.observations.at(-1).modelFixtureSelectedTerminalSuccess, undefined);
-    assert.doesNotMatch(JSON.stringify(model.observations), /private-error-canary/);
-    assert.equal(
-      model.observations.some((event) => event.event === "skipper-native-poll"),
-      false,
-    );
-  }
-});
-
-test("the installed Skipper model rejects a changed native session and stops polling at its chat deadline", async (t) => {
-  const model = await controlledModel(t);
-  const initial = toolCall(model.next());
-  const poll = toolCall(model.result(initial, nativeToolOutput({ session: 42 })));
-  assert.equal(
-    model.result(poll, nativeToolOutput({ session: 43 })),
-    "SKIPPER_INCOMPLETE_skipper-test",
-  );
-  assert.equal(model.observations.at(-1).status, "unrecognized");
-
-  // Replay the mixed-session history with a terminal result after losing callback state.
-  model.restart();
-  const beforeReplay = model.observations.length;
-  assert.equal(
-    model.result(
-      { ...poll, call_id: model.command.id + "-wait-2" },
-      nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
-    ),
-    "SKIPPER_INCOMPLETE_skipper-test",
-  );
-  assert.equal(model.observations.length, beforeReplay + 1);
-  assert.equal(model.observations[beforeReplay].modelFixtureSelectedTerminalSuccess, undefined);
-  assert.partialDeepStrictEqual(model.observations[beforeReplay], {
-    event: "skipper-native-result",
-    id: model.command.id,
-    status: "unrecognized",
-  });
-
-  const expired = await controlledModel(t);
-  const exec = toolCall(expired.next());
-  await writeFile(expired.path, JSON.stringify({ ...expired.command, expiresAt: Date.now() - 1 }));
-  assert.equal(
-    expired.result(exec, nativeToolOutput({ session: 42 })),
-    "SKIPPER_INCOMPLETE_skipper-test",
-  );
-  assert.equal(expired.observations.at(-1).status, "deadline");
-  assert.equal(
-    expired.observations.some((event) => event.event === "skipper-native-poll"),
-    false,
-  );
-});
-
-test("the installed Skipper model rejects orphan or out-of-order native results", async (t) => {
-  for (const session of [42, undefined]) {
-    const orphan = await controlledModel(t);
-    const exec = toolCall(orphan.next());
-    const poll = toolCall(orphan.result(exec, nativeToolOutput({ session: 42 })));
-    orphan.restart();
-    assert.equal(
-      orphan.result(
-        poll,
-        nativeToolOutput({ session, exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" }),
-        true,
-      ),
-      "SKIPPER_INCOMPLETE_skipper-test",
-    );
-    assert.equal(orphan.observations.at(-1).status, "unrecognized");
-  }
-  const reordered = await controlledModel(t);
-  const exec = toolCall(reordered.next());
-  const poll = toolCall(reordered.result(exec, nativeToolOutput({ session: 42 })));
-  assert.equal(
-    reordered.result(
-      { ...poll, call_id: reordered.command.id + "-wait-2" },
-      nativeToolOutput({ session: 42 }),
-    ),
-    "SKIPPER_INCOMPLETE_skipper-test",
-  );
-});
-
-test("the installed Skipper model reserves the native poll minimum and rejects late success", async (t) => {
-  for (const remaining of [1_000, -1]) {
-    const model = await controlledModel(t);
-    const exec = toolCall(model.next());
-    await writeFile(
-      model.path,
-      JSON.stringify({ ...model.command, expiresAt: Date.now() + remaining }),
-    );
-    assert.equal(
-      model.result(exec, nativeToolOutput({ session: 42 })),
-      "SKIPPER_INCOMPLETE_skipper-test",
-    );
-    assert.equal(model.observations.at(-1).status, "deadline");
-  }
-  const late = await controlledModel(t);
-  const exec = toolCall(late.next());
-  const poll = toolCall(late.result(exec, nativeToolOutput({ session: 42 })));
-  await writeFile(late.path, JSON.stringify({ ...late.command, expiresAt: Date.now() - 1 }));
-  assert.equal(
-    late.result(poll, nativeToolOutput({ exit: 0, output: "SKIPPER_COMPUTE_DONE_skipper-test" })),
-    "SKIPPER_INCOMPLETE_skipper-test",
-  );
-  assert.equal(late.observations.at(-1).status, "deadline");
-});

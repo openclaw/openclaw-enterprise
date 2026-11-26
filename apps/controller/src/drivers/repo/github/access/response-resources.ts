@@ -56,8 +56,12 @@ function rewriteRecord(
   return result;
 }
 
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function omitRepositoryCredentials(value: JsonValue): JsonValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isJsonObject(value)) {
     return value;
   }
   const result: JsonObject = { ...value };
@@ -77,7 +81,7 @@ function rewriteItem(
   value: JsonValue,
   dependencies: ResourceRewriteDependencies,
 ): JsonValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+  if (!isJsonObject(value)) {
     return value;
   }
   const result = rewriteRecord(value, resourceFields[resource], dependencies);
@@ -87,7 +91,7 @@ function rewriteItem(
   if (resource === "pull") {
     for (const field of ["head", "base"]) {
       const branch = result[field];
-      if (branch !== null && typeof branch === "object" && !Array.isArray(branch)) {
+      if (isJsonObject(branch)) {
         const repository = branch.repo;
         if (repository !== undefined) {
           result[field] = { ...branch, repo: omitRepositoryCredentials(repository) };
@@ -96,13 +100,7 @@ function rewriteItem(
     }
   }
   const pullRequest = result.pull_request;
-  if (
-    resource === "issue" &&
-    pullRequest !== undefined &&
-    pullRequest !== null &&
-    typeof pullRequest === "object" &&
-    !Array.isArray(pullRequest)
-  ) {
+  if (resource === "issue" && isJsonObject(pullRequest)) {
     result.pull_request = rewriteRecord(pullRequest, { url: pullUrl }, dependencies);
   }
   return result;

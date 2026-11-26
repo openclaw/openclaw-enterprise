@@ -301,6 +301,17 @@ interface OperationRecord {
   release?: () => void;
 }
 
+// External rotation still uses explicit Secret updates, not managed refresh.
+export function supportsStaticCredentials(
+  type: CredentialProviderDefinition["sourceType"],
+): boolean {
+  return (
+    type.rotation !== "refresh" &&
+    type.deviceAuthorization === undefined &&
+    type.harnessAuth?.loginMode !== "chatgptAuthTokens"
+  );
+}
+
 function captureProvider(
   ports: EgressAuthorityPorts,
   route: EgressRoute,
@@ -310,6 +321,9 @@ function captureProvider(
     return receiver;
   }
   const ref = immutableCopy(receiver.ref);
+  // Pin the facts used to accept a static source, not unrelated catalog metadata.
+  const type = receiver.sourceType.type;
+  const staticLifecycle = supportsStaticCredentials(receiver.sourceType);
   const methods = Object.freeze({
     routes: receiver.routes,
     normalizeConfig: receiver.normalizeConfig,
@@ -331,6 +345,8 @@ function captureProvider(
         current =
           ports.provider(route) === receiver &&
           isDeepStrictEqual(receiver.ref, ref) &&
+          receiver.sourceType.type === type &&
+          supportsStaticCredentials(receiver.sourceType) === staticLifecycle &&
           receiver.routes === methods.routes &&
           receiver.normalizeConfig === methods.normalizeConfig &&
           receiver.classify === methods.classify &&

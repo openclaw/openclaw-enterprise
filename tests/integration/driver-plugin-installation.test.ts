@@ -24,17 +24,17 @@ import {
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.ts";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,
 } from "../helpers/installation-driver-configuration.ts";
-import { injectJson as injectUntypedJson } from "../helpers/inject-json.mjs";
+import { injectJson } from "../helpers/inject-json.ts";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
 } from "../helpers/request-admission-expectations.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 type DriverSelection = {
   id: string;
@@ -54,12 +54,6 @@ type InstallationFixture = {
   };
 };
 type PackageLayout = { root: string; entry?: string; files: Record<string, string> };
-type InjectedResponse = {
-  statusCode: number;
-  body: string;
-  headers: Record<string, unknown>;
-  json(): unknown;
-};
 
 function installation(): InstallationFixture {
   return createInstallationDriverConfiguration();
@@ -73,27 +67,6 @@ function hasOperationAbortSignal(
   value: unknown,
 ): value is { currentOperationAbortSignal(): unknown } {
   return isRecord(value) && typeof value.currentOperationAbortSignal === "function";
-}
-
-function isInjectedResponse(value: unknown): value is InjectedResponse {
-  return (
-    isRecord(value) &&
-    typeof value.statusCode === "number" &&
-    typeof value.body === "string" &&
-    isRecord(value.headers) &&
-    typeof value.json === "function"
-  );
-}
-
-async function injectJson(
-  app: ReturnType<typeof createFastifyApp>,
-  method: string,
-  url: string,
-  options?: Parameters<typeof injectUntypedJson>[3],
-): Promise<InjectedResponse> {
-  const response: unknown = await injectUntypedJson(app, method, url, options);
-  assert.ok(isInjectedResponse(response));
-  return response;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -317,10 +290,6 @@ async function authenticatedApplication(t: TestContext, drivers: InstallationRun
         // its Sandbox view again would discard the owner of its Namespace binding.
         controller.installDriver(drivers.protectedDriver, ["sandbox", "credential_proxy"]);
       }
-      if (drivers.credentialGatewayDriver !== undefined) {
-        controller.registerDriver(drivers.credentialGatewayDriver);
-        controller.selectDriver("credential_gateway", drivers.credentialGatewayDriver.id);
-      }
       return controller;
     },
     iamDriver,
@@ -398,7 +367,7 @@ async function request(
     host: new URL(authOrigin).host,
     body,
   });
-  return { status: response.statusCode, ...record(response.json()) };
+  return { status: response.statusCode, ...record(response.json<unknown>()) };
 }
 
 test("Installation inspection returns accepted Driver values, redacts opaque resources, and rechecks administration", async (t) => {
@@ -412,14 +381,9 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
     audience: "configured-audience",
     expirationSeconds: 900,
   };
-  const credentialGateway = record(record(configuration.drivers).credential_gateway);
   const sandboxGateway = record(
     record(record(record(configuration.drivers).sandbox).configuration).gateway,
   );
-  credentialGateway.configuration = {
-    binaries: ["/usr/bin/configured-model-client"],
-    toolBinaries: ["/usr/bin/configured-tool-client"],
-  };
   sandboxGateway.operatorWorkspaceResources = [
     {
       apiVersion: "v1",
@@ -450,26 +414,14 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   assert.equal(bootstrap.status, 201, JSON.stringify(bootstrap));
 
   // Editing the operator's file cannot replace values accepted by this running process.
-  record(credentialGateway.configuration).binaries = ["/usr/bin/next-startup"];
+  configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "next-startup";
   await writeFile(path, JSON.stringify(configuration));
   const inspected = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(inspected.status, 200, JSON.stringify(inspected));
   const descriptors = new Map(
     configurationDescriptors(inspected).map((descriptor) => [descriptor.capability, descriptor]),
   );
-  const credentials = record(descriptors.get("credential_gateway"));
-  assert.equal(credentials.driverId, "openshell-credentials");
-  assert.equal(credentials.implementation, "openshell");
-  assert.equal(credentials.scope, "installation");
-  assert.equal(credentials.key, "startup");
-  assert.deepEqual(credentials.startupConfiguration, {
-    binaries: ["/usr/bin/configured-model-client"],
-    toolBinaries: ["/usr/bin/configured-tool-client"],
-  });
-  assert.equal(
-    record(record(record(credentials.configurationSchema).properties).binaries).type,
-    "array",
-  );
+  assert.equal(descriptors.has("credential_gateway"), false);
   assert.deepEqual(record(descriptors.get("configuration")).startupConfiguration, {
     authentication: { mode: "inCluster" },
   });
@@ -493,7 +445,7 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const sandbox = record(record(descriptors.get("sandbox")).startupConfiguration);
   const gateway = record(sandbox.gateway);
   const networkPolicy = record(records(record(sandbox.policy).networkPolicies)[0]);
-  assert.equal(gateway.workspaceMode, "operator");
+  assert.equal(sandbox.integrationMode, "legacy");
   assert.equal(gateway.operatorWorkspaceResources, "[redacted]");
   assert.equal(gateway.networkPolicyResources, "[redacted]");
   assert.deepEqual(networkPolicy.binaries, [{ path: "/usr/bin/model-client" }]);
@@ -510,7 +462,6 @@ test("Installation inspection returns accepted Driver values, redacts opaque res
   const denied = await request(fixture, "GET", "/installation/driver-configurations");
   assert.equal(denied.status, 403, JSON.stringify(denied));
   assert.equal(denied.data, undefined);
-  assert.ok(!JSON.stringify(denied).includes("/usr/bin/configured-model-client"));
   const denial = fixture.auditSink.events.find(
     (event) =>
       event.kind === "authorization_denial" &&
@@ -656,7 +607,7 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
           body: { name: "Unauthenticated Driver selection" },
         });
         assert.equal(unauthenticated.statusCode, 401);
-        assert.equal(record(record(unauthenticated.json()).error).message, message);
+        assert.equal(record(record(unauthenticated.json<unknown>()).error).message, message);
       }
       const publicSignup = await injectJson(fixture.app, "POST", "/api/auth/sign-up/email", {
         host: new URL(fixture.config.authOrigin).host,

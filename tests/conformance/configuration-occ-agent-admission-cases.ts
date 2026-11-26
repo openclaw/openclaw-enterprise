@@ -10,7 +10,7 @@ import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../
 import { type UpdateAgentInput, type CreateAgentInput } from "../../packages/occ/src/index.ts";
 import { registerAndSelectDrivers } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
 import { refusedAnswer } from "../helpers/refusal-answers.ts";
 import { GATEWAY_MANAGED_MODE_DENIED } from "../helpers/refusal-text.mjs";
 

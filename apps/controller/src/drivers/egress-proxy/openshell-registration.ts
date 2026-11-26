@@ -1,7 +1,6 @@
 import type {
   Backend,
-  CredentialProxyDriver,
-  CredentialProviderDefinition,
+  LegacyEgressProxyDriver,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import type { OpenShellGateway } from "../../backends/openshell.ts";
@@ -10,7 +9,7 @@ import type { RepositoryTransportBinding } from "../../composition/repository-cr
 import type { RepositoryGitDeliveryResolver } from "../repo/access/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
 import { PostgresOpenShellGitRouteStore } from "./openshell-git-route-store.ts";
-import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
+import { OpenShellLegacyEgressProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
 import {
   OpenShellGitRuntime,
   type OpenShellGitRuntimeConfiguration,
@@ -38,7 +37,7 @@ export function createOpenShellCapabilities(input: {
     readonly id: string;
     readonly configuration: OpenShellProxyOptions;
     readonly exchangeAuthority?: EgressAuthorityConfiguration;
-    readonly preparedProviders: readonly CredentialProviderDefinition[];
+    readonly repositoryOriginRefusal?: string | undefined;
   };
 }) {
   const configuration = input.repository?.configuration;
@@ -61,17 +60,18 @@ export function createOpenShellCapabilities(input: {
       ...(git && { openShellGit: git }),
     },
   );
-  const proxy: CredentialProxyDriver | undefined =
+  const proxy: LegacyEgressProxyDriver | undefined =
     input.proxy &&
-    new OpenShellCredentialProxyDriver(input.proxy.configuration, {
+    new OpenShellLegacyEgressProxyDriver(input.proxy.configuration, {
       id: input.proxy.id,
       backend: input.backend,
       sandbox,
-      preparedProviders: input.proxy.preparedProviders,
+      repositoryOriginRefusal: input.proxy.repositoryOriginRefusal,
       ...(input.proxy.exchangeAuthority && { exchangeAuthority: input.proxy.exchangeAuthority }),
       ...(git && {
         bindRepositoryGit: git.bindRepositoryGit.bind(git),
         previewEnforcement: git.previewEnforcement.bind(git),
+        boundGitRule: git.boundGitRule.bind(git),
         mandatoryEnforcement: git.mandatoryEnforcement.bind(git),
       }),
     });

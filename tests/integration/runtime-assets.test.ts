@@ -327,21 +327,9 @@ packages:
   );
   assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "downloadClients"), false);
-  const nodeProvenance = join(directory, "node-provenance.json");
-  await writeFile(
-    nodeProvenance,
-    JSON.stringify({
-      architecture: process.arch,
-      platform: process.platform,
-      version: process.versions.node,
-      sha256: createHash("sha256")
-        .update(await readFile(process.execPath))
-        .digest("hex"),
-    }),
-  );
   const unselected = spawnSync(
     process.execPath,
-    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output, nodeProvenance],
+    ["scripts/build-runtime-assets.ts", "inventory", sourceAlias, output],
     { encoding: "utf8" },
   );
   assert.notEqual(unselected.status, 0);
@@ -372,14 +360,13 @@ packages:
   }
   assert.deepEqual(Object.entries(patches), applied);
   assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
-  // The remaining per-patch fields keep their names and values.
-  for (const [field, file] of [
-    ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
-    [
-      "openclawRequiredWorkerAuthorityRegressionPatchSha256",
-      "openclaw-required-worker-authority-regression.patch",
-    ],
-  ] as const) {
-    assert.equal(provenance[field], patches[file], field);
-  }
+  assert.equal(
+    Object.hasOwn(provenance, "openclawRequiredWorkerAuthorityRegressionPatchSha256"),
+    false,
+  );
+  // The remaining per-patch field keeps its name and value.
+  assert.equal(
+    provenance.openclawBridgePatchSha256,
+    patches["openclaw-codex-read-only-paths.patch"],
+  );
 });

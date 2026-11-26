@@ -1,8 +1,12 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
-import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
-import { installationControllerOptions } from "./installation-config.ts";
+import {
+  credentialSourceDeliveryBinding,
+  installationControllerOptions,
+} from "./installation-config.ts";
+import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
+import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
   controlPlaneAuditDatabaseOptions,
@@ -119,7 +123,7 @@ export async function composePostgresDevelopment(
 
   let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
   const close = (database: { close(): Promise<void> }) =>
-    closeResources(exchange, drivers?.protectedDriver, drivers?.preparedGitHub, database);
+    closeResources(exchange, drivers?.protectedDriver, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
@@ -145,9 +149,7 @@ export async function composePostgresDevelopment(
       }
     }
     const sandboxDriver = drivers?.sandboxDriver;
-    const credentialGatewayDriver = drivers?.credentialGatewayDriver;
     const protectedDriver = drivers?.protectedDriver;
-    const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
       ("installation" in options
@@ -179,19 +181,19 @@ export async function composePostgresDevelopment(
     });
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
-    const channelDriver = new SlackChannelDriver();
+    const channelDriver =
+      drivers?.channelDrivers?.find(({ provider }) => provider === "slack")?.driver ??
+      new SlackChannelDriver(globalThis.fetch, undefined, { expectProxy: true });
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
         authenticationStateEncryptionSecret: config.authSecret,
-        ...installationControllerOptions(drivers?.installation),
+        ...installationControllerOptions(drivers?.installation, drivers?.repositoryRegistry),
+        credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),
         namespaceLifecycleBindings: drivers?.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
-        ...(drivers?.pluginSourceReader === undefined
-          ? {}
-          : { pluginSourceReader: drivers.pluginSourceReader }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -207,35 +209,16 @@ export async function composePostgresDevelopment(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(channelDriver);
     controller.selectDriver("channel", channelDriver.id);
-    if (protectedDriver !== undefined) {
-      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
-    } else if (sandboxDriver !== undefined) {
-      controller.registerDriver(sandboxDriver);
-      controller.selectDriver("sandbox", sandboxDriver.id);
-    }
-    if (credentialGatewayDriver !== undefined) {
-      controller.registerDriver(credentialGatewayDriver);
-      controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
-    }
-    if (credentialRefreshDriver !== undefined) {
-      controller.registerDriver(credentialRefreshDriver);
-      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
-    }
+    installSelectedSandboxDrivers(controller, drivers ?? { sandboxDriver, protectedDriver });
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
       controller.selectDriver("configuration", configurationDriver.id);
     }
     if (drivers?.secretDriver !== undefined) {
-      drivers.tokenService?.registerIssuer(
-        new OAuthAccountTokens(
-          state,
-          drivers.secretDriver,
-          controller.resolveConnectionClient.bind(controller),
-        ),
-      );
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
+    const tokenService = await installTokenServiceDriver(controller, drivers, state);
     controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
@@ -367,7 +350,6 @@ export async function composePostgresDevelopment(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     drivers?.repositoryTransport?.connectRestartObservation?.(pool);
-    await drivers?.preparedGitHub?.connect(pool);
     exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     const checkDatabaseReadiness = createPostgresReadinessCheck(pool);
@@ -375,7 +357,13 @@ export async function composePostgresDevelopment(
       await checkDatabaseReadiness();
       return { status: "ready" };
     });
-    app.addHook("onClose", () => close(state));
+    const stopTokenMaintenance = tokenService
+      ? scheduleTokenServiceMaintenance(app, tokenService, config.logger)
+      : undefined;
+    app.addHook("onClose", async () => {
+      await stopTokenMaintenance?.();
+      await close(state);
+    });
     return app;
   } catch (error) {
     // Preserve the startup failure after attempting each cleanup.

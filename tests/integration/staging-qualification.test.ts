@@ -12,7 +12,7 @@ const execute = promisify(execFile);
 const digest = `sha256:${"b".repeat(64)}`;
 const repository = "openclaw/openclaw-enterprise";
 const runtimeFile = "tests/integration/runtime-image-startup.test.ts";
-const runtimeChildCase = "runtime startup child consumes the CI-prepared Codex seccomp profile";
+const runtimeChildCase = "runtime startup child consumes the reviewed Codex startup inputs";
 const runtimeChildFixture = new URL(
   "../fixtures/staging-qualification-seccomp-child.ts",
   import.meta.url,
@@ -20,12 +20,16 @@ const runtimeChildFixture = new URL(
 
 test("staging workflow command consumes bound digests and refuses invalid release evidence", (t) =>
   checkWorkflowCommand(t));
-test("staging runtime lane preserves the reviewed Codex version in its child", checkRuntimeChild);
+test(
+  "staging runtime lane preserves the reviewed Codex startup inputs in its child",
+  checkRuntimeChild,
+);
 test("staging pair pull binds sealed images and cleans failed pulls", (t) =>
   checkWorkflowCommand(t, true));
 
 const signinChanges = [
   "compatible",
+  "previous-controller",
   "controller",
   "catalog",
   "runtime",
@@ -73,7 +77,7 @@ async function checkWorkflowCommand(
   if (signin) {
     // Use real repository objects so the fixed reader/catalog projection is
     // checked by the production planner, without replacing Git decisions.
-    await execute("git", ["clone", "--shared", "--quiet", process.cwd(), root]);
+    await execute("git", ["clone", "--shared", "--quiet", "--no-checkout", process.cwd(), root]);
     await git(["checkout", "--quiet", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb"]);
     await cp("scripts/ci", join(root, "scripts/ci"), { recursive: true });
     await cp("scripts/upgrade-image-identity.py", join(root, "scripts/upgrade-image-identity.py"));
@@ -111,15 +115,23 @@ async function checkWorkflowCommand(
     recipePath,
     signin === "runtime" ? recipe + "\n# Different release recipe\n" : recipe,
   );
+  const controllerChange = join(root, "apps/controller/unreviewed.txt");
+  if (signin === "previous-controller") {
+    // Restore the reviewed input in the candidate so only the previous source is unclassified.
+    await writeFile(controllerChange, "Unreviewed input\n");
+  }
   const source = await commit();
+  if (signin === "previous-controller") {
+    await rm(controllerChange);
+  }
   if (signin === "runtime") {
     await writeFile(recipePath, recipe);
   }
   if (signin === "controller" || signin === "catalog") {
     // A changed production tree cannot inherit the reviewed reader contract.
     const file =
-      signin === "controller" ? "apps/controller/unreviewed.txt" : "migrations/unreviewed.sql";
-    await writeFile(join(root, file), "Unreviewed input\n");
+      signin === "controller" ? controllerChange : join(root, "migrations/unreviewed.sql");
+    await writeFile(file, "Unreviewed input\n");
   }
   if (signin === "catalog-source") {
     // The catalog source alone must invalidate the reviewed reader contract.
@@ -453,6 +465,9 @@ syncBuiltinESMExports();
 import base64, json, os, sys
 from pathlib import Path
 root = Path(__file__).resolve().parent.parent
+# Count invocation even if the request fails before the pull or inspect checks.
+with (root / 'calls.jsonl').open('a') as log:
+    log.write(json.dumps({'pairDocker': True}) + '\\n')
 store = json.loads((root / 'pair-store.json').read_text())
 args = sys.argv[1:]
 assert 'GH_TOKEN' not in os.environ and 'GITHUB_TOKEN' not in os.environ
@@ -563,18 +578,22 @@ else:
             ? /Unreviewed historical runtime recipe/
             : /Unclassified sign-in reader/,
         );
+        // A rejected source pair must never hand credentials to Docker or publish a receipt.
+        assert.equal(
+          (await calls()).some((call) => call.pairDocker),
+          false,
+          "Refuse the incompatible pair before invoking Docker.",
+        );
+        await assert.rejects(readFile(pairPath), { code: "ENOENT" });
         await assert.rejects(readFile(join(directory, "staging-signin-plan.json")), {
           code: "ENOENT",
         });
-        assert.deepEqual(
-          (await calls()).flatMap((call) => (call.pairPull ? [call.pairPull] : [])),
-          signin === "runtime" ? [] : references,
-        );
         return;
       }
       if (scenario === "valid") {
         await pull();
         if (signin) {
+          assert.ok((await calls()).some((call) => call.pairDocker));
           const plan = JSON.parse(
             await readFile(join(directory, "staging-signin-plan.json"), "utf8"),
           );
@@ -594,6 +613,11 @@ else:
               await git(["rev-parse", "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb:migrations"])
             ).stdout.trim(),
           );
+          const catalog = await git([
+            "show",
+            "7e1ac6d88e3893c3d4e6444fb3b9b9776519a3fb:migrations/meta/_canonical-history.json",
+          ]);
+          assert.deepEqual(plan.catalogManifest, JSON.parse(catalog.stdout));
           assert.equal(
             plan.stagedImagesSha256,
             createHash("sha256")
@@ -1034,6 +1058,9 @@ async function checkRuntimeChild(t: TestContext) {
           OCC_TEST_WORKSPACE_ENVOY_IMAGE:
             original.prepare.defaultEnv.OCC_TEST_WORKSPACE_ENVOY_IMAGE,
           OCC_TEST_STAGING_CODEX_VERSION: version,
+          OCC_TEST_PRODUCTION_IMAGE: version === undefined ? undefined : `sha256:${"c".repeat(64)}`,
+          EXPECTED_OCC_REVISION:
+            version === undefined ? undefined : "54bfa7fc1b99e362450beb5f9211e164991fa7b4",
           OCC_TEST_STAGING_UNDECLARED: "outer-only",
         },
       },

@@ -12,11 +12,12 @@ import type {
   AgentRevision,
   ComputeAgentBinding,
   ComputeRevisionContext,
-  CredentialProxyDriver,
+  LegacyEgressProxyDriver,
   HarnessExecutionMode,
   OpenClawConfigurationValue,
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionFiles,
+  RepositoryRevisionState,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import type { GatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
@@ -31,11 +32,8 @@ import {
 } from "./repository-runtime-material-kubernetes-fixture.ts";
 
 type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
-type MutableBindings = Omit<
-  Mutable<NonNullable<AgentRevision["repositoryCredentials"]>>,
-  "bindings"
-> & {
-  bindings: Mutable<NonNullable<AgentRevision["repositoryCredentials"]>["bindings"][number]>[];
+type MutableBindings = Omit<Mutable<RepositoryRevisionState>, "bindings"> & {
+  bindings: Mutable<RepositoryRevisionState["bindings"][number]>[];
 };
 export type MaterialRevision = Omit<
   Mutable<AgentRevision>,
@@ -96,7 +94,7 @@ interface ComputeFixturePorts {
     network: Mutable<KubernetesComputeDriverOptions["network"]>;
   };
   apiClients: Promise<KubernetesMaterialClients>;
-  readonly proxyDriver: CredentialProxyDriver | undefined;
+  readonly proxyDriver: LegacyEgressProxyDriver | undefined;
   waitBeforeRetry: () => Promise<void>;
   sandboxDriver:
     | {

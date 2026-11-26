@@ -180,37 +180,6 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-controller-envoy-egress
-  namespace: {{ .Release.Namespace | quote }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-    matchExpressions:
-      - key: app.kubernetes.io/component
-        operator: In
-        values: [api, worker]
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ $routing.envoyNamespace | quote }}
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/component: proxy
-              app.kubernetes.io/managed-by: envoy-gateway
-              app.kubernetes.io/name: envoy
-              gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace | quote }}
-              gateway.envoyproxy.io/owning-gateway-name: {{ $gatewayName | quote }}
-      ports:
-        - protocol: TCP
-          port: {{ $routing.envoyHttpsTargetPort }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
   name: {{ include "openclaw.gatewayRouting.envoyNetworkPolicyName" . | quote }}
   namespace: {{ $routing.envoyNamespace | quote }}
 spec:
@@ -291,4 +260,32 @@ spec:
       ports:
         - protocol: TCP
           port: 18000
+{{- if .Values.strandsBox.workerReadiness }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-strands-worker-readiness
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: worker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+          podSelector:
+            matchLabels:
+              openclaw.dev/workload-role: agent
+            matchExpressions:
+              - key: openclaw.dev/strands-box
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 18791
+{{- end }}
 {{- end }}

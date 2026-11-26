@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { Check } from "typebox/value";
 
-import { CredentialSourceSchema } from "../../packages/contracts/src/api/resources.ts";
-import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import { isArray, isRecord, parseJson } from "../helpers/egress-observation-values.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
@@ -15,11 +12,6 @@ import {
 } from "../helpers/postgres-protected-scenarios.ts";
 import { receipts as installedReceipts } from "../helpers/egress-custody-observations.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
-import {
-  credentialSourceFieldRequired,
-  PROTECTED_SOURCE_ROTATE_REFUSED,
-  PROTECTED_SOURCE_UPDATE_REFUSED,
-} from "../helpers/refusal-text.mjs";
 
 type CaptureChanges = {
   target?: Partial<Capture["request"]["target"]>;
@@ -46,76 +38,65 @@ test(
   "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal",
   { ...requiresPostgres, timeout: 120_000 },
   async (t) => {
-    let issuerAccess = 0;
     let readsBeforeAdmission: number | undefined;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
-      // Gateway and Proxy IDs are in distinct capability namespaces and may legally coincide.
-      proxyDriverId: "openshell-credentials",
-      preparedGitHub: new Proxy(
-        {},
-        {
-          get() {
-            issuerAccess++;
-            throw Error("Credential-free metadata must never access the issuer or prepared store.");
-          },
-        },
-      ),
-      async admitSource({ app, agent, namespace, path, origin, countSecretReads }) {
+      async admitSource({ app, agent, namespace, origin, path, secret, countSecretReads }) {
         readsBeforeAdmission = countSecretReads();
-        const config = {
-          origin,
-          repository_id: String(repository.id),
-          repository: repository.full_name,
-          agent_id: agent.id,
-        };
-        const input = {
+        const installation = await app.request("GET", "/installation");
+        assert.equal(installation.status, 200);
+        assert.ok(isRecord(installation.data));
+        const capabilities = installation.data.capabilities;
+        assert.ok(isRecord(capabilities) && isRecord(capabilities.credentialSources));
+        const { types } = capabilities.credentialSources;
+        assert.ok(isArray(types));
+        assert.ok(
+          types.some(
+            (entry: unknown) =>
+              isRecord(entry) && entry.type === "credential-free-repository-metadata",
+          ),
+        );
+        assert.ok(
+          !types.some((entry: unknown) => isRecord(entry) && entry.type === "github-app-metadata"),
+        );
+
+        // A real Namespace Secret cannot revive the retired built-in signer offer.
+        const refused = await app.request("POST", path, {
+          body: {
+            name: "retired-signer",
+            type: "github-app-metadata",
+            config: {
+              app_id: "7302",
+              installation_id: "7303",
+              repository_id: String(repository.id),
+              repository: repository.full_name,
+              agent_id: agent.id,
+              authority: "execution",
+            },
+            secrets: { private_key: secret.ref },
+          },
+        });
+        assert.equal(refused.status, 400);
+        assert.match(
+          JSON.stringify(refused.body),
+          /Register static credentials or OAuth through TokenService/,
+        );
+        assert.equal(countSecretReads(), readsBeforeAdmission);
+
+        const source = await app.controller.createCredentialSource(app.principal.id, {
+          namespaceId: namespace.id,
           name: "identity-only",
           type: "credential-free-repository-metadata",
-          config,
-        };
-        const post = (body: typeof input & { config: { authority?: "execution" } }) =>
-          app.request("POST", path, { body });
-        // No implicit execution authority: the catalog requires it, and the refusal names it.
-        const implicit = await post(input);
-        assert.equal(implicit.status, 400, "no implicit execution authority");
-        assert.ok(Check(ErrorResponse, implicit.body));
-        assert.equal(
-          implicit.body.error.message,
-          credentialSourceFieldRequired("credential-free-repository-metadata", "config.authority"),
-        );
-        const { status, data: source } = await post({
-          ...input,
-          config: { ...config, authority: "execution" },
+          config: {
+            origin,
+            repository_id: String(repository.id),
+            repository: repository.full_name,
+            agent_id: agent.id,
+            authority: "execution",
+          },
         });
-        assert.equal(status, 201);
-        assert.ok(Check(CredentialSourceSchema, source));
         assert.equal(source.ownerCapability, "credential_proxy");
-        const listed = await app.request("GET", path);
-        assert.equal(listed.status, 200);
-        assert.ok(isArray(listed.data));
-        const listedSource = listed.data.find((entry) => isRecord(entry) && entry.id === source.id);
-        assert.ok(Check(CredentialSourceSchema, listedSource));
-        assert.equal(listedSource.ownerCapability, "credential_proxy");
-
-        const read = await app.request("GET", `${path}/${source.id}`);
-        assert.equal(read.status, 200);
-        assert.ok(Check(CredentialSourceSchema, read.data));
-        assert.equal(read.data.ownerCapability, "credential_proxy");
         assert.equal(source.egress?.adoption, "credential_free");
-        assert.deepEqual(source.secrets, {});
-        // Its grant was admitted once, at create: an update or rotation cannot change it, and
-        // the caller who may change the source is told to replace it (finding 2536).
-        for (const [method, suffix, options, message] of [
-          ["PATCH", "", { body: {} }, PROTECTED_SOURCE_UPDATE_REFUSED],
-          ["POST", "/rotate", {}, PROTECTED_SOURCE_ROTATE_REFUSED],
-        ] as const) {
-          const refused = await app.request(method, `${path}/${source.id}${suffix}`, options);
-          assert.equal(refused.status, 409, `${method}: ${JSON.stringify(refused.body)}`);
-          assert.ok(Check(ErrorResponse, refused.body));
-          assert.equal(refused.body.error.code, "RESOURCE_CONFLICT", method);
-          assert.equal(refused.body.error.message, message, method);
-        }
         return bindRuntimeSource(app, namespace, agent, source);
       },
     });
@@ -130,10 +111,10 @@ test(
         {
           sourceId: f.source.id,
           sourceType: f.source.type,
-          credentialProxyId: f.controller.selectedDriver("credential_gateway").id,
+          credentialProxyId: f.controller.selectedDriver("credential_proxy").id,
         },
       ],
-      "a new protected source names the Proxy even when the Gateway has the same ID",
+      "a protected Source names its selected Proxy",
     );
     const capture = (changed?: CaptureChanges) => captureMetadata(f, changed);
     const resolve = async (captured: Capture) => {
@@ -292,6 +273,5 @@ test(
       readsBeforeAdmission,
       "zero provider Secret reads, including refusal paths",
     );
-    assert.equal(issuerAccess, 0, "zero issuer or prepared-material calls");
   },
 );

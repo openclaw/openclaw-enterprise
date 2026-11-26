@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer, type Server } from "node:https";
 import { tmpdir } from "node:os";
@@ -15,6 +15,7 @@ import {
   getGlobalDispatcher,
   setGlobalDispatcher,
 } from "../../apps/controller/node_modules/undici/index.js";
+import type { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { AuditEventFactory } from "../../packages/audit/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
@@ -30,7 +31,9 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { certificateAuthority, signedLeaf } from "../helpers/certificates.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { defaultUsersIAM } from "../helpers/default-users-iam.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
@@ -74,7 +77,6 @@ type DeleteMode =
   | "lostReply";
 type CreateMode = "drop" | "before503" | "beforeReset";
 const scope = "chatgpt.workspace.feature.allow-codex-local-access.access";
-const annotation = "openclaw.dev/provider-credential-id";
 const safeObject = (x: unknown): Json => {
   assert.ok(x !== null && typeof x === "object" && !Array.isArray(x));
   return x as Json;
@@ -84,28 +86,6 @@ const textField = (x: Json, k: string): string => {
   return x[k] as string;
 };
 const data = (r: Reply): Json => safeObject(r.body.data);
-const secretName = (id: string): string =>
-  "service-account-" + createHash("sha256").update(id).digest("hex").slice(0, 32);
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
-async function until(
-  predicate: () => Promise<boolean> | boolean,
-  label: string,
-  ms = 10_000,
-): Promise<void> {
-  const end = Date.now() + ms;
-  while (!(await predicate())) {
-    if (Date.now() >= end) {
-      throw new Error(label);
-    }
-    await new Promise((r) => setTimeout(r, 20));
-  }
-}
 async function body(request: IncomingMessage): Promise<Json> {
   let bytes = "";
   for await (const chunk of request) {
@@ -151,7 +131,8 @@ const live = {
   auditNext: undefined as (() => string) | undefined,
   auditConsumed: 0,
   runtime: undefined as InstallationRuntimeDrivers | undefined,
-  compute: undefined as KubernetesComputeDriver | undefined,
+  state: undefined as PostgresPlatformState | undefined,
+  controller: undefined as OpenClawController | undefined,
   pool: undefined as pg.Pool | undefined,
   provider: undefined as Server | undefined,
   kube: undefined as Server | undefined,
@@ -165,6 +146,7 @@ const live = {
   accounts: new Map<string, string>(),
   credentials: new Map<string, Credential>(),
   secrets: new Map<string, Secret>(),
+  configMaps: new Map<string, Json>(),
   namespaces: new Map<string, Namespace>(),
   deleteModes: new Map<string, DeleteMode>(),
   createModes: new Map<string, CreateMode>(),
@@ -187,55 +169,10 @@ function persist(kind: "provider" | "kubernetes"): void {
   writeFileSync(path + ".tmp", JSON.stringify(value), { mode: 0o600 });
   renameSync(path + ".tmp", path);
 }
-function secret(id: string): Secret | undefined {
-  return live.secrets.get(secretName(id));
-}
-function durableSecret(id: string): Secret | undefined {
-  const value = safeObject(
-    JSON.parse(readFileSync(join(live.directory, "kubernetes.json"), "utf8")) as unknown,
-  );
-  return new Map(value.secrets as [string, Secret][]).get(secretName(id));
-}
 function credentialFor(a: Account): Credential {
   const found = [...live.credentials.values()].find((x) => x.accountId === a.externalId);
   assert.ok(found, "expected one synthetic provider credential");
   return found;
-}
-function seedSecret(a: Account, credentialId: string, token: string = randomUUID()): Secret {
-  const name = secretName(a.id);
-  const s: Secret = {
-    apiVersion: "v1",
-    kind: "Secret",
-    metadata: {
-      name,
-      namespace: kubernetesNamespaceName(live.namespaceId),
-      uid: randomUUID(),
-      resourceVersion: String(live.events.length + 1),
-      labels: {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise",
-        "openclaw.dev/namespace": live.namespaceId,
-        "openclaw.dev/service-account": a.id,
-      },
-      annotations: {
-        "openclaw.dev/namespace-id": live.namespaceId,
-        "openclaw.dev/service-account-id": a.id,
-        [annotation]: credentialId,
-      },
-    },
-    type: "Opaque",
-    data: { token: Buffer.from(token).toString("base64") },
-  };
-  live.secrets.set(name, s);
-  persist("kubernetes");
-  return s;
-}
-function armAudit(a: Account): void {
-  live.afterStored.set(secretName(a.id), () => {
-    live.auditNext = () => {
-      live.auditConsumed++;
-      return live.duplicateAuditId;
-    };
-  });
 }
 function providerEvents(a: Account, operation = "credential-post"): Event[] {
   return live.events.filter(
@@ -398,11 +335,34 @@ async function kubeHandler(request: IncomingMessage, response: ServerResponse): 
     );
     return;
   }
+  if (parts[4] === "configmaps") {
+    if (parts.length === 5 && request.method === "POST") {
+      const value = await body(request);
+      const metadata = safeObject(value.metadata);
+      const name = textField(metadata, "name");
+      const stored = {
+        ...value,
+        metadata: { ...metadata, namespace: ns, uid: randomUUID(), resourceVersion: "1" },
+      };
+      live.configMaps.set(name, stored);
+      send(response, 201, stored);
+      return;
+    }
+    if (parts.length === 6 && request.method === "GET") {
+      const value = live.configMaps.get(parts[5]!);
+      if (value) {
+        send(response, 200, value);
+      } else {
+        status(response, 404);
+      }
+      return;
+    }
+    throw new Error("unexpected ConfigMap operation");
+  }
   assert.equal(parts[4], "secrets");
   if (parts.length === 5 && request.method === "POST") {
     const value = (await body(request)) as unknown as Secret;
-    assert.equal(value.kind, "Secret");
-    assert.equal(value.apiVersion, "v1");
+
     assert.equal(value.metadata.namespace, ns);
     const name = value.metadata.name;
     const mode = live.createModes.get(name);
@@ -422,6 +382,8 @@ async function kubeHandler(request: IncomingMessage, response: ServerResponse): 
     }
     const stored: Secret = {
       ...value,
+      apiVersion: "v1",
+      kind: "Secret",
       metadata: {
         ...value.metadata,
         uid: randomUUID(),
@@ -462,6 +424,44 @@ async function kubeHandler(request: IncomingMessage, response: ServerResponse): 
     } else {
       status(response, 404);
     }
+    return;
+  }
+  if (request.method === "PUT") {
+    const value = (await body(request)) as unknown as Secret;
+    const current = live.secrets.get(name);
+    if (!current) {
+      status(response, 404);
+      return;
+    }
+    if (value.metadata.resourceVersion !== current.metadata.resourceVersion) {
+      status(response, 409);
+      return;
+    }
+    const uid = current.metadata.uid;
+    assert.ok(uid, "A stored Secret must have a UID.");
+    const stored: Secret = {
+      ...value,
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        ...value.metadata,
+        uid,
+        resourceVersion: String(Number(current.metadata.resourceVersion) + 1),
+      },
+      data: {
+        ...value.data,
+        ...Object.fromEntries(
+          Object.entries(value.stringData ?? {}).map(([key, data]) => [
+            key,
+            Buffer.from(data).toString("base64"),
+          ]),
+        ),
+      },
+    };
+    delete stored.stringData;
+    live.secrets.set(name, stored);
+    record("secret-put", name, "persisted");
+    send(response, 200, stored);
     return;
   }
   assert.equal(request.method, "DELETE");
@@ -538,7 +538,11 @@ async function request(
   });
 }
 function expect(r: Reply, wanted: number, code?: string): void {
-  assert.equal(r.status, wanted, "HTTP status; " + JSON.stringify(live.diagnostics.at(-1) ?? {}));
+  assert.equal(
+    r.status,
+    wanted,
+    `HTTP status at ${new Error().stack?.split("\n")[2]?.trim()}; ${JSON.stringify(r.body.error ?? live.diagnostics.at(-1) ?? {})}`,
+  );
   if (code) {
     assert.equal(safeObject(r.body.error).code, code, "canonical error code");
   }
@@ -593,35 +597,6 @@ async function noBinding(a: Account): Promise<void> {
     "failed issuance must roll back both fields",
   );
 }
-function retained(a: Account, c: Credential): void {
-  const s = durableSecret(a.id);
-  assert.ok(s, "recovery receipt must remain after unconfirmed provider revocation");
-  assert.equal(s.metadata.annotations?.[annotation], c.id, "receipt credential ID");
-  assert.ok(
-    s.data?.token === Buffer.from(c.token).toString("base64"),
-    "receipt token must match without disclosure",
-  );
-  assert.ok(s.metadata.uid && s.metadata.resourceVersion, "persisted Secret identity");
-  assert.ok(live.credentials.has(c.id), "provider credential remains live");
-}
-function order(a: Account, c: Credential, start = 0): void {
-  const e = live.events.slice(start);
-  const confirmed = e.findIndex(
-    (x) =>
-      x.operation === "credential-delete" &&
-      x.id === a.externalId + "/" + c.id &&
-      (x.outcome === "confirmed" ||
-        x.outcome.startsWith("reply-credential_not_found") ||
-        x.outcome.startsWith("reply-service_account_not_found")),
-  );
-  const removed = e.findIndex(
-    (x) => x.operation === "secret-delete" && x.id === secretName(a.id) && x.outcome === "applied",
-  );
-  assert.ok(
-    confirmed >= 0 && removed > confirmed,
-    "provider confirmation must precede exact Secret deletion",
-  );
-}
 async function startApp(
   url: string,
   selected = true,
@@ -665,18 +640,20 @@ async function startApp(
   const factory = selected
     ? (() => {
         assert.ok(definition?.type === "chatgpt");
-        return createChatGPTServiceAccountDriverFactory(
-          {
-            id: definition.id,
-            drivers: definition.drivers,
-            client: new ChatGPTClient({
-              workspaceId: definition.configuration.workspaceId,
-              adminKey: live.adminKey,
-              credentialTtlSeconds: 3600,
-            }),
-          },
-          runtime.computeDriver,
-        );
+        const register = createChatGPTServiceAccountDriverFactory({
+          id: definition.id,
+          drivers: definition.drivers,
+          client: new ChatGPTClient({
+            workspaceId: definition.configuration.workspaceId,
+            adminKey: live.adminKey,
+            credentialTtlSeconds: 3600,
+          }),
+        });
+        return ((controller, state) => {
+          live.state = state;
+          live.controller = controller;
+          register(controller, state);
+        }) satisfies typeof register;
       })()
     : undefined;
   const app = await composePostgresDevelopment(
@@ -777,7 +754,7 @@ async function prepare(): Promise<void> {
     { mode: 0o600 },
   );
   const auth = { mode: "kubeconfig" as const, kubeconfigPath, context: "fixture" };
-  const conf = createInstallationDriverConfiguration();
+  const conf = buildSandboxInstallation();
   conf.occ.cluster = "compensation-fixture";
   for (const x of [conf.drivers.compute, conf.drivers.configuration, conf.drivers.secret]) {
     x.configuration.authentication = auth;
@@ -789,8 +766,10 @@ async function prepare(): Promise<void> {
     configPath,
     JSON.stringify({
       ...conf,
+      iam: defaultUsersIAM(),
       presets: { includeDefaults: false },
       backend: [
+        ...conf.backend,
         {
           id: "recovery-chatgpt",
           type: "chatgpt",
@@ -805,6 +784,7 @@ async function prepare(): Promise<void> {
       drivers: {
         ...conf.drivers,
         service_account: { id: "recovery-service-account", configuration: {} },
+        token_service: { id: "occ", configuration: {} },
       },
     }),
     { mode: 0o600 },
@@ -842,13 +822,18 @@ async function prepare(): Promise<void> {
   });
   assert.ok(live.runtime);
   assert.ok(live.runtime.computeDriver instanceof KubernetesComputeDriver);
-  live.compute = live.runtime.computeDriver;
   live.pool = new pg.Pool({
     connectionString: databaseUrl,
     max: 3,
     application_name: "sa-comp-observer-" + randomUUID(),
   });
   setGlobalDispatcher(live.agent);
+  live.namespaces.set("oce-installation-secrets", {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: "oce-installation-secrets" },
+    status: { phase: "Active" },
+  });
   live.mainUrl = await startApp(databaseUrl);
   const ns = await request(
     "POST",
@@ -920,536 +905,24 @@ after(async () => {
 });
 
 test(
-  "known audit rollback retains the exact recovery receipt when provider revocation fails",
+  "fresh issued ServiceAccount PAT uses TokenService custody and preserves independent Source lifecycle",
   requiresPostgres,
   async () => {
-    const a = await account("audit-retain");
-    armAudit(a);
-    live.deleteModes.set(a.externalId, "503");
-    const before = live.auditConsumed;
-    const r = await issue(a);
-    expect(r, 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(live.auditConsumed, before + 1, "real audit collision consumed");
-    await noBinding(a);
-    const c = credentialFor(a);
-    retained(a, c);
-    assert.equal(providerEvents(a).length, 1);
-  },
-);
-test(
-  "HTTP retry is blocked until the retained provider credential is confirmed revoked",
-  requiresPostgres,
-  async () => {
-    const a = await account("retry");
-    armAudit(a);
-    live.deleteModes.set(a.externalId, "503");
-    expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-    const c = credentialFor(a);
-    const start = live.events.length;
-    expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(providerEvents(a).length, 1, "retry cannot mint before revocation");
-    live.deleteModes.delete(a.externalId);
-    const r = await issue(a);
-    expect(r, 201);
-    order(a, c, start);
-    assert.equal(providerEvents(a).length, 2);
-    assert.ok(!live.credentials.has(c.id));
-    const next = credentialFor(a);
-    assert.equal((await binding(a))?.external_credential_id, next.id);
-    assert.ok(
-      !r.text.includes(next.id) &&
-        !r.text.includes(next.token) &&
-        !r.text.includes(secretName(a.id)),
-      "public projection excludes private locator and provider identity",
-    );
-  },
-);
-test(
-  "applied but unacknowledged Kubernetes create retains a recoverable credential ID",
-  requiresPostgres,
-  async () => {
-    const a = await account("applied-create");
-    armAudit(a);
-    live.createModes.set(secretName(a.id), "drop");
-    live.deleteModes.set(a.externalId, "503");
-    const r = await issue(a);
-    expect(r, 503, "DEPENDENCY_UNAVAILABLE");
-    await noBinding(a);
-    const c = credentialFor(a);
-    assert.equal(
-      live.events.filter(
-        (x) =>
-          x.operation === "secret-post" && x.id === secretName(a.id) && x.outcome === "requested",
-      ).length,
-      1,
-      "mutating create cannot replay",
-    );
-    assert.ok(
-      live.events.some(
-        (x) => x.operation === "secret-get" && x.id === secretName(a.id) && x.outcome === "found",
-      ),
-      "real SDK readback",
-    );
-    retained(a, c);
-    live.createModes.delete(secretName(a.id));
-    expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(providerEvents(a).length, 1);
-    live.deleteModes.delete(a.externalId);
-    const start = live.events.length;
-    expect(await issue(a), 201);
-    order(a, c, start);
-    assert.equal(providerEvents(a).length, 2);
-  },
-);
-test(
-  "confirmed revocation cleans only its matching Secret after either failed issuance entrance",
-  requiresPostgres,
-  async () => {
-    for (const applied of [false, true]) {
-      const a = await account(applied ? "clean-applied" : "clean-audit");
-      armAudit(a);
-      if (applied) {
-        live.createModes.set(secretName(a.id), "drop");
-      }
-      const start = live.events.length;
-      const r = await issue(a);
-      expect(r, 409, "RESOURCE_CONFLICT");
-      await noBinding(a);
-      const event = providerEvents(a)[0]!;
-      const id = event.id.slice(a.externalId.length + 1);
-      order(a, { id, accountId: a.externalId, occId: a.id, token: "" }, start);
-      assert.equal(secret(a.id), undefined);
-      assert.ok(!live.credentials.has(id));
-      live.createModes.delete(secretName(a.id));
-      expect(await issue(a), 201);
-    }
-    const a = await account("readback-success");
-    live.createModes.set(secretName(a.id), "drop");
-    expect(await issue(a), 201);
-    assert.equal(providerEvents(a).length, 1);
-    assert.equal((await binding(a))?.external_credential_id, credentialFor(a).id);
-  },
-);
-test("recognized already-absent provider replies complete recovery", requiresPostgres, async () => {
-  for (const mode of ["credential404", "account404"] as const) {
-    const a = await account(mode);
-    armAudit(a);
-    live.deleteModes.set(a.externalId, "503");
-    expect(await issue(a), 503);
-    const c = credentialFor(a);
-    live.credentials.delete(c.id);
-    persist("provider");
-    live.deleteModes.set(a.externalId, mode);
-    const start = live.events.length;
-    expect(await issue(a), 201);
-    order(a, c, start);
-    assert.equal(providerEvents(a).length, 2);
-    live.deleteModes.delete(a.externalId);
-  }
-});
-test(
-  "unconfirmed provider failures keep the receipt and block replacement",
-  requiresPostgres,
-  async () => {
-    for (const mode of [
-      "unknown404",
-      "403",
-      "503",
-      "invalidJson",
-      "wrongId",
-      "notDeleted",
-      "lostReply",
-    ] as const) {
-      const a = await account(mode);
-      armAudit(a);
-      live.deleteModes.set(a.externalId, "503");
-      expect(await issue(a), 503);
-      const c = credentialFor(a);
-      live.deleteModes.set(a.externalId, mode);
-      expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-      assert.ok(durableSecret(a.id), "unconfirmed provider reply must retain receipt");
-      assert.equal(providerEvents(a).length, 1, "unconfirmed recovery must not mint");
-      if (mode === "lostReply") {
-        assert.ok(!live.credentials.has(c.id));
-        live.deleteModes.set(a.externalId, "credential404");
-        expect(await issue(a), 201);
-        assert.equal(providerEvents(a).length, 2);
-      }
-      live.deleteModes.delete(a.externalId);
-    }
-  },
-);
-test(
-  "a Kubernetes create that never applied leaves foreign or unrelated objects untouched",
-  requiresPostgres,
-  async () => {
-    for (const mode of ["before503", "beforeReset"] as const) {
-      const a = await account(mode);
-      live.createModes.set(secretName(a.id), mode);
-      expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(secret(a.id), undefined);
-      assert.equal(
-        [...live.credentials.values()].filter((c) => c.accountId === a.externalId).length,
-        0,
+    const a = await account("fresh");
+    const first = await issue(a);
+    expect(first, 409);
+    assert.equal(providerEvents(a).length, 0, "a provisioning Namespace cannot mint a PAT");
+    await live.state!.transact(async (unit) => {
+      const updated = await unit.namespaces.transitionNamespaceStatus(
+        live.namespaceId,
+        "provisioning",
+        "ready",
       );
-    }
-    for (const foreign of [true, false]) {
-      const a = await account(foreign ? "foreign" : "other-token");
-      live.createModes.set(secretName(a.id), "before503");
-      live.beforeSecretCreate = (name) => {
-        if (name === secretName(a.id)) {
-          const s = seedSecret(a, "unrelated-id");
-          if (foreign) {
-            s.metadata.labels!["openclaw.dev/service-account"] = "other";
-          }
-          persist("kubernetes");
-        }
-      };
-      try {
-        expect(await issue(a), 503, "DEPENDENCY_UNAVAILABLE");
-        const observed = secret(a.id);
-        assert.ok(observed);
-        assert.equal(observed.metadata.annotations?.[annotation], "unrelated-id");
-        assert.equal(
-          [...live.credentials.values()].filter((c) => c.accountId === a.externalId).length,
-          0,
-        );
-      } finally {
-        live.beforeSecretCreate = undefined;
-      }
-    }
-  },
-);
-test("delayed compensation cannot delete another issuance's Secret", requiresPostgres, async () => {
-  const a = await account("delayed");
-  armAudit(a);
-  const held = deferred();
-  const release = deferred();
-  let oldId = "";
-  let first = true;
-  live.beforeProviderDelete = async (id) => {
-    if (first) {
-      first = false;
-      oldId = id;
-      held.resolve();
-      await release.promise;
-    }
-  };
-  const pending = issue(a);
-  try {
-    await held.promise;
-    await noBinding(a);
-    expect(await issue(a), 201);
-    const replacementId = (await binding(a))?.external_credential_id;
-    assert.ok(replacementId);
-    const replacement = live.credentials.get(replacementId);
-    assert.ok(replacement);
-    assert.notEqual(replacement.id, oldId);
-    release.resolve();
-    expect(await pending, 409, "RESOURCE_CONFLICT");
-    assert.equal((await binding(a))?.external_credential_id, replacement.id);
-    assert.equal(secret(a.id)?.metadata.annotations?.[annotation], replacement.id);
-    assert.ok(live.credentials.has(replacement.id));
-  } finally {
-    release.resolve();
-    live.beforeProviderDelete = undefined;
-    await pending.catch(() => {});
-  }
-});
-
-test(
-  "exact cleanup respects ownership, credential ID, UID and resourceVersion",
-  requiresPostgres,
-  async () => {
-    const a = await account("exact");
-    const original = "synthetic-exact-" + randomUUID();
-    const input = {
-      namespaceId: live.namespaceId,
-      serviceAccountId: a.id,
-      secretRef: { name: secretName(a.id), key: "token" },
-    };
-    let s = seedSecret(a, "original-id", original);
-    await live.compute!.deleteServiceAccountCredential({
-      ...input,
-      accessToken: "different-token",
+      assert.equal(updated?.status, "ready");
     });
-    assert.equal(secret(a.id)?.metadata.uid, s.metadata.uid);
-    await live.compute!.deleteServiceAccountCredential({ ...input, credentialId: "different-id" });
-    assert.equal(secret(a.id)?.metadata.uid, s.metadata.uid);
-    await live.compute!.deleteServiceAccountCredential({
-      ...input,
-      accessToken: original,
-      credentialId: "different-id",
-    });
-    assert.equal(secret(a.id)?.metadata.uid, s.metadata.uid, "both supplied selectors must match");
-    s.metadata.labels!["openclaw.dev/service-account"] = "foreign";
-    persist("kubernetes");
-    await live.compute!.deleteServiceAccountCredential({ ...input, accessToken: original });
-    assert.equal(secret(a.id)?.metadata.uid, s.metadata.uid);
-    // Each race isolates one precondition, so either omitted wire field is observable.
-    for (const changedField of ["resourceVersion", "uid"] as const) {
-      s = seedSecret(a, "original-id", original);
-      assert.ok(s.metadata.uid);
-      assert.ok(s.metadata.resourceVersion);
-      const expectedPreconditions = {
-        uid: s.metadata.uid,
-        resourceVersion: s.metadata.resourceVersion,
-      };
-      let observedDelete = false;
-      const eventCount = live.events.length;
-      live.beforeSecretDelete = (name, value) => {
-        if (name === secretName(a.id)) {
-          live.beforeSecretDelete = undefined;
-          assert.deepEqual(value.preconditions, expectedPreconditions);
-          observedDelete = true;
-          const replacement = seedSecret(a, "replacement-id");
-          if (changedField === "resourceVersion") {
-            replacement.metadata.uid = expectedPreconditions.uid;
-            replacement.metadata.resourceVersion =
-              expectedPreconditions.resourceVersion + "-changed";
-          } else {
-            replacement.metadata.resourceVersion = expectedPreconditions.resourceVersion;
-          }
-          assert.notEqual(replacement.metadata[changedField], expectedPreconditions[changedField]);
-          const unchangedField = changedField === "uid" ? "resourceVersion" : "uid";
-          assert.equal(replacement.metadata[unchangedField], expectedPreconditions[unchangedField]);
-          persist("kubernetes");
-        }
-      };
-      await assert.rejects(
-        live.compute!.deleteServiceAccountCredential({ ...input, credentialId: "original-id" }),
-        { code: 409 },
-      );
-      assert.equal(observedDelete, true);
-      assert.equal(secret(a.id)?.metadata.annotations?.[annotation], "replacement-id");
-      assert.deepEqual(durableSecret(a.id), secret(a.id));
-      assert.ok(
-        live.events
-          .slice(eventCount)
-          .some(
-            (x) =>
-              x.operation === "secret-delete" &&
-              x.id === secretName(a.id) &&
-              x.outcome === "precondition-conflict",
-          ),
-      );
-    }
-    for (const field of ["uid", "resourceVersion"] as const) {
-      s = seedSecret(a, "original-id", original);
-      delete s.metadata[field];
-      persist("kubernetes");
-      await assert.rejects(
-        live.compute!.deleteServiceAccountCredential({ ...input, accessToken: original }),
-        { message: "The ServiceAccount credential Secret has no exact identity to delete." },
-      );
-      assert.ok(secret(a.id));
-    }
-    live.beforeSecretDelete = undefined;
-  },
-);
-test(
-  "an owned leftover without a safe credential ID blocks issuance",
-  requiresPostgres,
-  async () => {
-    for (const id of ["", "..", ".", "invalid/id"]) {
-      const a = await account("unsafe");
-      const s = seedSecret(a, id);
-      if (id === "") {
-        delete s.metadata.annotations![annotation];
-      }
-      persist("kubernetes");
-      const start = live.events.length;
-      expect(await issue(a), 409, "RESOURCE_CONFLICT");
-      assert.equal(secret(a.id)?.metadata.uid, s.metadata.uid);
-      assert.equal(
-        live.events.slice(start).filter((x) => x.operation.startsWith("credential-")).length,
-        0,
-      );
-    }
-  },
-);
-test(
-  "two concurrent HTTP issuances serialize on the exact PostgreSQL account lock",
-  requiresPostgres,
-  async () => {
-    const a = await account("concurrent");
-    const held = deferred();
-    const release = deferred();
-    live.beforeProviderCreate = async (id) => {
-      if (id === a.externalId) {
-        held.resolve();
-        await release.promise;
-      }
-    };
-    const first = issue(a);
-    let second: Promise<Reply> | undefined;
-    try {
-      await held.promise;
-      second = issue(a);
-      await until(
-        async () =>
-          Number(
-            (
-              await live.pool!.query<{ n: string }>(
-                "SELECT count(*)::text AS n FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1 AND wait_event_type='Lock'",
-                [live.appName],
-              )
-            ).rows[0]!.n,
-          ) >= 1,
-        "second issuance did not wait on the PostgreSQL lock",
-      );
-      assert.equal(providerEvents(a).length, 0);
-      release.resolve();
-      expect(await first, 201);
-      expect(await second, 409, "RESOURCE_CONFLICT");
-      assert.equal(providerEvents(a).length, 1);
-      assert.equal((await binding(a))?.external_credential_id, credentialFor(a).id);
-    } finally {
-      release.resolve();
-      live.beforeProviderCreate = undefined;
-      await first.catch(() => {});
-      await second?.catch(() => {});
-    }
-  },
-);
-test(
-  "lost PostgreSQL session during leftover lookup cannot reclaim a later committed issuance",
-  requiresPostgres,
-  async () => {
-    const a = await account("lost-session");
-    const initial = seedSecret(a, "old-credential");
-    live.credentials.set("old-credential", {
-      id: "old-credential",
-      accountId: a.externalId,
-      occId: a.id,
-      token: Buffer.from(initial.data!.token!, "base64").toString(),
-    });
-    persist("provider");
-    const held = deferred();
-    const release = deferred();
-    let first = true;
-    live.beforeSecretRead = async (name) => {
-      if (first && name === secretName(a.id)) {
-        first = false;
-        held.resolve();
-        await release.promise;
-      }
-    };
-    const stale = issue(a);
-    try {
-      await held.promise;
-      const pids = await live.pool!.query<{ pid: number }>(
-        "SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1 AND state='idle in transaction'",
-        [live.appName],
-      );
-      assert.equal(pids.rowCount, 1, "exactly one owned transaction may be terminated");
-      assert.equal(
-        (
-          await live.pool!.query<{ terminated: boolean }>(
-            "SELECT pg_terminate_backend($1) AS terminated",
-            [pids.rows[0]!.pid],
-          )
-        ).rows[0]!.terminated,
-        true,
-      );
-      expect(await issue(a), 201);
-      const c = credentialFor(a);
-      release.resolve();
-      expect(await stale, 503, "DEPENDENCY_UNAVAILABLE");
-      assert.equal((await binding(a))?.external_credential_id, c.id);
-      assert.equal(secret(a.id)?.metadata.annotations?.[annotation], c.id);
-      assert.ok(live.credentials.has(c.id));
-    } finally {
-      release.resolve();
-      live.beforeSecretRead = undefined;
-      await stale.catch(() => {});
-    }
-  },
-);
-test(
-  "lost PostgreSQL COMMIT acknowledgment preserves a committed issuance without replay",
-  requiresPostgres,
-  async () => {
-    assert.ok(databaseUrl);
-    const a = await account("lost-commit");
-    const proxy = await commitAckProxy(databaseUrl);
-    live.proxies.push(proxy);
-    const url = await startApp(proxy.url, true, "sa-comp-commit-" + randomUUID());
-    live.afterStored.set(secretName(a.id), () => {
-      live.auditNext = () => {
-        proxy.arm();
-        return "aud_" + randomUUID();
-      };
-    });
-    const start = live.events.length;
-    const r = await issue(a, { url });
-    expect(r, 503, "DEPENDENCY_UNAVAILABLE");
-    assert.ok(proxy.observedCommit, "actual COMMIT was observed");
-    const c = credentialFor(a);
-    assert.equal((await binding(a))?.external_credential_id, c.id);
-    assert.equal(
-      live.events.slice(start).filter((x) => x.operation.endsWith("-delete")).length,
-      0,
-      "unknown COMMIT cannot compensate",
-    );
-    expect(await issue(a), 409, "RESOURCE_CONFLICT");
-    assert.equal(providerEvents(a).length, 1);
-  },
-);
-test(
-  "withheld PostgreSQL COMMIT is reconciled before an explicit recovery request",
-  requiresPostgres,
-  async () => {
-    assert.ok(databaseUrl);
-    const a = await account("withheld-commit");
-    const proxy = await commitAckProxy(databaseUrl);
-    live.proxies.push(proxy);
-    const name = "sa-comp-withheld-" + randomUUID();
-    const url = await startApp(proxy.url, true, name);
-    live.afterStored.set(secretName(a.id), () => {
-      live.auditNext = () => {
-        proxy.arm({ pauseCommit: true });
-        return "aud_" + randomUUID();
-      };
-    });
-    const start = live.events.length;
-    const pending = issue(a, { url });
-    await until(() => proxy.commitPaused, "COMMIT was not paused");
-    await proxy.close();
-    live.proxies.splice(live.proxies.indexOf(proxy), 1);
-    const r = await pending;
-    expect(r, 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(proxy.observedCommit, true, "proxy observed the withheld COMMIT request");
-    await until(
-      async () =>
-        Number(
-          (
-            await live.pool!.query<{ n: string }>(
-              "SELECT count(*)::text AS n FROM pg_stat_activity WHERE datname=current_database() AND application_name=$1",
-              [name],
-            )
-          ).rows[0]!.n,
-        ) === 0,
-      "withheld transaction session did not end",
-    );
-    await noBinding(a);
-    assert.equal(live.events.slice(start).filter((x) => x.operation.endsWith("-delete")).length, 0);
-    const c = credentialFor(a);
-    retained(a, c);
-    const recovery = live.events.length;
-    expect(await issue(a), 201);
-    order(a, c, recovery);
-    assert.equal(providerEvents(a).length, 2);
-  },
-);
-test(
-  "parser and exact-account IAM refusals precede provider and Secret effects",
-  requiresPostgres,
-  async () => {
-    const a = await account("admission");
     const principal = await request(
       "POST",
-      "/namespaces/" + live.namespaceId + "/iam/service-principals",
+      `/namespaces/${live.namespaceId}/iam/service-principals`,
       "{}",
     );
     expect(principal, 201);
@@ -1460,270 +933,209 @@ test(
       JSON.stringify({
         servicePrincipalId: principalId,
         namespaceId: live.namespaceId,
-        name: "recovery refusal",
-      }),
-    );
-    expect(keyReply, 201);
-    const key = textField(data(keyReply), "key");
-    const start = live.events.length;
-    expect(
-      await request(
-        "POST",
-        "/namespaces/" + live.namespaceId + "/service-accounts/" + a.id + "/credentials",
-        "{}",
-        null,
-      ),
-      401,
-      "UNAUTHENTICATED",
-    );
-    const denied = await issue(a, { key });
-    assert.ok([403, 404].includes(denied.status));
-    assert.ok(
-      ["FORBIDDEN", "NOT_FOUND"].includes(textField(safeObject(denied.body.error), "code")),
-    );
-    expect(await issue(a, { payload: '{"unexpected":true}' }), 400, "INVALID_REQUEST");
-    expect(await issue(a, { query: "?force=true" }), 400, "INVALID_REQUEST");
-    expect(
-      await request(
-        "POST",
-        "/namespaces/" + live.namespaceId + "/service-accounts/not-an-id/credentials",
-        "{}",
-      ),
-      400,
-      "INVALID_REQUEST",
-    );
-    assert.equal(
-      live.events
-        .slice(start)
-        .filter(
-          (x) =>
-            x.operation.startsWith("credential-") ||
-            x.operation === "secret-post" ||
-            x.operation === "secret-delete",
-        ).length,
-      0,
-    );
-    const role = await request(
-      "POST",
-      "/namespaces/" + live.namespaceId + "/iam/roles",
-      JSON.stringify({
-        name: "Recovery issuer " + randomUUID().slice(0, 8),
-        permissions: [{ action: "update", resourceKind: "service_account" }],
-      }),
-    );
-    expect(role, 201);
-    const grant = await request(
-      "POST",
-      "/namespaces/" + live.namespaceId + "/iam/access-bindings",
-      JSON.stringify({
-        subjectKind: "identity",
-        subjectId: principalId,
-        roleId: textField(data(role), "id"),
-        resourceKind: "service_account",
-        resourceId: a.id,
-      }),
-    );
-    expect(grant, 201);
-    expect(await issue(a, { key }), 201);
-  },
-);
-test(
-  "revoked exact-account authority cannot recover a retained credential",
-  requiresPostgres,
-  async () => {
-    const a = await account("revoked-authority");
-    const iam = "/namespaces/" + live.namespaceId + "/iam";
-    const principal = await request("POST", iam + "/service-principals", "{}");
-    expect(principal, 201);
-    const principalId = textField(data(principal), "id");
-    const keyReply = await request(
-      "POST",
-      "/api/auth/service-keys",
-      JSON.stringify({
-        servicePrincipalId: principalId,
-        namespaceId: live.namespaceId,
-        name: "Retained credential recovery",
+        name: "issuer permission check",
       }),
     );
     expect(keyReply, 201);
     const key = textField(data(keyReply), "key");
     const role = await request(
       "POST",
-      iam + "/roles",
+      `/namespaces/${live.namespaceId}/iam/roles`,
       JSON.stringify({
-        name: "Exact credential issuer " + randomUUID().slice(0, 8),
+        name: `Issuer ${randomUUID()}`,
         permissions: [{ action: "update", resourceKind: "service_account" }],
       }),
     );
     expect(role, 201);
-    const grant = await request(
-      "POST",
-      iam + "/access-bindings",
-      JSON.stringify({
-        subjectKind: "identity",
-        subjectId: principalId,
-        roleId: textField(data(role), "id"),
-        resourceKind: "service_account",
-        resourceId: a.id,
-      }),
+    expect(
+      await request(
+        "POST",
+        `/namespaces/${live.namespaceId}/iam/access-bindings`,
+        JSON.stringify({
+          subjectKind: "identity",
+          subjectId: principalId,
+          roleId: textField(data(role), "id"),
+          resourceKind: "service_account",
+          resourceId: a.id,
+        }),
+      ),
+      201,
     );
-    expect(grant, 201);
-
-    // The real audit rollback leaves one recoverable credential outside PostgreSQL.
-    armAudit(a);
-    live.deleteModes.set(a.externalId, "503");
-    const auditBefore = live.auditConsumed;
-    expect(await issue(a, { key }), 503, "DEPENDENCY_UNAVAILABLE");
-    assert.equal(live.auditConsumed, auditBefore + 1, "real audit collision consumed");
-    await noBinding(a);
-    const old = credentialFor(a);
-    retained(a, old);
-    assert.equal(providerEvents(a).length, 1);
-    const receipt = structuredClone(durableSecret(a.id));
-
-    // Revocation goes through the same IAM owner as an administrator's policy edit.
-    expect(await request("DELETE", iam + "/access-bindings/" + textField(data(grant), "id")), 204);
-    live.deleteModes.delete(a.externalId);
-    const deniedStart = live.events.length;
     expect(await issue(a, { key }), 403, "FORBIDDEN");
     assert.equal(
-      live.events
-        .slice(deniedStart)
-        .filter(
-          (x) =>
-            x.operation.startsWith("credential-") ||
-            x.operation === "account-post" ||
-            x.operation === "account-delete" ||
-            x.operation === "secret-post" ||
-            x.operation === "secret-delete",
-        ).length,
+      providerEvents(a).length,
       0,
-      "lost authority cannot mutate either credential owner",
+      "Source create authority must be checked before issuer mint",
     );
-    await noBinding(a);
-    assert.ok(
-      JSON.stringify(durableSecret(a.id)) === JSON.stringify(receipt),
-      "the exact retained receipt must stay unchanged without disclosing its token",
-    );
-    retained(a, old);
-    assert.equal(providerEvents(a).length, 1, "denied recovery cannot issue a replacement");
 
-    // A currently authorized caller must retire the exact old credential before replacement.
-    const recoveryStart = live.events.length;
-    expect(await issue(a), 201);
-    order(a, old, recoveryStart);
-    const recovery = live.events.slice(recoveryStart);
-    const removed = recovery.findIndex(
-      (x) =>
-        x.operation === "secret-delete" && x.id === secretName(a.id) && x.outcome === "applied",
+    // Namespace-level create grants are provisioned by Installation IAM, not by the exact-resource Namespace role API.
+    const creatorRoleId = `role-${randomUUID()}`;
+    await live.pool!.query(
+      "INSERT INTO occ.iam_roles(id,name,permissions) VALUES($1,$2,$3::jsonb)",
+      [
+        creatorRoleId,
+        "Fresh Source creator",
+        JSON.stringify([
+          { action: "create", resourceKind: "credential_source" },
+          { action: "create", resourceKind: "agent" },
+          { action: "read", resourceKind: "configuration" },
+          { action: "read", resourceKind: "namespace" },
+        ]),
+      ],
     );
-    const created = recovery.findIndex(
-      (x) => x.operation === "credential-post" && x.id.startsWith(a.externalId + "/"),
+    await live.pool!.query(
+      "INSERT INTO occ.iam_access_bindings(id,namespace_id,identity_subject_id,role_id) VALUES($1,$2,$3,$4)",
+      [`binding-${randomUUID()}`, live.namespaceId, principalId, creatorRoleId],
     );
-    assert.ok(created > removed, "replacement issuance follows exact receipt removal");
+    const issued = await issue(a, { key });
+    expect(issued, 201);
+    const credential = safeObject(data(issued).credential);
+    assert.equal(credential.kind, "access_token");
+    const sourceId = textField(credential, "sourceId");
+    assert.match(sourceId, /^cs_/);
+    const c = credentialFor(a);
+    assert.ok(
+      !issued.text.includes(c.id) && !issued.text.includes(c.token),
+      "public reply must exclude issuer identities and bearer",
+    );
+    assert.equal((await binding(a))?.external_credential_id, c.id);
+    const sourceReply = await request(
+      "GET",
+      `/namespaces/${live.namespaceId}/credential-sources/${sourceId}`,
+    );
+    expect(sourceReply, 200);
+    const source = data(sourceReply);
     assert.equal(
-      providerEvents(a, "credential-delete").filter((x) => x.outcome === "confirmed").length,
-      1,
+      Object.hasOwn(source, "ownerCapability"),
+      false,
+      "public Source metadata excludes private custody owner",
     );
-    assert.equal(providerEvents(a).length, 2);
-    assert.equal(live.credentials.has(old.id), false);
-    const replacement = credentialFor(a);
-    assert.notEqual(replacement.id, old.id);
-    assert.equal((await binding(a))?.external_credential_id, replacement.id);
-    assert.equal(secret(a.id)?.metadata.annotations?.[annotation], replacement.id);
-    retained(a, replacement);
-  },
-);
-test(
-  "force deletion keeps configured-provider and no-provider behavior separate",
-  requiresPostgres,
-  async () => {
-    const a = await account("configured-force");
-    expect(await issue(a), 201);
-    live.deleteModes.set(a.externalId, "503");
-    expect(
-      await request(
-        "DELETE",
-        "/namespaces/" + live.namespaceId + "/service-accounts/" + a.id + "?force=true",
-      ),
-      503,
-      "DEPENDENCY_UNAVAILABLE",
+    const storedSource = await live.state!.read((view) =>
+      view.credentialSources.findCredentialSource(live.namespaceId, sourceId),
     );
-    assert.ok(await binding(a));
-    assert.ok(secret(a.id));
-    live.deleteModes.delete(a.externalId);
-    expect(
-      await request(
-        "DELETE",
-        "/namespaces/" + live.namespaceId + "/service-accounts/" + a.id + "?force=true",
-      ),
-      204,
+    assert.ok(storedSource?.ownerCapability === "token_service" && storedSource.type === "static");
+    const owner = live.controller!.selectedDriver("token_service");
+    const resolved = await owner.resolveCredential(
+      {
+        sourceRef: { kind: "credential_source", namespaceId: live.namespaceId, id: sourceId },
+        tokenServiceInstanceId: storedSource.tokenServiceInstanceId,
+      },
+      AbortSignal.timeout(5_000),
     );
-    assert.equal(await binding(a), undefined);
-    const b = await account("no-driver-force");
-    expect(await issue(b), 201);
-    const credential = credentialFor(b);
-    assert.equal((await binding(b))?.external_credential_id, credential.id);
-    const noDriverUrl = await startApp(databaseUrl!, false, "sa-comp-no-driver-" + randomUUID());
-    const accountPath = `/namespaces/${live.namespaceId}/service-accounts/${b.id}`;
-    const start = live.events.length;
+    assert.equal(
+      resolved.credential === c.token,
+      true,
+      "selected TokenService holds the issued bearer",
+    );
+    assert.equal(source.type, "static");
+    assert.deepEqual(source.config, { provider_preset: "codex-pat" });
+    assert.equal(
+      [...live.secrets.values()].some((x) => x.metadata.name.startsWith("service-account-")),
+      false,
+      "no second ServiceAccount bearer Secret is created",
+    );
     expect(
-      await request("DELETE", accountPath, undefined, live.key, noDriverUrl),
+      await request("DELETE", `/namespaces/${live.namespaceId}/credential-sources/${sourceId}`),
       409,
-      "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
+      "RESOURCE_CONFLICT",
     );
-    const forced = await request(
+
+    const config = await request(
+      "POST",
+      `/namespaces/${live.namespaceId}/configurations`,
+      JSON.stringify({ kind: "agent", values: createHarnessConfiguration("codex", "gpt-4.1") }),
+    );
+    expect(config, 201);
+    const boundAgent = await request(
+      "POST",
+      `/namespaces/${live.namespaceId}/agents`,
+      JSON.stringify({
+        name: `Issued PAT Agent ${randomUUID()}`,
+        configurationId: textField(data(config), "id"),
+        executionMode: "dedicated",
+        harnessAuth: { method: "credential_source", sourceId },
+        credentialSources: [{ sourceId }],
+      }),
+      key,
+    );
+    expect(boundAgent, 201);
+    assert.deepEqual(
+      data(boundAgent).credentialSources,
+      [{ sourceId }],
+      "the restricted issuer can select the Source using its creator operate grant",
+    );
+    // Source binding is independent from the issuer account. Deleting the account must revoke
+    // the exact issuer credential while leaving the bound Agent and ordinary Source retirement intact.
+    const deleted = await request(
       "DELETE",
-      `${accountPath}?force=true`,
-      undefined,
-      live.key,
-      noDriverUrl,
+      `/namespaces/${live.namespaceId}/service-accounts/${a.id}`,
     );
-    expect(forced, 200);
-    // The public receipt identifies the Backend and leaves provider binding details in audit.
-    assert.deepEqual(data(forced), {
-      id: b.id,
-      namespaceId: live.namespaceId,
-      revocation: "skipped",
-      backendId: "recovery-chatgpt",
-    });
-    expect(await request("GET", accountPath, undefined, live.key, noDriverUrl), 404);
-    assert.equal(await binding(b), undefined);
-    assert.equal(secret(b.id), undefined);
+    expect(deleted, 204);
+    assert.ok(!live.credentials.has(c.id), "issuer credential must be revoked");
+    expect(
+      await request("GET", `/namespaces/${live.namespaceId}/credential-sources/${sourceId}`),
+      200,
+    );
+    const retainedAgent = await request(
+      "GET",
+      `/namespaces/${live.namespaceId}/agents/${textField(data(boundAgent), "id")}`,
+    );
+    expect(retainedAgent, 200);
+    assert.deepEqual(data(retainedAgent).credentialSources, [{ sourceId }]);
     assert.equal(
-      live.events
-        .slice(start)
-        .filter((x) => x.operation.startsWith("credential-") || x.operation === "account-delete")
-        .length,
+      (
+        await live.pool!.query(
+          "SELECT 1 FROM occ.service_account_driver_bindings WHERE service_account_id=$1",
+          [a.id],
+        )
+      ).rowCount,
       0,
     );
-    const audit = await live.pool!.query<{ details: Json }>(
-      `SELECT details - '__occAuditMetadata' AS details
-       FROM occ.audit_events
-       WHERE namespace_id=$1 AND resource_kind='service_account' AND resource_id=$2
-         AND kind='mutation' AND action='openclaw.service_accounts.delete' AND outcome='success'`,
-      [live.namespaceId, b.id],
+
+    // An audit collision after Source registration is a known finalization failure. The normal
+    // rollback callback must revoke the issuer credential before removing its custody Source.
+    const failed = await account("known-finalization");
+    const beforeSources = (
+      await live.pool!.query(
+        "SELECT count(*)::int AS n FROM occ.credential_sources WHERE namespace_id=$1",
+        [live.namespaceId],
+      )
+    ).rows[0].n;
+    const beforeCustody = new Set(live.secrets.keys());
+    live.beforeSecretCreate = (name) => {
+      if (name.startsWith("occ-private-")) {
+        live.afterStored.set(name, () => {
+          live.auditNext = () => {
+            live.auditConsumed++;
+            return live.duplicateAuditId;
+          };
+        });
+      }
+    };
+    const failedReply = await issue(failed);
+    live.beforeSecretCreate = undefined;
+    expect(failedReply, 409, "RESOURCE_CONFLICT");
+    assert.equal(providerEvents(failed).length, 1);
+    assert.equal(
+      [...live.credentials.values()].filter((x) => x.accountId === failed.externalId).length,
+      0,
+      "known rollback revokes the newly minted issuer credential",
     );
-    // An operator needs the exact binding identifiers to revoke the orphaned credential.
-    assert.deepEqual(audit.rows, [
-      {
-        details: {
-          actorServiceKeyId: live.keyId,
-          force: true,
-          revocation: "skipped",
-          backendId: "recovery-chatgpt",
-          workspaceId: live.workspaceId,
-          externalAccountId: b.externalId,
-          credentialId: credential.id,
-        },
-      },
-    ]);
-    for (const mismatch of ["backend", "workspace"] as const) {
-      const c = await account("foreign-" + mismatch);
-      const other = await startApp(databaseUrl!, true, "sa-comp-foreign-" + randomUUID(), mismatch);
-      expect(await issue(c, { url: other }), 503, "DEPENDENCY_UNAVAILABLE");
-      assert.equal(providerEvents(c).length, 0);
-      await noBinding(c);
-    }
+    await noBinding(failed);
+    assert.equal(
+      (
+        await live.pool!.query(
+          "SELECT count(*)::int AS n FROM occ.credential_sources WHERE namespace_id=$1",
+          [live.namespaceId],
+        )
+      ).rows[0].n,
+      beforeSources,
+      "known failed association removes newly registered Source",
+    );
+    assert.deepEqual(
+      [...live.secrets.keys()].filter((name) => !beforeCustody.has(name)),
+      [],
+      "known failed association removes newly created private custody",
+    );
   },
 );

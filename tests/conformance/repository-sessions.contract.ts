@@ -10,10 +10,8 @@ import type {
   Secret,
 } from "@openclaw-enterprise/contracts";
 import type { RepositorySessionRepository } from "../../packages/occ/src/ports/repository-sessions.ts";
-import type {
-  ConfigurationOwnership,
-  PlatformStateStore,
-} from "../../packages/occ/src/state/platform-state.ts";
+import type { ConfigurationOwnership } from "../../packages/occ/src/ports/configurations.ts";
+import type { PlatformStateStore } from "../../packages/occ/src/ports/platform-state-store.ts";
 import { verifyRepositorySessionCases } from "./repository-session-state-cases.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.ts";
 
@@ -76,10 +74,13 @@ export async function seedSessionRevision(
     executionMode,
     gatewayManagedMode: true,
     servicePrincipalId: `service-agent-${randomUUID()}`,
-    repositoryBindings: credentials.bindings.map(({ repositoryRef, profile }) => ({
-      repositoryRef,
-      profile,
-    })),
+    repositoryAccess: {
+      defaultProfile: "git-write",
+      repositories: credentials.bindings.map(({ repositoryRef, profile }) => ({
+        repositoryRef,
+        profile,
+      })),
+    },
     createdAt,
   } satisfies Omit<Agent, "desiredRuntimeState" | "status">;
   const revision = {

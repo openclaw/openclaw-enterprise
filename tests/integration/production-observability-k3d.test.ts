@@ -1,11 +1,52 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test, { after } from "node:test";
 import { decodeOtlpLogs } from "../helpers/production-observability-collector.ts";
 import {
   installObservabilityControlPlane,
   observabilitySelection,
+  waitForObservabilityNamespaces,
 } from "../helpers/production-observability-k3d.ts";
-import { verifyInstalledWorkerRestarts } from "../helpers/worker-termination-installed.ts";
+import {
+  verifyInstalledWorkerRestarts,
+  workerObserverCollectorBinary,
+} from "../helpers/worker-termination-installed.ts";
+
+let collectorDirectory: string | undefined;
+let collectorBinary: Promise<string> | undefined;
+
+async function extractCollectorBinary() {
+  collectorDirectory ??= await mkdtemp(join(tmpdir(), "occ-worker-collector-"));
+  // An unsuccessful extraction can leave a partial file. A retry gets a fresh path.
+  const attempt = await mkdtemp(join(collectorDirectory, "attempt-"));
+  return workerObserverCollectorBinary(attempt);
+}
+
+function getCollectorBinary() {
+  collectorBinary ??= extractCollectorBinary().catch((error: unknown) => {
+    collectorBinary = undefined;
+    throw error;
+  });
+  return collectorBinary;
+}
+
+// Both tests' test Namespaces must be gone before the file passes.
+after(async () => {
+  const cleanup = [waitForObservabilityNamespaces()];
+  if (collectorDirectory !== undefined) {
+    cleanup.push(rm(collectorDirectory, { recursive: true, force: true }));
+  }
+  const results = await Promise.allSettled(cleanup);
+  const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "observability fixture cleanup failed");
+  }
+});
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -165,7 +206,7 @@ test(
       assert.match(string(metrics.text), /otelcol_exporter_sent_log_records/);
     }
     f.record("Shipped Collector exported real attributed OCC logs to a minimal OTLP receiver");
-    await verifyInstalledWorkerRestarts(f, readLogs, "container");
+    await verifyInstalledWorkerRestarts(f, readLogs, "container", getCollectorBinary);
   },
 );
 
@@ -175,7 +216,7 @@ test(
   async (t) => {
     const f = await installObservabilityControlPlane(t, { nativeRepository: true });
     const readLogs = await f.installLogReceiver();
-    await verifyInstalledWorkerRestarts(f, readLogs, "restartable-init");
+    await verifyInstalledWorkerRestarts(f, readLogs, "restartable-init", getCollectorBinary);
     assert.ok(object(await f.api("GET", "/installation")).id);
   },
 );

@@ -11,7 +11,7 @@ import {
   readAccount as readUntypedAccount,
   signedInHeaders,
 } from "./production-sign-in.mjs";
-import { injectLocalhost as untypedInjectLocalhost } from "./inject-json.mjs";
+import { injectLocalhost as injectRequest } from "./inject-json.ts";
 
 export type { Credentials, FixtureAccount, SignInApp } from "./postgres-sign-in-installation.ts";
 export type App = Pick<SignInApp, "close" | "inject" | "ready">;
@@ -121,11 +121,11 @@ export function recordData(value: unknown): Record<string, unknown> {
 
 export async function injectLocalhost(
   app: App,
-  method: string,
+  method: Parameters<typeof injectRequest>[1],
   url: string,
-  options: Parameters<typeof untypedInjectLocalhost>[3] = {},
+  options: Parameters<typeof injectRequest>[3] = {},
 ): Promise<InjectedResponse> {
-  return response(await untypedInjectLocalhost(app, method, url, options));
+  return response(await injectRequest(app, method, url, options));
 }
 
 export async function passwordSignIn(

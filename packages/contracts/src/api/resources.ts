@@ -1,22 +1,27 @@
+import { CredentialClientId } from "./connection-templates.ts";
 import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
+import { ConnectionDestinationsSchema, OAuthScope } from "./connection-templates.ts";
 
 import {
   AgentId,
   AgentProvisioningWorkId,
+  RepositoryNetworkGrantSchema,
   PresetId,
   PresetTemplateSchema,
   ConfigurationGeneration,
   ConfigurationId,
   ConfigurationKindSchema,
   ConfigurationValues,
+  ConnectionTemplateId,
   CredentialSourceConfig,
   CredentialSourceId,
   CredentialSourceReference,
   CredentialSourceSecrets,
   CredentialSourceType,
   GatewayManagedModeSchema,
+  AgentNetworkProxySchema,
   HarnessExecutionModeSchema,
   RevisionHarnessSchema,
   ModelProviderId,
@@ -38,7 +43,6 @@ import {
   SecretBindings,
   SecretId,
   SecretReference,
-  ServiceAccountCredentialSchema,
   ServiceAccountId,
   Timestamp,
   WorkspaceFileName,
@@ -159,12 +163,52 @@ const PluginCatalogEntrySchema = Type.Object(
   { additionalProperties: false },
 );
 
+const PluginCredentialSlotSchema = Type.Object(
+  {
+    pluginId: Type.String(),
+    releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    id: Type.String(),
+    label: Type.String(),
+    toolDiscovery: Type.Optional(Type.Literal(true)),
+    issuers: Type.Optional(Type.Array(Type.String())),
+    recipient: Type.Optional(
+      Type.Union([
+        Type.Object(
+          { mode: Type.Literal("manual"), tokenUrl: Type.String() },
+          { additionalProperties: false },
+        ),
+        Type.Object(
+          {
+            mode: Type.Literal("mcp_discovery"),
+            serverUrl: Type.String(),
+            resource: Type.String(),
+          },
+          { additionalProperties: false },
+        ),
+      ]),
+    ),
+    sources: Type.Array(
+      Type.Object({ id: CredentialSourceId, name: Type.String() }, { additionalProperties: false }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const SavedPluginCredentialSlotSchema = Type.Object(
+  {
+    ...PluginCredentialSlotSchema.properties,
+    boundSourceId: Type.Optional(CredentialSourceId),
+  },
+  { additionalProperties: false },
+);
+
 export const AgentPluginCatalogResponse = Type.Object(
   {
     data: Type.Object(
       {
         plugins: Type.Array(PluginCatalogEntrySchema),
         nextCursor: Type.Union([Type.String(), Type.Null()]),
+        credentialSlots: Type.Optional(Type.Array(PluginCredentialSlotSchema)),
         setup: Type.Optional(
           Type.Object(
             { message: Type.String(), links: Type.Array(PluginCatalogLinkSchema) },
@@ -220,7 +264,12 @@ const RuntimeEvidenceTimestamp = Type.String({
 const PluginPolicyCapabilitiesSchema = Type.Object(
   {
     driver: Type.Ref("PluginDriverIdentity"),
-    policyScopeByPlugin: Type.Optional(Type.Record(Type.String(), Type.Literal("enablement_only"))),
+    policyScopeByPlugin: Type.Optional(
+      Type.Record(
+        Type.String(),
+        Type.Union([Type.Literal("enablement_only"), Type.Literal("tool_human_approval")]),
+      ),
+    ),
     approvers: Type.Optional(
       Type.Object(
         { agent: Type.Boolean(), plugin: Type.Boolean(), tools: Type.Boolean() },
@@ -259,26 +308,10 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
       {
         ...PluginPolicyCapabilitiesSchema.properties,
         discoveryCredential: PluginDiscoveryCredentialSchema,
-        credentialSlots: Type.Optional(
-          Type.Array(
-            Type.Object(
-              {
-                pluginId: Type.String(),
-                releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-                id: Type.String(),
-                label: Type.String(),
-                toolDiscovery: Type.Optional(Type.Literal(true)),
-                sources: Type.Array(
-                  Type.Object(
-                    { id: CredentialSourceId, name: Type.String() },
-                    { additionalProperties: false },
-                  ),
-                ),
-              },
-              { additionalProperties: false },
-            ),
-          ),
+        hostedCredential: Type.Optional(
+          Type.Union([Type.Literal("codex_account"), Type.Literal("api_key")]),
         ),
+        credentialSlots: Type.Optional(Type.Array(SavedPluginCredentialSlotSchema)),
       },
       { additionalProperties: false },
     ),
@@ -331,6 +364,10 @@ const InstallationPluginDiscoverySchema = Type.Object(
 const InstallationCapabilitiesSchema = Type.Object(
   {
     nativeAdmin: Type.Optional(Type.Literal(true)),
+    deviceAuthorization: Type.Optional(Type.Literal(true)),
+    modelCredentialSourcePresets: Type.Optional(
+      Type.Array(Type.Union([Type.Literal("openai"), Type.Literal("codex-pat")])),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -438,10 +475,10 @@ export const AgentSchema = Type.Object(
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: HarnessExecutionModeSchema,
     gatewayManagedMode: GatewayManagedModeSchema,
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     pluginDriver: Type.Optional(Type.Ref("PluginDriverIdentity")),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
-    repositoryBindings: Type.Optional(RepositoryBindingSelectionsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
     desiredRuntimeState: Type.Union([Type.Literal("running"), Type.Literal("stopped")]),
     activeRevisionId: Type.Optional(RevisionId),
@@ -457,8 +494,8 @@ const ConfigurationReadErrorSchema = Type.Object(
     field: Type.Union([
       Type.Literal("plugins"),
       Type.Literal("pluginApprovers"),
-      Type.Literal("repositoryBindings"),
       Type.Literal("repositoryAccess"),
+      Type.Literal("networkProxy"),
       Type.Literal("harnessAuth"),
       Type.Literal("credentialSources"),
       Type.Literal("secretBindings"),
@@ -470,7 +507,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryAccess, networkProxy, harnessAuth, and credentialSources.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -481,8 +518,8 @@ export const AgentReadSchema = Type.Union(
           "pluginDriver",
           "plugins",
           "pluginApprovers",
-          "repositoryBindings",
           "repositoryAccess",
+          "networkProxy",
           "harnessAuth",
           "credentialSources",
         ]).properties,
@@ -665,7 +702,7 @@ export const CredentialRefreshStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material.",
+      "Credential refresh status for a refresh-type source. It never contains tokens or refresh material.",
   },
 );
 
@@ -683,27 +720,163 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
+      "Source admission or owner status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
-export const CredentialSourceSchema = Type.Object(
+const CredentialSourceCommon = {
+  id: CredentialSourceId,
+  namespaceId: NamespaceId,
+  name: Name,
+  state: Type.Union([Type.Literal("ready"), Type.Literal("deleting")]),
+  createdAt: Type.String({ format: "date-time" }),
+  ref: CredentialSourceReference,
+  status: Type.Optional(CredentialSourceStatusSchema),
+};
+
+const OAuthConsentCommon = {
+  ownerPrincipalId: Type.String(),
+  requestedScopes: Type.Array(OAuthScope),
+  grantedScopes: Type.Array(OAuthScope),
+  revocationRequestedBy: Type.Optional(Type.String()),
+  revokedAt: Type.Optional(Type.String({ format: "date-time" })),
+};
+
+export const OAuthTemplateSourceConsentSchema = Type.Object(
+  {
+    ...OAuthConsentCommon,
+    kind: Type.Literal("connection_template"),
+    version: Type.Integer({ minimum: 1 }),
+    oauthClientId: Type.String(),
+    issuer: Type.String(),
+    tokenUrl: Type.String(),
+    clientId: Type.String(),
+    destinations: Type.Array(ConnectionDestinationsSchema.items),
+    resource: Type.Optional(Type.String()),
+    mcpServerUrl: Type.Optional(Type.String()),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Original OAuth consent and non-secret client and provider metadata. It never contains credential material.",
+  },
+);
+
+const CodexAccountText = Type.String({ minLength: 1, maxLength: 512 });
+export const OAuthBuiltinCodexSourceConsentSchema = Type.Object(
+  {
+    ...OAuthConsentCommon,
+    kind: Type.Literal("builtin_codex"),
+    issuer: Type.String(),
+    tokenUrl: Type.String(),
+    clientId: Type.String(),
+    account: Type.Object(
+      {
+        accountId: CodexAccountText,
+        planType: CodexAccountText,
+        isFedramp: Type.Boolean(),
+        userId: Type.Optional(CodexAccountText),
+        email: Type.Optional(CodexAccountText),
+        accountUserId: Type.Optional(CodexAccountText),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "Authorization for the fixed, server-owned Codex OAuth preset. Never contains tokens.",
+  },
+);
+
+export const OAuthSourceConsentSchema = Type.Union([
+  OAuthTemplateSourceConsentSchema,
+  OAuthBuiltinCodexSourceConsentSchema,
+]);
+
+export const StaticCredentialSourceSchema = Type.Object(
+  {
+    ...CredentialSourceCommon,
+    type: Type.Literal("static"),
+    connectionTemplateId: Type.Optional(ConnectionTemplateId),
+    config: CredentialSourceConfig,
+  },
+  { additionalProperties: false },
+);
+
+export const OAuthCredentialSourceSchema = Type.Union([
+  Type.Object(
+    {
+      ...CredentialSourceCommon,
+      type: Type.Literal("oauth2-refresh-token"),
+      connectionTemplateId: ConnectionTemplateId,
+      consent: OAuthTemplateSourceConsentSchema,
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      ...CredentialSourceCommon,
+      type: Type.Literal("oauth2-refresh-token"),
+      consent: OAuthBuiltinCodexSourceConsentSchema,
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+const GitHubNumericId = Type.String({ pattern: "^[1-9][0-9]{0,15}$" });
+export const GitHubAppInstallationCredentialSourceSchema = Type.Object(
+  {
+    ...CredentialSourceCommon,
+    type: Type.Literal("github-app-installation"),
+    clientId: CredentialClientId,
+    scope: Type.Object(
+      {
+        appId: GitHubNumericId,
+        installationId: GitHubNumericId,
+        repositories: Type.Array(
+          Type.Object(
+            { repositoryId: GitHubNumericId, repository: Type.String({ minLength: 3 }) },
+            { additionalProperties: false },
+          ),
+          { minItems: 1, maxItems: 16 },
+        ),
+        permissions: Type.Record(
+          Type.String(),
+          Type.Union([Type.Literal("read"), Type.Literal("write")]),
+          {
+            minProperties: 1,
+          },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  {
+    $id: "GitHubAppInstallationCredentialSource",
+    additionalProperties: false,
+    description: "GitHub App installation Source metadata with the verified finite token scope.",
+  },
+);
+
+export const CredentialSourceSchema = Type.Union([
+  StaticCredentialSourceSchema,
+  OAuthCredentialSourceSchema,
+  Type.Object(GitHubAppInstallationCredentialSourceSchema.properties, {
+    additionalProperties: false,
+  }),
+]);
+
+const LegacyCredentialSourceSchema = Type.Object(
   {
     id: CredentialSourceId,
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
-    ownerCapability: Type.Union(
-      [
-        Type.Literal("credential_gateway"),
-        Type.Literal("credential_proxy"),
-        Type.Literal("token_service"),
-      ],
-      {
-        description:
-          "The Token Service owns saved accounts. Other sources belong to the Driver that admitted them.",
-      },
-    ),
+    ownerCapability: Type.Union([
+      Type.Literal("credential_gateway"),
+      Type.Literal("credential_proxy"),
+    ]),
     config: CredentialSourceConfig,
     egress: Type.Optional(
       Type.Object(
@@ -733,6 +906,11 @@ export const CredentialSourceSchema = Type.Object(
   },
   { additionalProperties: false },
 );
+
+const CredentialSourceResultSchema = Type.Union([
+  CredentialSourceSchema,
+  LegacyCredentialSourceSchema,
+]);
 
 export const AgentRuntimeCredentialStatusSchema = Type.Object(
   {
@@ -1063,7 +1241,14 @@ export const ServiceAccountSchema = Type.Object(
     name: Name,
     credential: Type.Optional(
       Type.Object(
-        { kind: ServiceAccountCredentialSchema.properties.kind },
+        {
+          kind: Type.Union([
+            Type.Literal("api_key"),
+            Type.Literal("oauth_access_token"),
+            Type.Literal("access_token"),
+          ]),
+          sourceId: Type.Optional(CredentialSourceId),
+        },
         { additionalProperties: false },
       ),
     ),
@@ -1081,6 +1266,21 @@ export const BackendSummarySchema = Type.Object(
 
 export const RepositoryOptionSchema = Type.Object(
   {
+    githubAccess: Type.Optional(
+      Type.Object(
+        {
+          ...RepositoryNetworkGrantSchema.properties,
+          repository: Type.String({
+            pattern: "^(?!.*\\.git$)(?:[a-z0-9][a-z0-9-]{0,38}/)?[a-z0-9][a-z0-9._-]{0,99}$",
+          }),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Maximum repository grant for a native GitHub selection. An installation-relative name is qualified from the selected GitHub Source before saving a network policy.",
+        },
+      ),
+    ),
     repositoryRef: RepositoryBindingSelectionSchema.properties.repositoryRef,
     displayName: Name,
     description: Type.Optional(Type.String({ minLength: 1, maxLength: 512 })),
@@ -1169,7 +1369,7 @@ export const SecretDetailResponse = Type.Object(
 );
 
 export const CredentialSourceResponse = Type.Object(
-  { data: CredentialSourceSchema, meta: Meta },
+  { data: CredentialSourceResultSchema, meta: Meta },
   {
     $id: "CredentialSourceResponse",
     additionalProperties: false,
@@ -1220,7 +1420,7 @@ export const CredentialWithdrawalResponse = Type.Object(
 );
 
 export const CredentialSourceListResponse = Type.Object(
-  { data: Type.Array(CredentialSourceSchema), meta: Meta },
+  { data: Type.Array(CredentialSourceResultSchema), meta: Meta },
   { additionalProperties: false },
 );
 
@@ -1375,7 +1575,7 @@ export const RepositoryRevisionStateSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
-    deadlineWallMs: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+    deadlineWallMs: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     bindings: RepositoryBindingSelectionsSchema,
   },
   { additionalProperties: false },
@@ -1396,6 +1596,7 @@ export const AgentRevisionSchema = Type.Object(
       description:
         "Gateway managed mode requested for this Agent version. It does not report Gateway runtime state.",
     }),
+    networkProxy: Type.Optional(AgentNetworkProxySchema),
     harness: RevisionHarnessSchema,
     compute: Type.Object(
       { id: Type.String({ minLength: 1 }), implementation: Type.String({ minLength: 1 }) },
@@ -1500,6 +1701,7 @@ export const AgentRevisionSummarySchema = Type.Object(
       "backendId",
       "configurationId",
       "configurationGeneration",
+      "networkProxy",
       "createdAt",
     ]).properties,
     harness: Type.Object(
@@ -1599,7 +1801,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
+          "Status of recorded runtime retirement and session disposal for retiring or nonserving Agent revisions. Session disposal reports its current queue state. `null` means there is no applicable work record. `succeeded` means the applicable records show completion at the time of the read.",
       },
     ),
     progress: Type.Union(

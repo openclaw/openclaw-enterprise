@@ -37,12 +37,12 @@ import {
   authenticatedHeaders,
   signInToControllerApp,
   createTestAuthPrincipal,
-} from "./auth-session.mjs";
+} from "./auth-session.ts";
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantRole } from "./iam-grants.ts";
-import { jsonRequestInit } from "./inject-json.mjs";
+import { jsonRequestInit } from "./inject-json.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 type MutableIAMState = { [K in keyof NativeIAMState]: Array<NativeIAMState[K][number]> };

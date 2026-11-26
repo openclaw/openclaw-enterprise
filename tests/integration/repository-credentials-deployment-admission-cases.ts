@@ -1,11 +1,21 @@
+import { repositoryAccessSelections } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 import { Type, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import type { createFastifyApp } from "../../apps/controller/src/index.ts";
+import {
+  SandboxPolicyResponse,
+  SandboxPolicyViewResponse,
+} from "../../packages/contracts/src/api/sandbox-policy.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import {
+  resolveSelectedRepositoryScope,
+  validateGitHubRepositoryRegistry,
+  type GitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { compileOpenShellBoundGitRule } from "../../apps/controller/src/drivers/sandbox/openshell-git-network-policy.ts";
 import {
   AgentListResponse,
   AgentReadResponse,
@@ -35,11 +45,16 @@ import {
   type PluginDesiredState,
   type ProvisionAgentBody,
   type RepositoryBindingSelection,
+  type RepositoryNetworkGrant,
   type SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
-import type { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  type InMemoryPlatformState,
+  type OpenClawController,
+} from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
 import {
   BROKER_PROXY_DISABLED,
@@ -48,7 +63,6 @@ import {
   BROKER_PROXY_EMPTY_HOST,
   BROKER_PROXY_LOCAL_BINDING,
   BROKER_PROXY_MODE,
-  CODEX_NEEDS_DEDICATED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   REPOSITORY_SELECTION_NOT_APPROVED,
@@ -56,12 +70,14 @@ import {
   runtimeIdUnsupported,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
 } from "../helpers/refusal-text.mjs";
+import { CODEX_NEEDS_DEDICATED } from "../helpers/refusal-configuration-runtime.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 
 type App = ReturnType<typeof createFastifyApp>;
 interface FixtureOptions {
   readonly compute?: ComputeDriver;
   readonly configurationDriver?: ConfigurationDriver;
+  configureRegistry?(registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry;
   readonly harness?: string;
   readonly repositories?: boolean;
 }
@@ -72,7 +88,7 @@ interface HttpResponse {
 }
 
 type Request = (
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "PUT",
   path: string,
   payload?: unknown,
 ) => Promise<HttpResponse>;
@@ -128,6 +144,142 @@ function checkedEnvelope<Schema extends TSchema>(
   const { status: _status, ...body } = response;
   assert.ok(Check(schemaContext, schema, body), message);
   return body;
+}
+
+function compiledRepositoryApiRoutes(
+  grants: readonly RepositoryNetworkGrant[],
+  permissions: Parameters<typeof compileOpenShellBoundGitRule>[3],
+) {
+  const rule = compileOpenShellBoundGitRule(
+    grants,
+    "oce-github-installation-" + "a".repeat(32),
+    ["/usr/bin/git"],
+    permissions,
+  );
+  assert.ok(rule.endpoints.some(({ host }) => host === "github.com"));
+  return rule.endpoints.flatMap((endpoint) =>
+    endpoint.host === "api.github.com" && "rules" in endpoint
+      ? endpoint.rules.map(({ allow }) => `${allow.method} ${allow.path}`)
+      : [],
+  );
+}
+
+export async function verifyRepositoryPolicyWriteProjection(
+  fixture: Composition & {
+    readonly namespace: { readonly id: string };
+    readonly configuration: { readonly id: string };
+    readonly iamState: Parameters<typeof grantRole>[0];
+    requestWithoutGrants(app: App, grant: (principalId: string) => void): Promise<Request>;
+  },
+  editableAgent: () => Promise<{
+    readonly policyPath: string;
+  }>,
+  sourceId: string,
+  grant: RepositoryNetworkGrant,
+) {
+  const absent = await editableAgent();
+  const present = await editableAgent();
+  const read = async (path: string) =>
+    checkedEnvelope(await fixture.request("GET", path), SandboxPolicyViewResponse, 200).data.policy;
+  const original = await read(absent.policyPath);
+  const initial = await read(present.policyPath);
+  for (const policy of [original, initial]) {
+    assert.equal(Object.hasOwn(policy, "repositoryNetworkPolicy"), false);
+  }
+
+  // Grant read on the Agent, Configuration and Harness source, plus mutation
+  // on these two policies. Policy read remains unavailable to this account.
+  const edit = await fixture.requestWithoutGrants(fixture.app, (principalId) => {
+    const namespaceId = fixture.namespace.id;
+    for (const policy of [original, initial]) {
+      grantRole(fixture.iamState, principalId, {
+        id: "manage-" + policy.agentId,
+        namespaceId,
+        resource: { kind: "agent", id: policy.agentId },
+        permissions: { agent: ["read", "manage_policy"] },
+      });
+      grantRole(fixture.iamState, principalId, {
+        id: "update-" + policy.id,
+        namespaceId,
+        resource: { kind: "sandbox_policy", id: policy.id },
+        permissions: { sandbox_policy: ["update"] },
+      });
+    }
+    grantRole(fixture.iamState, principalId, {
+      id: "read-policy-configuration",
+      namespaceId,
+      resource: { kind: "configuration", id: fixture.configuration.id },
+      permissions: { configuration: ["read"] },
+    });
+    grantRole(fixture.iamState, principalId, {
+      id: "read-policy-source",
+      namespaceId,
+      resource: { kind: "credential_source", id: sourceId },
+      permissions: { credential_source: ["read"] },
+    });
+  });
+  assert.equal((await edit("GET", absent.policyPath)).status, 403);
+  assert.equal((await edit("GET", present.policyPath)).status, 403);
+
+  const update = (
+    path: string,
+    expectedVersion: number,
+    repositoryNetworkPolicy?: readonly RepositoryNetworkGrant[],
+  ) =>
+    edit("PUT", path, {
+      expectedVersion,
+      additions: [],
+      ...(repositoryNetworkPolicy === undefined ? {} : { repositoryNetworkPolicy }),
+    });
+  const saved = checkedEnvelope(
+    await update(present.policyPath, initial.version, [grant]),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.deepEqual(saved.repositoryNetworkPolicy, [grant]);
+  // Align versions with ordinary saves and check that the response omits both
+  // an absent list and the existing list, which this caller cannot read.
+  const omitted = checkedEnvelope(
+    await update(present.policyPath, saved.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.equal(Object.hasOwn(omitted, "repositoryNetworkPolicy"), false);
+  const advance = checkedEnvelope(
+    await update(absent.policyPath, original.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  const omittedAbsent = checkedEnvelope(
+    await update(absent.policyPath, advance.version),
+    SandboxPolicyResponse,
+    200,
+  ).data;
+  assert.equal(Object.hasOwn(omittedAbsent, "repositoryNetworkPolicy"), false);
+  assert.equal(omittedAbsent.version, omitted.version);
+
+  const before = await read(absent.policyPath);
+  const existing = await read(present.policyPath);
+  assert.equal(Object.hasOwn(before, "repositoryNetworkPolicy"), false);
+  assert.deepEqual(existing.repositoryNetworkPolicy, [grant]);
+  const first = checkedEnvelope(
+    await update(absent.policyPath, before.version, []),
+    ErrorResponse,
+    403,
+    "first deny-all save without SandboxPolicy read",
+  ).error;
+  const withdrawal = checkedEnvelope(
+    await update(present.policyPath, existing.version, []),
+    ErrorResponse,
+    403,
+    "withdrawal without SandboxPolicy read",
+  ).error;
+  assert.deepEqual(
+    { ...first, message: first.message.replaceAll(before.id, "<policy>") },
+    { ...withdrawal, message: withdrawal.message.replaceAll(existing.id, "<policy>") },
+  );
+  assert.deepEqual(await read(absent.policyPath), before);
+  assert.deepEqual(await read(present.policyPath), existing);
 }
 
 function narrowRepositoryPolicy(
@@ -234,7 +386,12 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
 
   test("Deploy freezes public repository selection without exposing provider grants", async (t) => {
     const f = await fixture(t);
-    const agent = await f.createAgent({ repositoryBindings: [{ repositoryRef: "project" }] });
+    const agent = await f.createAgent({
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "project" }],
+      },
+    });
     await f.prepareDeployment(agent);
     const path = `${f.collection}/${agent.id}`;
     const { data: deployed } = checkedEnvelope(
@@ -259,7 +416,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
 
     const cleared = await f.request("PATCH", path, {
       configurationId: f.configuration.id,
-      repositoryBindings: [],
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
     });
     assert.equal(cleared.status, 200);
     const { data: historical } = checkedEnvelope(
@@ -290,7 +447,9 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
 
   test("Deploy rechecks repository policy after a draft was accepted", async (t) => {
     const f = await fixture(t);
-    const agent = await f.createAgent({ repositoryBindings: selection });
+    const agent = await f.createAgent({
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+    });
     await f.prepareDeployment(agent);
     // Recomposition replaces operator policy; an accepted draft is not a permanent grant.
     const reconfigured = await f.compose(narrowRepositoryPolicy(f.registry, f.namespace.id));
@@ -322,8 +481,83 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       200,
     );
     assert.ok(!("configurationReadError" in unchanged));
-    assert.deepEqual(unchanged.repositoryBindings, selection);
+    assert.deepEqual(repositoryAccessSelections(unchanged.repositoryAccess), selection);
     assert.equal(unchanged.desiredRuntimeState, "stopped");
+  });
+
+  test("Redeploying an unchanged repository binding takes the current Namespace REST policy", async (t) => {
+    const bindings = [{ repositoryRef: "project", profile: "github-repository" }];
+    const grant = { repository: "example/project", access: "write" } as const;
+    const f = await fixture(t, {
+      configureRegistry: selectedRepositoryRegistry("write", { nativeGit: "v1" }),
+    });
+    const agent = await f.createAgent({
+      repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
+    });
+    await f.prepareDeployment(agent);
+    const path = `${f.collection}/${agent.id}`;
+    const namespaceId = f.namespace.id;
+    const deploy = async (request: Request) => {
+      const { data: response } = checkedEnvelope(
+        await request("POST", `${path}/deploy`),
+        AgentRevisionResponse,
+        202,
+      );
+      assert.deepEqual(response.repositoryCredentials?.bindings, bindings);
+      const revision = await f.state.read((view) =>
+        view.revisions.findRevision(namespaceId, agent.id, response.id),
+      );
+      assert.ok(revision?.repositoryCredentials);
+      return revision.repositoryCredentials.bindings;
+    };
+    const initial = await deploy(f.request);
+    function restRoutes(registry: GitHubRepositoryRegistry, admitted: typeof initial) {
+      const { scopedRest } = resolveSelectedRepositoryScope(
+        validateGitHubRepositoryRegistry(registry, backendId),
+        namespaceId,
+        admitted,
+      );
+      // Feed the exact admitted credential scope to the Sandbox compiler with a Write grant.
+      return compiledRepositoryApiRoutes([grant], scopedRest);
+    }
+    assert.deepEqual(restRoutes(f.registry, initial), []);
+
+    const expanded: GitHubRepositoryRegistry = {
+      ...f.registry,
+      repositories: f.registry.repositories.map((entry) => ({
+        ...entry,
+        namespaces: entry.namespaces.map((policy) =>
+          entry.repositoryRef === "project" && policy.namespaceId === namespaceId
+            ? {
+                ...policy,
+                permissions: {
+                  contents: "write",
+                  metadata: "read",
+                  issues: "write",
+                  pull_requests: "write",
+                },
+              }
+            : policy,
+        ),
+      })),
+    };
+    const reconfigured = await f.compose(expanded);
+    const current = await deploy(reconfigured.request);
+    // A changed registration preserves the draft selector without refreshing an old revision.
+    assert.throws(() => restRoutes(expanded, initial), {
+      message: "selected-repository-grant-changed",
+    });
+    const routes = restRoutes(expanded, current);
+    assert.ok(routes.includes("GET /repos/example/project/issues"));
+    assert.ok(routes.includes("POST /repos/example/project/pulls"));
+    assert.ok(routes.includes("POST /repos/example/project/issues"));
+    const { data: draft } = checkedEnvelope(
+      await reconfigured.request("GET", path),
+      AgentReadResponse,
+      200,
+    );
+    assert.ok(!("configurationReadError" in draft));
+    assert.deepEqual(repositoryAccessSelections(draft.repositoryAccess), bindings);
   });
 
   test("Repository refusals wait for the Agent grant: a missing and an unreadable Agent answer alike", async (t) => {
@@ -331,14 +565,19 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     // grant on the Agent, so a caller without it learns nothing from them: the same request gets
     // the same answer for an Agent that exists and one that does not, each request's ID hidden.
     const f = await fixture(t);
-    const agent = await f.createAgent({ repositoryBindings: selection });
+    const agent = await f.createAgent({
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+    });
     await f.prepareDeployment(agent);
     const reconfigured = await f.compose(narrowRepositoryPolicy(f.registry, f.namespace.id));
     const outsider = await f.requestWithoutGrants(reconfigured.app);
     const missing = `agt_${randomUUID()}`;
     const refusedSave = {
       configurationId: f.configuration.id,
-      repositoryBindings: [{ repositoryRef: "missing" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "missing" }],
+      },
     };
     for (const { method, suffix, body, status, message } of [
       {
@@ -394,7 +633,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     );
     assert.equal(options.error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
     const agent = await f.createAgent({
-      repositoryBindings: selection,
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
       harnessAuth: { method: "runtime" },
       gatewayManagedMode: false,
     });
@@ -412,7 +651,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     );
     const cleared = await f.request("PATCH", path, {
       configurationId: f.configuration.id,
-      repositoryBindings: [],
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
     });
     assert.equal(cleared.status, 200);
     const { data: ordinary } = checkedEnvelope(
@@ -468,7 +707,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
             name: `Repository Agent ${randomUUID()}`,
             configurationId: f.configuration.id,
             executionMode,
-            repositoryBindings: selection,
+            repositoryAccess: { defaultProfile: "git-write", repositories: selection },
           });
           const { error } = checkedEnvelope(refused, ErrorResponse, status);
           assert.equal(error.code, code);
@@ -479,7 +718,10 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
           );
           return;
         }
-        const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
+        const agent = await f.createAgent({
+          executionMode,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+        });
         await f.prepareDeployment(agent);
         // Written past OCC, as an older release's Configuration save stored it.
         const { gateway, ...native } = createHarnessConfiguration(harness, "gpt-5.1");
@@ -511,7 +753,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     const invalidMode = await f.request("POST", f.collection, {
       name: "Unknown mode",
       configurationId: f.configuration.id,
-      repositoryBindings: selection,
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
       executionMode: "unknown",
     });
     const { error } = checkedEnvelope(invalidMode, ErrorResponse, 400);
@@ -526,7 +768,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     const f = await fixture(t, { harness: "codex" });
     const agent = await f.createAgent({
       executionMode: "dedicated",
-      repositoryBindings: selection,
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
     });
     await f.prepareDeployment(agent);
     // Selecting Sandbox changes the admitted topology; no Sandbox runtime is invoked.
@@ -558,9 +800,9 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
         const bindings = [{ repositoryRef: "project", profile }];
         const agent = await f.createAgent({
           executionMode: "dedicated",
-          repositoryBindings: bindings,
+          repositoryAccess: { defaultProfile: "git-write", repositories: bindings },
         });
-        assert.deepEqual(agent.repositoryBindings, bindings);
+        assert.deepEqual(repositoryAccessSelections(agent.repositoryAccess), bindings);
         await f.prepareDeployment(agent);
         const path = `${f.collection}/${agent.id}`;
         const { data: deployed } = checkedEnvelope(
@@ -608,7 +850,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     assert.equal(allowing.status, 200, JSON.stringify(allowing));
     const agent = await f.createAgent({
       executionMode: "dedicated",
-      repositoryBindings: selection,
+      repositoryAccess: { defaultProfile: "git-write", repositories: selection },
     });
     await f.prepareDeployment(agent);
     const path = `${f.collection}/${agent.id}`;
@@ -629,7 +871,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
           name: `Repository Agent ${randomUUID()}`,
           configurationId: f.configuration.id,
           executionMode: "dedicated",
-          repositoryBindings: selection,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         }),
         message,
         `${label} create`,
@@ -637,7 +879,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       assertBrokerProxyRefused(
         await f.request("PATCH", path, {
           configurationId: f.configuration.id,
-          repositoryBindings: selection,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         }),
         message,
         `${label} update`,
@@ -674,7 +916,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
     // and deploys: the refusal's other remedy works.
     const cleared = await f.request("PATCH", path, {
       configurationId: f.configuration.id,
-      repositoryBindings: [],
+      repositoryAccess: { defaultProfile: "git-write", repositories: [] },
     });
     assert.equal(cleared.status, 200, JSON.stringify(cleared));
     const unbound = await f.request("POST", `${path}/deploy`);
@@ -692,7 +934,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       f.request("POST", f.collection, {
         name: `Repository Agent ${randomUUID()}`,
         configurationId: savedConfiguration.id,
-        repositoryBindings: selection,
+        repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         ...(plugins === undefined ? {} : { plugins }),
       });
     // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
@@ -732,7 +974,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
           executionMode: "dedicated",
           configuration: { kind: "agent", values: codexProxyValues("codex", networkProxy) },
           harnessAuth: { method: "api_key", source: modelSecret.ref },
-          repositoryBindings: selection,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         }),
         message,
         `${label} provision`,
@@ -763,7 +1005,10 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       {
         method: "PATCH",
         path: `${f.collection}/${agent.id}`,
-        body: { configurationId: f.configuration.id, repositoryBindings: selection },
+        body: {
+          configurationId: f.configuration.id,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
+        },
       },
       {
         method: "POST",
@@ -771,7 +1016,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
         body: {
           name: `Repository Agent ${randomUUID()}`,
           configurationId: f.configuration.id,
-          repositoryBindings: selection,
+          repositoryAccess: { defaultProfile: "git-write", repositories: selection },
         },
       },
     ] as const) {
@@ -816,7 +1061,8 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
         undefined,
         undefined,
         undefined,
-        selection,
+        undefined,
+        { defaultProfile: "git-write", repositories: selection ?? [] },
       ),
     );
     const scopes = checkedEnvelope(
@@ -838,7 +1084,7 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       200,
     );
     assert.ok(!("configurationReadError" in cleared));
-    assert.deepEqual(cleared.repositoryBindings ?? [], []);
+    assert.deepEqual(repositoryAccessSelections(cleared.repositoryAccess) ?? [], []);
   });
 
   test("Provisioning rejects a forbidden repository profile before queueing or creating resources", async (t) => {
@@ -867,7 +1113,10 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       executionMode: "dedicated",
       configuration: { kind: "agent", values: f.configuration.values },
       harnessAuth: { method: "api_key", source: modelSecret.ref },
-      repositoryBindings: [{ repositoryRef: "foreign-project", profile: "git-write" }],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: "foreign-project", profile: "git-write" }],
+      },
     } satisfies ProvisionAgentBody;
     const response = await f.request("POST", `${f.collection}/provision`, body);
     const { error } = checkedEnvelope(response, ErrorResponse, 400);
@@ -885,5 +1134,29 @@ export function registerRepositoryCredentialsDeploymentAdmissionCases({
       [f.namespace.id, `ns_${randomUUID()}`],
       { label: "POST agents/provision" },
     );
+  });
+}
+
+export function selectedRepositoryRegistry(
+  contents: "read" | "write",
+  {
+    nativeGit,
+    overrides = {},
+  }: {
+    nativeGit?: "v1" | undefined;
+    overrides?: Readonly<Record<string, "read" | "write">>;
+  } = {},
+) {
+  return (registry: GitHubRepositoryRegistry): GitHubRepositoryRegistry => ({
+    ...registry,
+    repositories: registry.repositories.map((repo) => ({
+      ...repo,
+      namespaces: repo.namespaces.map(({ namespaceId }) => ({
+        namespaceId,
+        profiles: ["github-repository"],
+        permissions: { contents: overrides[repo.repositoryRef] ?? contents, metadata: "read" },
+        ...(nativeGit && { nativeGit }),
+      })),
+    })),
   });
 }

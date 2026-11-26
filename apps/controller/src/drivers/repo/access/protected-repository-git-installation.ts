@@ -60,8 +60,7 @@ export function selectedRepositoryGrantSql(admissionId: string): string {
       ORDER BY member->>'repositoryRef') AS member_sessions,
     bool_and(session.session_id IS NOT NULL
       AND clock_timestamp() < to_timestamp(session.deadline_wall_ms / 1000.0)
-      AND (agent.repository_bindings @> jsonb_build_array(jsonb_build_object(
-        'repositoryRef',member->>'repositoryRef','profile',member->>'profile'))) IS TRUE
+      AND (occ.repository_access_contains_binding(agent.repository_access,member->>'repositoryRef',member->>'profile')) IS TRUE
     ) AS all_current
   FROM occ.repository_session_attempts anchor
   JOIN occ.agent_revisions revision ON (revision.namespace_id,revision.agent_id,revision.id)=
@@ -107,7 +106,13 @@ export const validRecipient = [
   "policyHash",
   ...repositoryGitRecipientFields.map((field) => "repositoryGitRecipient," + field),
 ]
-  .map((path) => `nullif(btrim(p.installation#>>'{enforcement,${path}}'), '') IS NOT NULL`)
+  .map((path) => {
+    const present = `nullif(btrim(p.installation#>>'{enforcement,${path}}'), '') IS NOT NULL`;
+    return path.endsWith("processInstanceId") || path.endsWith("networkInstanceId")
+      ? `(${present} OR (${admittedAuthorization}='online-request'
+          AND NOT (${recipient} ? 'processInstanceId') AND NOT (${recipient} ? 'networkInstanceId')))`
+      : present;
+  })
   .join(" AND ");
 
 /**

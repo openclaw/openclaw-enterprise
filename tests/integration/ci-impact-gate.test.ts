@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.ts";
-import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.ts";
 
 const gate = resolve("scripts/ci/impact-gate.ts");
 
@@ -18,6 +18,22 @@ type GateNeeds = Record<string, JobState> & {
   "runtime-image-fixture": JobState;
 };
 type ExpandedGate = Record<string, { result: string; lanes?: string[] }>;
+
+// Keep lane ownership independent of the gate's classifier.
+const expectedImageLanes = new Set([
+  "images-packaging",
+  "images-runtime-startup",
+  "images-runtime-startup-2",
+  "images-runtime-startup-3",
+]);
+
+function expectedParent(lane: string): string {
+  assert.ok(expectedFullLanes.includes(lane), `unexpected test lane: ${lane}`);
+  if (lane === "runtime-image-fixture") {
+    return lane;
+  }
+  return expectedImageLanes.has(lane) ? "image-lanes" : "pr-safe";
+}
 
 function assertExpandedGate(expanded: unknown): asserts expanded is ExpandedGate {
   assert.ok(typeof expanded === "object" && expanded !== null && !Array.isArray(expanded));
@@ -66,6 +82,52 @@ function runGate(t: TestContext, mode: string, needs: GateNeeds | string, extra:
   return { ...result, expanded };
 }
 
+function assertRejectedJobs({
+  label,
+  passingNeeds,
+  run,
+  lanes,
+}: {
+  label: string;
+  passingNeeds: () => GateNeeds;
+  run: (needs: GateNeeds) => ReturnType<typeof runGate>;
+  lanes: readonly string[];
+}) {
+  for (const [job, state] of Object.entries(passingNeeds())) {
+    for (const bad of [
+      "failure",
+      "cancelled",
+      "missing",
+      state.result === "success" ? "skipped" : "success",
+    ]) {
+      const needs = passingNeeds();
+      if (bad === "missing") {
+        delete needs[job];
+      } else {
+        const selected = needs[job];
+        assert.ok(selected);
+        selected.result = bad;
+      }
+      const result = run(needs);
+      const context = `${label}: ${job} ${bad}`;
+      assert.notEqual(result.status, 0, context);
+      assert.match(result.stderr, new RegExp(job));
+      for (const lane of lanes) {
+        const parent = expectedParent(lane);
+        assert.equal(
+          result.expanded?.[parent]?.result,
+          job === parent ? bad : "success",
+          `${context} -> ${lane}`,
+        );
+        if (lane !== parent) {
+          assert.equal(result.expanded?.[lane], undefined, "matrix result is not a lane result");
+          assert.ok(result.expanded?.[parent]?.lanes?.includes(lane));
+        }
+      }
+    }
+  }
+}
+
 test("gate accepts only the selected jobs and preserves full-mode matrix ownership", (t) => {
   const docs = runGate(t, "docs", passingGateNeeds("docs"));
   assert.equal(docs.status, 0, docs.stderr);
@@ -89,13 +151,11 @@ test("gate accepts only the selected jobs and preserves full-mode matrix ownersh
   );
   assert.deepEqual(
     full.expanded["pr-safe"]?.lanes,
-    expectedFullLanes.filter(
-      (lane) => lane !== "runtime-image-fixture" && !lane.startsWith("images-"),
-    ),
+    expectedFullLanes.filter((lane) => expectedParent(lane) === "pr-safe"),
   );
   assert.deepEqual(
     full.expanded["image-lanes"]?.lanes,
-    expectedFullLanes.filter((lane) => lane.startsWith("images-")),
+    expectedFullLanes.filter((lane) => expectedParent(lane) === "image-lanes"),
   );
   for (const state of Object.values(full.expanded)) {
     assert.equal(state.result, "success");
@@ -104,49 +164,12 @@ test("gate accepts only the selected jobs and preserves full-mode matrix ownersh
 
 test("gate rejects failed, cancelled, missing, and unexpectedly run or skipped jobs", (t) => {
   for (const mode of ["docs", "full"] as const) {
-    for (const [job, state] of Object.entries(passingGateNeeds(mode))) {
-      for (const bad of [
-        "failure",
-        "cancelled",
-        "missing",
-        state.result === "success" ? "skipped" : "success",
-      ]) {
-        const needs: GateNeeds = passingGateNeeds(mode);
-        if (bad === "missing") {
-          delete needs[job];
-        } else {
-          const selected = needs[job];
-          assert.ok(selected);
-          selected.result = bad;
-        }
-        const result = runGate(t, mode, needs);
-        assert.notEqual(result.status, 0, `${mode}: ${job} ${bad}`);
-        assert.match(result.stderr, new RegExp(job));
-        if (mode === "full") {
-          for (const lane of expectedFullLanes) {
-            const source =
-              lane === "runtime-image-fixture"
-                ? lane
-                : lane.startsWith("images-")
-                  ? "image-lanes"
-                  : "pr-safe";
-            assert.equal(
-              result.expanded?.[source]?.result,
-              job === source ? bad : "success",
-              `${mode}: ${job} ${bad} -> ${lane}`,
-            );
-            if (lane !== source) {
-              assert.equal(
-                result.expanded?.[lane],
-                undefined,
-                "matrix result is not a lane result",
-              );
-              assert.ok(result.expanded?.[source]?.lanes?.includes(lane));
-            }
-          }
-        }
-      }
-    }
+    assertRejectedJobs({
+      label: mode,
+      passingNeeds: () => passingGateNeeds(mode),
+      run: (needs) => runGate(t, mode, needs),
+      lanes: mode === "full" ? expectedFullLanes : [],
+    });
   }
 });
 
@@ -249,43 +272,12 @@ test("tests mode rejects wrong job states and unverifiable lane sets", (t) => {
     ["checks-baseline-1", "images-packaging"],
     ["checks-baseline-1", "runtime-image-fixture"],
   ]) {
-    for (const [job, state] of Object.entries(testNeeds(lanes))) {
-      for (const bad of [
-        "failure",
-        "cancelled",
-        "missing",
-        state.result === "success" ? "skipped" : "success",
-      ]) {
-        const needs = testNeeds(lanes);
-        if (bad === "missing") {
-          delete needs[job];
-        } else {
-          const selected = needs[job];
-          assert.ok(selected);
-          selected.result = bad;
-        }
-        const result = runTestsGate(t, lanes, needs);
-        assert.notEqual(result.status, 0, `${job} ${bad}`);
-        assert.match(result.stderr, new RegExp(job));
-        for (const lane of lanes) {
-          const source =
-            lane === "runtime-image-fixture"
-              ? lane
-              : lane.startsWith("images-")
-                ? "image-lanes"
-                : "pr-safe";
-          assert.equal(
-            result.expanded?.[source]?.result,
-            job === source ? bad : "success",
-            `${job} ${bad} -> ${lane}`,
-          );
-          if (lane !== source) {
-            assert.equal(result.expanded?.[lane], undefined, "matrix result is not a lane result");
-            assert.ok(result.expanded?.[source]?.lanes?.includes(lane));
-          }
-        }
-      }
-    }
+    assertRejectedJobs({
+      label: `tests ${lanes.join(", ")}`,
+      passingNeeds: () => testNeeds(lanes),
+      run: (needs) => runTestsGate(t, lanes, needs),
+      lanes,
+    });
   }
   const lanes = ["checks-baseline-1", "postgres"];
   // The impact job's lanes must be the ones being gated.

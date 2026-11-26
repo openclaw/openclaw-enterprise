@@ -254,7 +254,7 @@ func (client *Client) DeletePreset(namespaceID, presetID string) error {
 	return client.sendEmpty(http.MethodDelete, []string{"namespaces", namespaceID, "presets", presetID})
 }
 
-// CreateCredentialSource registers a Namespace Secret with the selected Credential Gateway.
+// CreateCredentialSource registers a static credential with the selected TokenService.
 func (client *Client) CreateCredentialSource(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(
 		http.MethodPost,
@@ -263,17 +263,17 @@ func (client *Client) CreateCredentialSource(namespaceID string, body jsontext.V
 	)
 }
 
-// ListCredentialSources lists credential sources without live gateway status.
+// ListCredentialSources lists readable credential Source metadata.
 func (client *Client) ListCredentialSources(namespaceID string) (any, error) {
 	return client.get("namespaces", namespaceID, "credential-sources")
 }
 
-// GetCredentialSource fetches a credential source with its live gateway status.
+// GetCredentialSource fetches one readable credential Source.
 func (client *Client) GetCredentialSource(namespaceID, sourceID string) (any, error) {
 	return client.get("namespaces", namespaceID, "credential-sources", sourceID)
 }
 
-// UpdateCredentialSource pushes current or replacement Secret values to the gateway copy.
+// UpdateCredentialSource updates a static Source through its selected TokenService.
 func (client *Client) UpdateCredentialSource(
 	namespaceID string,
 	sourceID string,
@@ -286,7 +286,7 @@ func (client *Client) UpdateCredentialSource(
 	)
 }
 
-// RotateCredentialSource forces a refresh-type source to mint a new token.
+// RotateCredentialSource asks TokenService to renew an OAuth or GitHub App Source.
 func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
 	return client.send(
 		http.MethodPost,
@@ -311,7 +311,7 @@ func (client *Client) GetAgentCredentialWithdrawal(namespaceID, agentID, sourceI
 	)
 }
 
-// DeleteCredentialSource removes an unreferenced credential source and its gateway copy.
+// DeleteCredentialSource retires a credential Source and its usable credential.
 func (client *Client) DeleteCredentialSource(namespaceID, sourceID string) error {
 	return client.sendEmpty(
 		http.MethodDelete,
@@ -608,13 +608,32 @@ func (client *Client) GetAgentRuntimeLogs(
 	return &page, nil
 }
 
-// StopAgent stops an Agent while retaining its revision history and persistent state.
-func (client *Client) StopAgent(namespaceID, agentID string) (any, error) {
-	return client.send(
-		http.MethodPost,
-		[]string{"namespaces", namespaceID, "agents", agentID, "stop"},
-		nil,
-	)
+// StopAgent requests an asynchronous stop while retaining revision history and
+// persistent state. A supplied expected revision constrains admission.
+func (client *Client) StopAgent(namespaceID, agentID string, expectedActiveRevisionID string) (any, error) {
+	segments := []string{"namespaces", namespaceID, "agents", agentID, "stop"}
+	if expectedActiveRevisionID == "" {
+		return client.send(http.MethodPost, segments, nil)
+	}
+	if !IsTypedID(expectedActiveRevisionID, "rev_") {
+		return nil, fmt.Errorf("expected active revision must be an exact revision ID")
+	}
+	query := url.Values{"expectedActiveRevisionId": {expectedActiveRevisionID}}
+	status, header, body, err := client.executeQuery(http.MethodPost, segments, query, nil)
+	if err == nil && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+		return nil, client.apiError(status, header, body)
+	}
+	if err == nil && status != http.StatusAccepted {
+		err = fmt.Errorf("expected HTTP 202, received HTTP %d", status)
+	}
+	var data any
+	if err == nil {
+		data, err = decodeResponseData(status, body)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w; the stop outcome is unknown. Check the Agent's state before retrying", err)
+	}
+	return data, nil
 }
 
 // DeleteAgent begins asynchronous Agent deletion.
@@ -637,8 +656,8 @@ func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet strin
 }
 
 // ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
-func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
-	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, body)
 }
 
 // TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.

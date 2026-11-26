@@ -259,7 +259,8 @@ export function jsonObjectProblem(text: string): string | undefined {
 
 type JsonObjectDiagnostic =
   | { kind: "valid"; value: Record<string, unknown> }
-  | { kind: "invalid-json" | "number-range"; message: string };
+  | { kind: "invalid-json"; message: string; offset?: number }
+  | { kind: "number-range"; message: string };
 
 // Model controls distinguish a number-range refusal from existing syntax/shape failures.
 export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
@@ -290,6 +291,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
     if (offset === 0 && fix) {
       return {
         kind: "invalid-json",
+        offset,
         message: `Invalid JSON: ${fix("at the start")}. Enter a valid JSON object.`,
       };
     }
@@ -297,6 +299,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
     const where = `line ${lines.length}, column ${visibleLength(lines.at(-1) ?? "") + 1}`;
     return {
       kind: "invalid-json",
+      offset,
       message: fix
         ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
         : `Invalid JSON at ${where}. Enter a valid JSON object.`,
@@ -530,6 +533,14 @@ function undescribe(control: Element, id: string) {
   }
 }
 
+/** Adds or removes one description, keeping other descriptions and avoiding redundant announcements. */
+export function setDescription(control: Element, id: string, show: boolean) {
+  const linked = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id);
+  if (linked !== show) {
+    (show ? describe : undescribe)(control, id);
+  }
+}
+
 let reasonIds = 0;
 
 /**
@@ -560,8 +571,8 @@ export function describeDisabled(
     undescribe(control, linked);
     delete control.dataset.disabledReason;
   }
-  if (id && !(control.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(id)) {
-    describe(control, id);
+  if (id) {
+    setDescription(control, id, true);
   }
   if (id && linked !== id) {
     control.dataset.disabledReason = id;

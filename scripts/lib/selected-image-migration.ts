@@ -11,7 +11,8 @@ const selectedImageMigrationProgram = readFileSync(
 
 export const selectedImageMigrationEntry = ["-e", selectedImageMigrationProgram, "--"];
 
-// Retained initialization Jobs can still name their image's executable directly.
+// Retained initialization Jobs can name a direct executable. Route their checks
+// through the selected-image loader so it verifies guarded mode support.
 export function migrationEntry(args: readonly string[]): string[] | undefined {
   const option = args.at(-1);
   const entry =
@@ -19,6 +20,6 @@ export function migrationEntry(args: readonly string[]): string[] | undefined {
   return isDeepStrictEqual(entry, selectedImageMigrationEntry) ||
     isDeepStrictEqual(entry, ["scripts/migrate-production.ts"]) ||
     isDeepStrictEqual(entry, ["scripts/migrate-production.mjs"])
-    ? entry
+    ? selectedImageMigrationEntry
     : undefined;
 }

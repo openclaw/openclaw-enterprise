@@ -12,6 +12,7 @@ import {
   managedInstalls,
   managedPluginCredentials,
   managedMcpCredentialBindings,
+  deployableManagedMcpToolNames,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -437,10 +438,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       const policy = selections[pkg.id]!;
       if (
         typeof policy.enabled !== "boolean" ||
-        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+        Object.keys(policy).some(
+          (key) =>
+            key !== "enabled" && key !== "driverPolicy" && !(pkg.kind === "mcp" && key === "tools"),
+        ) ||
+        (pkg.kind === "mcp" && policy.tools !== undefined && policy.driverPolicy === undefined)
       ) {
         throw new ConfigurationHarnessError(
-          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+          pkg.kind === "mcp"
+            ? `The ${pkg.entry.name} package supports enablement, a credential slot, and per-tool human approval.`
+            : `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
         );
       }
     }
@@ -484,7 +491,10 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     return { plugins: this.catalog(plugins), nextCursor: null };
   }
 
-  async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
+  async getCatalogPlugin(input: {
+    readonly pluginId: string;
+    readonly discoveredMcpToolNames?: readonly string[];
+  }): Promise<PluginCatalogEntry> {
     const pkg = managedInstalls.find(({ id }) => id === input.pluginId);
     if (!pkg) {
       // An unknown ID is the caller's error (finding 2790); name the versioned package ID
@@ -497,6 +507,20 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
         versioned.length === 1 ? versioned[0]!.id : undefined,
       );
     }
+    if (input.discoveredMcpToolNames !== undefined) {
+      if (pkg.kind !== "mcp") {
+        throw new ConfigurationHarnessError(
+          "Only a managed MCP Plugin can describe discovered tools.",
+        );
+      }
+      const names = deployableManagedMcpToolNames(pkg, input.discoveredMcpToolNames);
+      return this.catalog([
+        {
+          ...pkg.entry,
+          tools: [...names].map((name) => ({ id: name, name, ownerId: pkg.id })),
+        },
+      ])[0]!;
+    }
     return this.catalog([pkg.entry])[0]!;
   }
 
@@ -507,6 +531,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     credentialRuntime?: {
       readonly sandbox: string | undefined;
       readonly gateway: string | undefined;
+      readonly stagedPluginIds?: ReadonlySet<string>;
     },
   ): void {
     const { managed, native } = splitOpenClawSelections(selections);
@@ -525,11 +550,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
         throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
       }
     }
-    requireManagedCredentialRuntime(
-      selections,
-      credentialRuntime?.sandbox,
-      credentialRuntime?.gateway,
-    );
+    requireManagedCredentialRuntime(selections, credentialRuntime?.stagedPluginIds);
   }
 
   validateAgentConfiguration(

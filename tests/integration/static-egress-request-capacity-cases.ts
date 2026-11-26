@@ -29,7 +29,8 @@ import capturedOperation from "../fixtures/static-egress/openshell-operation.jso
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { syntheticDispatchFixture } from "../helpers/static-egress-dispatch.ts";
 import { requestId } from "../helpers/static-egress-request-id.ts";
-import { staticEgressWireFixture, wireTime } from "../helpers/static-egress.mjs";
+import { protectedMetadataFixture, wireTime } from "../helpers/static-egress.mjs";
+import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 function heldRequests(t: TestContext, release: () => void) {
@@ -72,7 +73,8 @@ export function registerStaticEgressRequestCapacityCases(): void {
   test("signed supervisor instance and UUIDv7 creation horizon refuse old callers and deadline-extension replay", async (t) => {
     let elapsed = 0;
     const now = () => new Date(Date.now() + elapsed);
-    const f = await staticEgressWireFixture(t, { now });
+    const fixture = await protectedMetadataFixture(t, { now });
+    const f = fixture.exchange;
     const reads = f.secretReads;
     const operation = asRecord(capturedOperation);
     const context = asRecord(operation?.request_context);
@@ -90,7 +92,7 @@ export function registerStaticEgressRequestCapacityCases(): void {
     assert.equal(operation.capture_delay_ms, 100);
     // The independently captured delayed sender wire is historical, never a reusable
     // authorization. Rebind only the fixture Sandbox to reach the real horizon check.
-    const historical = f.capture();
+    const historical = captureMetadata(fixture);
     historical.request.context.request_id = historicalId;
     historical.deadline = { seconds, nanos };
     assert.ok((await f.resolve(historical)).refused);
@@ -101,15 +103,15 @@ export function registerStaticEgressRequestCapacityCases(): void {
       { instance_id: f.namespace.id },
     ]) {
       if (claims.instance_id?.startsWith("10000000-")) {
-        assert.ok((await f.resolve(f.capture(), f.metadata(claims))).refused);
+        assert.ok((await f.resolve(captureMetadata(fixture), f.metadata(claims))).refused);
       } else {
-        await assert.rejects(f.resolve(f.capture(), f.metadata(claims)), { code: 7 });
+        await assert.rejects(f.resolve(captureMetadata(fixture), f.metadata(claims)), { code: 7 });
       }
     }
     assert.equal(f.secretReads, reads);
-    const captured = f.capture();
+    const captured = captureMetadata(fixture);
     captured.deadline = wireTime(now().getTime() + 1000);
-    const ready = (await f.resolve(captured)).ready;
+    const ready = (await f.resolve(captured)).ready_without_material;
     assert.ok(ready);
     // A short submitted deadline does not shorten replay retention for this immutable operation ID.
     elapsed = 2000;
@@ -118,12 +120,8 @@ export function registerStaticEgressRequestCapacityCases(): void {
     elapsed = 31_000;
     captured.deadline = wireTime(now().getTime() + 1000);
     assert.ok((await f.resolve({ ...captured, response_custody: randomBytes(32) })).refused);
-    assert.equal(
-      f.secretReads,
-      reads + 1,
-      "eviction cannot make an expired UUID into a new operation",
-    );
-    assert.ok((await f.resolve(f.capture())).ready);
+    assert.equal(f.secretReads, reads, "eviction cannot make an expired UUID into a new operation");
+    assert.ok((await f.resolve(captureMetadata(fixture))).ready_without_material);
   });
 
   test(
@@ -143,19 +141,19 @@ export function registerStaticEgressRequestCapacityCases(): void {
         requestIds: 256,
         sandboxRequestIds: 64,
       };
-      const f = await staticEgressWireFixture(t, {
+      const fixture = await protectedMetadataFixture(t, {
         now: () => new Date(start + elapsed),
         credentialProxyCapacity: capacity,
       });
+      const f = fixture.exchange;
       assert.ok(f.controller instanceof OpenClawController);
       assert.deepEqual(
         f.controller.createCredentialProxy(capacityProbeOwner).capacity,
         capacity,
         "the controller builds the exchange's proxy with the configured bounds",
       );
-      const peer = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
       // Advance the controller's supported clock while keeping genuine signed identity, IAM,
-      // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
+      // authority transport and HTTPS provider. Completion must release active capacity;
       // fixed operation horizons must release replay capacity during the same long-lived JWT.
       // One Sandbox at one request per 800 ms holds about 38 replay entries per 30 s horizon,
       // under its share of 64; a horizon twice as long would reach it. Its share is the first
@@ -169,24 +167,37 @@ export function registerStaticEgressRequestCapacityCases(): void {
       assert.ok(60_000 / step > capacity.sandboxRequestIds);
       assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
       assert.ok(capacity.operations < operations);
-      // The Kubernetes Secret driver stamps each read with the wall clock, and the proxy refuses
-      // material observed after its own clock. Setup can take longer than one step on a busy
-      // runner, so start the advanced clock from the wall clock after setup, not before it.
+      // Start the replay horizon after the controlled installation has been admitted.
       start = Date.now();
+      fixture.setResponse({
+        status: 200,
+        body: { id: 7311, full_name: "fixture/credential-free" },
+      });
       for (let i = 0; i < operations; i += 1) {
         elapsed += step;
-        const protectedResponse = await f.exchangeResponse(undefined, undefined, peer);
+        const captured = captureMetadata(fixture);
+        const ready = (
+          await f.resolve(
+            captured,
+            f.metadata({
+              exp: Math.floor(Date.now() / 1000) + 3600,
+            }),
+          )
+        ).ready_without_material;
+        assert.ok(ready);
+        const { allowed } = await f.authorize(
+          f.permitRequest(captured, ready, { noMaterial: true }),
+        );
+        assert.ok(allowed);
+        const response = await f.send(captured, { credential_headers: [] });
+        const protectedResponse = await f.protect(captured, response);
         assert.ok(
           "body" in protectedResponse && Buffer.isBuffer(protectedResponse.body),
           `sequential operation ${i}`,
         );
       }
       assert.equal(f.providerRequests.length, operations);
-      assert.ok(
-        f.providerRequests.every(
-          ({ authorization }) => authorization === "Bearer synthetic-key-initial",
-        ),
-      );
+      assert.ok(f.providerRequests.every(({ authorization }) => authorization === undefined));
     },
   );
 
@@ -761,30 +772,34 @@ export function registerStaticEgressRequestCapacityCases(): void {
     const { credentialProxyCapacity } = installationControllerOptions(loaded.installation);
     assert.ok(credentialProxyCapacity);
     assert.equal(credentialProxyCapacity.sandboxOperations, 1);
-    const f = await staticEgressWireFixture(t, { credentialProxyCapacity });
+    const fixture = await protectedMetadataFixture(t, { credentialProxyCapacity });
+    const f = fixture.exchange;
     // The Sandbox's only operation slot is held by a ready handle on an open exchange.
     const held = await f.beginExchange();
     t.after(() => {
       held.stream.cancel();
     });
-    held.stream.write(held.opening(f.capture()));
+    held.stream.write(held.opening(captureMetadata(fixture)));
     const heldReply = await held.next();
     assert.equal(heldReply.event, "resolved");
-    assert.ok(heldReply.resolved.ready, "the first request is ready");
+    assert.ok(heldReply.resolved.ready_without_material, "the first request is ready");
     const reads = f.secretReads;
-    const refused = await f.resolve(f.capture());
+    const refused = await f.resolve(captureMetadata(fixture));
     assert.equal(refused.refused?.code, f.refusalCode("UNAVAILABLE"), JSON.stringify(refused));
     assert.equal(f.secretReads, reads, "a request past the configured share reads no Secret");
     // Closing the exchange releases its handle and with it the slot. The authority sees the
     // cancellation asynchronously, so the next request may briefly still be refused.
     held.stream.cancel();
     const deadline = Date.now() + 10_000;
-    let next = await f.resolve(f.capture());
-    while (!next.ready && Date.now() < deadline) {
+    let next = await f.resolve(captureMetadata(fixture));
+    while (!next.ready_without_material && Date.now() < deadline) {
       await setTimeout(50);
-      next = await f.resolve(f.capture());
+      next = await f.resolve(captureMetadata(fixture));
     }
-    assert.ok(next.ready, `the released slot serves the next request: ${JSON.stringify(next)}`);
+    assert.ok(
+      next.ready_without_material,
+      `the released slot serves the next request: ${JSON.stringify(next)}`,
+    );
   });
 
   test("a request ID stays reserved once policy or Secret work can start", async (t) => {
@@ -846,3 +861,6 @@ export function registerStaticEgressRequestCapacityCases(): void {
     assert.equal(checks, 3);
   });
 }
+
+export { runStaticEgressReceiptCapacityCase } from "./static-egress-receipt-capacity-cases.ts";
+export { createStaticEgressAdmissionCases } from "./static-egress-admission-cases.ts";

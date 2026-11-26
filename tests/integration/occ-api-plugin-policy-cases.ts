@@ -7,71 +7,53 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   AgentListResponse,
-  AgentReadResponse,
   AgentResponse,
   AgentRevisionListResponse,
   AgentRevisionResponse,
-  ErrorResponse,
   InstallationResponse,
   type AgentWire,
-  type CreateAgentBody,
   type CreateConfigurationBody,
-  type ErrorCode,
   type OpenClawConfigurationDocument,
   type PluginDesiredSelection,
   type PluginDesiredState,
-  type PluginDriver,
-  type UpdateAgentBody,
 } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { managedPluginSettingRefusal, pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
+import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
+import { managedPluginSettingRefusal } from "../helpers/refusal-configuration-runtime.ts";
 import {
   bindHarnessKey,
   bootstrapInstallation,
   checkedInjectedBody,
   createConfiguration,
-  createInjectedControllerFixture,
   createNamespace,
-  type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
 
-type Controller = {
-  fixture: Awaited<ReturnType<typeof createInjectedControllerFixture>>;
-  request: FixtureRequest;
-};
-type ConfiguredController = (options?: {
-  configurationDriver?: ConfigurationDriver;
-}) => Promise<Controller>;
-type Reply = Awaited<ReturnType<FixtureRequest>>;
-type ConfigurationDriver = ReturnType<typeof createTestConfigurationDriver>;
-type AgentCreate = Omit<CreateAgentBody, "plugins"> & { plugins?: PluginDesiredState };
-type AgentUpdate = Omit<UpdateAgentBody, "plugins"> & { plugins?: PluginDesiredState };
+import {
+  apiError,
+  diffsPluginId,
+  diffsSelection,
+  linearPluginId,
+  readAgent,
+  selectPluginDriver,
+  type AgentCreate,
+  type AgentUpdate,
+  type ConfigurationDriver,
+  type ConfiguredController,
+  type Controller,
+  type Reply,
+} from "./occ-api-plugin-policy-support.ts";
+
+export {
+  registerPluginHarnessCase,
+  registerPluginSnapshotCase,
+} from "./occ-api-plugin-snapshot-cases.ts";
+export {
+  registerCodexPluginApproversCase,
+  registerPluginAuthorizationCase,
+} from "./occ-api-plugin-authorization-cases.ts";
+
 type ApprovalPolicy = "never" | "on-request" | "on-failure";
-
-const diffsPluginId = "occ-plugin:diffs";
-const linearPluginId = "codex-plugin:linear@openai-curated-remote";
-const diffsSelection = {
-  [diffsPluginId]: { enabled: true, toolDefaults: { approval: "none" } },
-} satisfies PluginDesiredState;
-
-function selectPluginDriver({ fixture }: Controller, pluginDriver: PluginDriver) {
-  assert(fixture.controller, "bootstrap must create the controller");
-  fixture.controller.registerDriver(pluginDriver);
-  fixture.controller.selectDriver("plugin", pluginDriver.id);
-}
-
-function apiError(reply: Reply, status: number, code: ErrorCode, label?: string) {
-  const { error } = checkedInjectedBody(reply, status, ErrorResponse);
-  assert.equal(error.code, code, `${label ?? "API error"}: ${JSON.stringify(reply.body)}`);
-  return error;
-}
-
-function readAgent(reply: Reply) {
-  const { data } = checkedInjectedBody(reply, 200, AgentReadResponse);
-  assert(!("configurationReadError" in data), JSON.stringify(data));
-  return data;
-}
 
 function savedConfiguration(driver: ConfigurationDriver, namespaceId: string, id: string) {
   const stored = driver.stored({ namespaceId, id });

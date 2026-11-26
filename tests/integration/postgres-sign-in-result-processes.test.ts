@@ -3,7 +3,7 @@ import { fork } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test, { type TestContext } from "node:test";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import {
   bootstrapProductionInstallation,
@@ -135,6 +135,7 @@ async function request(
   }
   return {
     status: response.status,
+    location: response.headers.get("location"),
     text,
     hasNullData: isRecord(payload) && payload.data === null,
     hasTopLevelSessionKey: isRecord(payload) && Object.hasOwn(payload, "sessionKey"),
@@ -143,23 +144,39 @@ async function request(
   };
 }
 
-async function callback(api: Api): Promise<Login> {
+async function startLogin(api: Api) {
   const start = await request(api, "/api/auth/providers/oidc/start", { method: "POST" });
   assert.equal(start.status, 200);
   assert.ok(typeof start.data.url === "string" && typeof start.data.attemptId === "string");
+  const cookie = cookieHeaderFromSetCookie(start.cookies)
+    .split("; ")
+    .find((pair) => /^__Host-occ_login_attempt=.+$/.test(pair));
+  assert.ok(cookie, "start must issue a browser binding cookie");
   const redirect = URL.parse(start.data.url);
   assert.ok(redirect, "Provider redirect must be a valid URL");
   const state = redirect.searchParams.get("state");
   assert.ok(state);
-  const code = await api.authorize(start.data.url);
-  const completed = await request(
-    api,
-    `/api/auth/providers/oidc/callback?state=${encodeURIComponent(state)}&code=${encodeURIComponent(code)}`,
-    { cookie: cookieHeaderFromSetCookie(start.cookies) },
-  );
+  return { url: start.data.url, state, attemptId: start.data.attemptId, cookie };
+}
+
+async function prepareCallback(issuer: Api, receiver = issuer) {
+  const { url, state, attemptId, cookie } = await startLogin(issuer);
+  // Each API has its own provider fixture. Issue the code where it will be redeemed.
+  const code = await receiver.authorize(url);
+  const query = new URLSearchParams({ state, code });
+  return { state, attemptId, cookie, path: `/api/auth/providers/oidc/callback?${query}` };
+}
+
+async function callback(
+  api: Api,
+  pending?: Awaited<ReturnType<typeof prepareCallback>>,
+): Promise<Login> {
+  const { attemptId, cookie, path } = pending ?? (await prepareCallback(api));
+  const completed = await request(api, path, { cookie });
   assert.equal(completed.status, 302);
+  assert.ok(completed.location === "/console/", "successful callback must redirect to the Console");
   return {
-    attemptId: start.data.attemptId,
+    attemptId,
     cookie: cookieHeaderFromSetCookie(completed.cookies),
   };
 }
@@ -307,6 +324,7 @@ test(
     assertCollected(await collect(a, spent), spentSession);
     const outstanding = await callback(a);
     const outstandingSession = await readSession(a, outstanding.cookie, recoveryUserId);
+    const pending = await prepareCallback(a, b);
     const before = await pool.query(
       "SELECT id, expires_at FROM occ.session WHERE user_id = $1 ORDER BY id",
       [recoveryUserId],
@@ -328,6 +346,42 @@ test(
           [recoveryUserId],
         );
         assert.deepEqual(after.rows, before.rows);
+      },
+    );
+
+    await t.test(
+      "an OIDC callback stays bound to its browser after the starting API exits",
+      async () => {
+        const other = await startLogin(b);
+        assert.ok(other.cookie !== pending.cookie, "the browsers must have distinct bindings");
+        const refused = "/console/?authError=oidc";
+        const assertRefused = async (path: string, cookie: string, location: string) => {
+          const result = await request(b, path, { cookie });
+          assert.equal(result.status, 302);
+          assert.ok(result.location === location, "callback must return the expected refusal");
+          assert.ok(
+            !result.cookies.some((pair) => pair.startsWith(`${sessionCookieName}=`)),
+            "refused callback must not issue a session cookie",
+          );
+        };
+        await assertRefused(pending.path, other.cookie, refused);
+        const login = await callback(b, pending);
+        const key = await readSession(b, login.cookie, recoveryUserId);
+        assertCollected(await collect(b, login), key);
+
+        // A provider error distinguishes a live attempt from a spent one without redeeming a code.
+        const unavailable = (state: string) =>
+          `/api/auth/providers/oidc/callback?${new URLSearchParams({ state, error: "temporarily_unavailable" })}`;
+        await assertRefused(
+          unavailable(other.state),
+          other.cookie,
+          "/console/?authError=oidc&authReason=provider-unavailable",
+        );
+        await assertRefused(unavailable(pending.state), pending.cookie, refused);
+        await assertRefused(pending.path, pending.cookie, refused);
+        assertDenied(await collect(b, login), key);
+        const stillCurrent = await readSession(b, login.cookie, recoveryUserId);
+        assert.ok(stillCurrent === key, "session must survive replay");
       },
     );
   },

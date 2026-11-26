@@ -46,11 +46,11 @@ var commandPermissions = map[string]commandPermission{
 	"preset list":                         {[]string{"listPresets"}, []string{"namespace.read"}, ""},
 	"preset get":                          {[]string{"getPreset"}, []string{"preset.read"}, ""},
 	"preset delete":                       {[]string{"deletePreset"}, []string{"preset.delete"}, ""},
-	"credential-source create":            {[]string{"createCredentialSource"}, []string{"credential_source.create"}, "Secret operate on the Secret it registers"},
+	"credential-source create":            {[]string{"createCredentialSource"}, []string{"credential_source.create"}, ""},
 	"credential-source list":              {[]string{"listCredentialSources"}, []string{"namespace.read"}, ""},
 	"credential-source get":               {[]string{"getCredentialSource"}, []string{"credential_source.read"}, ""},
-	"credential-source delete":            {[]string{"deleteCredentialSource"}, []string{"credential_source.delete"}, ""},
-	"credential-source update":            {[]string{"updateCredentialSource"}, []string{"credential_source.update"}, "Secret operate on each Secret it binds"},
+	"credential-source delete":            {[]string{"deleteCredentialSource"}, nil, "credential source delete, or read and operate when you own the OAuth grant"},
+	"credential-source update":            {[]string{"updateCredentialSource"}, []string{"credential_source.update"}, ""},
 	"credential-source rotate":            {[]string{"rotateCredentialSource"}, []string{"credential_source.update"}, ""},
 	"service-account list":                {[]string{"listServiceAccounts"}, []string{"namespace.read"}, ""},
 	"service-account delete":              {[]string{"deleteServiceAccount"}, []string{"service_account.delete"}, ""},
@@ -193,6 +193,8 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 		needs = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 	}
 	switch {
+	case needs == "" && also != "":
+		needs = also
 	case needs == "":
 		// Nothing to grant: a list filtered per item refuses only a scoped key.
 		return ""

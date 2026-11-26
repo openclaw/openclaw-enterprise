@@ -224,29 +224,6 @@ export function signInSettings(env: readonly EnvironmentEntry[]): SignInSettings
   return settings;
 }
 
-export function loginEgress(objects: readonly ChartResource[]) {
-  return objects.flatMap(({ kind, metadata, spec }) => {
-    const provider = /-api-(google|oidc)-login-egress$/.exec(metadata.name)?.[1];
-    if (kind !== "NetworkPolicy" || (provider !== "google" && provider !== "oidc")) {
-      return [];
-    }
-    return [
-      { provider, rules: array(record(spec, metadata.name).egress, `${metadata.name} egress`) },
-    ];
-  });
-}
-
-export function egressPeers(rule: unknown) {
-  return array(record(rule, "Egress rule").to, "Egress peers");
-}
-
-export function egressCidr(peer: unknown) {
-  const ipBlock = record(peer, "Egress peer").ipBlock;
-  if (ipBlock !== undefined) {
-    return string(record(ipBlock, "Egress IP block").cidr, "Egress CIDR");
-  }
-}
-
 export function assertSecretMount(
   objects: readonly ChartResource[],
   component: Component,
@@ -273,6 +250,14 @@ export function assertSecretMount(
   );
   assert.equal(mount.mountPath, expected.mountPath, `${label} mount path`);
   assert.equal(mount.readOnly, true, `${label} mount must be read-only`);
+  assert.ok(
+    mount.subPath === undefined || mount.subPath === "",
+    `${label} directory mount must not set subPath`,
+  );
+  assert.ok(
+    mount.subPathExpr === undefined || mount.subPathExpr === "",
+    `${label} directory mount must not set subPathExpr`,
+  );
   assert.deepEqual(
     containerEnv(container, name).filter(({ name }) => name === expected.variable),
     [{ name: expected.variable, value: `${expected.mountPath}/${expected.itemPath}` }],

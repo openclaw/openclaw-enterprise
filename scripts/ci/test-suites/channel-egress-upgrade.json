@@ -1,0 +1,43 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_SLACK_CHANNEL_ID",
+    "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "SLACK_BOT_TOKEN",
+    "OCC_TEST_GATEWAY_CA_CERT_PATH",
+    "OCC_TEST_GATEWAY_CA_KEY_PATH",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
+    "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
+    "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE",
+    "OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE",
+    "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS"
+  ],
+  "optionalEnv": ["OCC_TEST_CHANNEL_EGRESS_DATABASE_MODE", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"],
+  "env": {
+    "OCC_TEST_SLACK_LIVE": "1",
+    "OCC_TEST_CHANNEL_EGRESS_UPGRADE": "1"
+  },
+  "prepare": {},
+  "fileConcurrency": 1,
+  "files": [
+    {
+      "path": "tests/integration/channel-egress-disabled-helm-real.test.ts",
+      "expectedTests": [
+        "one-off upgrades an actual disabled Helm installation without Envoy or Agent transitions"
+      ]
+    },
+    {
+      "path": "tests/integration/channel-egress-upgrade-helm-real.test.ts",
+      "expectedTests": [
+        "one-off channel upgrade deploys current drafts and verifies real model and Slack recovery"
+      ]
+    }
+  ]
+}

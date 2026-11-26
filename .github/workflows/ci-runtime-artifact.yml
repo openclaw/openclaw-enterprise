@@ -2,6 +2,11 @@ name: CI Runtime Artifact
 
 on:
   workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ""
+        description: Approved Release OCE checkout.
     outputs:
       artifact-id:
         value: ${{ jobs.build.outputs.artifact-id }}
@@ -21,9 +26,8 @@ jobs:
   build:
     name: Build ordinary CI runtime
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    # Provisional cold-build measurement envelope; the helper bounds the build
-    # subprocess to 180 minutes. Consumers keep their own shorter test budgets.
-    timeout-minutes: 240
+    # The helper bounds the build to 40 minutes, leaving time for export and upload.
+    timeout-minutes: 60
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       archive-sha256: ${{ steps.build.outputs.archive-sha256 }}
@@ -37,6 +41,11 @@ jobs:
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
+      - name: Select the approved release checkout
+        if: inputs.source_sha != '' || github.workflow_ref == 'openclaw/openclaw-enterprise/.github/workflows/release-oce.yml@refs/heads/main'
+        uses: ./.github/actions/select-integration-source
+        with:
+          source-sha: ${{ inputs.source_sha }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.22.1"

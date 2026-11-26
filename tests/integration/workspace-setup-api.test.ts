@@ -1,24 +1,17 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import test, { type TestContext } from "node:test";
 
-import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import {
   AgentListResponse,
-  AgentRevisionListResponse,
   AgentResponse,
   ConfigurationResponse,
   InstallationResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import type { Identity } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { grantRole } from "../helpers/iam-grants.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import {
   registerHarnessPlacementAdmissionCases,
@@ -88,91 +81,6 @@ async function listAgents(fixture: WorkspaceFixture) {
 registerWorkspaceSetupAdmissionCases({ setup, storeConfiguration });
 
 registerProjectedIdentityAdmissionCase({ setup });
-
-test("Credential-source deployment refuses OpenShell projected identity before creating a revision", async (t) => {
-  for (const userNamespaces of [false, true]) {
-    const sandbox = openShellSandbox(t, { userNamespaces });
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/app/bin/codex"] },
-      { id: "workspace-openshell-credentials", backend: sandbox.backend },
-    );
-    const f = await setup(t, sandbox);
-    const compute = createTestKubernetesComputeDriver("source-identity-admission", {
-      sandboxDriver: sandbox.sandboxDriver,
-      credentialGatewayDriver: gateway,
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "occ",
-        expirationSeconds: 600,
-      },
-    });
-    for (const driver of [gateway, compute]) {
-      f.controller.registerDriver(driver);
-      f.controller.selectDriver(driver.capability, driver.id);
-    }
-    const secret = await f.createSecret(f.namespace.id, "model-token", "synthetic-model-token");
-    const sourceId = `cs_${randomUUID()}`;
-    // A previously registered source is ready; admission uses its real Driver catalog, not
-    // provider provisioning or live model credentials.
-    await f.state.transact((unit) =>
-      unit.credentialSources.createCredentialSource({
-        id: sourceId,
-        namespaceId: f.namespace.id,
-        name: "Codex account",
-        type: "codex-pat",
-        config: {},
-        secrets: { access_token: secret.ref },
-        ownerCapability: "credential_gateway",
-        driverId: gateway.id,
-        state: "ready",
-        createdAt: new Date().toISOString(),
-      }),
-    );
-    const configuration = await f.createConfiguration(
-      f.namespace.id,
-      createHarnessConfiguration("codex", "gpt-5.1"),
-    );
-    const saved = await f.create("Credential-source Agent", {
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-      harnessAuth: { method: "credential_source", sourceId },
-      credentialSources: [{ sourceId }],
-    });
-    // Source-backed bindings intentionally defer authentication validation from save to deploy.
-    const { data: agent } = f.fixtureResponse(
-      saved,
-      201,
-      AgentResponse,
-      "save credential-source Agent",
-    );
-    const identities: Identity[] = f.policy.identities;
-    identities.push({
-      kind: "service_principal",
-      id: agent.servicePrincipalId,
-      namespaceId: f.namespace.id,
-    });
-    grantRole(f.policy, agent.servicePrincipalId, {
-      id: `source-${agent.id}`,
-      namespaceId: f.namespace.id,
-      permissions: { credential_source: ["operate"] },
-      resource: { kind: "credential_source", id: sourceId },
-    });
-    const deployed = await f.request("POST", `${f.path}/${agent.id}/deploy`);
-    assertApiError(deployed, 400, "INVALID_REQUEST");
-    const { error } = f.fixtureResponse(
-      deployed,
-      400,
-      ErrorResponse,
-      "refuse projected identity deployment",
-    );
-    assert.match(error.message, /servicePrincipalCredentials\.mode to disabled/);
-    const revisions = await f.request("GET", `${f.path}/${agent.id}/revisions`);
-    assert.deepEqual(
-      f.fixtureResponse(revisions, 200, AgentRevisionListResponse, "list revisions").data,
-      [],
-    );
-  }
-});
 
 // Admission must refuse settings that native workspace preparation cannot accept before a
 // deployment can stop its predecessor. Codex remains a supported control.

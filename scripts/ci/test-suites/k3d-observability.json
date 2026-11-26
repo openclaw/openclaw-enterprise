@@ -46,12 +46,6 @@
       "expectedTests": [
         "production installation receipts survive interruption before and after Job capture"
       ]
-    },
-    {
-      "path": "tests/integration/production-preflight-cleanup-k3d.test.ts",
-      "expectedTests": [
-        "interrupted preflight recovery respects real Kubernetes identity and consumer lifetime"
-      ]
     }
   ]
 }

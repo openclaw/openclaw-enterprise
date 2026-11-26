@@ -5,7 +5,7 @@ import { RepositoryDeliveryPendingLog } from "../../apps/controller/src/composit
 import {
   OPERATION_REFUSAL_HINT_CODES,
   operationRefusalHintCode,
-} from "../../packages/occ/src/state/controller-work.ts";
+} from "../../packages/occ/src/deployment-work-status.ts";
 import { AUTH_MAINTAIN_COMMANDS } from "../../scripts/lib/auth-maintain-arguments.ts";
 import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
 import { bindDeliveryTransport } from "./common-logging-delivery-fixture.ts";

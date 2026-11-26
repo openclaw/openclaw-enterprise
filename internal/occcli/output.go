@@ -107,27 +107,17 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 		{title: "TYPE", key: "type"},
 		{title: "STATE", key: "state"},
 	}
-	// List responses carry no live gateway status (that takes a gateway call per source),
-	// so only single-resource tables get the column.
-	if collection {
-		return app.printItems(value, collection, columns)
-	}
-	columns = append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"})
-	if app.output == "table" {
+	if !collection && app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			if status, ok := resource["status"].(map[string]any); ok {
-				// Table output shows the live gateway state and, when the driver
-				// reported one, the refresh state. Structured output keeps the
-				// full status and is not given these table-only keys.
-				row := maps.Clone(resource)
-				row["gatewayStatus"] = status["state"]
 				if refresh, ok := status["refresh"].(map[string]any); ok {
 					if state, ok := refresh["state"].(string); ok && state != "" {
+						row := maps.Clone(resource)
 						row["refreshStatus"] = state
 						columns = append(columns, column{title: "REFRESH", key: "refreshStatus"})
+						value = row
 					}
 				}
-				value = row
 			}
 		}
 	}
@@ -268,6 +258,13 @@ func (app *application) printDeploymentStatus(value any, agent map[string]any) e
 	}
 	if row["repositoryAccess"] != nil {
 		columns = append(columns, column{title: "REPOSITORY ACCESS", key: "repositoryAccess", format: deploymentErrorText})
+	}
+	if app.output == "table" && row["cleanup"] != nil {
+		columns = append(columns, column{title: "CLEANUP", key: "cleanup", format: func(value any) any {
+			cleanup, _ := value.(map[string]any)
+			status, _ := cleanup["status"].(string)
+			return cmp.Or(status, "unknown")
+		}})
 	}
 	return app.printItems(row, false, columns)
 }

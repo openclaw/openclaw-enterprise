@@ -67,9 +67,8 @@ also rechecks both retained Secrets against their prepared UIDs and full data.
 Recovery keeps the candidate reference; it does not return to the original Secret.
 
 Resources present only in the recorded predecessor must be absent, including
-resources marked `helm.sh/resource-policy: keep`. For example, clearing
-`api.channelDirectoryProxyUrl` retires its egress NetworkPolicy and API container
-environment entry. Recovery refuses while either remains. Reconcile removals
+resources marked `helm.sh/resource-policy: keep`. Recovery refuses while a
+retired resource remains. Reconcile removals
 explicitly while writers are stopped; the recovery command does not delete them.
 It checks absence before recording recovery, immediately before rollback, after
 rollback and on resume. Read failures do not count as absence.

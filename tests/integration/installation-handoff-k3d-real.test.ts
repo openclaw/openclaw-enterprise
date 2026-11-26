@@ -265,15 +265,24 @@ test(
         { name: "addons.k3s.cattle.io", version: "v1" },
       ],
     };
+    type Plan = typeof config & { serviceDependency?: unknown };
     const configPath = join(dir, "plan.json");
     type Check = {
       id: string;
       status: string;
+      summary?: string;
       limits?: { resource: string; status: string }[];
       stale?: string[];
       missing?: string[];
+      resources?: {
+        kind: string;
+        namespace: string;
+        name: string;
+        uid: string;
+        resourceVersion: string;
+      }[];
     };
-    async function diagnose(plan = config, sensitiveValue?: string) {
+    async function diagnose(plan: Plan = config, sensitiveValue?: string) {
       await writeFile(configPath, JSON.stringify(plan));
       const result = spawnSync(
         process.execPath,
@@ -311,6 +320,7 @@ test(
     assert.equal(initial.checks.get("controller:kube-system/coredns")?.status, "passed");
     assert.equal(initial.checks.get("crd:addons.k3s.cattle.io")?.status, "passed");
     assert.equal(initial.checks.get("crd:missing.example.test")?.status, "failed");
+    assert.equal(initial.checks.has("service-egress"), false);
     assert.equal(initial.status, 1);
 
     // ResourceQuota's own controller supplies usage. One slot remains, but the candidate needs two
@@ -346,12 +356,122 @@ test(
     const fits = await diagnose({ ...config, peakAdditional: { jobs: 1, replicaSets: 1 } });
     assert.equal(fits.checks.get("resource-quotas")?.status, "passed");
 
+    // The Service observes a live allocated address and a named target port.
+    // The two policy grants cover the Service and its translated destination independently.
+    const serviceName = "middleware";
+    // A NetworkPolicy name can exceed the 63-character Service name limit.
+    const policyName = "middleware-egress".padEnd(64, "s");
+    const servicePort = 9443;
+    const targetPort = "https";
+    const labels = { app: serviceName };
+    const applyService = (name: string, spec: object) =>
+      applyManifest(
+        JSON.stringify({ apiVersion: "v1", kind: "Service", metadata: { name, namespace }, spec }),
+      );
+    await applyService(serviceName, {
+      selector: labels,
+      ports: [{ port: servicePort, targetPort }],
+    });
+    const cidr = `${(await resource("service", serviceName)).spec.clusterIP}/32`;
+    const namespaceSelector = { matchLabels: { "kubernetes.io/metadata.name": namespace } };
+    const podSelector = { matchLabels: labels };
+    const setPolicy = (
+      address: string,
+      peers: { namespaceSelector?: typeof namespaceSelector; podSelector?: typeof podSelector }[],
+    ) =>
+      applyManifest(
+        JSON.stringify({
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: { name: policyName, namespace },
+          spec: {
+            podSelector: { matchLabels: { app: "observer" } },
+            policyTypes: ["Egress"],
+            egress: [
+              {
+                to: [{ ipBlock: { cidr: address } }],
+                ports: [{ protocol: "TCP", port: servicePort }],
+              },
+              { to: peers, ports: [{ protocol: "TCP", port: targetPort }] },
+            ],
+          },
+        }),
+      );
+    await setPolicy("192.0.2.1/32", [{ namespaceSelector, podSelector }]);
+
+    async function readVersion(kind: string, name: string) {
+      const { uid, resourceVersion } = (await resource(kind.toLowerCase(), name)).metadata;
+      assert.ok(uid && resourceVersion);
+      return { kind, namespace, name, uid, resourceVersion };
+    }
+    const readVersions = () =>
+      Promise.all([readVersion("Service", serviceName), readVersion("NetworkPolicy", policyName)]);
+    const dependency = {
+      service: { namespace, name: serviceName, port: servicePort },
+      policy: { namespace, name: policyName },
+    };
+    const dependencyPlan = { ...config, serviceDependency: dependency };
+    async function checkDependency() {
+      const versions = await readVersions();
+      const result = await diagnose(dependencyPlan);
+      assert.deepEqual(
+        await readVersions(),
+        versions,
+        "the diagnostic must leave all selected objects unchanged",
+      );
+      const egress = result.checks.get("service-egress");
+      assert.deepEqual(egress?.resources, versions);
+      return egress;
+    }
+    const stale = await checkDependency();
+    assert.equal(stale?.status, "failed");
+    assert.deepEqual(stale?.missing, [`${cidr} TCP/${servicePort}`]);
+
+    // Split selectors create two broad peers and do not establish the combined edge.
+    await setPolicy(cidr, [{ namespaceSelector }, { podSelector }]);
+    const split = await checkDependency();
+    assert.equal(split?.status, "failed");
+    assert.deepEqual(split?.missing, [`${namespace} Service-selected Pods TCP/${targetPort}`]);
+
+    await setPolicy(cidr, [{ namespaceSelector, podSelector }]);
+    assert.equal((await checkDependency())?.status, "passed");
+
+    // ExternalName is a DNS alias in both API shapes. A declared port cannot
+    // supply the ClusterIP and Pod edges that the check requires.
+    for (const hasPort of [false, true]) {
+      const name = hasPort ? "alias-with-port" : "alias-without-port";
+      await applyService(name, {
+        type: "ExternalName",
+        externalName: "middleware.example.test",
+        ports: hasPort ? [{ port: servicePort }] : undefined,
+      });
+      const observed = await resource("service", name);
+      assert.equal(observed.spec.ports?.[0]?.port, hasPort ? servicePort : undefined);
+      const alias = await diagnose({
+        ...config,
+        serviceDependency: { ...dependency, service: { ...dependency.service, name } },
+      });
+      const egress = alias.checks.get("service-egress");
+      assert.equal(egress?.status, "failed", name);
+      assert.match(egress?.summary ?? "", /ExternalName/u);
+      assert.deepEqual(egress?.resources, [
+        {
+          kind: "Service",
+          namespace,
+          name,
+          uid: observed.metadata.uid,
+          resourceVersion: observed.metadata.resourceVersion,
+        },
+      ]);
+    }
+
     // The same real API refuses this identity. A refusal is incomplete evidence,
     // not a negative readiness observation; credentials must never enter output.
     await kubectl("-n", namespace, "create", "serviceaccount", "reader");
     const token = String(
       await kubectl("-n", namespace, "create", "token", "reader", "--duration=10m"),
     ).trim();
+    assert.ok(token, "the denied reader needs a credential to exercise authorization");
     const clusters = JSON.parse(
       String(
         await kubectl(
@@ -378,7 +498,7 @@ test(
       { mode: 0o600 },
     );
     const denied = await diagnose(
-      { ...config, kubeconfig: deniedConfig, context: "reader" },
+      { ...dependencyPlan, kubeconfig: deniedConfig, context: "reader" },
       token,
     );
     for (const id of [
@@ -386,10 +506,48 @@ test(
       "api-addresses",
       "gateway-class",
       `controller:${namespace}/observer`,
+      "service-egress",
     ]) {
       assert.equal(denied.checks.get(id)?.status, "unknown", id);
     }
     assert.equal(denied.status, 2);
+
+    const missingService = "missing-middleware";
+    const role = "missing-service-reader";
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "role",
+      role,
+      "--verb=get",
+      "--resource=services",
+      `--resource-name=${missingService}`,
+    );
+    await kubectl(
+      "-n",
+      namespace,
+      "create",
+      "rolebinding",
+      role,
+      `--role=${role}`,
+      `--serviceaccount=${namespace}:reader`,
+    );
+    const missing = await diagnose(
+      {
+        ...config,
+        kubeconfig: deniedConfig,
+        context: "reader",
+        serviceDependency: {
+          service: { ...dependency.service, name: missingService },
+          policy: dependency.policy,
+        },
+      },
+      token,
+    );
+    assert.equal(missing.checks.get("service-egress")?.status, "failed");
+    assert.match(missing.checks.get("service-egress")?.summary ?? "", /Service does not exist/u);
+    assert.equal(missing.status, 1);
   },
 );
 
@@ -413,6 +571,7 @@ test("first install retains exact attempt evidence after a lost client", { skip 
     values,
     JSON.stringify({
       gatewayRouting: { enabled: false },
+      channelEgress: { enabled: false },
       images: { controller: `registry.example.invalid/controller@sha256:${"a".repeat(64)}` },
       auth: { baseUrl: "https://occ.example.invalid", secretName: "occ-auth", secretKey: "secret" },
       agentNativeAdmin: { domain: "agents.example.invalid" },

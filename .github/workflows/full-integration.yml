@@ -72,6 +72,9 @@ jobs:
           INPUT_LANE: ${{ inputs.lane }}
         run: |
           node scripts/ci/full-integration-preflight.ts
+      - name: Scheduled preflight diagnostic (${{ steps.select.outputs.failure_stage || 'unknown' }})
+        if: ${{ failure() && !cancelled() && github.event_name == 'schedule' && steps.select.outcome == 'failure' }}
+        run: ":"
 
   execute:
     name: Execute

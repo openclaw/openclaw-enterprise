@@ -110,6 +110,9 @@ kubeconfig proxy settings. Neither command changes the receipt or cluster.
   and do not retry.
 - **Unknown or incomplete.** An unreadable Job remains unknown, even if kubectl
   reports a login problem or refusal; it is not evidence that the Job is absent.
+  Completion with an older selected-image wrapper or direct historical `.mjs`
+  entry cannot establish a flag-dependent migration check; that checkpoint remains
+  unknown.
   Confirm the target. For a reported login problem, use a separately authorized
   read-only session. For a reported refusal, confirm the intended reader with the
   access owner without restoring temporary privilege or requesting broader access.
@@ -124,20 +127,19 @@ below.
 
 ## Choose the first workflow
 
-Start with one task and a small group. For example, let an Agent read a
-support queue and draft replies before enabling customer-facing sends. Name the
-business owner, acceptable output quality, response time, cost, and the person
-who handles exceptions. Use test records and a private test channel for the
-initial checks.
+Start with one task and a small group, such as an Agent that reads a support
+queue and drafts replies before customer-facing sends. Name the business owner,
+quality criteria, response time, cost and exception handler. Use test records
+and a private channel.
 
-Confirm that the organization can operate the host infrastructure, database,
-credentials, and integrations before relying on the workflow.
+Confirm infrastructure, database, credential and integration operations before
+relying on the workflow.
 
 ## Assign operating ownership
 
-Record a primary and backup contact, the exact scope they manage, and how to
-reach them when the platform is unavailable. The same person can own several
-areas; each responsibility still needs an explicit handoff.
+Record primary and backup contacts, their scope and how to reach them during
+outages. One person can own several areas, but each responsibility needs an
+explicit handoff.
 
 | Area                   | Decision to record                                                                                        | Owning guidance                                                                                         |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |

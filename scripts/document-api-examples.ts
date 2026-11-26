@@ -143,15 +143,21 @@ export function documentApiExamples<T>(document: T): T {
             if (!failure) {
               throw new Error(`Missing error example: ${name} ${status}`);
             }
-            sharedExamples[failure[0]] = {
+            const key = failure[0];
+            sharedExamples[key] = {
               summary: failure[0],
               value: { error: { code: failure[0], message: failure[1] }, meta },
             };
-            content.examples = { example: { $ref: `#/components/examples/${failure[0]}` } };
+            content.examples = { example: { $ref: `#/components/examples/${key}` } };
           } else if (mediaType === "text/event-stream") {
             content.examples = example(
               'data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello."},"index":0}]}\n\ndata: [DONE]\n\n',
               "Native SSE completion",
+            );
+          } else if (name === "completeNamespaceConnection" && mediaType === "text/html") {
+            content.examples = example(
+              "<!doctype html><html>Account connected</html>",
+              "Browser consent completion page",
             );
           } else if (mediaType === "text/plain") {
             content.examples = example(

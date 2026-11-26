@@ -12,11 +12,16 @@ selectors. Production Helm validates peer label maps. The cluster must enforce
 NetworkPolicies. Do not expose the listener through a `NodePort`,
 `LoadBalancer`, `hostNetwork`, or public endpoint.
 
-The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
-configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
-OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
-demo workloads.
+The production chart gives the API and worker Pods unrestricted egress. Their
+inbound access remains restricted by the release's default-deny and approved
+ingress policies. Initialization, Agent, Sandbox, collector, and proxy workloads
+do not inherit the control-plane egress grant. The chart gives initialization
+only its configured DNS, database, and Kubernetes API access.
+
+Chart-managed isolated workloads, including initialization, collector, and proxy
+Pods, use the configured `dns.namespace` and `dns.podLabels` peers on UDP and TCP
+ports `53` and `5353`. Port `5353` supports OpenShift DNS backends after Service
+address translation.
 
 The trusted-operator native admin pilot is the only documented public-ingress
 exception: the console host and Agent wildcard hosts route to OCC through the
@@ -24,29 +29,23 @@ procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md
 Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
 session cookie before forwarding to the native gateway.
 
-| Variable                                   | Required value or format                                                                                           | Behavior                                                                                                                     |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                                 | Exactly `production`.                                                                                              | Enables durable production controller composition.                                                                           |
-| `OCC_HOST`                                 | One explicit Pod interface IP address.                                                                             | Wildcard addresses and implicit hostnames are rejected.                                                                      |
-| `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
-| `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
-| `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
-| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret, 32 characters minimum.                                                    | Signs sessions and derives the [device-login encryption key](../drivers/kubernetes-compute/codex-oauth-storage.md).          |
-| `OCC_AUTH_BASE_URL`                        | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
-| `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
-| `OCC_PREPROVISIONED_NAMESPACE`             | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
-| `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
-| `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
-| `OCC_API_HTTPS_EGRESS_OPEN`                | Optional `true` or `false`, default `false`; set by Helm.                                                          | API only; `true` (open sign-in egress) makes an unanswered Slack check a retryable `503`.                                    |
-| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
-| `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
+| Variable                       | Required value or format                                                                                           | Behavior                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                     | Exactly `production`.                                                                                              | Enables durable production controller composition.                                                                           |
+| `OCC_HOST`                     | One explicit Pod interface IP address.                                                                             | Wildcard addresses and implicit hostnames are rejected.                                                                      |
+| `OCC_PORT`                     | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
+| `OCC_DATABASE_URL`             | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
+| `OCC_CONFIG_PATH`              | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
+| `OCC_AUTH_SECRET`              | Mounted high-entropy Better Auth secret, 32 characters minimum.                                                    | Signs sessions and derives the [device-login encryption key](../drivers/kubernetes-compute/codex-oauth-storage.md).          |
+| `OCC_AUTH_BASE_URL`            | HTTPS DNS origin without path, query, fragment or user info; must share a non-public suffix with the Agent domain. | Defines the Better Auth base URL and cookie origin.                                                                          |
+| `OCC_GATEWAY_API_KEY_PATH`     | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
+| `OCC_PREPROVISIONED_NAMESPACE` | Optional JSON `{"namespaceId","uid"}` binding one operator-created namespace; set by Helm.                         | API and worker. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).                   |
+| `NODE_EXTRA_CA_CERTS`          | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
+| `OCC_GATEWAY_CA_PATH`          | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
-For Helm, prefer `slackProxy.enabled` over an external
-`api.channelDirectoryProxyUrl`; the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
-owns both options' API-only proxy egress and the proxy's `slack.com:443`
-requirement. With neither, the chart renders no proxy egress rule, and Slack
-lookup and credential validation require another approved network route.
+[Managed channel egress](../drivers/kubernetes-compute/channel-egress.md) uses
+Installation configuration and Helm values. OCC derives its provider listener
+from those settings; no separate proxy environment variables are supported.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -146,9 +145,7 @@ These optional variables reach only the API, never other workloads.
 The API Deployment uses `Recreate`: an upgrade stops the old API Pod first, so
 two controllers never serve together. Activation still requires closed ingress and stopped identity writers.
 
-Google and OIDC have API-only HTTPS egress rules. Empty provider `egressCidrs`
-allows every address except link-local `169.254.0.0/16`. An explicit list replaces
-that default, including the exception; keep it narrow. Direct GitHub sign-in
+Google and OIDC use the API's control-plane egress. Direct GitHub sign-in
 settings are rejected. See [upgrade instructions](../../guides/deploy/oidc-upgrade.md).
 
 `api.trustedProxy` defaults off: `Forwarded`, `X-Forwarded-*`, and `X-Real-IP`
@@ -192,10 +189,6 @@ guarded profile and `OCC_AUTH_RECOVERY_USER_ID` recovery user; see
 | `OCC_AUTH_GOOGLE_CLIENT_SECRET`   | `auth.google` Secret key `clientSecretKey` | Google OAuth client secret, read from the dedicated `auth.google.secretName` Secret.                                                               |
 | `OCC_AUTH_GOOGLE_ALLOWED_DOMAINS` | `auth.google.allowedDomains`               | Optional comma-separated hosted domains. When set, the ID token's `hd` must match one and `email_verified` must be `true`. Requires the client ID. |
 
-With `auth.google.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-google-login-egress` on TCP 443 for
-`oauth2.googleapis.com` and `www.googleapis.com`. Empty `auth.google.egressCidrs`
-allows any address except link-local `169.254.0.0/16`; narrow it with an egress proxy.
 Rendering fails on incomplete Google values, a Secret shared with any other
 chart Secret, `agentNativeAdmin.enabled` with Google, an HTTP base URL, or an allowed
 domain that is not a DNS name.
@@ -203,7 +196,7 @@ domain that is not a DNS name.
 ### OIDC sign-in
 
 [OIDC controller settings](oidc.md) defines the provider URLs, client credentials,
-API egress and optional private CA trust. These API-only settings require the
+the provider endpoints and optional private CA trust. These API-only settings require the
 same guarded sign-in profile and recovery user and Google.
 
 ### Production Installation bootstrap environment
@@ -300,7 +293,7 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+`1K` in top-level `resources`, `channelEgress.resources`, Collector `resources`,
 and Collector volume size limits, with an error naming the setting. It also
 rejects a value with a leading `-` (negative) and resource names Kubernetes
 refuses. Kubernetes remains responsible for complete quantity validation;

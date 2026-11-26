@@ -59,7 +59,7 @@ export async function gitCommandBodies(t, pushRef) {
 export async function gitExpiryGateway(
   t,
   {
-    model,
+    model = "",
     workspace,
     sandbox,
     revisionId,
@@ -100,8 +100,13 @@ export async function gitExpiryGateway(
     processInstanceId: "same-process",
     networkInstanceId: "same-network",
   });
+  const started = { seconds: Math.floor(Date.now() / 1000) };
   const world = {
     repositoryGitRecipient,
+    processInstanceId: String(repositoryGitRecipient.processInstanceId),
+    networkInstanceId: String(repositoryGitRecipient.networkInstanceId),
+    supervisorSessionId: "same-supervisor",
+    runtimeGeneration: "initial-runtime",
     writes: 0,
     providerCreates: [],
     profileImports: [],
@@ -130,22 +135,24 @@ export async function gitExpiryGateway(
     retainedProfile.resource_version = "2";
   };
   const providers = {
-    [model]: {
-      type: modelSourceId ? model : "inference",
-      ...(platformProfile ? {} : { profile_workspace: workspace }),
-      metadata: {
-        workspace,
-        name: model,
-        id: "model-id",
-        resource_version: "7",
-        ...(modelSourceId && {
-          labels: {
-            "app.kubernetes.io/managed-by": "openclaw-enterprise",
-            "openclaw.dev/credential-source-id": modelSourceId,
-          },
-        }),
+    ...(model && {
+      [model]: {
+        type: modelSourceId ? model : "inference",
+        ...(platformProfile ? {} : { profile_workspace: workspace }),
+        metadata: {
+          workspace,
+          name: model,
+          id: "model-id",
+          resource_version: "7",
+          ...(modelSourceId && {
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/credential-source-id": modelSourceId,
+            },
+          }),
+        },
       },
-    },
+    }),
   };
   if (supervisor) {
     // Stock attaches an endpointless runtime-files profile as well as the model.
@@ -260,14 +267,14 @@ export async function gitExpiryGateway(
         observed: {
           ...snapshot,
           sequence: "81",
-          session_id: "same-supervisor",
-          process_instance_id: repositoryGitRecipient.processInstanceId,
+          session_id: world.supervisorSessionId,
+          process_instance_id: world.processInstanceId,
           credentials_installed: !expired,
           ...(expired && { reason: "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" }),
           launch_environment_installed: !expired,
           policy_active: true,
         },
-        network_instance_id: repositoryGitRecipient.networkInstanceId,
+        network_instance_id: world.networkInstanceId,
         observed_time: now,
         evaluated_time: now,
       },
@@ -293,17 +300,20 @@ export async function gitExpiryGateway(
             name: supervisor?.sandbox ?? sandbox,
             workspace,
             resource_version: String(world.version),
-            annotations: supervisor
-              ? {
-                  "openclaw.dev/revision-id": supervisor.revisionId,
-                  "openclaw.dev/namespace-id": supervisor.namespaceId,
-                  "openclaw.dev/agent-id": supervisor.agentId,
-                }
-              : { "openclaw.dev/revision-id": revisionId },
+            annotations: {
+              "internal.openshell.ai/runtime-generation": world.runtimeGeneration,
+              ...(supervisor
+                ? {
+                    "openclaw.dev/revision-id": supervisor.revisionId,
+                    "openclaw.dev/namespace-id": supervisor.namespaceId,
+                    "openclaw.dev/agent-id": supervisor.agentId,
+                  }
+                : { "openclaw.dev/revision-id": revisionId }),
+            },
           },
           spec: {
             ...(supervisor && { policy: supervisor.policy }),
-            restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
+            restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS",
             providers: world.detaches.length
               ? world.retainedProviders
               : [...world.retainedProviders, gitName],
@@ -313,7 +323,7 @@ export async function gitExpiryGateway(
           },
           status: {
             phase: "SANDBOX_PHASE_READY",
-            main_process_instance_id: repositoryGitRecipient.networkInstanceId,
+            main_process_instance_id: world.networkInstanceId,
             configuration_activated: true,
             configuration_admission: {
               state: 2,
@@ -325,7 +335,7 @@ export async function gitExpiryGateway(
                 : "6",
               policy_hash: "original-policy",
             },
-            ...(supervisor && { main_process_started_time: supervisor.started }),
+            main_process_started_time: supervisor?.started ?? started,
           },
         },
       },
@@ -422,10 +432,12 @@ export async function gitExpiryGateway(
           network_policies: {
             ...supervisor.policy.network_policies,
             [supervisor.gitRule.name]: supervisor.gitRule,
-            ["_provider_" + model.replaceAll("-", "_")]: {
-              name: "_provider_" + model.replaceAll("-", "_"),
-              endpoints: [{ host: "api.openai.com", port: 443 }],
-            },
+            ...(model && {
+              ["_provider_" + model.replaceAll("-", "_")]: {
+                name: "_provider_" + model.replaceAll("-", "_"),
+                endpoints: [{ host: "api.openai.com", port: 443 }],
+              },
+            }),
             ["_provider_" + supervisor.runtimeProvider.replaceAll("-", "_")]: {
               name: "_provider_" + supervisor.runtimeProvider.replaceAll("-", "_"),
             },
@@ -499,5 +511,17 @@ export async function gitExpiryGateway(
     client.close();
     server.forceShutdown();
   });
-  return { client, world };
+  function setRuntimeProvider(name) {
+    assert.ok(supervisor && providers[supervisor.runtimeProvider]);
+    const previous = supervisor.runtimeProvider;
+    const provider = providers[previous];
+    delete providers[previous];
+    provider.metadata.name = name;
+    providers[name] = provider;
+    supervisor.runtimeProvider = name;
+    world.retainedProviders = world.retainedProviders.map((providerName) =>
+      providerName === previous ? name : providerName,
+    );
+  }
+  return { client, world, setRuntimeProvider };
 }

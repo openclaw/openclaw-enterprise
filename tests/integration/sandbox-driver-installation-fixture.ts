@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import type { OpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { OpenShellSandboxDriverOptions } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   ConfigurationValidationError,
@@ -11,11 +13,9 @@ import { loadInstallationFile } from "../helpers/installation-file.ts";
 type RefusalDetail = ConfigurationValidationError["error"]["details"][number];
 
 export function openShellWorkspaceHarnessConfiguration() {
-  const gateway: { workspaceMode: OpenShellSandboxDriverOptions["gateway"]["workspaceMode"] } = {
-    workspaceMode: "operator",
-  };
   const configuration = {
-    gateway,
+    integrationMode: "legacy" as NonNullable<OpenShellSandboxDriverOptions["integrationMode"]>,
+    gateway: {},
     kubernetes: {
       userNamespaces: false,
       serviceAccount: {
@@ -54,7 +54,7 @@ export function buildSandboxInstallation() {
           port: 50051,
           insecureTransport: "network-policy",
         } satisfies OpenShellBackendConfiguration,
-        drivers: { sandbox: "openshell-sandbox", credential_gateway: "openshell-credentials" },
+        drivers: { sandbox: "openshell-sandbox" },
       },
     ],
     drivers: {
@@ -66,16 +66,69 @@ export function buildSandboxInstallation() {
           servicePrincipalCredentials: { mode: "disabled" },
         },
       },
-      credential_gateway: {
-        id: "openshell-credentials",
-        configuration: { binaries: ["/app/bin/model-client"] },
-      },
       sandbox: {
         id: "openshell-sandbox",
         configuration: openShellWorkspaceHarnessConfiguration(),
       },
     },
   };
+}
+
+// Exercise the production Installation loader and selected Compute with controlled external SDK transports.
+export async function loadSelectedOpenShellAgentInstallation(
+  t: TestContext,
+  {
+    installation,
+    computeId,
+    tokenServiceId,
+    core,
+    gatewayClient,
+  }: {
+    installation: ReturnType<typeof buildSandboxInstallation>;
+    computeId: string;
+    tokenServiceId: string;
+    core: object;
+    gatewayClient: OpenShellGatewayClient;
+  },
+) {
+  Object.assign(installation.drivers, {
+    token_service: { id: tokenServiceId, configuration: {} },
+  });
+  installation.drivers.compute.id = computeId;
+  Reflect.deleteProperty(installation.drivers.compute.configuration.network, "gatewayClients");
+  Object.assign(installation.drivers.compute.configuration, {
+    gatewayRouting: {
+      hostname: "agents.example.test",
+      gatewayName: "gateways",
+      gatewayNamespace: "occ-system",
+      envoyNamespace: "envoy",
+    },
+  });
+  const runtime = await loadInstallationFile(t, installation, {
+    createOpenShellBackend: (definition) => createOpenShellBackend(definition, { gatewayClient }),
+  });
+  assert.ok(runtime);
+  // The loader constructs Compute itself and does not expose an SDK factory; inject only its cached transport.
+  assert.ok(
+    Reflect.set(
+      runtime.computeDriver,
+      "apiClients",
+      Promise.resolve({
+        core,
+        apps: {
+          async listNamespacedDeployment() {
+            return { items: [] };
+          },
+        },
+        version: {
+          async getCode() {
+            return { gitVersion: "v1.35.0" };
+          },
+        },
+      }),
+    ),
+  );
+  return runtime;
 }
 
 export function buildEndpointInstallation(endpoint: string) {

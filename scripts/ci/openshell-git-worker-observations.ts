@@ -116,7 +116,7 @@ export const boolean = (value: unknown) => (typeof value === "boolean" ? value :
 // independent of controller imports, and never accept arbitrary diagnostic text.
 const expiryCheck = choice(
   "model-provider",
-  "original-launch-and-pods",
+  "original-launch-and-execution",
   "original-git-provider",
   "attachment-after-send-intent",
   "original-git-installation",

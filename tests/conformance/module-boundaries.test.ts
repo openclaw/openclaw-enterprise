@@ -19,6 +19,7 @@ import {
 } from "../../scripts/module-boundaries/exceptions.ts";
 import { validatePolicy, type Policy } from "../../scripts/module-boundaries/evaluate-policy.ts";
 import { parseJSON } from "../../scripts/module-boundaries/workspace.ts";
+import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -43,11 +44,6 @@ type Output = { stdout: string; stderr: string };
 type ExitFailure = Error & Output & { code: number };
 type DiagnosticRow = Report["violations"][number];
 type Edge = Pick<Report["edges"][number], "from" | "to">;
-
-// Drain every operation before fixture cleanup. allSettled keeps the original input order.
-async function settle<T>(promises: Iterable<Promise<T>>): Promise<T[]> {
-  return (await Promise.allSettled(promises)).map(settledValue);
-}
 
 function settledValue<T>(result: PromiseSettledResult<T>): T {
   if (result.status === "rejected") {

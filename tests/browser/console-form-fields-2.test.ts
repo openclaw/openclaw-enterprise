@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -105,39 +105,6 @@ test("the authentication source form shows a missing Secret under its field", as
   // A source without a Secret field drops the error with the field.
   await method.selectOption("runtime");
   assert.equal(await page.locator("#harness-auth-secret-error:not([hidden])").count(), 0);
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-});
-
-// The renamed field's required error names the label the page shows (finding 1987), and the
-// console's check leaves its list closed, so the error stays in sight (finding 1988).
-test("the authentication source form names the Service account token Secret it requires", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Auth labels");
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Auth Labels",
-    nativeValues("al", { harnessId: "codex" }),
-    { executionMode: "dedicated", harnessAuth: null },
-  );
-  const { page } = await newPage(t, fixture, { browser });
-  const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByLabel("Authentication source", { exact: true }).selectOption("codex_pat");
-  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
-  const token = page.getByLabel("Service account token Secret", { exact: true });
-  await assertShownError(token, "Service account token Secret is required.");
-  assert.equal(await token.getAttribute("aria-expanded"), "false", "the list stays closed");
-  assert.equal(
-    await token.evaluate((node) => {
-      const error = globalThis.document.getElementById(`${node.id}-error`);
-      if (!error) {
-        throw new Error(`Missing field error for ${node.id}`);
-      }
-      const { left, top, height } = error.getBoundingClientRect();
-      return error.contains(globalThis.document.elementFromPoint(left + 4, top + height / 2));
-    }),
-    true,
-    "nothing covers the error",
-  );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 

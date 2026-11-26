@@ -9,35 +9,34 @@ last_verified: "2026-11-04"
 
 ## Overview
 
-Scheduled QA runs Console Secret management on Compose/Kubernetes, OpenShell
-security and lifecycle files, local installation, and OIDC Agent chat. Jobs use
-real dependencies on disposable installations. Results are advisory, not merge
-or publication gates.
+QA covers Console Secrets, OpenShell security and lifecycle, local installation,
+OIDC Agent chat and native Agent browsing on disposable Compose/Kubernetes
+installations with real dependencies. Results gate neither merge nor publication.
 
 <a id="when-it-runs"></a>
 
 ## Trigger
 
-| Trigger                                            | Jobs selected                                                                |
-| -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                              |
-| Manual run of `qa-advisory.yml` on `main`          | All four groups                                                              |
-| Eligible PR with `full-qa`                         | All four groups                                                              |
-| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                       |
-| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                             |
-| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                      |
-| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, OIDC Agent chat and all OpenShell jobs; no local installation job |
+| Trigger                                            | Jobs selected                                                                     |
+| -------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Schedule on `main`, every 6 hours at minute 17 UTC | All four groups                                                                   |
+| Manual on `main` with blank `test_file` or `all`   | All four groups                                                                   |
+| Manual on `main` with an exact `test_file`         | Jobs that run that file                                                           |
+| Eligible PR with `full-qa`                         | All four groups                                                                   |
+| Eligible PR with only `qa-openshell-compose`       | Compose OpenShell first-Agent job only                                            |
+| Eligible PR with `qa-keycloak-installation`        | Keycloak installation shard only                                                  |
+| Eligible PR with `qa-openclaw-model-ui`            | Kubernetes / OpenClaw / `model-ui` only                                           |
+| Push to `main`, when `QA_ADVISORY_ON_PUSH=true`    | QA matrix, native Agent browser and all OpenShell jobs; no local installation job |
 
 Maintainers label reviewed same-repository PRs. Dependabot authors and triggers
-are ineligible. Narrow labels select their union. `full-qa` runs `console-secrets` for Codex,
-`agent-audit` in Compose, and `http-chat` for both presets and placements.
-The focused Compose job checks
-native redeployment and required-worker execution on Kubernetes workloads.
+are ineligible. Narrow labels select their union. `full-qa` runs Codex
+`console-secrets`, Compose `agent-audit`, and `http-chat` in both presets and
+placements. Compose checks native redeployment and required workers on Kubernetes.
 
-PR runs test the merge commit. New commits replace opted-in runs; unrelated
-labels cannot restart or cancel them. Remove labels before pushing unreviewed
-code; removal stops future selection but does not cancel active runs. Eligible
-main pushes finish independently. The author of a breaking change owns triage.
+New commits replace opted-in merge-commit runs. Unrelated labels leave runs
+unchanged. Remove QA labels before pushing unreviewed code. Active runs and
+eligible main pushes finish independently. Authors triage regressions.
+[Verify PR source before labeling](configuration.md#verify-pr-source-before-labeling).
 
 Keycloak needs no model credential and allows 180 minutes; OpenClaw allows 120.
 Together they allow 300 runtime runner-minutes per attempt, plus selection—not
@@ -48,10 +47,8 @@ OpenClaw requires `OPENAI_API_KEY` and nonblank `OCC_TEST_OPENAI_MODEL` in
 before the lane. Each cell materializes only its provider credential, removed
 after success or failure.
 
-Push execution is opt-in through `QA_ADVISORY_ON_PUSH`; the schedule does not
-require that variable. Credentialed QA and OpenShell jobs use
-[`integration-qa-pr`](configuration.md#environments). Dependabot cannot start a
-manual advisory run.
+The schedule does not require `QA_ADVISORY_ON_PUSH`. Credentialed QA and OpenShell
+jobs use [`integration-qa-pr`](configuration.md#environments).
 
 ## Scenarios
 
@@ -59,24 +56,28 @@ The [QA matrix](../../../scripts/ci/test-suites/qa-matrix.json) preserves existi
 clusters and kubeconfig. Setup checks Google Workspace for OpenClaw and Linear
 for Codex.
 
-| Scenario                | In advisory          | Presets         | Checks                                                                                                                                                                           |
-| ----------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                                         |
-| `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                             |
-| `model-ui`              | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                     |
-| `scratch-volume`        | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
-| `oidc-agent-chat`       | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
-| `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
-| `agent-audit`           | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
-| `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
-| `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
-| `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
-| `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
-| `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
-| `openshell-git-model`   | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
+| Scenario                         | In advisory          | Presets         | Checks                                                                                                                                                                           |
+| -------------------------------- | -------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-policy`                 | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                                         |
+| `plugin-install`                 | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                                             |
+| `model-ui`                       | Focused label only   | OpenClaw        | Real model turn and native browser response.                                                                                                                                     |
+| `scratch-volume`                 | Yes — OpenShell job  | Codex           | Admitted scratch and workspace access through real tools, frozen selection, and missing/wrong-UID claim refusal.                                                                 |
+| `oidc-agent-chat`                | Yes, separate job    | OpenClaw        | First-login Default user enrollment, returning Keycloak sign-in, signed admission claims, owner creation and deployment, browser reply, administrative and sibling-Agent denial. |
+| `console-secrets`                | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls.                       |
+| `agent-audit`                    | Yes (Compose)        | Codex           | Check the exact Agent grant and link the deployed Agent's queue, claim, and result records. Check the record for a successful Agent read.                                        |
+| `git-write`                      | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                                      |
+| `git-push-denied`                | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                                       |
+| `slack`                          | No                   | Codex           | Threaded reply and new root message.                                                                                                                                             |
+| `channel-egress-upgrade`         | No                   | Codex           | [One-off channel upgrade](../slack.md#one-off-channel-upgrade-proof).                                                                                                            |
+| `openshell-linear-read`          | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
+| `codex-search-config`            | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
+| `openshell-template-resources`   | No                   | Codex           | [Template resource delivery](../openshell-managed.md#template-resource-delivery).                                                                                                |
+| `openshell-provider-replacement` | No                   | Codex           | [Managed Provider replacement](../openshell-managed.md#provider-replacement), network changes, model turns and peer isolation.                                                   |
+| `openshell-git-replacement`      | No                   | Codex           | [Managed Git recovery](../openshell-git-replacement.md), workspace retention and revision-scoped repository grants.                                                              |
+| `openshell-token-service-agent`  | No                   | OpenClaw        | [Prepared native Source custody](../manual-tests.md): a real dedicated Agent turn, rotation, withdrawal, and deletion of the supplied disposable Source.                         |
 
-[QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
-[scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.
+Source: [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs),
+[scenario selection](../../../tests/helpers/qa-selection.mjs).
 
 See [HTTP chat verification](../agent-http-chat.md).
 
@@ -90,14 +91,11 @@ To run OpenShell scenarios locally, prepare the matching fixture for
 `model-ui` checks Console sign-in and Agent use, then redeploys with a provider
 alias, the existing Secret, and `OCE_MODEL_API_KEY` for a real model turn.
 
-`openshell-git-model` requires Kubernetes, Codex, `OCC_TEST_QA_SANDBOX_ENV`,
-`OCC_TEST_QA_OPENAI_KEY_FILE`, and `OCC_TEST_QA_OPENAI_MODEL`. Its disposable stack
-uses a controlled Git origin and real model provider.
+`openshell-optional-plugin-withdrawal`: native optional Plugin withdrawal.
 
 ### Harness destination overrides
 
-The explicit `harness-overrides` QA scenario runs dedicated Codex and OpenClaw
-through an installed Kubernetes/OpenShell workflow. It deploys two Agents with
+`harness-overrides` runs dedicated Codex and OpenClaw on Kubernetes/OpenShell. It deploys two Agents with
 distinct authorized destinations and a third inheriting the default, performs real
 model turns, restarts the controllers with changed and removed defaults, and
 withdraws one Agent's source while the other Agents continue serving.
@@ -118,26 +116,23 @@ OpenShell needs Landlock, unavailable on QA's Blacksmith runners. Each file
 runs on an Ubuntu 24.04 VM with a Landlock check, Docker daemon, cluster and
 private state. Job names use `QA advisory (OpenShell / <test-file-basename>)`.
 
-Each [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json) file gets a
-`run-ci-lane` job with `lane: openshell` and its selected `test-file`. The
-`qa-openshell-compose` label selects only the first row below.
+`run-ci-lane` selects each [OpenShell](../../../scripts/ci/test-suites/openshell.json)
+`test-file` separately (`lane: openshell`). `qa-openshell-compose` selects the first row only.
 
-| Test (source)                                                                                       | Coverage                                                                                                                                                                         |
-| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Compose first Agent](../../../tests/integration/local-first-agent-openshell-real.test.mjs)         | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
-| [OpenShell installation](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)             | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
-| [Gateway tool policy](../../../tests/integration/openshell-gateway-tool-policy-real.test.ts)        | Gateway model tool restrictions, positive administrator controls, and policy replacement.                                                                                        |
-| [Namespace isolation](../../../tests/integration/namespace-driver-openshell-k3d-real.test.ts)       | Bootstrap gateways and Workspaces before Agents, then run Agents in both Namespaces.                                                                                             |
-| [Credential lifecycle](../../../tests/integration/openshell-credentials-real.test.ts)               | Credential routing, replacement, non-model sources, and absence from Agent material.                                                                                             |
-| [Live credential withdrawal](../../../tests/integration/openshell-withdrawal-real.test.ts)          | Credential update, revocation without restarting the Harness, embedded refusal, and authenticated native policy scopes.                                                          |
-| [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                      | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
-| [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)             | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
-| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)        | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
-| [Scratch storage](../../../tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts)     | Real scratch and workspace writes, immutable binding, and missing/wrong-UID claim refusal.                                                                                       |
-| [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs)  | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
-| [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)       | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
-| [Repository retention](../../../tests/integration/openshell-git-retention-real.test.ts)             | Standing Git and a live conversation survive a refused controller-only upgrade. Finite cases cover expiry and two-Agent withdrawal.                                              |
-| [Single-Agent finite removal](../../../tests/integration/openshell-git-finite-removal-real.test.ts) | Before-deadline removal, ordered supervisor denial after worker replacement, same-runtime conversation, and actual retirement after model-authority withdrawal.                  |
+| Test (source)                                                                                      | Coverage                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Compose first Agent](../../../tests/integration/local-first-agent-openshell-real.test.mjs)        | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
+| [OpenShell installation](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)            | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
+| [Gateway tool policy](../../../tests/integration/openshell-gateway-tool-policy-real.test.ts)       | Gateway model tool restrictions, positive administrator controls, and policy replacement.                                                                                        |
+| [Namespace isolation](../../../tests/integration/namespace-driver-openshell-k3d-real.test.ts)      | Bootstrap gateways and Workspaces before Agents, then run Agents in both Namespaces.                                                                                             |
+| [Credential lifecycle](../../../tests/integration/openshell-credentials-real.test.ts)              | Credential routing, replacement, non-model sources, and absence from Agent material.                                                                                             |
+| [Live credential withdrawal](../../../tests/integration/openshell-withdrawal-real.test.ts)         | Credential update, revocation without restarting the Harness, embedded refusal, and authenticated native policy scopes.                                                          |
+| [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                     | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
+| [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)            | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
+| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
+| [Scratch storage](../../../tests/integration/sandbox-driver-openshell-scratch-k3d-real.test.ts)    | Real scratch and workspace writes, immutable binding, and missing/wrong-UID claim refusal.                                                                                       |
+| [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
+| [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 
 For finite Git conversation checks, `persisted reply; read=…` means the model
 returned the expected nonce. The readback category identifies the failed check.
@@ -147,15 +142,14 @@ must belong to the logical run returned by the Gateway. Codex can finish that ru
 on a new native turn after an internal retry.
 The check sends each authenticated nonce prompt once.
 
-The runner requires the selected files' credentials, expected tests, and cleanup.
-Local installation also uses one runner per manifest file: input and network-policy
-refusals, Kubernetes and Compose profiles, and Keycloak sign-in and recovery.
-The six original installation cases remain required.
-A failed job does not cancel its peers. Hosted preparation builds first-Agent
-images from the current checkout using read-only caches. Local Setup then creates
+The runner requires credentials, expected tests, and cleanup. Local installation
+uses one runner per manifest file and requires the six original cases: input and
+network-policy refusals, Kubernetes and Compose profiles, and Keycloak sign-in
+and recovery. Peer jobs continue after a failure. Hosted preparation builds
+first-Agent images from the checkout with read-only caches. Local Setup creates
 and cleans up each installation without duplicate clusters. See
-[OpenShell CI preparation and timing](openshell-execution.md) for image selection,
-runner requirements, and interpretation of setup and model-execution timings.
+[OpenShell CI preparation and timing](openshell-execution.md) for images, runner
+requirements, and setup and model-execution timings.
 
 [Full Integration](full-integration.md) can also run this suite with
 `lane=openshell` or `lane=all`; that workflow runs the same files serially.
@@ -166,11 +160,13 @@ included in advisory coverage.
 
 ## Execution
 
-To run the same coverage as the schedule, configure the
-[hosted credentials](configuration.md#environments), then start the workflow:
+Configure [hosted credentials](configuration.md#environments). Set `test_file`
+to an exact catalog path. Invalid or ambiguous paths stop selection. Omit
+`test_file` or use `all` for the full advisory.
 
 ```sh
-gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
+gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main \
+  -f test_file=tests/integration/harness-topology-k3d-routing-real.test.mjs
 ```
 
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
@@ -186,7 +182,7 @@ Local instructions run the **QA matrix only**. For other suites, follow
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes `native-restart`, `namespace-lifecycle`, `sandbox-policy`, `scratch-volume`, `plugin-install`,
-`openshell-linear-read`, `openshell-git-model`, `codex-search-config`, `harness-overrides` and
+`openshell-linear-read`, `codex-search-config`, `harness-overrides` and
 `oidc-agent-chat` selectors.
 Invalid selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
@@ -330,7 +326,7 @@ export OCC_TEST_QA_CONTROLLER_IMAGE="$CONTROLLER_IMAGE"
 export OCC_TEST_QA_RUNTIME_IMAGE="$RUNTIME_IMAGE"
 ```
 
-Reuse the builder's intermediate cache, including Node compilation, with consistent
+Reuse the builder's intermediate cache with consistent
 platform and build arguments. Loading final images does not restore intermediate
 cache. For portability, use Docker's [cache export/import options](https://docs.docker.com/build/cache/backends/);
 `mode=max` includes intermediate stages. Hosted CI cache is separate. These commands
@@ -346,7 +342,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-`TEST_ENV_FILE` is the private environment file described above.
+`TEST_ENV_FILE` names that private file.
 
 ## Results and limits
 
@@ -360,11 +356,12 @@ For OpenClaw, inspect `matrix.json`: one `kubernetes/OpenClaw` cell with only
 Its `partial:selected` scope is intentional; missing stages or artifacts leave
 verification incomplete. Preserve the job link and attempt-specific results.
 
-| Results                                             | Where to look                                                                 |
-| --------------------------------------------------- | ----------------------------------------------------------------------------- |
-| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`              |
-| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
-| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`              |
+| Results                                             | Where to look                                                                                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`                                                                            |
+| OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`)                                                               |
+| Native Agent browser                                | `qa-advisory-oidc-agent-chat-gateway-routing`; [browser media and review procedure](../native-agent-browser.md#collect-ci-browser-evidence) |
+| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`                                                                            |
 
 Startup failures report elapsed time, the 1,100,000 ms limit, and the observed
 exit code or signal. `timed out` identifies deadline expiry. A later `SIGPIPE`

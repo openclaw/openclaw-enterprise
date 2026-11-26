@@ -1,9 +1,16 @@
+import { slackChannelDrivers } from "../helpers/channel-egress.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+  assertReadyGateway,
+  assertHarnessWorkspaceClaim,
+  assertHarnessWorkspaceMounts,
+  assertRetainedHarnessWorkspaceClaim,
+} from "../helpers/kubernetes-compute-observations.ts";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
   requiresKubernetes,
@@ -20,9 +27,8 @@ import {
   revisionContext,
   revision,
   gatewayName,
+  harnessWorkspaceClaimName,
   revisionName,
-  assertReadyGateway,
-  assertHarnessWorkspaceClaim,
   createDriver,
   createScopedController,
   deleteNamespaces,
@@ -368,23 +374,11 @@ test(
       ...gatewayAuth,
       trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
     });
-    const workload = await resource("deployment", revisionName(candidate), existingName);
+    const workloadName = revisionName(candidate);
+    const workload = await resource("deployment", workloadName, existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(
-        ({ persistentVolumeClaim }) =>
-          persistentVolumeClaim?.claimName === harnessClaim.metadata.name,
-      ),
-      false,
-      "Gateway must not mount the Harness workspace claim",
-    );
-    assert.deepEqual(
-      workload.spec.template.spec.volumes.find(({ name }) => name === "openclaw-workspace"),
-      {
-        name: "openclaw-workspace",
-        persistentVolumeClaim: { claimName: harnessClaim.metadata.name },
-      },
-    );
+    const expectedClaimName = harnessWorkspaceClaimName(agentId);
+    assertHarnessWorkspaceMounts(gateway, workload, workloadName, expectedClaimName);
     await driver.stopRevision(candidate);
     assert.equal(await missing("deployment", revisionName(candidate), existingName), true);
     assert.equal(await missing("deployment", gatewayName(agentId), existingName), true);
@@ -397,9 +391,9 @@ test(
       [],
       "stop must not return while an exact revision Pod can still execute",
     );
-    assert.equal(
-      (await resource("persistentvolumeclaim", harnessClaim.metadata.name, existingName)).metadata
-        .uid,
+    await assertRetainedHarnessWorkspaceClaim(
+      existingName,
+      expectedClaimName,
       harnessClaim.metadata.uid,
       "stop must preserve the Agent-owned Harness workspace claim",
     );
@@ -538,15 +532,13 @@ test(
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
           gatewayStorageSizeGiB: 1024,
-          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
-          channels: { proxyUrl: "http://10.42.0.15:3128" },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,
           },
         },
       },
-      { nodeEnrollment },
+      { nodeEnrollment, channelDrivers: slackChannelDrivers },
     );
     await runProvisioningApiCase(context, {
       driver,

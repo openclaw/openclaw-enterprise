@@ -5,9 +5,6 @@ import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
-  AgentReadResponse,
-  AgentResponse,
-  AgentRevisionListResponse,
   ConfigurationResponse,
   ErrorResponse,
   InstallationResponse,
@@ -16,16 +13,11 @@ import {
   ServiceAccountListResponse,
   ServiceAccountResponse,
   type ErrorCode,
-  type HarnessAuthBinding,
   type ServiceAccountCredential,
 } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { assertSameAnswer } from "../helpers/refusal-answers.ts";
-import {
-  callerDenied,
-  SERVICE_ACCOUNT_CROSS_NAMESPACE,
-  SERVICE_ACCOUNT_NAME_CONFLICT,
-} from "../helpers/refusal-text.mjs";
+import { callerDenied, SERVICE_ACCOUNT_NAME_CONFLICT } from "../helpers/refusal-text.mjs";
 import {
   createInjectedControllerFixture,
   createServiceAccount,
@@ -110,23 +102,6 @@ async function createConfiguration(request: FixtureRequest, namespaceId: string)
   return data;
 }
 
-function serviceAccountHarnessAuth(
-  namespaceId: string,
-  id: string,
-): Extract<HarnessAuthBinding, { method: "codex_pat" }> {
-  return { method: "codex_pat", source: { kind: "service_account", namespaceId, id } };
-}
-
-function assertAssociatedAccount(
-  agent: AgentResponse["data"] | AgentReadResponse["data"],
-  id: string,
-) {
-  assert("harnessAuth" in agent);
-  const { harnessAuth } = agent;
-  assert(harnessAuth?.method === "codex_pat" && harnessAuth.source.kind === "service_account");
-  assert.equal(harnessAuth.source.id, id);
-}
-
 async function assertBodylessDelete(fixture: Fixture, path: string) {
   const response = await fixture.app.fetch(
     new Request(`https://console.oce.localhost${path}`, {
@@ -149,12 +124,29 @@ test("a forced ServiceAccount delete without a ChatGPT Backend removes an accoun
   // Seed the state left by a previously issued token after the Backend is removed.
   const { controller } = fixture;
   assert(controller);
-  await controller.transact((unit) =>
-    unit.serviceAccounts.updateCredential(namespace.id, account.id, {
+  await fixture.markNamespaceReady(namespace.id);
+  await controller.transact(async (unit) => {
+    const instance = await unit.installations.selectTokenServiceInstance({
+      id: randomUUID(),
+      driverId: "occ",
+      storeIdentity: "force-delete-existing-custody",
+    });
+    const source = await unit.credentialSources.createCredentialSource({
+      id: `cs_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Retained issued PAT",
+      type: "static",
+      config: { provider_preset: "codex-pat" },
+      ownerCapability: "token_service",
+      tokenServiceInstanceId: instance.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    });
+    await unit.serviceAccounts.updateCredential(namespace.id, account.id, {
       kind: "access_token",
-      secretRef: { name: `account-${account.id.slice(3)}`, key: "token" },
-    }),
-  );
+      sourceId: source.id,
+    });
+  });
 
   // Without force, and with an explicit force=false, deletion still refuses and names both ways out.
   for (const path of [accountPath, `${accountPath}?force=false`]) {
@@ -240,15 +232,15 @@ test("native ServiceAccounts keep private credential references and cannot admit
     body: {
       name: "service-account-agent",
       configurationId: configuration.id,
-      harnessAuth: serviceAccountHarnessAuth(account.namespaceId, account.id),
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: account.namespaceId, id: account.id },
+      },
     },
   });
-  const { data: agent } = checkedBody(agentResult, 201, AgentResponse);
-  assertAssociatedAccount(agent, account.id);
-  const agentPath = `${agentsPath}/${agent.id}`;
-  const deploymentPath = `${agentPath}/deploy`;
+  const refusal = checkRefusal(agentResult, 409, "RESOURCE_CONFLICT");
+  assert.equal(refusal.message, "Bind the issued ServiceAccount's Credential Source instead.");
 
-  // A ready Namespace is insufficient: associated accounts without credentials cannot admit revisions.
   const { controller } = fixture;
   assert(controller);
   await fixture.markNamespaceReady(namespace.id);
@@ -275,18 +267,6 @@ test("native ServiceAccounts keep private credential references and cannot admit
   });
   assert.equal(deniedIssuance.status, 403, JSON.stringify(deniedIssuance.body));
 
-  // Without a Backend no account can hold an access token, so deployment names the Backend too.
-  const missingCredential = await request("POST", deploymentPath);
-  const missingCredentialError = checkRefusal(
-    missingCredential,
-    409,
-    "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
-  );
-  assert.equal(
-    missingCredentialError.message,
-    "ChatGPT Harness authentication needs an issued access-token credential, and this Installation has no ChatGPT Backend to issue one. An Installation administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
-  );
-
   const initialCredential: ServiceAccountCredential = {
     kind: "api_key",
     secretRef: { name: "namespace-provider-source", key: "provider-api-key" },
@@ -302,15 +282,6 @@ test("native ServiceAccounts keep private credential references and cannot admit
     initialCredential,
   );
 
-  const nativeDeployment = await request("POST", deploymentPath);
-  const nativeDeploymentError = checkRefusal(
-    nativeDeployment,
-    409,
-    "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
-  );
-  // A PAT source admits only an access-token credential, never an API key in its place.
-  assert.match(nativeDeploymentError.message, /needs an issued access-token credential/);
-
   // OAuth references are representable, but no refresh or OAuth execution exists yet.
   const oauthCredential: ServiceAccountCredential = {
     kind: "oauth_access_token",
@@ -320,14 +291,6 @@ test("native ServiceAccounts keep private credential references and cannot admit
     body: oauthCredential,
   });
   assert.equal(oauthUpdate.status, 200);
-  const oauthDeployment = await request("POST", deploymentPath);
-  const oauthDeploymentError = checkRefusal(
-    oauthDeployment,
-    409,
-    "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
-  );
-  assert.match(oauthDeploymentError.message, /needs an issued access-token credential/);
-
   const replacementCredential: ServiceAccountCredential = {
     kind: "api_key",
     secretRef: { name: "namespace-provider-rotated", key: "rotated-api-key" },
@@ -342,29 +305,12 @@ test("native ServiceAccounts keep private credential references and cannot admit
     (await controller.getServiceAccount(fixture.principal.id, namespace.id, account.id)).credential,
     replacementCredential,
   );
-  const revisions = await request("GET", `${agentPath}/revisions`);
-  assert.deepEqual(checkedBody(revisions, 200, AgentRevisionListResponse).data, []);
-
-  // The caller holds delete on the account, so the conflict names what still depends on it.
-  const boundDeletion = await request("DELETE", accountPath);
-  const boundDeletionError = checkRefusal(boundDeletion, 409, "RESOURCE_CONFLICT");
-  assert.equal(
-    boundDeletionError.message,
-    "An Agent draft, active revision, pending deployment, or pending Agent provisioning request still references the ServiceAccount. Remove those references, or let provisioning finish, first.",
-  );
-  // Authorization precedes the reference check: a caller without delete learns nothing about references.
   const outsider = await fixture.createAuthPrincipal("service-account-outsider");
   fixture.state.identities.push(outsider.principal);
   assert(outsider.session);
   const forbidden = await request("DELETE", accountPath, { session: outsider.session });
   checkRefusal(forbidden, 403, "FORBIDDEN");
 
-  const detached = await request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, harnessAuth: null },
-  });
-  assert.equal(checkedBody(detached, 200, AgentResponse).data.harnessAuth, null);
-
-  // Failed admissions create no pending revision that could keep a detached account referenced.
   await assertBodylessDelete(fixture, accountPath);
 
   const unusedAccount = await createServiceAccount(request, namespace.id, "unused-provider");
@@ -410,7 +356,6 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   const namespaceAPath = `/namespaces/${namespaceA.id}`;
   const namespaceBPath = `/namespaces/${namespaceB.id}`;
   const accountsPath = `${namespaceAPath}/service-accounts`;
-  const agentsPath = `${namespaceAPath}/agents`;
   const exactAccountPath = `${accountsPath}/${accountA.id}`;
   const credentialPath = `${exactAccountPath}/credential`;
 
@@ -467,50 +412,11 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     assert.equal(crossNamespace.status, 404);
   }
 
-  const configurationB = await createConfiguration(request, namespaceB.id);
-  const configurationA = await createConfiguration(request, namespaceA.id);
-  const crossNamespaceAssociation = await request("POST", `${namespaceBPath}/agents`, {
-    body: {
-      name: "cross-namespace-agent",
-      configurationId: configurationB.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
-    },
-  });
-  assert.equal(crossNamespaceAssociation.status, 404);
-  // A source naming another Namespace is refused as such, even when the route Namespace holds
-  // an account with that id: the reference itself must not cross Namespaces.
-  const foreignSourceAssociation = await request("POST", agentsPath, {
-    body: {
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, accountA.id),
-    },
-  });
-  // The rule reads only the request, before any account lookup, so the API names it as a request
-  // error instead of a 404 (finding 2536): the text is the same whether the account exists.
-  const foreignSourceError = checkRefusal(foreignSourceAssociation, 400, "INVALID_REQUEST");
-  assert.equal(foreignSourceError.message, SERVICE_ACCOUNT_CROSS_NAMESPACE);
-  const missingForeignSource = await request("POST", agentsPath, {
-    body: {
-      name: "foreign-source-agent",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(namespaceB.id, `sa_${randomUUID()}`),
-    },
-  });
-  assert.deepEqual(checkRefusal(missingForeignSource, 400, "INVALID_REQUEST"), foreignSourceError);
-
-  // Namespace-wide Agent authority never substitutes for an exact ServiceAccount binding.
   fixture.state.roles.push(
     {
       id: "role-service-account-namespace-reader",
       namespaceId: namespaceA.id,
-      permissions: [
-        { action: "read", resourceKind: "namespace" },
-        { action: "read", resourceKind: "configuration" },
-        { action: "create", resourceKind: "agent" },
-        { action: "read", resourceKind: "agent" },
-        { action: "update", resourceKind: "agent" },
-      ],
+      permissions: [{ action: "read", resourceKind: "namespace" }],
     },
     {
       id: "role-exact-service-account-reader",
@@ -543,10 +449,7 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     return { identity, app: fixture.createApp(identity) };
   }
 
-  const { identity: reader, app: readerApp } = await exactReader(
-    "existing-account-reader",
-    accountA.id,
-  );
+  const { app: readerApp } = await exactReader("existing-account-reader", accountA.id);
 
   const authorizedAccount = await injectedRequest(readerApp, "GET", exactAccountPath);
   assert.equal(authorizedAccount.status, 200);
@@ -570,53 +473,6 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
   });
   assert.equal(denial.action, "openclaw.service_accounts.read");
 
-  // Agent creation still needs read permission on its exact associated account, not a sibling.
-  const deniedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
-    body: {
-      name: "denied-account-association",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
-    },
-  });
-  assert.equal(deniedAssociation.status, 403);
-  const deniedAssociationAudit = auditSink.events.at(-1);
-  assert(deniedAssociationAudit?.kind === "authorization_denial");
-  assert.equal(deniedAssociationAudit.action, "openclaw.agents.create");
-  assert.deepEqual(deniedAssociationAudit.authorization, {
-    principalId: reader.id,
-    action: "read",
-    resource: { kind: "service_account", id: accountB.id, namespaceId: namespaceA.id },
-  });
-
-  const allowedAssociation = await injectedRequest(readerApp, "POST", agentsPath, {
-    body: {
-      name: "allowed-account-association",
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountA.namespaceId, accountA.id),
-    },
-  });
-  const { data: associatedAgent } = checkedBody(allowedAssociation, 201, AgentResponse);
-  assertAssociatedAccount(associatedAgent, accountA.id);
-  const associatedAgentPath = `${agentsPath}/${associatedAgent.id}`;
-
-  // Replacing A with B requires exact read on the new account, not merely authority over A.
-  const deniedNewAccount = await injectedRequest(readerApp, "PATCH", associatedAgentPath, {
-    body: {
-      configurationId: configurationA.id,
-      harnessAuth: serviceAccountHarnessAuth(accountB.namespaceId, accountB.id),
-    },
-  });
-  assert.equal(deniedNewAccount.status, 403);
-  const unchangedAfterNewAccountDenial = await injectedRequest(
-    readerApp,
-    "GET",
-    associatedAgentPath,
-  );
-  assertAssociatedAccount(
-    checkedBody(unchangedAfterNewAccountDenial, 200, AgentReadResponse).data,
-    accountA.id,
-  );
-
   const deniedCreation = await injectedRequest(readerApp, "POST", accountsPath, {
     body: { name: "unauthorized-account" },
   });
@@ -628,40 +484,4 @@ test("native ServiceAccounts reject invalid references and enforce exact Namespa
     id: namespaceA.id,
     namespaceId: namespaceA.id,
   });
-
-  // Reading replacement account B cannot authorize detaching or replacing the existing account A.
-  const { identity: replacementOnlyReader, app: replacementOnlyApp } = await exactReader(
-    "replacement-only-reader",
-    accountB.id,
-  );
-
-  for (const harnessAuth of [null, serviceAccountHarnessAuth(namespaceA.id, accountB.id)]) {
-    const deniedOldAccount = await injectedRequest(
-      replacementOnlyApp,
-      "PATCH",
-      associatedAgentPath,
-      {
-        body: {
-          configurationId: configurationA.id,
-          harnessAuth,
-        },
-      },
-    );
-    assert.equal(deniedOldAccount.status, 403);
-    const deniedOldAccountAudit = auditSink.events.at(-1);
-    assert(deniedOldAccountAudit?.kind === "authorization_denial");
-    assert.equal(deniedOldAccountAudit.action, "openclaw.agents.update");
-    assert.deepEqual(deniedOldAccountAudit.authorization, {
-      principalId: replacementOnlyReader.id,
-      action: "read",
-      resource: {
-        kind: "service_account",
-        id: accountA.id,
-        namespaceId: namespaceA.id,
-      },
-    });
-
-    const unchanged = await injectedRequest(replacementOnlyApp, "GET", associatedAgentPath);
-    assertAssociatedAccount(checkedBody(unchanged, 200, AgentReadResponse).data, accountA.id);
-  }
 });

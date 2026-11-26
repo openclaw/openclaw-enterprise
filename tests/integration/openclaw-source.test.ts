@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 test("runtime source arguments reject missing, malformed, and conflicting identity", async (t) => {
   const directory = await temporaryDirectory(t, "openclaw-source-");

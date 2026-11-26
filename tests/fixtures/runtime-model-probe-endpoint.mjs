@@ -16,6 +16,7 @@ import { connect } from "node:net";
 // with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
+const heldPrompt = process.env.PROBE_ENDPOINT_HELD_PROMPT;
 const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
 // When set, a turn answers with the last match of this pattern in its request
 // (a caller's nonce) instead of READY, so a caller can prove its own turn arrived.
@@ -24,7 +25,9 @@ const echoPattern =
     ? undefined
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
+const workspaceHistory = process.env.PROBE_ENDPOINT_WORKSPACE_HISTORY === "1";
 const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const slackStandIn = process.env.PROBE_SLACK_STANDIN === "1";
 const skipperFixture =
   process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
     ? (await import("./skipper-prepared-compute-model.mjs")).createSkipperPreparedComputeEvents(
@@ -223,9 +226,101 @@ function publicReadEvents(model, request) {
   ];
 }
 
+// The replacement gets only a continuation prompt. Return a successful
+// continuation answer only when the incoming request already carries the tool
+// result and prior reply. The provider never asks for a second file read.
+function workspaceHistoryEvents(model, request) {
+  if (!workspaceHistory) {
+    return undefined;
+  }
+  const { input, tools } = JSON.parse(request);
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const userIndex = input.findLastIndex((item) => item.role === "user");
+  const prompt = JSON.stringify(input[userIndex]?.content ?? "");
+  const continuation = prompt.includes("Report the retained workspace result.");
+  const callId = "call_gateway_history_read";
+  const marker = /workspace-history-[a-f0-9]{32}/u;
+  const outputIndex = input.findIndex(
+    (item) => item.type === "function_call_output" && item.call_id === callId,
+  );
+  const output = input[outputIndex];
+  if (
+    !continuation &&
+    !output &&
+    !prompt.includes("Read gateway-history.txt and report its value.")
+  ) {
+    return undefined;
+  }
+  const value = JSON.stringify(output?.output ?? "").match(marker)?.[0];
+  if (continuation) {
+    const callIndex = input.findIndex(
+      (item) => item.type === "function_call" && item.call_id === callId && item.name === "read",
+    );
+    const replyIndex = input.findIndex(
+      (item) =>
+        item.role === "assistant" && JSON.stringify(item.content ?? "").includes(`Read ${value}`),
+    );
+    if (
+      value &&
+      callIndex >= 0 &&
+      callIndex < outputIndex &&
+      outputIndex < replyIndex &&
+      replyIndex < userIndex
+    ) {
+      return answerEvents(model, `Retained ${value}`);
+    }
+    // A fresh session has no function history or leaked workspace value.
+    const hasHistory =
+      input.some((item) => item.type === "function_call" || item.type === "function_call_output") ||
+      marker.test(JSON.stringify(input));
+    return answerEvents(model, hasHistory ? "History incomplete" : "History missing");
+  }
+  if (output) {
+    return answerEvents(model, value ? `Read ${value}` : "Workspace read failed");
+  }
+  if (
+    !tools?.every((tool) => tool.type === "function") ||
+    !tools.some((tool) => tool.name === "read")
+  ) {
+    emit({
+      event: "workspace-history-tools",
+      tools: tools?.map(({ name, type }) => ({ name, type })),
+    });
+    return answerEvents(model, "Ordinary workspace read tool missing");
+  }
+  const item = {
+    id: "fc_gateway_history",
+    type: "function_call",
+    status: "completed",
+    call_id: callId,
+    name: "read",
+    arguments: JSON.stringify({ path: "gateway-history.txt" }),
+  };
+  const slot = { item_id: item.id, output_index: 0 };
+  const base = { id: "resp_gateway_history", object: "response", model, created_at: 1 };
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { ...item, arguments: "", status: "in_progress" },
+    },
+    { type: "response.function_call_arguments.delta", ...slot, delta: item.arguments },
+    { type: "response.function_call_arguments.done", ...slot, arguments: item.arguments },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
+  ];
+}
+
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed, caller) {
   emit({ event: "request", transport, turn: true });
+  if (heldPrompt !== undefined && request.includes(heldPrompt)) {
+    emit({ event: "turn-held" });
+    return;
+  }
   if (mode === "hang") {
     return;
   }
@@ -237,6 +332,7 @@ function turn(transport, model, request, respond, closed, caller) {
     respond(
       skipperFixture?.({ model, request, answerEvents, emit }) ??
         publicReadEvents(model, request) ??
+        workspaceHistoryEvents(model, request) ??
         answerEvents(model, text),
     );
     emit({
@@ -249,9 +345,60 @@ function turn(transport, model, request, respond, closed, caller) {
   }, delayMs);
 }
 
+function slackRequest(request, response) {
+  if (!slackStandIn || request.headers.host?.split(":")[0] !== "slack.com") {
+    return false;
+  }
+  const method = new URL(request.url, "https://slack.com").pathname.replace(/^\/api\//, "");
+  const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1] ?? "";
+  const suffix = token.endsWith("-b") ? "B" : "A";
+  let result;
+  if (method === "auth.test" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      team: "Smoke",
+      team_id: "TSMOKE",
+      user: `smoke_${suffix}`,
+      user_id: `USMOKE${suffix}`,
+      bot_id: `BSMOKE${suffix}`,
+      url: "https://smoke.slack.com/",
+      is_enterprise_install: false,
+    };
+  } else if (method === "apps.connections.open" && token.startsWith("xapp-1-smoke-")) {
+    result = { ok: true, url: `wss://wss-primary.slack.com/socket/${suffix}` };
+  } else if (method === "users.list" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      members: [{ id: "USMOKEA", name: "smoke_a" }],
+      response_metadata: { next_cursor: "" },
+    };
+  } else if (method === "conversations.list" && token.startsWith("xoxb-smoke-")) {
+    result = {
+      ok: true,
+      channels: [{ id: "CSMOKE", name: "smoke" }],
+      response_metadata: { next_cursor: "" },
+    };
+  } else {
+    result = { ok: false, error: "invalid_auth" };
+  }
+  emit({
+    event: "slack-api",
+    method,
+    ok: result.ok,
+    caller: suffix,
+    peer: request.socket.remoteAddress,
+  });
+  response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(result));
+  return true;
+}
+
 const server = createServer(
   { key: readFileSync("/fixture/key.pem"), cert: readFileSync("/fixture/cert.pem") },
   (request, response) => {
+    if (slackRequest(request, response)) {
+      return;
+    }
     const caller = callerLabel(request);
     if (caller === null) {
       response.writeHead(401, { "content-type": "application/json" });
@@ -322,6 +469,25 @@ server.on("tlsClientError", (error) => emit({ event: "tls-error", code: error.co
 
 const sockets = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
+  if (
+    slackStandIn &&
+    request.headers.host?.split(":")[0] === "wss-primary.slack.com" &&
+    request.url?.startsWith("/socket/")
+  ) {
+    sockets.handleUpgrade(request, socket, head, (webSocket) => {
+      const caller = request.url.endsWith("/B") ? "B" : "A";
+      emit({ event: "slack-socket", caller });
+      webSocket.send(
+        JSON.stringify({
+          type: "hello",
+          num_connections: 1,
+          connection_info: { app_id: `ASMOKE${caller}` },
+          debug_info: { host: "smoke" },
+        }),
+      );
+    });
+    return;
+  }
   const caller = callerLabel(request);
   if (caller === null || mode === "reject") {
     emit({ event: "request", transport: "websocket", turn: true });

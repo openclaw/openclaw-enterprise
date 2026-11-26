@@ -264,30 +264,26 @@ test("shipped models API lists visible Codex models from a separate catalog proc
   assert.match(catalogLog, /"host":"chatgpt.com","path":"\/backend-api\/codex\/models"/);
   assert.equal(catalogLog.includes("at-fixture-token"), false);
 
-  const transcript = {
-    revision: process.env.OCC_PROOF_REVISION ?? "uncommitted",
-    node: process.version,
-    controllerPid: ready.pid,
-    catalogPid: proxy.child.pid,
-    fetch: ready.fetch,
-    catalog: {
-      whoami: { chatgpt_account_id: "verified-account", chatgpt_account_is_fedramp: false },
-      models: [
-        { slug: "gpt-5.5", visibility: "list", priority: null },
-        { slug: "codex-auto-review", visibility: "hide", priority: null },
-        { slug: "gpt-5.4", visibility: "list", priority: null },
-      ],
-    },
-    response: {
-      status: response.status,
-      cacheControl: response.headers["cache-control"],
-      data: body.data,
-    },
-    catalogRequests: catalogLog
-      .trim()
-      .split("\n")
-      .filter((line) => line.startsWith("{")),
-  };
-  t.diagnostic(JSON.stringify(transcript));
-  console.log(JSON.stringify(transcript));
+  t.diagnostic(
+    JSON.stringify({
+      revision: execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root.pathname,
+        encoding: "utf8",
+      }).trim(),
+      node: process.version,
+      testPid: process.pid,
+      controllerPid: ready.pid,
+      catalogPid: proxy.child.pid,
+      fetch: ready.fetch,
+      response: {
+        status: response.status,
+        cacheControl: response.headers["cache-control"],
+        data: body.data,
+      },
+      catalogRequests: catalogLog
+        .trim()
+        .split("\n")
+        .filter((line) => line.startsWith("{")),
+    }),
+  );
 });

@@ -21,6 +21,22 @@ export function capability(value: unknown): value is DriverCapability {
   return typeof value === "string" && DRIVER_CAPABILITIES.some((candidate) => candidate === value);
 }
 
+function validClientScopes(value: unknown): boolean {
+  const scopes = asRecord(value);
+  return (
+    scopes !== undefined &&
+    Object.entries(scopes).every(([purpose, supported]) => {
+      if ((purpose !== "oauth2" && purpose !== "github-app") || !Array.isArray(supported)) {
+        return false;
+      }
+      return (
+        new Set(supported).size === supported.length &&
+        supported.every((scope) => scope === "installation" || scope === "namespace")
+      );
+    })
+  );
+}
+
 export function driverHasCapabilityContract(driver: Driver): boolean {
   const candidate = driver as unknown as Record<string, unknown>;
   if (driver.capability === "iam") {
@@ -57,6 +73,32 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       (candidate.withValue === undefined || typeof candidate.withValue === "function") &&
       (candidate.readCredentialInput === undefined ||
         typeof candidate.readCredentialInput === "function")
+    );
+  }
+  if (driver.capability === "token_service") {
+    return (
+      [
+        "registerClientSecret",
+        "updateClientSecret",
+        "resolveClientSecret",
+        "removeClientSecret",
+        "createSource",
+        "updateSource",
+        "resolveCredential",
+        "forceRefresh",
+        "getRefreshStatus",
+        "removeSource",
+      ].every((operation) => typeof candidate[operation] === "function") &&
+      validClientScopes(candidate.clientScopes)
+    );
+  }
+  if (driver.capability === "credential_proxy_delivery") {
+    return (
+      ["deployProxy", "configureDeployment", "getDeploymentStatus", "removeDeployment"].every(
+        (operation) => typeof candidate[operation] === "function",
+      ) &&
+      (candidate.notifyCredentialUpdated === undefined ||
+        typeof candidate.notifyCredentialUpdated === "function")
     );
   }
   if (driver.capability === "credential_proxy") {
@@ -169,6 +211,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "channel") {
     return (
+      typeof candidate.enableRouting === "function" &&
       typeof candidate.lookupDirectory === "function" &&
       (candidate.validateCredentials === undefined ||
         typeof candidate.validateCredentials === "function")
@@ -191,8 +234,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     typeof candidate.deleteNamespace === "function" &&
     typeof candidate.prepareRevision === "function" &&
     typeof candidate.retireRevision === "function" &&
-    (candidate.getGatewayChatEndpoint === undefined ||
-      typeof candidate.getGatewayChatEndpoint === "function") &&
+    (candidate.getGatewayBrowserRequest === undefined ||
+      typeof candidate.getGatewayBrowserRequest === "function") &&
     (candidate.getRuntimeImages === undefined ||
       typeof candidate.getRuntimeImages === "function") &&
     (candidate.resolveSandboxNamespace === undefined ||

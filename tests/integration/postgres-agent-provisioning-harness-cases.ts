@@ -15,7 +15,7 @@ import {
   nativeAdminConfigurationSupported,
 } from "../../apps/controller/src/gateway/native-admin.ts";
 import { ConfigurationHarnessError } from "../../packages/occ/src/index.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import { waitFor } from "../helpers/wait-for.ts";

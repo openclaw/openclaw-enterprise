@@ -3,7 +3,7 @@ import type { TestContext } from "node:test";
 import type { Pool } from "pg";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { OpenShellLegacyEgressProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { InstalledDriver, PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { createOpenShellCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-registration.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
@@ -14,7 +14,7 @@ import { composePostgresDevelopment, createPostgresControllerAuth } from "./pass
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import type { standingExecutionPlatform } from "./postgres-standing-execution.ts";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.mjs";
+import { authenticatedHeaders, cookieHeaderFromSetCookie } from "./auth-session.ts";
 
 /** API composition has its own Git owner and database pool. Only Kubernetes discovery is
  * controlled; the disposition travels through authenticated Fastify, OCC, Compute and Sandbox. */
@@ -88,8 +88,8 @@ export async function repositoryRestartInventory(
               ...input.sandbox,
               configuration: input.proxy!.configuration,
               definition: {
-                configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
-                validateConfiguration: OpenShellCredentialProxyDriver.validateConfiguration,
+                configurationSchema: OpenShellLegacyEgressProxyDriver.configurationSchema,
+                validateConfiguration: OpenShellLegacyEgressProxyDriver.validateConfiguration,
                 configurationContributions: OpenShellSandboxDriver.configurationContributions,
               },
             },

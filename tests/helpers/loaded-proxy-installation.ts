@@ -14,6 +14,9 @@ export async function loadedProxyInstallation(
     id: string;
     registry: { backendId: string };
     preview?: boolean;
+    tokenService?: true;
+    /** repository.preparedGitHub.apiOrigin; omitted selects github.com. */
+    apiOrigin?: string;
     createOpenShellBackend: NonNullable<
       Parameters<typeof loadInstallationConfiguration>[0]["createOpenShellBackend"]
     >;
@@ -21,7 +24,7 @@ export async function loadedProxyInstallation(
 ) {
   const directory = await temporaryDirectory(t, "proxy-installation-");
   const registryPath = join(directory, "registry.json");
-  await writeFile(registryPath, JSON.stringify(input.registry));
+  await writeFile(registryPath, JSON.stringify(input.registry), { mode: 0o644 });
   const base = createCredentialProxyInstallationConfiguration();
   const authority = base.drivers.credential_proxy.configuration.authority;
   const repository = input.profile === "repository";
@@ -59,6 +62,7 @@ export async function loadedProxyInstallation(
     ],
     drivers: {
       ...base.drivers,
+      ...(input.tokenService && { token_service: { id: "occ", configuration: {} } }),
       sandbox: {
         ...base.drivers.sandbox,
         id: input.id,
@@ -81,6 +85,7 @@ export async function loadedProxyInstallation(
         preparedGitHub: {
           custodyKeyPath: join(directory, "custody.key"),
           privateKeyPath: join(directory, "app.pem"),
+          ...(input.apiOrigin && { apiOrigin: input.apiOrigin }),
         },
         openShell: { registrationName: "oce-prepared-git", authority },
       },

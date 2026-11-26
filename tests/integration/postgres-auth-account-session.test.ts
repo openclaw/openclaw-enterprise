@@ -20,7 +20,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { sessionBindingKey } from "../../apps/controller/src/auth/session-binding.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 

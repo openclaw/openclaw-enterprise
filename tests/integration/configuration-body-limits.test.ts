@@ -15,13 +15,14 @@ import type {
   ResourceRef,
 } from "../../packages/contracts/src/index.ts";
 import { ConfigurationSizeError, type PlatformStateStore } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   assertWriteAuthorizationDenial,
   partialWrite,
 } from "../helpers/partial-write-authorization.ts";
-import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
+import { createDenied } from "../helpers/refusal-access.ts";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
 // all written with six-byte JSON escapes.

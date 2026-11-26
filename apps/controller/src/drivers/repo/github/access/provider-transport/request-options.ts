@@ -1,4 +1,13 @@
-import { parseGitHubNumericId, validateGitHubRepositoryGrant } from "../repository-grant.ts";
+import type { GitHubAppInstallationScope } from "@openclaw-enterprise/contracts";
+
+import {
+  createRepositorySlugPattern,
+  isGitHubRepositoryPermissions,
+  parseGitHubNumericId,
+  validateGitHubFiniteInstallationScope,
+  validateGitHubRepositoryGrant,
+  type GitHubAppRepositorySelection,
+} from "../repository-grant.ts";
 import type { RequestOptions } from "node:https";
 import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubPreparationAdmission } from "../prepared-contracts.ts";
@@ -17,17 +26,20 @@ type GitHubIssuanceScope = Readonly<{
 }> &
   (
     | Readonly<{ kind: "inherited" }>
-    | Readonly<{
+    | (Readonly<{
         kind: "selected";
-        repositoryIds: readonly number[];
         permissions: Readonly<Record<string, string>>;
-      }>
+      }> &
+        (
+          | { readonly repositoryIds: readonly number[] }
+          | { readonly repositoryNames: readonly string[] }
+        ))
   );
 type IssuanceProjection =
   | Readonly<{ kind: "inherited" }>
   | Readonly<{
       kind: "selected";
-      repositories: readonly Readonly<{ id: number; name: string }>[];
+      repositories: readonly Readonly<{ id?: number; name: string }>[];
       permissions: Readonly<Record<string, string>>;
     }>;
 const requestBodies = new WeakMap<ProviderScope, string>();
@@ -53,19 +65,20 @@ function canonicalPermissions(permissions: Readonly<Record<string, string>>) {
   );
 }
 
+function projectFiniteScope(scope: GitHubAppInstallationScope): IssuanceProjection {
+  return {
+    kind: "selected",
+    repositories: scope.repositories
+      .map((r) => ({ id: numericId(r.repositoryId), name: r.repository }))
+      .sort((a, b) => a.id - b.id),
+    permissions: canonicalPermissions(scope.permissions),
+  };
+}
+
 function projectIssuanceScope(scope: GitHubPreparationAdmission["grant"]): IssuanceProjection {
   if (scope.profile === "github-repository") {
     validateGitHubRepositoryGrant(scope);
-    return {
-      kind: "selected",
-      repositories: scope.repositories
-        .map((r) => ({
-          id: numericId(r.repositoryId),
-          name: r.repository,
-        }))
-        .sort((a, b) => a.id - b.id),
-      permissions: canonicalPermissions(scope.permissions),
-    };
+    return projectFiniteScope(scope);
   }
   if (scope.profile === "github-installation") {
     // Reject a mixed persisted grant instead of silently dropping its narrowing constraints.
@@ -95,6 +108,48 @@ export function prepareProviderScope(
   origin: string,
   scope: GitHubPreparationAdmission["grant"],
 ): ProviderScope {
+  return prepareScope(origin, scope, projectIssuanceScope(scope));
+}
+
+export function prepareGitHubAppProviderScope(
+  origin: string,
+  scope: GitHubAppRepositorySelection,
+): ProviderScope {
+  if (scope.repositories.every(({ repositoryId }) => repositoryId !== undefined)) {
+    validateGitHubFiniteInstallationScope(scope);
+    return prepareScope(origin, scope, projectFiniteScope(scope));
+  }
+
+  const slugPattern = createRepositorySlugPattern();
+  const names = scope.repositories.map(({ repository }) => repository.toLowerCase());
+  const [owner] = names[0]?.split("/") ?? [];
+  numericId(scope.appId);
+  if (
+    names.length < 1 ||
+    names.length > 16 ||
+    new Set(names).size !== names.length ||
+    names.some((name) => !slugPattern.test(name) || !name.startsWith(owner + "/")) ||
+    !isGitHubRepositoryPermissions(scope.permissions)
+  ) {
+    throw new Error("invalid-provider-scope");
+  }
+  return prepareScope(origin, scope, {
+    kind: "selected",
+    repositories: scope.repositories
+      .map(({ repository, repositoryId }) => ({
+        name: repository.toLowerCase(),
+        ...(repositoryId === undefined ? {} : { id: numericId(repositoryId) }),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, "en")),
+    permissions: canonicalPermissions(scope.permissions),
+  });
+}
+
+function prepareScope(
+  origin: string,
+  scope: Pick<GitHubAppInstallationScope, "appId" | "installationId">,
+  projection: IssuanceProjection,
+): ProviderScope {
   if (parseCanonicalGitHubOrigin(origin) === undefined) {
     throw new Error("invalid-provider-origin");
   }
@@ -104,29 +159,45 @@ export function prepareProviderScope(
     appId: scope.appId,
     installationId: numericId(scope.installationId),
   };
-  const projection = projectIssuanceScope(scope);
   const issuance: GitHubIssuanceScope =
     projection.kind === "inherited"
       ? Object.freeze({ ...target, kind: "inherited" })
       : Object.freeze({
           ...target,
           kind: "selected",
-          repositoryIds: Object.freeze(projection.repositories.map((repository) => repository.id)),
+          ...(projection.repositories.some(({ id }) => id === undefined)
+            ? {
+                repositoryNames: Object.freeze(
+                  projection.repositories.map(({ name }) => name.slice(name.indexOf("/") + 1)),
+                ),
+              }
+            : {
+                repositoryIds: Object.freeze(
+                  projection.repositories.map(({ id }) => {
+                    if (id === undefined) {
+                      throw new Error("invalid-provider-scope");
+                    }
+                    return id;
+                  }),
+                ),
+              }),
           permissions: projection.permissions,
         });
   if (projection.kind === "selected") {
     projection.repositories.forEach(Object.freeze);
     Object.freeze(projection.repositories);
   }
-  // The issuer sends the exact normalized provider scope. Repository names stay in the
-  // response-validation projection; stable IDs identify the repositories in the mint request.
+  // GitHub accepts unqualified names on first enrollment. The response must
+  // prove the exact owner/repository entries before TokenService can save the token.
   const prepared = Object.freeze({ ...projection, issuance }) as ProviderScope;
   requestBodies.set(
     prepared,
     issuance.kind === "inherited"
       ? "{}"
       : JSON.stringify({
-          repository_ids: issuance.repositoryIds,
+          ...("repositoryNames" in issuance
+            ? { repositories: issuance.repositoryNames }
+            : { repository_ids: issuance.repositoryIds }),
           permissions: issuance.permissions,
         }),
   );
@@ -146,19 +217,55 @@ export function providerRequestOptions(
   if (!isGitHubWireCredential(authorization)) {
     throw new Error("invalid-provider-credential");
   }
-  const origin = new URL(endpoint.issuance.origin);
   const issue = operation === "issue";
   const body = issue ? issueBody : "";
+  return githubRequestOptions(
+    endpoint.issuance.origin,
+    issue ? "POST" : "DELETE",
+    issue
+      ? `/app/installations/${endpoint.issuance.installationId}/access_tokens`
+      : "/installation/token",
+    authorization,
+    ca,
+    body,
+  );
+}
+
+/** App-JWT identity reads have a fixed path and cannot mint or revoke a token. */
+export function appIdentityRequestOptions(
+  origin: string,
+  authorization: string,
+  ca: Uint8Array | undefined,
+  installationId?: number,
+): Readonly<{ options: RequestOptions; body: string }> {
+  if (
+    !parseCanonicalGitHubOrigin(origin) ||
+    !isGitHubWireCredential(authorization) ||
+    (installationId !== undefined && (!Number.isSafeInteger(installationId) || installationId < 1))
+  ) {
+    throw new Error("invalid-provider-identity-request");
+  }
+  const path = installationId === undefined ? "/app" : `/app/installations/${installationId}`;
+  return githubRequestOptions(origin, "GET", path, authorization, ca, "");
+}
+
+function githubRequestOptions(
+  originValue: string,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  authorization: string,
+  ca: Uint8Array | undefined,
+  body: string,
+): Readonly<{ options: RequestOptions; body: string }> {
+  const origin = new URL(originValue);
   return {
     body,
     options: {
       protocol: "https:",
       hostname: origin.hostname.replace(/^\[|\]$/g, ""),
       port: origin.port || 443,
-      method: issue ? "POST" : "DELETE",
-      path: issue
-        ? `/app/installations/${endpoint.issuance.installationId}/access_tokens`
-        : "/installation/token",
+      method,
+      path,
       agent: false,
       rejectUnauthorized: true,
       maxHeaderSize: 32768,

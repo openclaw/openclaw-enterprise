@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import tokenServiceAgentLane from "../../scripts/ci/test-suites/openshell-token-service-agent.json" with { type: "json" };
 
 const scenarioPresets = {
   "native-restart": ["Codex"],
+  "channel-egress-upgrade": ["Codex"],
   "http-chat": ["OpenClaw", "Codex"],
   "namespace-lifecycle": ["OpenClaw"],
   "oidc-agent-chat": ["OpenClaw"],
@@ -9,7 +11,11 @@ const scenarioPresets = {
   "scratch-volume": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
-  "openshell-git-model": ["Codex"],
+  "openshell-template-resources": ["Codex"],
+  "openshell-provider-replacement": ["Codex"],
+  "openshell-git-replacement": ["Codex"],
+  "openshell-optional-plugin-withdrawal": ["OpenClaw"],
+  "openshell-token-service-agent": ["OpenClaw"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "harness-overrides": ["OpenClaw", "Codex"],
@@ -36,13 +42,18 @@ export function selectQaMatrix(env = process.env) {
     (name) =>
       ![
         "native-restart",
+        "channel-egress-upgrade",
         "namespace-lifecycle",
         "oidc-agent-chat",
         "sandbox-policy",
         "scratch-volume",
         "plugin-install",
         "openshell-linear-read",
-        "openshell-git-model",
+        "openshell-template-resources",
+        "openshell-provider-replacement",
+        "openshell-git-replacement",
+        "openshell-optional-plugin-withdrawal",
+        "openshell-token-service-agent",
         "codex-search-config",
         "harness-overrides",
       ].includes(name),
@@ -54,6 +65,12 @@ export function selectQaMatrix(env = process.env) {
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const channelUpgrade = scenarios.includes("channel-egress-upgrade");
+  if (channelUpgrade) {
+    assert.equal(scenarios.length, 1, "channel-egress-upgrade requires an exclusive QA selection");
+    assert.equal(installation, "kubernetes", "channel-egress-upgrade requires Kubernetes");
+    assert.equal(preset, "Codex", "channel-egress-upgrade requires Codex");
+  }
   const nativeRestart = scenarios.includes("native-restart");
   if (nativeRestart) {
     assert.equal(scenarios.length, 1, "native-restart requires an exclusive QA selection");
@@ -65,6 +82,16 @@ export function selectQaMatrix(env = process.env) {
     assert.equal(scenarios.length, 1, "oidc-agent-chat requires an exclusive QA selection");
     assert.equal(installation, "kubernetes", "oidc-agent-chat requires Kubernetes");
     assert.equal(preset, "OpenClaw", "oidc-agent-chat requires the OpenClaw preset");
+  }
+  const tokenServiceAgent = scenarios.includes("openshell-token-service-agent");
+  if (tokenServiceAgent) {
+    assert.equal(
+      scenarios.length,
+      1,
+      "OpenShell TokenService Agent requires an exclusive selection",
+    );
+    assert.equal(installation, "kubernetes", "OpenShell TokenService Agent requires Kubernetes");
+    assert.equal(preset, "OpenClaw", "OpenShell TokenService Agent requires Dedicated OpenClaw");
   }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
@@ -93,28 +120,38 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
+            "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) && applies(scenario, value, name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
+            "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) &&
           applies(scenario, value, name) &&
           !scenarios.includes(scenario),
@@ -123,14 +160,19 @@ export function selectQaMatrix(env = process.env) {
         (scenario) =>
           ![
             "native-restart",
+            "channel-egress-upgrade",
+            "openshell-template-resources",
             "namespace-lifecycle",
             "sandbox-policy",
             "scratch-volume",
             "plugin-install",
             "openshell-linear-read",
-            "openshell-git-model",
             "harness-overrides",
             "oidc-agent-chat",
+            "openshell-provider-replacement",
+            "openshell-git-replacement",
+            "openshell-optional-plugin-withdrawal",
+            "openshell-token-service-agent",
           ].includes(scenario) && !applies(scenario, value, name),
       ),
     })),
@@ -156,6 +198,28 @@ export function selectQaMatrix(env = process.env) {
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
   const requiredEnv = [];
+  if (tokenServiceAgent) {
+    requiredEnv.push(...tokenServiceAgentLane.requiredEnv);
+  }
+  if (channelUpgrade) {
+    requiredEnv.push(
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE",
+      "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS",
+      "OPENAI_API_KEY",
+      "OCC_TEST_CHANNEL_EGRESS_SOURCE_CONTROLLER_IMAGE",
+      "OCC_TEST_CHANNEL_EGRESS_SOURCE_CHART",
+      "OCC_TEST_CHANNEL_EGRESS_NEXT_CONTROLLER_IMAGE",
+      "SLACK_APP_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "OCC_TEST_SLACK_SENDER_BOT_TOKEN",
+      "OCC_TEST_SLACK_CHANNEL_ID",
+    );
+  }
   if (nativeRestart) {
     requiredEnv.push(
       "OCC_TEST_KUBERNETES_KUBECONFIG",
@@ -193,6 +257,10 @@ export function selectQaMatrix(env = process.env) {
   }
   if (oidcAgentChat) {
     requiredEnv.push(
+      "OPENCLAW_ENTERPRISE_CI_STATE",
+      "OCC_TEST_NATIVE_BASELINE_CONTROLLER_IMAGE",
+      "OCC_TEST_NATIVE_BASELINE_RUNTIME_IMAGE",
+      "OCC_TEST_NATIVE_BASELINE_SOURCE",
       "OCC_TEST_KUBERNETES_KUBECONFIG",
       "OCC_TEST_KUBERNETES_CONTEXT",
       "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
@@ -219,12 +287,64 @@ export function selectQaMatrix(env = process.env) {
     }
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
-  const gitModel = scenarios.includes("openshell-git-model");
+  const templateResources = scenarios.includes("openshell-template-resources");
+  if (templateResources) {
+    assert.equal(
+      installation,
+      "kubernetes",
+      "Template resources require explicit Kubernetes selection",
+    );
+    requiredEnv.push("OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE");
+  }
   const namespaceLifecycle = scenarios.includes("namespace-lifecycle");
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const scratchVolume = scenarios.includes("scratch-volume");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const gitReplacement = scenarios.includes("openshell-git-replacement");
+  const providerReplacement = scenarios.includes("openshell-provider-replacement");
+  const optionalPluginWithdrawal = scenarios.includes("openshell-optional-plugin-withdrawal");
+  if (optionalPluginWithdrawal) {
+    assert.equal(
+      scenarios.length,
+      1,
+      "Optional Plugin withdrawal requires an exclusive QA selection",
+    );
+    assert.equal(installation, "kubernetes", "Optional Plugin withdrawal requires Kubernetes");
+    assert.equal(preset, "OpenClaw", "Optional Plugin withdrawal requires Dedicated OpenClaw");
+    assert.equal(
+      env.OCC_TEST_OPENSHELL_HARNESS,
+      "openclaw",
+      "Optional Plugin withdrawal requires the OpenClaw fixture selection",
+    );
+    requiredEnv.push(
+      "OPENAI_API_KEY",
+      "OCC_TEST_OPENAI_MODEL",
+      "OCC_TEST_OPENSHELL_HARNESS",
+      "OCC_TEST_OPENSHELL_K3D_REAL",
+      "OCC_TEST_DATABASE_URL",
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+      "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+      "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+      "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+      "OCC_TEST_OPENSHELL_HELM",
+      "OCC_TEST_OPENSHELL_HELM_CHART",
+      "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+      "OCC_TEST_GATEWAY_CA_CERT_PATH",
+      "OCC_TEST_GATEWAY_CA_KEY_PATH",
+    );
+  }
+  if (providerReplacement || gitReplacement) {
+    assert.notEqual(installation, "compose", "Provider replacement requires Kubernetes setup");
+    requiredEnv.push(
+      "OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE",
+      "OCC_TEST_KUBERNETES_KUBECONFIG",
+      "OCC_TEST_KUBERNETES_CONTEXT",
+    );
+  }
   const harnessOverrides = scenarios.includes("harness-overrides");
   if (harnessOverrides) {
     assert.notEqual(
@@ -244,13 +364,16 @@ export function selectQaMatrix(env = process.env) {
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       nativeRestart ||
+      channelUpgrade ||
       namespaceLifecycle ||
       sandboxPolicy ||
       scratchVolume ||
       pluginInstall ||
       linearRead ||
       harnessOverrides ||
-      gitModel,
+      providerReplacement ||
+      gitReplacement ||
+      optionalPluginWithdrawal,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -265,7 +388,7 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (namespaceLifecycle || gitModel) {
+  if (namespaceLifecycle) {
     assert.notEqual(installation, "compose", "This OpenShell scenario requires Kubernetes");
     for (const key of ["OCC_TEST_QA_OPENAI_KEY_FILE", "OCC_TEST_QA_OPENAI_MODEL"]) {
       if (!requiredEnv.includes(key)) {
@@ -285,7 +408,7 @@ export function selectQaMatrix(env = process.env) {
       }
     }
   }
-  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume || gitModel) {
+  if (namespaceLifecycle || sandboxPolicy || pluginInstall || scratchVolume) {
     if ((sandboxPolicy || pluginInstall) && !requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -315,7 +438,6 @@ export function selectQaMatrix(env = process.env) {
     installations,
     exclusions,
     namespaceLifecycle,
-    gitModel,
     oidcAgentChat,
     sandboxPolicy,
     scratchVolume,
@@ -323,7 +445,13 @@ export function selectQaMatrix(env = process.env) {
     linearRead,
     harnessOverrides,
     nativeRestart,
+    channelUpgrade,
     presets,
+    providerReplacement,
+    gitReplacement,
+    optionalPluginWithdrawal,
+    tokenServiceAgent,
+    templateResources,
     cells,
     scenarios,
     requiredEnv,

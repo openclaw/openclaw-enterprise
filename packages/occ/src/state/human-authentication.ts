@@ -7,7 +7,7 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
 } from "../errors.ts";
-import type { PlatformUnitOfWork } from "./platform-state.ts";
+import type { PlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import type { AccountEnrollmentRole } from "@openclaw-enterprise/iam";

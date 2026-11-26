@@ -62,7 +62,7 @@ function input(controlPlane: TestInput = {}) {
         scraperPodLabels: { app: "prometheus" },
       },
       recoveryUserId: "recovery-admin_1",
-      google: { egressCidrs: ["192.0.2.20/32"] },
+      google: {},
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
       ...controlPlane,
     },
@@ -73,7 +73,7 @@ function input(controlPlane: TestInput = {}) {
       gatewayNodeSelector: { "oce-role": "control" },
       transportSecretPrefix: "openclaw-agent-transport",
     },
-    channels: { managedSlackProxy: true },
+    channels: { managedEgress: true, excludedCidrs: ["10.0.0.0/8"] },
   };
 }
 
@@ -81,7 +81,7 @@ function input(controlPlane: TestInput = {}) {
 function codexInput(codex: TestInput = {}) {
   return {
     runtime: { ...input({}).runtime, codexSeccompProfile: "profiles/codex.json" },
-    codex: { modelDiscoveryCidrs: [], ...codex },
+    codex: { ...codex },
   };
 }
 
@@ -96,7 +96,6 @@ const repositoryInput = {
   appKeySecretName: "occ-repository-app-key",
   tlsSecretName: "occ-repository-tls",
   publicCaSecretName: "occ-repository-ca",
-  upstreamCidrs: ["192.0.2.30/32"],
 };
 
 test("profile renderer refuses the retired signing gateway without preparing outputs", async () => {
@@ -376,30 +375,6 @@ fieldParity("trusted proxy CIDRs get the same verdict from the preflight and the
   cases: cidrCases,
   controlPlane: (cidr) => ({ trustedProxy: { preset: "ingress-nginx", cidrs: [cidr] } }),
   values: (cidr) => ({ api: { trustedProxy: { preset: "ingress-nginx", cidrs: [cidr] } } }),
-});
-
-// The API's Slack directory proxy: one literal IPv4 endpoint, and not the unspecified address.
-fieldParity("directory proxy URLs get the same verdict from the preflight and the chart", {
-  cases: [
-    ["http://192.0.2.10:3128", true],
-    ["https://192.0.2.10:443", true],
-    ["http://0.0.0.0:3128", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
-    ["http://192.0.2.999:3128", false, /must contain valid IPv4 octets/],
-    ["http://192.0.2.10:65536", false, /must contain a TCP port from 1 to 65535/],
-    ["http://010.0.0.1:3128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    // Both edges of the octet and port ranges, port 0 or a leading zero, a path, and the
-    // unspecified host over HTTPS.
-    ["http://192.0.2.255:3128", true],
-    ["http://192.0.2.256:3128", false, /must contain valid IPv4 octets/],
-    ["http://192.0.2.10:65535", true],
-    ["http://192.0.2.10:0", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["http://192.0.2.10:03128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["http://192.0.2.10:3128/path", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
-    ["https://0.0.0.0:443", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
-  ],
-  controlPlane: () => ({}),
-  extraInput: (url) => ({ channels: { managedSlackProxy: false, directoryProxyUrl: url } }),
-  values: (url) => ({ slackProxy: { enabled: false }, api: { channelDirectoryProxyUrl: url } }),
 });
 
 // The chart's clientAddressHeader refusal, in its order. generic still accepts a plain
@@ -903,7 +878,6 @@ test(
     const accounts = {
       workspaceId: "11111111-1111-4111-8111-111111111111",
       adminSecretName: "occ-chatgpt-admin",
-      providerCidr: "192.0.2.21/32",
     };
     for (const enabled of [false, true]) {
       cases.push({
@@ -917,7 +891,6 @@ test(
             chatgpt: {
               enabled,
               secretName: accounts.adminSecretName,
-              providerCidr: accounts.providerCidr,
             },
           },
         },
@@ -1050,7 +1023,7 @@ const resourceNames: Array<
   [
     "controlPlane.google.secretName",
     "auth.google.secretName",
-    (secretName) => ({ google: { egressCidrs: ["192.0.2.20/32"], secretName } }),
+    (secretName) => ({ google: { secretName } }),
     (secretName) => ({ auth: { google: { secretName } } }),
   ],
 ];

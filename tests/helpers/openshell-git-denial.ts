@@ -396,3 +396,243 @@ export function createOpenShellGitDenial({
     },
   });
 }
+
+// Keep the literal request target separate from the repository and service
+// that Git must actually serve. Mixed service keys must never reach the origin.
+// Under AC-3, stock OpenShell may match HEAD as GET. A "read" row may be
+// refused or advertise uploads on A. HEAD on A receive or C must be denied.
+export function gitAclVariants(initialSha: string) {
+  const upload = "/fixture/a.git/info/refs?service=git-upload-pack";
+  const receive = "/fixture/a.git/info/refs?service=git-receive-pack";
+  const cases = [
+    ["GET", upload + "&service=git-receive-pack", "a", "receive", "deny"],
+    ["GET", receive + "&service=git-upload-pack", "a", "upload", "deny"],
+    ["GET", upload + "&%73ervice=git-receive-pack", "a", "receive", "deny"],
+    ["GET", upload + "&service=git-upload-pack", "a", "upload", "read"],
+    ["GET", upload + "&extra=1", "a", "upload", "read"],
+    ["GET", upload + "&Service=git-receive-pack", "a", "upload", "read"],
+    ["GET", "/fixture/%61.git/info/refs?%73ervice=git-%75pload-pack", "a", "upload", "read"],
+    ["HEAD", upload, "a", "upload", "read"],
+    ["HEAD", receive, "a", "receive", "deny"],
+    ["HEAD", "/fixture/%63.git/info/refs?service=git-upload-pack", "c", "upload", "deny"],
+    [
+      "GET",
+      "/fixture/a.git/%2e%2e/%63.git/info/refs?service=git-upload-pack",
+      "c",
+      "upload",
+      "deny",
+    ],
+    ["GET", "/fixture/%63.git/info/refs?service=git-receive-pack", "c", "receive", "deny"],
+    ["POST", "/fixture/a.git/git-receive-pack?anything=1", "a", "receive", "deny"],
+    ["POST", "/fixture/%63.git/git-upload-pack", "c", "upload", "deny"],
+    ["POST", "/fixture/a.git/../%63.git/git-receive-pack", "c", "receive", "deny"],
+  ] as const;
+  return cases.map(([method, target, repo, operation, expected]) => {
+    const repository = `fixture/${repo}`;
+    const service = `git-${operation}-pack`;
+    const rpc = method === "POST";
+    return Object.freeze({
+      method,
+      target,
+      repository,
+      operation,
+      expected,
+      service,
+      path: `/${repository}.git/${rpc ? service : "info/refs"}`,
+      ...(rpc && {
+        body: operation === "upload" ? `0032want ${initialSha}\n00000009done\n` : "0000",
+      }),
+    });
+  });
+}
+
+export type GitAclVariant = ReturnType<typeof gitAclVariants>[number];
+
+type GitAclObservation =
+  | { kind: "git" | "success" }
+  | { kind: "variant"; method: GitAclVariant["method"]; path: string; host: string }
+  | { kind: "rest"; method: "GET" | "POST"; path: string; host: string };
+type GitAclCredentialFingerprint = readonly [length: number, sha256: string];
+
+function gitAclCredentialFingerprints(token: string): readonly GitAclCredentialFingerprint[] {
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  return [token, basic].map((value) => [
+    Buffer.byteLength(value),
+    createHash("sha256").update(value).digest("hex"),
+  ]);
+}
+
+function gitAclCheckCommand(fingerprints: readonly GitAclCredentialFingerprint[]): string[] {
+  // Node's TypeScript loader erases types. The guest needs only Node builtins.
+  const script = `(${checkGitAclDenial.toString()})().catch(() => {
+    process.stderr.write("ACL_DENIAL_CAPTURE\\n");
+    process.exitCode = 1;
+  });`;
+  return ["node", "--eval", script, "--", JSON.stringify(fingerprints)];
+}
+
+/** Check the alias and require the broad credential to be absent from every guest value. */
+export function createGitAclEnvironmentGuard(token: string): string {
+  return [...gitAclCheckCommand(gitAclCredentialFingerprints(token)), "environment"]
+    .map((argument) => "'" + argument.replaceAll("'", "'\\''") + "'")
+    .join(" ");
+}
+
+/** Carry fingerprints of the static control credential or the issuer's token history. */
+export function createGitAclDenialCommand(
+  credential: string | readonly GitAclCredentialFingerprint[],
+) {
+  const fingerprints =
+    typeof credential === "string" ? gitAclCredentialFingerprints(credential) : credential;
+  const prefix = gitAclCheckCommand(fingerprints);
+  return (observation: GitAclObservation, [executable, ...args]: [string, ...string[]]) => [
+    ...prefix,
+    observation.kind,
+    "method" in observation ? observation.method : "",
+    "path" in observation ? observation.path : "",
+    "host" in observation ? observation.host : "",
+    executable,
+    ...args,
+  ];
+}
+
+async function checkGitAclDenial() {
+  const { spawnSync } = await import("node:child_process");
+  const { createHash } = await import("node:crypto");
+  const [encoded, kind, method, path, host, executable, ...args] = process.argv.slice(1);
+  const limit = 8192;
+  const fail = (diagnostic: string) => {
+    process.stderr.write(diagnostic + "\n");
+    process.exitCode = 1;
+  };
+  const fingerprints: GitAclCredentialFingerprint[] = JSON.parse(encoded ?? "null");
+  const environmentOnly = kind === "environment" && method === undefined;
+  const rest = kind === "rest" || kind === "variant";
+  if (
+    (!rest && kind !== "git" && kind !== "success" && !environmentOnly) ||
+    !Array.isArray(fingerprints) ||
+    fingerprints.length < 2 ||
+    fingerprints.some(
+      ([length, hash]) =>
+        !Number.isSafeInteger(length) || length <= 0 || !/^[a-f0-9]{64}$/.test(hash),
+    )
+  ) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  const containsCredential = (stream: Buffer) => {
+    for (const [size, hash] of fingerprints) {
+      for (let offset = 0; offset + size <= stream.length; offset++) {
+        if (
+          createHash("sha256")
+            .update(stream.subarray(offset, offset + size))
+            .digest("hex") === hash
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  if (!/^openshell:resolve:env:s[a-f0-9]{64}_GITHUB_TOKEN$/.test(process.env.GITHUB_TOKEN ?? "")) {
+    return fail(environmentOnly ? "ACL_GITHUB_PLACEHOLDER" : "ACL_PLACEHOLDER_ENVIRONMENT");
+  }
+  for (const value of Object.values(process.env)) {
+    if (value !== undefined && containsCredential(Buffer.from(value))) {
+      return fail("ACL_CREDENTIAL_IN_ENVIRONMENT");
+    }
+  }
+  if (environmentOnly) {
+    return;
+  }
+  if (!executable) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  if (rest) {
+    args.push(
+      "-u",
+      `x-access-token:${process.env.GITHUB_TOKEN}`,
+      "--show-error",
+      "--max-filesize",
+      String(limit),
+      "--write-out",
+      "\n%{http_code} %{content_type}\n",
+    );
+  }
+  const { stdout, stderr, status, error } = spawnSync(executable, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: limit + 1,
+  });
+  if (error || status === null || !stdout || !stderr) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  if (stdout.length + stderr.length > limit) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  // Scan complete bytes in both streams before interpreting a status or body.
+  // Any contiguous match counts, including prefixes and extra JSON fields.
+  if (containsCredential(stdout) || containsCredential(stderr)) {
+    return fail("ACL_CREDENTIAL_IN_OUTPUT");
+  }
+
+  if (kind === "success") {
+    if (status !== 0 || stderr.length !== 0) {
+      return fail("ACL_ALLOWED_CAPTURE");
+    }
+    process.stdout.write(stdout);
+    return;
+  }
+  if (kind === "git") {
+    if (status === 0) {
+      return fail("ACL_NATIVE_UNEXPECTED_SUCCESS");
+    }
+    if (!/^fatal: .*The requested URL returned error: 403$/m.test(stderr.toString("utf8"))) {
+      return fail("ACL_NATIVE_HTTP");
+    }
+    process.stdout.write("403 native-git\n");
+    return;
+  }
+
+  // A transport failure can leave a convincing status and body in stdout.
+  if (status !== 0) {
+    return fail("ACL_DENIAL_CAPTURE");
+  }
+  const response = stdout.toString("utf8");
+  const diagnostic = "ACL_NATIVE_REST_DENIAL";
+  if (kind === "variant") {
+    if (/\n200 application\/x-git-upload-pack-advertisement\n$/.test(response)) {
+      process.stdout.write("200 upload-advertisement\n");
+      return;
+    }
+    // HEAD has no denial body. Status alone does not identify the policy layer.
+    if (method === "HEAD" && /\n403 [^\r\n]*\n$/.test(response)) {
+      process.stdout.write("403 head-http\n");
+      return;
+    }
+  }
+  const footer = /\n403 application\/json\n$/.exec(response);
+  if (!footer) {
+    return fail(diagnostic);
+  }
+  const body = JSON.parse(response.slice(0, footer.index));
+  if (
+    body?.layer !== "l7" ||
+    body.method !== method ||
+    body.path !== path ||
+    body.host !== host ||
+    body.port !== 443
+  ) {
+    return fail(diagnostic);
+  }
+  if (
+    body.error !== "policy_denied" ||
+    body.protocol !== "rest" ||
+    body.rule_missing?.type !== "rest_allow" ||
+    body.rule_missing.layer !== "l7" ||
+    body.rule_missing.method !== method ||
+    body.rule_missing.path !== path
+  ) {
+    return fail(diagnostic);
+  }
+  process.stdout.write("403 native-rest-policy\n");
+}

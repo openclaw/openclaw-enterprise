@@ -1,26 +1,76 @@
-# Inspect shared model configuration and authorize a credential
+# Inspect model configuration and save a Credential Source
 
-Use these desktop stories:
+Open **Pages/Create Agent → Codex with model Credential Source**. The story fills a
+dummy OpenAI API key in a masked field after selecting **Add new credential…** under
+**Model credential**. Select **Create Agent**. Confirm that the request log shows
+`POST …/credential-sources` before the Agent draft save, with no `POST …/secrets`.
+The draft uses the returned Credential Source ID. The response does not contain
+the entered key. Deploying this draft is a separate action.
 
-- **Pages/Settings → Shared model provider**
-- **Pages/Create Agent → Authorize shared model destination**
-- **Pages/Create Agent → Destination authorization refusal**
+Also inspect these changed states:
 
-In Settings, expand Compute and inspect `runtime.modelProvider`. Switch between
-Fields and JSON. Confirm that the URL and protocol agree and that no credential
-value appears. The view is read-only; operators change Installation startup
-configuration.
+- **Credential Source creation denied** shows a simulated permission refusal.
+- **Credential Source outcome unknown** shows a simulated TokenService outage and clears the entered key.
+- **Credential Source creation pending** shows the submitting state while the request waits.
 
-In Create Agent, select the simulated model Secret. Enter
-`https://models.example.com/v1` in **Authorized base URL**, then create the Agent.
-Confirm that the source registration carries `config.authorized_base_url` and
-does not carry `config.base_url`. This field authorizes the key's destination;
-it does not choose or override the Installation endpoint.
+For Embedded execution, a password Preset, another provider, or an Installation without
+a supported model Source preset, use the visible **Model credential Secret** picker.
+**Pages/Settings → Shared model provider** remains a read-only view of Installation
+startup configuration; Source creation does not change that configuration.
 
-Also check the existing default-source, missing-credential, registration-failure,
-and uncertain-registration stories. An empty authorization uses OpenAI's default
-destination. Pending registration locks its configuration. Check registration before editing
-a refused request; uncertain registration reuses the same request. Switching to account authentication hides source configuration.
+## Discover, create, and reuse a Source
+
+Open **Pages/Credentials → Credentials**. The single **Credentials** tab shows readable
+static, OAuth, and protected Proxy Source metadata alongside Namespace Secrets. Confirm that
+the page does not show OAuth consent, Proxy configuration, or credential values.
+In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, or
+an available static Bearer Template. Enter a dummy value and select **Create Source**.
+Confirm that the Source appears in the inventory and its value is not returned.
+A Template Source cannot serve as model authentication or be admitted directly to an Agent.
+**Created Source without exact read access** confirms creation without adding the Source to the readable inventory.
+**Source created but inventory access denied** confirms creation, clears stale rows, and shows the denied Namespace read operation.
+
+Open **Pages/Create Agent → Reuse an existing Credential Source**. Confirm the saved
+Source is selected under **Model credential**, then select **Create Agent**. Check
+that the draft uses the selected Source ID and the request log
+contains no `POST …/credential-sources`. If the Source list fails, select **Retry Source list**
+before choosing a Source. **Reuse a saved ChatGPT OAuth Source** selects a compatible
+built-in OAuth Source in the same field without starting another sign-in. Open
+**Components/Credentials → Replace an existing
+Credential Source**, select **Save authentication source**, and check that the Agent
+uses the replacement ID without another Source enrollment. Deployment is separate.
+**Select a first managed Source for Codex** shows the Stop requirement and the destination check that occurs at deployment.
+Open **Components/Credentials → Codex PAT Source with a previous model provider override**.
+The simulated draft has switched from an OpenAI Source to a Codex PAT Source. Expand
+**Harness destination** if needed. Confirm that **Harness settings** selects
+**Use Installation default**, the previous model provider override cannot be retained, and
+**Override model provider** is unavailable. The Credentials guidance identifies the PAT Source's
+fixed destination. This story does not deploy the draft.
+
+Inspect these list and failure stories:
+
+- **Pages/Credentials → No readable Credential Sources** shows an empty Source inventory.
+- **Credential Sources loading** keeps Namespace Secrets available while the Source read waits.
+- **Pages/Create Agent → Existing Source list loading**, **Retry an unavailable Source list**,
+  and **No eligible model Credential Source** show pending, retry, and missing-choice states.
+- **Pages/Credentials → Credential Source inventory denied** and **Credential Source
+  creation denied** show the applicable access failure.
+- **Model Source creation when Templates are unavailable** keeps model Source creation
+  available after Template discovery fails.
+- **Credential Source create outcome unknown** clears the value and blocks another create.
+  Close the dialog and select **Refresh** to find the Source saved by the simulated API.
+- **Credential Source conflict outcome unknown** simulates a `409 RESOURCE_CONFLICT` response,
+  clears the value, and blocks another create. Close the dialog and select **Refresh**. If the Source
+  is absent, the guidance directs an operator to check the credential owner before another attempt.
+  The preview cannot establish whether the owner holds the value.
+- **Pages/Create Agent → Existing Source operate denied after Configuration save** reports
+  the retained Configuration and the refused Agent create.
+- **Components/Credentials → Credential Source replacement denied** leaves the saved Agent
+  bound to its previous Source.
+- **Model Source unavailable without an approved destination** preserves the current Source
+  and disables replacement for a Configuration that cannot use the approved model preset.
+- **Pages/Create Agent → Existing Source destination mismatch** refuses an incompatible
+  Advanced settings route before saving Configuration or Agent state.
 
 ## Correct an edited model catalog
 

@@ -7,7 +7,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
@@ -30,12 +30,12 @@ import {
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
-  DIAGNOSTICS_DENIED,
   notIncluded,
   RELOAD_DRAFT_BEFORE_SAVING,
   REPOSITORY_ACCESS_CHANGED,
   REPOSITORY_EDITS_PENDING,
 } from "../helpers/refusal-text.mjs";
+import { DIAGNOSTICS_DENIED } from "../helpers/refusal-access.ts";
 
 // Errors, warnings and notices share one status block (UX plan C1): a wash in the tone's
 // design-token colour, with the text in the body colour. Errors and warnings retain a stripe;
@@ -506,7 +506,7 @@ test("Authentication source save outcomes", async (t) => {
       const { page, save, feedback } = await authenticationSourcePage(t, "auth-oauth", {
         harnessId: "codex",
       });
-      await page.getByLabel("Authentication source").selectOption("credential_source");
+      await page.getByLabel("Authentication source").selectOption("device_login");
       await save.click();
       const refusal = page
         .getByRole("alert")
@@ -754,6 +754,7 @@ test("Configuration save outcomes", async (t) => {
         await lineState(feedback),
         quietStatus("Reload this draft before leaving the editor."),
       );
+      await assertFocusedInView(t, feedback);
     },
   );
 

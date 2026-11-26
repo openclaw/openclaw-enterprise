@@ -2,6 +2,7 @@ import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertExecutionAdmission,
   ConfigurationValidationError,
   repositoryGitAuthorization,
   requireConfiguration,
@@ -17,12 +18,13 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import {
-  OpenShellCredentialProxyDriver,
+  OpenShellLegacyEgressProxyDriver,
   openShellEgressConfiguration,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import * as releaseFixture from "../fixtures/driver-packages/protected-execution-driver/index.ts";
 import * as repositoryFixture from "../fixtures/driver-packages/protected-execution-driver/repository-git.ts";
 import { createExternalProtectedDriver } from "../../apps/controller/src/composition/driver-packages.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 const sensitive = "SECRET-DO-NOT-LEAK";
 const releaseConfiguration = {
@@ -110,7 +112,7 @@ const owners: readonly {
   {
     capability: "credential_proxy",
     implementation: "openshell",
-    definition: OpenShellCredentialProxyDriver,
+    definition: OpenShellLegacyEgressProxyDriver,
     valid: {
       middlewareName: "credential-proxy",
       authorityScope: "execution",
@@ -276,7 +278,7 @@ test("OpenShell direct construction and policy rendering still enforce configura
   ]) {
     // Malformed runtime input must fail before selection or route rendering.
     assert.throws(
-      () => Reflect.construct(OpenShellCredentialProxyDriver, [options, undefined]),
+      () => Reflect.construct(OpenShellLegacyEgressProxyDriver, [options, undefined]),
       redactedConfigurationError,
     );
     assert.throws(
@@ -325,7 +327,7 @@ test("OpenShell discovery and policy use the installed configuration after calle
     authorityScope: "execution" as const,
     observedHookPreviewWorkspace: "preview-1",
   };
-  const proxy = new OpenShellCredentialProxyDriver(options, {
+  const proxy = new OpenShellLegacyEgressProxyDriver(options, {
     id: "proxy",
     backend: {
       id: "openshell",
@@ -343,6 +345,11 @@ test("OpenShell discovery and policy use the installed configuration after calle
     generation: 1,
     sandboxDriverId: sandbox.id,
     egressDriverId: proxy.id,
+    driver: {
+      id: proxy.id,
+      implementation: proxy.implementation,
+      configurationId: "a".repeat(64),
+    },
     execution: {
       installationId: "installation",
       namespaceId: "namespace",
@@ -353,14 +360,47 @@ test("OpenShell discovery and policy use the installed configuration after calle
     },
     routes: [],
   };
-  // Revision preparation reads the admitted plan and owner IDs; no workload is started.
-  const context = {
-    namespace: { id: plan.execution.namespaceId },
-    revision: { id: plan.execution.revisionId, egressPlan: plan },
+  // A zero-route protected admission carries no Git binding or artifact snapshot.
+  const createdAt = new Date().toISOString();
+  const context: ProxyRevisionContext = {
+    namespace: {
+      id: plan.execution.namespaceId,
+      name: "fixture",
+      status: "ready",
+      createdAt,
+    },
+    revision: {
+      id: plan.execution.revisionId,
+      namespaceId: plan.execution.namespaceId,
+      agentId: plan.execution.agentId,
+      revision: 1,
+      backendId: "openshell",
+      configurationId: "fixture-configuration",
+      configurationKind: "agent",
+      configurationGeneration: 1,
+      configuration: createHarnessConfiguration("openclaw", "fixture"),
+      gatewayManagedMode: false,
+      harness: {
+        id: "openclaw",
+        version: "2026.9.1",
+        mode: "dedicated",
+        overrides: {},
+        configuration: {},
+      },
+      compute: { id: "kubernetes", implementation: "kubernetes" },
+      sandboxDriverId: sandbox.id,
+      harnessAuth: { method: "runtime" },
+      servicePrincipalId: plan.execution.servicePrincipalId,
+      createdAt,
+      executionAdmission: { version: 3, mode: "protected" },
+      egressPlan: plan,
+    },
     plan,
     signal: t.signal,
-  } as ProxyRevisionContext;
+  };
+  assertExecutionAdmission(context.revision);
   const wiring = await proxy.configureRevision(context);
+  assert.deepEqual(wiring.configuration.network_policies, {});
   assert.partialDeepStrictEqual(wiring.configuration.network_middlewares, {
     "oce-egress": { middleware: "installed" },
   });

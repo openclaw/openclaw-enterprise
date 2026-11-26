@@ -46,14 +46,14 @@ const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_reposit
 // by an answer that carried no token, or past both bounds: issueAttemptLiveBoundMs after its
 // intent, and any verified provider expiry plus skew. 'current' is live custody, never settled
 // by time. 'intent', 'retire', 'revoking' and 'unknown' (lost issue or revocation) settle by time.
-const settledAfter = (
+export const preparedAttemptSettlesAfter = (
   a: string,
 ) => `greatest(${a}.started_at + ${issueAttemptLiveBoundMs} * interval '1 millisecond',
   ${a}.provider_expires_at + ${providerClockSkewMs} * interval '1 millisecond')`;
 export const preparedAttemptSettled = (
   a: string,
 ) => `(${a}.custody IN ('revoked','expired','not_issued')
-  OR (${a}.custody <> 'current' AND ${settledAfter(a)} <= clock_timestamp()))`;
+  OR (${a}.custody <> 'current' AND ${preparedAttemptSettlesAfter(a)} <= clock_timestamp()))`;
 
 const active = live("'ready'");
 const enrolling = live("'registering','ready'");
@@ -237,7 +237,7 @@ export class PreparedGitHubPostgres {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
         `SELECT count(*)::integer AS unsettled, CASE WHEN NOT bool_or(custody='current')
-          THEN max(${settledAfter("a")}) END AS "settlesAt", bool_and(custody='revoking') AS revoking
+          THEN max(${preparedAttemptSettlesAfter("a")}) END AS "settlesAt", bool_and(custody='revoking') AS revoking
         FROM ${attempts} a JOIN ${families} f USING (source_id)
         WHERE ${matching} AND NOT enabled AND NOT ${preparedAttemptSettled("a")}`,
         [source.key.source.id, source],

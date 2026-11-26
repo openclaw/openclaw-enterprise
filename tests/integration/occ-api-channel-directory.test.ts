@@ -142,6 +142,7 @@ test("Channel directory lookup checks the exact edit target and Secret before an
   const channelDriver: ChannelDriver = {
     id: "channel-directory-integration",
     capability: "channel",
+    enableRouting: () => [],
     implementation: "test-directory",
     async lookupDirectory(input) {
       providerCalls += 1;
@@ -247,6 +248,15 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     expected,
   );
 
+  const selectedSecretReads = () =>
+    secretDriver.calls.filter(
+      (call) =>
+        call.operation === "withValue" &&
+        call.secret.namespaceId === namespace.id &&
+        call.secret.id === secretData.id,
+    ).length;
+
+  // Authorization denials must occur before reading the selected Secret or calling the provider.
   for (const [resourceKind, resourceId, action, editTarget] of [
     ["agent", namespace.id, "create", {}],
     ["agent", agentData.id, "update", { agentId: agentData.id }],
@@ -262,11 +272,16 @@ test("Channel directory lookup checks the exact edit target and Secret before an
       effect: "deny",
     };
     fixture.state.restrictions.push(restriction);
+    const readsBefore = selectedSecretReads();
+    const callsBefore: number = providerCalls;
     const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
     assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(selectedSecretReads(), readsBefore);
+    assert.equal(providerCalls, callsBefore);
     fixture.state.restrictions.pop();
   }
 
+  // A restriction installed during the selected Secret read must still block the provider.
   for (const [resourceKind, resourceId, action, editTarget] of [
     ["agent", agentData.id, "update", { agentId: agentData.id }],
     ["secret", secretData.id, "operate", {}],
@@ -279,9 +294,11 @@ test("Channel directory lookup checks the exact edit target and Secret before an
       action,
       effect: "deny",
     };
+    const readsBefore = selectedSecretReads();
     const callsBefore: number = providerCalls;
     const denied = await controller.request("POST", path, { body: { ...body, ...editTarget } });
     assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(selectedSecretReads(), readsBefore + 1);
     assert.equal(providerCalls, callsBefore);
     fixture.state.restrictions.pop();
   }

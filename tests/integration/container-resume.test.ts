@@ -11,7 +11,7 @@ import {
 } from "../../scripts/ci/container-release.ts";
 import { setEnvironment } from "../helpers/environment.ts";
 import { prependPath, writeCommand } from "../helpers/fake-commands.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 function field<K extends PropertyKey>(value: unknown, key: K): unknown {
   return (value as Record<K, unknown>)[key];
@@ -454,6 +454,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       mismatch("workflow-other\\.yml"),
     ],
     [() => (publishWorkflowRecord.state = "disabled_manually"), mismatch("'disabled_manually'")],
+    [() => (run.path = other("release-oce")), /^Use Release OCE recovery/],
     [() => (run.workflow_id = 9), mismatch("\\b9\\b")],
     [() => (run.path = other("run-other")), mismatch("run-other\\.yml")],
     [() => (run.id = 124), mismatch("'124'")],
@@ -473,6 +474,10 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
       /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
     ],
     [() => jobs.splice(6, 1), /^Exactly one successful Assemble runtime OCI image job/],
+    [
+      () => jobs.push({ ...item(jobs, 6), name: "prepare / Assemble runtime OCI image" }),
+      /^Exactly one successful Assemble runtime OCI image job/,
+    ],
     [
       () => jobs.splice(1, 1),
       /^Exactly one successful prepare \/ Prepare controller \(amd64\) job/,
@@ -623,6 +628,11 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
   assert.equal(field(field(state, "remote"), item(prepared, 1).remote), item(prepared, 1).bytes);
   assert.deepEqual(parse(await readFile(join(directory, "publication.json"), "utf8")), receipt);
   // Retrying recovery verifies both existing digests without another copy.
+  for (const entry of jobs) {
+    if (entry.name.startsWith("Assemble ")) {
+      entry.name = `prepare / ${entry.name}`;
+    }
+  }
   await runRecovery();
   assert.deepEqual(parse(await readFile(statePath, "utf8")), state);
   // A cancelled producer recovers too, as does a successful preparation-only run (publish: false).

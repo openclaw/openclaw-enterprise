@@ -7,13 +7,7 @@ import {
 } from "../../apps/controller/src/auth/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import type { ChartValues } from "../helpers/production-chart-network-fixture.ts";
-import {
-  deploymentEnv,
-  egressCidr,
-  egressPeers,
-  loginEgress,
-  signInSettings,
-} from "../helpers/sign-in-chart.ts";
+import { deploymentEnv, signInSettings } from "../helpers/sign-in-chart.ts";
 import {
   defaultInstallSettings,
   googleUpgradeSettings,
@@ -31,7 +25,6 @@ import {
   recoveryUserId,
   refusal,
   render,
-  renders,
   resolveSecrets,
   settle,
   startsUp,
@@ -357,11 +350,6 @@ const chartOnly = (
       assert.match(await refusal(values), chart, `${provider}: ${name}`);
     }),
   );
-const emptyEgress = (provider: string) =>
-  new RegExp(
-    `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
-  );
-
 export function registerProxyAndEgressCases() {
   test(
     "trusted-proxy CIDR parity preserves mapped hosts and bounded IPv6 ranges",
@@ -516,26 +504,6 @@ export function registerProxyAndEgressCases() {
           /auth\.google client ID and client secret must use different Secret keys/,
         ],
         [
-          "a hostname egress",
-          { ...google, "auth.google.egressCidrs[0]": "accounts.google.com" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an invalid egress address",
-          { ...google, "auth.google.egressCidrs[0]": "142.250.300.0/24" },
-          /auth\.google\.egressCidrs contains an invalid IPv4 address/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...google, "auth.google.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.google\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...google, "auth.google.egressCidrs": "" },
-          emptyEgress("google"),
-        ],
-        [
           "an empty-string domain allowlist",
           { ...google, "auth.google.allowedDomains": "" },
           /auth\.google\.allowedDomains must be a list of DNS domain names/,
@@ -569,21 +537,6 @@ export function registerProxyAndEgressCases() {
           "one key for client ID and secret",
           { ...oidc, "auth.oidc.clientSecretKey": "client-id" },
           /auth\.oidc client ID and client secret must use different Secret keys/,
-        ],
-        [
-          "a hostname egress",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "tenant.idp.example.test" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "a /0 egress entry",
-          { ...oidc, "auth.oidc.egressCidrs[0]": "0.0.0.0/0" },
-          /auth\.oidc\.egressCidrs requires explicit IPv4 CIDRs/,
-        ],
-        [
-          "an empty-string egress list",
-          { ...oidc, "auth.oidc.egressCidrs": "" },
-          emptyEgress("oidc"),
         ],
         [
           "an HTTP base URL",
@@ -635,70 +588,9 @@ export function registerProxyAndEgressCases() {
           defaultInstallSettings,
           key,
         );
-        assert.equal(
-          objects.filter(
-            ({ kind, metadata }) =>
-              kind === "NetworkPolicy" && /-login-egress$/.test(metadata.name),
-          ).length,
-          0,
-          key,
-        );
       }),
     );
   });
-
-  test(
-    "the chart tells the API whether a sign-in egress rule opens HTTPS to any address",
-    tooling,
-    async () => {
-      // Production names a missing Slack proxy for an unanswered Slack check only when API
-      // egress is closed; an open sign-in rule can reach Slack directly (finding 2533). The chart
-      // reports open exactly when it renders a login egress rule to 0.0.0.0/0, from any provider.
-      const google = googleUpgradeValues(recoveryUserId);
-      const oidc = oidcUpgradeValues(recoveryUserId);
-      const narrowed = (provider: "google" | "oidc") => ({
-        [`auth.${provider}.egressCidrs[0]`]: "203.0.113.0/24",
-      });
-      const flag = "OCC_API_HTTPS_EGRESS_OPEN";
-      const cases: readonly [label: string, values: ChartValues, open: string][] = [
-        ["password only", {}, "false"],
-        ["Google", google, "true"],
-        ["Google narrowed", { ...google, ...narrowed("google") }, "false"],
-        ["OIDC", oidc, "true"],
-        ["OIDC narrowed", { ...oidc, ...narrowed("oidc") }, "false"],
-      ];
-      await settle(
-        cases.map(async ([label, values, open]) => {
-          const objects = await render(values);
-          assert.deepEqual(
-            deploymentEnv(objects, "api").filter(({ name }) => name === flag),
-            [{ name: flag, value: open }],
-            label,
-          );
-          const anyAddress = loginEgress(objects).some(({ rules }) =>
-            rules.some((rule) =>
-              egressPeers(rule).some((peer) => egressCidr(peer) === "0.0.0.0/0"),
-            ),
-          );
-          assert.equal(String(anyAddress), open, label);
-          assert.ok(!deploymentEnv(objects, "worker").some(({ name }) => name === flag), label);
-        }),
-      );
-      // The API accepts the rendered value and refuses anything but true or false.
-      const environment = await renders(
-        "Google egress flag",
-        google,
-        googleUpgradeSettings(recoveryUserId),
-        ["google"],
-      );
-      const [accepted, refused] = await settle([
-        startupCode({ ...environment, [flag]: "true" }),
-        startupCode({ ...environment, [flag]: "open" }),
-      ]);
-      assert.equal(accepted, "PERSISTENCE_UNAVAILABLE");
-      assert.equal(refused, "STARTUP_FAILED");
-    },
-  );
 
   test(
     "shared sessions derive DNS scope with native access enabled or disabled",

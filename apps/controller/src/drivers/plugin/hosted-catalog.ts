@@ -86,7 +86,7 @@ async function withCredential<T>(
     let accountId: string;
     let isFedramp: boolean;
     if (input.accountId !== undefined) {
-      // Account metadata accompanies the warm token from the trusted Credential Gateway.
+      // Account metadata comes from the authorized Source, never from the browser request.
       accessToken = input.accessToken;
       accountId = input.accountId;
       isFedramp = input.isFedramp === true;
@@ -240,8 +240,16 @@ export async function discoverHostedPlugins(
     if (nextCursor !== null && nextCursor === input.cursor) {
       invalid();
     }
+    const plugins = array(response.plugins, PAGE_SIZE).map(catalogEntry);
+    const seenIds = new Set<string>();
+    for (const plugin of plugins) {
+      if (seenIds.has(plugin.id)) {
+        invalid();
+      }
+      seenIds.add(plugin.id);
+    }
     return {
-      plugins: array(response.plugins, PAGE_SIZE).map(catalogEntry),
+      plugins,
       nextCursor,
       setup: {
         message:

@@ -12,7 +12,7 @@ import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import {
   first,
   injectLocalhost as injectRequest,
@@ -52,7 +52,7 @@ test(
     assert.ok(databaseUrl);
     function injectLocalhost(
       target: App,
-      method: string,
+      method: Parameters<typeof injectRequest>[1],
       path: string,
       options: RequestOptions = {},
     ) {

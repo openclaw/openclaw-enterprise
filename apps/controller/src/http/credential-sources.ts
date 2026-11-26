@@ -1,27 +1,65 @@
-import type {
-  CredentialSourceMetadata,
-  CredentialSourceStatus,
-  CredentialWithdrawalStatus,
-  SecretReference,
+import {
+  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
+  type AuditEvent,
+  type CredentialSourceMetadata,
+  type CredentialSourceStatus,
+  type CredentialWithdrawalStatus,
+  type PushAgentCredentialsBody,
+  type SecretReference,
 } from "@openclaw-enterprise/contracts";
+import type {
+  LegacyCredentialSourceMetadata,
+  UpdateManagedCredentialSourceInput,
+} from "@openclaw-enterprise/occ";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../backends/token-service/codex-oauth-preset.ts";
+
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
+function phaseAudit(event: AuditEvent, phase: string | undefined): AuditEvent {
+  return phase === undefined
+    ? event
+    : { ...event, action: `${event.action}.started`, details: { ...event.details, phase } };
+}
+
 function clientCredentialSource(
-  source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
+  source:
+    | Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>
+    | LegacyCredentialSourceMetadata,
 ): Record<string, unknown> {
-  return {
-    id: source.id,
-    namespaceId: source.namespaceId,
-    name: source.name,
-    type: source.type,
-    ownerCapability: source.ownerCapability,
-    config: source.config,
-    secrets: source.secrets,
-    state: source.state,
-    ...(source.egress === undefined ? {} : { egress: source.egress }),
-    ref: source.ref,
-    ...(source.status === undefined ? {} : { status: source.status }),
-  };
+  if ("ownerCapability" in source) {
+    const {
+      id,
+      namespaceId,
+      name,
+      type,
+      ownerCapability,
+      config,
+      secrets,
+      state,
+      ref,
+      egress,
+      status,
+    } = source;
+    return {
+      id,
+      namespaceId,
+      name,
+      type,
+      ownerCapability,
+      config,
+      secrets,
+      state,
+      ref,
+      ...(egress === undefined
+        ? {}
+        : { egress: { adoption: egress.adoption, retention: egress.retention } }),
+      ...(status === undefined ? {} : { status }),
+    };
+  }
+  if (source.type === "oauth2-refresh-token" && source.consent.kind === "builtin_codex") {
+    return { ...source, consent: { ...source.consent, ...BUILTIN_CODEX_OAUTH_PRESET } };
+  }
+  return { ...source };
 }
 
 function clientCredentialWithdrawal(
@@ -42,6 +80,14 @@ function clientCredentialWithdrawal(
   };
 }
 
+const credentialPushFailures = {
+  resolution_failed: {
+    event: "credential.resolution_failed",
+    code: "CREDENTIAL_RESOLUTION_FAILED",
+  },
+  delivery_failed: { event: "credential.delivery_failed", code: "CREDENTIAL_DELIVERY_FAILED" },
+} as const;
+
 export const credentialSourceHandlers = {
   async createCredentialSource({
     controller,
@@ -52,19 +98,62 @@ export const credentialSourceHandlers = {
     namespaceId,
     mutationEvent,
   }) {
-    // Registration spans a gateway write, so the core commits the audit with its final step.
-    const created = await controller.createCredentialSource(
-      context.actorId,
-      {
+    if (
+      body?.type === "github-app-installation" &&
+      "clientId" in body &&
+      "repositoryRefs" in body
+    ) {
+      const created = await controller.createManagedCredentialSource(
+        context.actorId,
         namespaceId,
-        name: body?.name as string,
-        type: body?.type as string,
-        ...(body?.config === undefined ? {} : { config: body.config as Record<string, string> }),
-        ...(body?.secrets === undefined
+        {
+          type: "github-app-installation",
+          clientId: body.clientId as string,
+          repositoryRefs: body.repositoryRefs as readonly string[],
+          name: body.name as string,
+        },
+        (resource, phase) => phaseAudit(mutationEvent(resource), phase),
+      );
+      reply
+        .status(201)
+        .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
+      return;
+    }
+    if (body && !("secret" in body)) {
+      const created = await controller.createCredentialSource(
+        context.actorId,
+        {
+          namespaceId,
+          name: body.name as string,
+          type: body.type as string,
+          ...(body.config === undefined ? {} : { config: body.config as Record<string, string> }),
+          ...(body.secrets === undefined
+            ? {}
+            : { secrets: body.secrets as Record<string, SecretReference> }),
+        },
+        (source) => mutationEvent({ kind: "credential_source", id: source.id, namespaceId }),
+      );
+      reply
+        .status(201)
+        .send({ data: clientCredentialSource(created), meta: { requestId: request.id } });
+      return;
+    }
+    const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } =
+      (body?.config as Record<string, string> | undefined) ?? {};
+    const created = await controller.createManagedCredentialSource(
+      context.actorId,
+      namespaceId,
+      {
+        type: "static",
+        name: body!.name as string,
+        lifecycleConfig: { settings },
+        secret: body!.secret as string,
+        ...(providerPreset === undefined ? {} : { providerPreset }),
+        ...(body!.connectionTemplateId === undefined
           ? {}
-          : { secrets: body.secrets as Record<string, SecretReference> }),
+          : { connectionTemplateId: body!.connectionTemplateId as string }),
       },
-      (source) => mutationEvent({ kind: "credential_source", id: source.id, namespaceId }),
+      (resource, phase) => phaseAudit(mutationEvent(resource), phase),
     );
     const source = clientCredentialSource(created);
     reply.status(201).send({ data: source, meta: { requestId: request.id } });
@@ -106,27 +195,32 @@ export const credentialSourceHandlers = {
   }) {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-    // The gateway write cannot roll back, so a failed request after it still records a failure.
-    const source = await controller.transact(async (unit) => {
-      const updated = await controller.updateCredentialSource(
-        context.actorId,
-        {
-          namespaceId,
-          credentialSourceId,
-          ...(body?.adoption === undefined ? {} : { adoption: body.adoption as "live" }),
-          ...(body?.authorityScope === undefined
-            ? {}
-            : { authorityScope: body.authorityScope as "execution" }),
-          ...(body?.secrets === undefined
-            ? {}
-            : { secrets: body.secrets as Record<string, SecretReference> }),
-        },
-        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
-      );
-      await unit.audit.append(mutationEvent(resource));
-      return clientCredentialSource(updated);
-    });
-    reply.send({ data: source, meta: { requestId: request.id } });
+    const failureAudit = (reasonCode: string) =>
+      mutationEvent(resource, undefined, undefined, { reasonCode });
+    const config = body?.config as Record<string, string> | undefined;
+    const secret = body?.secret as string | undefined;
+    const { [SOURCE_PROVIDER_PRESET_CONFIG_KEY]: providerPreset, ...settings } = config ?? {};
+    const presetUpdate = config === undefined ? {} : { providerPreset: providerPreset ?? null };
+    const lifecycleUpdate =
+      config !== undefined && Object.keys(settings).length > 0
+        ? { lifecycleConfig: { settings } }
+        : {};
+    let input: UpdateManagedCredentialSourceInput;
+    if (secret !== undefined) {
+      input = { secret, ...lifecycleUpdate, ...presetUpdate };
+    } else if (lifecycleUpdate.lifecycleConfig !== undefined) {
+      input = { lifecycleConfig: lifecycleUpdate.lifecycleConfig, ...presetUpdate };
+    } else {
+      input = { providerPreset: providerPreset ?? null };
+    }
+    const updated = await controller.updateManagedCredentialSource(
+      context.actorId,
+      { namespaceId, credentialSourceId },
+      input,
+      (target, phase) => phaseAudit(mutationEvent(target), phase),
+      failureAudit,
+    );
+    reply.send({ data: clientCredentialSource(updated), meta: { requestId: request.id } });
   },
   async rotateCredentialSource({
     controller,
@@ -139,14 +233,58 @@ export const credentialSourceHandlers = {
   }) {
     const credentialSourceId = params.credentialSourceId as string;
     const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
-    const rotated = await controller.rotateCredentialSource(
+    const renewed = await controller.rotateCredentialSource(
       context.actorId,
       { namespaceId, credentialSourceId },
       (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
       mutationEvent(resource),
     );
-    const source = clientCredentialSource(rotated);
+    const source = clientCredentialSource(renewed);
     reply.send({ data: source, meta: { requestId: request.id } });
+  },
+  async pushAgentCredentials({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    body,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const agentId = params.agentId as string;
+    const agent = { kind: "agent" as const, id: agentId, namespaceId };
+    const results = await controller.pushAgentCredentials(
+      context.actorId,
+      {
+        namespaceId,
+        agentId,
+        sources: (body as PushAgentCredentialsBody).sources,
+      },
+      {
+        started: () => phaseAudit(mutationEvent(agent), "delivery_retry_started"),
+        empty: () => mutationEvent(agent),
+        result: (result) => {
+          const source = { kind: "credential_source" as const, id: result.sourceId, namespaceId };
+          return result.outcome === "succeeded"
+            ? mutationEvent(source, { agentId })
+            : mutationEvent(source, { agentId }, undefined, {
+                reasonCode: credentialPushFailures[result.outcome].code,
+              });
+        },
+      },
+    );
+    for (const result of results) {
+      if (result.outcome !== "succeeded") {
+        request.log.warn({
+          ...credentialPushFailures[result.outcome],
+          requestId: request.id,
+          namespaceId,
+          credentialSourceId: result.sourceId,
+        });
+      }
+    }
+    reply.send({ data: { results }, meta: { requestId: request.id } });
   },
   async withdrawAgentCredentialSource({
     controller,
@@ -178,16 +316,19 @@ export const credentialSourceHandlers = {
     reply.send({ data: clientCredentialWithdrawal(withdrawal), meta: { requestId: request.id } });
   },
   async deleteCredentialSource({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    // Deletion commits in two steps around the gateway call; the audit commits with the removal.
+    // Managed removal and completion audit commit independently.
     const credentialSourceId = params.credentialSourceId as string;
     await controller.deleteCredentialSource(
       context.actorId,
       namespaceId,
       credentialSourceId,
-      (removed) =>
-        mutationEvent(
-          { kind: "credential_source", id: credentialSourceId, namespaceId },
-          removedAccessBindingDetails(removed),
+      (removed, phase) =>
+        phaseAudit(
+          mutationEvent(
+            { kind: "credential_source", id: credentialSourceId, namespaceId },
+            removedAccessBindingDetails(removed),
+          ),
+          phase,
         ),
     );
     reply.status(204).send();

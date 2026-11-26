@@ -32,7 +32,7 @@ See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) fo
 artifact verification and rerun behavior.
 
 The job is outside `CI Required`, so its failure does not fail that merge gate.
-A failed main-push CI workflow can still block container and CLI publication,
+A failed main-push CI workflow can still block standalone container and CLI publication,
 which require successful CI for their source.
 
 ## Scenarios
@@ -70,7 +70,10 @@ node scripts/ci/first-agent-smoke.ts run
 The second command builds images; `run` requires those build results. Do not
 substitute a production cluster for the script's disposable installation.
 
-Cold runtime source builds have a 180-minute command budget, matching native runtime assembly. Node compilation alone has exceeded the former 40-minute limit. The protected prepared-Git job allows 240 minutes for image builds and its installed proof. Controller-only builds and artifact-backed bake calls retain 40 minutes; the ordinary artifact-backed smoke job also stays at 40 minutes. These are cancellation bounds, not predicted durations or an explanation for runner losses.
+Image build commands have a 40-minute budget. The protected prepared-Git job
+allows 120 minutes for image builds and its installed proof; the ordinary
+artifact-backed smoke job allows 40 minutes. These are cancellation limits,
+not expected durations.
 
 ### Local isolation
 

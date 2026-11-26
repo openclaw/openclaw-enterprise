@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.ts";
 import { createConsoleFixtureTransport } from "../helpers/console-fixture-transport.ts";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
@@ -101,7 +103,7 @@ test(
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
-      await import("../helpers/qa-repository.mjs");
+      await import("../helpers/qa-repository.ts");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.ts");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -134,6 +136,36 @@ test(
     context.diagnostic(`QA evidence: ${artifacts}`);
     for (const exclusion of selection.exclusions) {
       context.diagnostic(`Excluded: ${exclusion}`);
+    }
+    if (selection.channelUpgrade) {
+      await stage(
+        context,
+        "kubernetes/Codex",
+        "one-off channel upgrade through the regular Agent workflow",
+        async () => {
+          const result = await promisify(execFile)(
+            process.execPath,
+            [
+              "--test",
+              "--test-concurrency=1",
+              "tests/integration/channel-egress-disabled-helm-real.test.ts",
+              "tests/integration/channel-egress-upgrade-helm-real.test.ts",
+            ],
+            {
+              env: {
+                ...process.env,
+                OCC_TEST_SLACK_LIVE: "1",
+                OCC_TEST_CHANNEL_EGRESS_UPGRADE: "1",
+              },
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "channel-egress-upgrade",
+      );
     }
     if (selection.nativeRestart) {
       const { arrangeProductionTopology, assertInterruptedGatewayTurnResumes } =
@@ -168,14 +200,41 @@ test(
         verifyQaSandboxPolicy(artifacts, "namespace-lifecycle"),
       );
     }
-    if (selection.gitModel) {
-      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+    if (selection.optionalPluginWithdrawal) {
+      const { verifyOpenShellOptionalPluginWithdrawal } =
+        await import("../helpers/openshell-optional-plugin-withdrawal.ts");
       await stage(
         context,
-        "kubernetes/Codex/OpenShell",
-        "fresh Gateway model delivery with and without Git access",
-        () => verifyQaSandboxPolicy(artifacts, "openshell-git-model"),
-        "openshell-git-model",
+        "kubernetes/OpenClaw/OpenShell",
+        "optional Slack withdrawal preserves other native bindings and Source custody",
+        () => verifyOpenShellOptionalPluginWithdrawal(context),
+        "openshell-optional-plugin-withdrawal",
+      );
+    }
+    if (selection.tokenServiceAgent) {
+      await stage(
+        context,
+        "kubernetes/OpenClaw/OpenShell",
+        "native Source custody, dedicated model turn, rotation and withdrawal",
+        async () => {
+          const env = { ...process.env, OCC_TEST_OPENSHELL_TOKEN_SERVICE_AGENT_REAL: "1" };
+          // The parent test runner marks its worker with this variable. Passing it to a new
+          // node --test process makes Node suppress the child suite as a recursive run.
+          delete env.NODE_TEST_CONTEXT;
+          const result = await promisify(execFile)(
+            process.execPath,
+            ["--test", "tests/integration/openshell-token-service-agent-real.test.ts"],
+            {
+              env,
+              timeout: 1_800_000,
+              maxBuffer: 8 * 1024 * 1024,
+            },
+          );
+          assert.match(result.stdout, /\btests 1(?:\r?\n|$)/);
+          assert.match(result.stdout, /(?:skipped|skip) 0/);
+          context.diagnostic(result.stdout);
+        },
+        "openshell-token-service-agent",
       );
     }
     if (selection.oidcAgentChat) {
@@ -187,6 +246,45 @@ test(
         () => runOidcAgentChatScenario(context),
         "oidc-agent-chat",
       );
+      const { runNativeProfileUpgradeScenario } =
+        await import("../helpers/native-profile-upgrade.mjs");
+      await stage(
+        context,
+        "kubernetes/OpenClaw",
+        "fixed pre-feature OCE installation upgrades the same retained Agent to delegated native profiles",
+        () => runNativeProfileUpgradeScenario(context),
+        "oidc-agent-chat-upgrade",
+      );
+    }
+    for (const gitReplacement of [false, true].filter((git) =>
+      git ? selection.gitReplacement : selection.providerReplacement,
+    )) {
+      const { verifyOpenShellProviderReplacement } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        gitReplacement ? "managed Git replacement" : "managed Provider replacement",
+        () => verifyOpenShellProviderReplacement(context, { gitReplacement }),
+        gitReplacement ? "openshell-git-replacement" : "openshell-provider-replacement",
+      );
+    }
+    if (selection.templateResources) {
+      const inputs = JSON.parse(
+        await readFile(process.env.OCC_TEST_OPENSHELL_RESOURCES_INPUT_FILE, "utf8"),
+      );
+      const { verifyOpenShellTemplateResources } =
+        await import("../helpers/openshell-provider-replacement.mjs");
+      for (const workspaceMode of ["operator", "managed"]) {
+        assert.ok(inputs[workspaceMode], `Select the prepared ${workspaceMode} installation`);
+        await stage(
+          context,
+          `kubernetes/Codex/OpenShell/${workspaceMode}`,
+          `${workspaceMode} template sizing, workspace access and real model turn`,
+          () => verifyOpenShellTemplateResources(context, inputs[workspaceMode], workspaceMode),
+          "openshell-template-resources",
+        );
+      }
     }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");

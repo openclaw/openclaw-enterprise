@@ -10,23 +10,17 @@ Set environment variables and secrets under **Settings → Environments → cont
 
 ## Build settings
 
-| Repository variable         | Required/default                                                                                       | Purpose                                                                                                                                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CONTAINER_NODE_BASE_IMAGE` | Required for publication and native checks invoked by `CI`; no approved default                        | Full Node 24 `image@sha256:...` matching `scripts/ci/test-suites/images-packaging.json` and `deploy/runtime/Dockerfile`. Use repository or organization scope: preparation has no environment. |
-| `CONTAINER_AMD64_RUNNER`    | Optional; `blacksmith-16vcpu-ubuntu-2404`                                                              | Native AMD64 image checks.                                                                                                                                                                     |
-| `CONTAINER_ARM64_RUNNER`    | Optional; controller: `blacksmith-8vcpu-ubuntu-2404-arm`; runtime: `blacksmith-16vcpu-ubuntu-2404-arm` | Native ARM64 image checks.                                                                                                                                                                     |
+| Repository variable         | Required/default                                                                | Purpose                                                                                                                                                                                        |
+| --------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CONTAINER_NODE_BASE_IMAGE` | Required for publication and native checks invoked by `CI`; no approved default | Full Node 24 `image@sha256:...` matching `scripts/ci/test-suites/images-packaging.json` and `deploy/runtime/Dockerfile`. Use repository or organization scope: preparation has no environment. |
+| `CONTAINER_AMD64_RUNNER`    | Optional; `blacksmith-16vcpu-ubuntu-2404`                                       | Native AMD64 image checks.                                                                                                                                                                     |
+| `CONTAINER_ARM64_RUNNER`    | Optional; `blacksmith-8vcpu-ubuntu-2404-arm`                                    | Native ARM64 image checks.                                                                                                                                                                     |
 
 A standalone native image check uses the selected source's checked-in CI base.
 
 Runner overrides must select provisioned Linux runners with the matching
 architecture, at least four CPUs, 12 GiB RAM, and enough disk for the build.
-The override takes precedence for both images. ARM64 runtime preparation selects
-eight Node compiler jobs only with at least 16 available CPUs and 40 GiB free
-within the observed host/process and cgroup-v2 ancestor limits. The budget leaves
-two CPUs per job and 8 GiB beyond 4 GiB per job. Smaller or unrecognized limits
-retain four jobs; other lanes stay at four. The resource log records the selected
-count, which both source verification and assembly consume. This admission
-budget does not guarantee peak usage or resolve an unexplained runner loss.
+The override takes precedence for both images.
 
 Runtime smoke uses fresh native runners with the same runner overrides, after
 verifying the retained OCI build. Both construction and smoke must succeed; an
@@ -38,9 +32,13 @@ credentials; it does not publish container images.
 
 ## Publication configuration
 
-Protect `main`, require `CI Required`, and review workflow changes. Publication
-requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch;
-there is no second-person approval or approval-comment requirement.
+Protect `main`, require `CI Required` for merge, and review workflow changes.
+The standalone image and CLI workflows require successful push CI for the
+release commit. **Release OCE** requires the dispatcher's approval through
+[`integration-main-approval`](../testing/ci/configuration.md#environments).
+Full releases require Full Integration. [Image-only publication](README.md#publish-images-only)
+skips that suite and requires the native image checks.
+Keep provider credentials in the integration environments.
 
 Create a separate `container-publish` environment: no required reviewers or wait
 timer, administrator bypass disabled, and exactly one deployment rule, branch

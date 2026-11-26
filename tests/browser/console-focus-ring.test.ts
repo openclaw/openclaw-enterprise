@@ -6,7 +6,7 @@ import type { Page } from "playwright";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.ts";
 import {
   consoleViewports,
   detailUrl,
@@ -334,31 +334,110 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
   await assertVisibleRings(page, "Agent tabs at 390", stops);
   // Back at the far end, arrowing again wraps to the first tab. Every arrowed-to tab sits clear
   // of the faded edges too, once the strip's scroll has settled the fades.
-  const faded = [];
-  for (let step = 0; step < count; step += 1) {
-    await page.keyboard.press("ArrowRight");
-    const tab = await page.evaluate(async () => {
+  const tabAtEdge = (selected = false) =>
+    page.evaluate(async (selected) => {
       await new Promise((resolve) => {
         globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
       });
-      const focused = globalThis.document.activeElement;
-      const strip = focused?.closest('[role="tablist"]');
-      if (!focused || !strip) {
-        throw new Error("ArrowRight moved focus outside the tab strip");
+      const document = globalThis.document;
+      const tab = selected
+        ? document.querySelector('[role="tablist"] [aria-selected="true"]')
+        : document.activeElement;
+      const strip = tab?.closest('[role="tablist"]');
+      if (!tab || !strip) {
+        throw new Error("Expected an Agent tab in the strip");
       }
       const style = globalThis.getComputedStyle(strip);
       const before = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")) || 0;
       const after = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")) || 0;
-      const box = focused.getBoundingClientRect();
+      const box = tab.getBoundingClientRect();
       const edge = strip.getBoundingClientRect();
       const under = Math.max(edge.left + before - box.left, box.right - (edge.right - after));
-      return { name: focused.textContent.trim(), under: Math.round(under) };
-    });
+      return {
+        name: tab.textContent.trim(),
+        under: Math.round(under),
+        partlyClipped: box.left < edge.left && box.right > edge.left,
+      };
+    }, selected);
+  const faded = [];
+  for (let step = 0; step < count; step += 1) {
+    await page.keyboard.press("ArrowRight");
+    const tab = await tabAtEdge();
     if (tab.under > 0) {
       faded.push(tab);
     }
   }
   assert.deepEqual(faded, [], "no arrowed-to tab sits under a faded edge");
+
+  const url = page.url();
+  const selected = page.getByRole("tab", { selected: true });
+  const panel = page.getByRole("tabpanel", { name: "Configuration", exact: true });
+  const tabStopsInStrip = page.getByRole("tablist").locator('[role="tab"][tabindex="0"]');
+  const assertConfigurationSelected = async () => {
+    assert.deepEqual(await selected.allTextContents(), ["Configuration"]);
+    assert.deepEqual(await tabStopsInStrip.allTextContents(), ["Configuration"]);
+    assert.ok(await panel.isVisible(), "the Configuration panel stays open");
+    assert.equal(page.url(), url, "leaving and re-entering the strip preserves the URL");
+  };
+
+  // A partly visible tab can stay clipped when Chrome focuses it again. Reproduce that position
+  // with native keys, leaving Configuration selected while focus roves to the right.
+  const clipConfiguration = async () => {
+    await page.keyboard.press("Home");
+    for (let step = 1; step < count; step += 1) {
+      await page.keyboard.press("ArrowRight");
+      if ((await tabAtEdge(true)).partlyClipped) {
+        return;
+      }
+    }
+    assert.fail("Expected Configuration to be partly clipped while roving");
+  };
+
+  await clipConfiguration();
+  await page.keyboard.press("Tab");
+  assert.equal(await panel.locator(":focus").count(), 1, "Tab moves to the selected panel");
+  await assertConfigurationSelected();
+  const onExit = await tabAtEdge(true);
+  await page.keyboard.press("Shift+Tab");
+  const onReturn = await tabAtEdge();
+  await assertConfigurationSelected();
+  const returnedRing = await focusedRing(page);
+  assert.ok(returnedRing);
+  assert.equal(returnedRing.name, "Configuration");
+  assert.deepEqual(
+    [onExit, onReturn].filter(({ under }) => under > 0),
+    [],
+    "the selected tab clears the fades both after Tab and on Shift+Tab return",
+  );
+  await assertVisibleRings(page, "Agent tab re-entry at 390", [returnedRing]);
+
+  // Clicking the gap above the strip leaves it without a Tab keydown.
+  await clipConfiguration();
+  const strip = await page.getByRole("tablist").boundingBox();
+  assert.ok(strip);
+  await page.mouse.click(Math.ceil(strip.x) + 2, Math.floor(strip.y) - 1);
+  assert.ok(
+    await page.evaluate(() => globalThis.document.activeElement === globalThis.document.body),
+  );
+  const entry = (await tabStops(page, ({ tag }) => tag === "tab")).at(-1);
+  assert.ok(entry);
+  assert.equal(entry.name, "Configuration");
+  await assertConfigurationSelected();
+  assert.ok((await tabAtEdge()).under <= 0, "Tab returns clear of the fades after a click outside");
+  await assertVisibleRings(page, "Agent tab after a click outside at 390", [entry]);
+
+  // Draft Deployment has no panel stop. Tab can leave the document, so check the strip
+  // on exit without relying on where the browser sends focus next.
+  await page.getByRole("tab", { name: "Deployment", exact: true }).press("Enter");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  const beforeExit = await tabAtEdge(true);
+  assert.equal(beforeExit.name, "Deployment");
+  assert.ok(beforeExit.under > 0, "Deployment is clipped while roving left");
+  await page.keyboard.press("Tab");
+  const afterExit = await tabAtEdge(true);
+  assert.equal(afterExit.name, "Deployment");
+  assert.ok(afterExit.under <= 0, "Deployment clears the fades when Tab leaves the strip");
 });
 
 test("repository rows and the Slack people search on Create Agent show an unclipped token ring", async (t) => {

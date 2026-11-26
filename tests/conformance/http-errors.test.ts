@@ -77,8 +77,6 @@ import {
   AGENT_NAME_CONFLICT,
   agentPrincipalDenied,
   callerDenied,
-  CONSOLE_ACCESS_DENIED,
-  CREDENTIAL_GATEWAY_NOT_CONFIGURED,
   CREDENTIAL_PROXY_INSTALLATION_PREVIEW,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -87,12 +85,16 @@ import {
   PROXY_REGISTRATION_UNAVAILABLE,
   RESOURCE_CONFLICT,
   RESOURCE_NOT_FOUND,
-  runtimeLogSourceUnavailable,
-  SERVICE_ACCOUNT_BACKEND_MISMATCH,
-  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
   storedCredentialSourceConfig,
   dedicatedOpenClawSandboxRefusal,
 } from "../helpers/refusal-text.mjs";
+import {
+  CREDENTIAL_GATEWAY_NOT_CONFIGURED,
+  SERVICE_ACCOUNT_BACKEND_MISMATCH,
+  SERVICE_ACCOUNT_NO_BACKEND_BINDING,
+} from "../helpers/refusal-credential-admission.ts";
+import { runtimeLogSourceUnavailable } from "../helpers/refusal-configuration-runtime.ts";
+import { CONSOLE_ACCESS_DENIED } from "../helpers/refusal-access.ts";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
@@ -287,7 +289,7 @@ const cases = [
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       message:
-        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryAccess.repositories`.",
     },
   ],
   [
@@ -488,7 +490,7 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message:
-        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryAccess.repositories, or select each repository with its own profile instead.",
     },
   ],
   [
@@ -1137,7 +1139,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
+        "OCC could not reach the sign-in service at auth.openai.com. Ask an operator to check API Pod DNS, routing, and HTTPS connectivity, then try again.",
     },
   ],
   [

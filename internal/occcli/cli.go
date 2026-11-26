@@ -133,7 +133,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 }
 
 func (app *application) installationCommand() *cobra.Command {
-	command := commandGroup("installation", "Inspect the singleton Installation")
+	command := commandGroup("installation", "Inspect, install, and upgrade the singleton Installation")
 	get := &cobra.Command{
 		Use:   "get",
 		Short: "Show the Installation",
@@ -173,7 +173,7 @@ func (app *application) installationCommand() *cobra.Command {
 			})
 		},
 	}
-	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"), installationUpgradeCommand())
+	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationMigrateValuesCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"), installationUpgradeCommand())
 	return command
 }
 
@@ -196,6 +196,12 @@ func (app *application) namespaceCommand() *cobra.Command {
 			}
 			namespace, err := client.CreateNamespace(args[0], existingNamespace)
 			if err != nil {
+				if lostMutationReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Namespace creation outcome is unconfirmed. Do not resend the create request.")
+					fmt.Fprintln(notices, "Keep the same connection options. Run occ namespace list, then use occ namespace get ID with the ID of a matching Namespace.")
+					fmt.Fprintln(notices, "The request may still commit, and permissions may hide the Namespace. If you cannot confirm the outcome, ask an Installation administrator to check the audit log.")
+				}
 				return err
 			}
 			return app.printNamespace(namespace, false)
@@ -508,13 +514,13 @@ func (app *application) presetCommand() *cobra.Command {
 func (app *application) credentialSourceCommand() *cobra.Command {
 	command := commandGroup(
 		"credential-source",
-		"Manage credential sources held by the selected Credential Gateway",
+		"Manage credential sources maintained by TokenService",
 	)
 
 	var createFile string
 	create := &cobra.Command{
 		Use:     "create",
-		Short:   "Register a credential source from a JSON document",
+		Short:   "Register a static credential source from a JSON document",
 		Example: credentialSourceCreateExample,
 		Args:    cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -534,7 +540,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	list := &cobra.Command{
 		Use:   "list",
-		Short: "List credential sources without live gateway status",
+		Short: "List readable credential sources",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -551,7 +557,8 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	get := &cobra.Command{
 		Use:   "get ID",
-		Short: "Show a credential source and its live gateway status",
+		Short: "Show a credential source and its available status",
+		Long:  "Show a credential source and its available status. Use -o json or -o yaml to inspect nonsecret OAuth consent details.",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -568,7 +575,7 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	deleteCommand := &cobra.Command{
 		Use:   "delete ID",
-		Short: "Delete an unreferenced credential source and its gateway copy",
+		Short: "Delete a credential source and retire its credential",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -584,24 +591,12 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 
 	var updateFile string
 	update := &cobra.Command{
-		Use:   "update ID",
-		Short: "Push current or replacement Secret values to the gateway copy",
-		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(command *cobra.Command, args []string) error {
-			// An explicit empty --file was refused by refuseEmptyFlags.
-			fileSet := command.Flags().Changed("file")
-			namespace, err := app.requiredNamespace()
-			if err != nil {
-				return err
-			}
-			body := jsontext.Value("{}")
-			if fileSet {
-				body, err = readJSON(updateFile)
-				if err != nil {
-					return err
-				}
-			}
-			client, err := app.client()
+		Use:     "update ID",
+		Short:   "Update a static credential source from a JSON document",
+		Example: credentialSourceUpdateExample,
+		Args:    idArgs(credentialSourceIDArg),
+		RunE: func(_ *cobra.Command, args []string) error {
+			namespace, body, client, err := app.namespaceJSONClient(updateFile)
 			if err != nil {
 				return err
 			}
@@ -616,12 +611,13 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		&updateFile,
 		"file",
 		"",
-		"JSON document with replacement secrets; omit to re-send the current Secret values (refused for oauth2-refresh-token: put a new sign-in's refresh token in a new Secret)",
+		"JSON document with secret, config, or both",
 	)
+	_ = update.MarkFlagRequired("file")
 
 	rotate := &cobra.Command{
 		Use:   "rotate ID",
-		Short: "Force a refresh-type source to mint a new token",
+		Short: "Renew an OAuth or GitHub App installation credential source",
 		Args:  idArgs(credentialSourceIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
@@ -811,21 +807,19 @@ func (app *application) agentCommand() *cobra.Command {
 				if err := revisionIDArg.check(retainedHarnessRevision, namespace); err != nil {
 					return err
 				}
-				previous, err := client.GetAgentRevision(namespace, args[0], retainedHarnessRevision)
-				if err != nil {
-					return err
-				}
-				record, ok := previous.(map[string]any)
-				if !ok {
-					return fmt.Errorf("the selected revision is unavailable")
-				}
-				overrides, err = retainedHarnessOverrides(client, namespace, args[0], record, command.ErrOrStderr())
+				overrides, err = readRetainedHarnessOverrides(client, namespace, args[0], retainedHarnessRevision, command.ErrOrStderr())
 				if err != nil {
 					return err
 				}
 			}
 			revision, err := client.DeployAgent(namespace, args[0], overrides)
 			if err != nil {
+				if lostMutationReply(err) {
+					notices := command.ErrOrStderr()
+					fmt.Fprintln(notices, "Deployment outcome is unconfirmed. Another deploy can create a second revision.")
+					fmt.Fprintf(notices, "Keep the same connection options and use these read-only commands, replacing REVISION_ID with the matching revision ID.\n  occ --namespace %s agent revisions %s\n  occ --namespace %s agent deployment-status %s REVISION_ID\n", namespace, args[0], namespace, args[0])
+					fmt.Fprintln(notices, "Your request may still commit, permissions may hide its revision, or another caller may deploy concurrently. Leave the outcome unresolved if you cannot identify your revision.")
+				}
 				return err
 			}
 			if err := app.printItems(revision, false, []column{
@@ -919,14 +913,29 @@ func (app *application) agentCommand() *cobra.Command {
 		}
 		return cmd
 	}
+	var checkRetainedHarnessOverrides bool
 	revision := &cobra.Command{
 		Use:   "revision AGENT_ID REVISION_ID",
 		Short: "Read one exact Agent revision and its saved settings",
 		Args:  idArgs(agentIDArg, revisionIDArg),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if checkRetainedHarnessOverrides && app.output != "json" {
+				return fmt.Errorf("--check-retain-harness-overrides requires --output json")
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
+			}
+			if checkRetainedHarnessOverrides {
+				if _, err := readRetainedHarnessOverrides(client, namespace, args[0], args[1], io.Discard); err != nil {
+					return err
+				}
+				return app.printStructured(map[string]any{
+					"id":                        args[1],
+					"namespaceId":               namespace,
+					"agentId":                   args[0],
+					"canRetainHarnessOverrides": true,
+				})
 			}
 			value, err := client.GetAgentRevision(namespace, args[0], args[1])
 			if err != nil {
@@ -940,6 +949,8 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	revision.Flags().BoolVar(&checkRetainedHarnessOverrides, "check-retain-harness-overrides", false, "Check whether the exact revision's requested Harness overrides can be retained")
+	_ = revision.Flags().MarkHidden("check-retain-harness-overrides")
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -1015,36 +1026,43 @@ func (app *application) agentCommand() *cobra.Command {
 			return app.printDeploymentStatus(deployment, resource)
 		},
 	}
+	var expectedActiveRevisionID string
 	stop := &cobra.Command{
 		Use:   "stop ID",
 		Short: "Stop an Agent while retaining its revision history and persistent state",
 		Long: "Stop an Agent while retaining its revision history and persistent state.\n" +
 			"The stop is asynchronous: the Agent's runtime shuts down in the background.\n" +
+			"With --if-active-revision, OCC checks at admission that the Agent is set to run and the exact revision is active, newest, and successfully deployed.\n" +
 			"There is no start command; run \"occ agent deploy ID\" to start the Agent again with a new revision.",
 		Args: idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("if-active-revision") {
+				if err := revisionIDArg.check(expectedActiveRevisionID, app.namespace); err != nil {
+					return fmt.Errorf("--if-active-revision: %w", err)
+				}
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			// Only an Agent the caller can already read tells whether anything ran:
-			// stopped with no active revision is a never-deployed or already
-			// stopped Agent (finding D746); stopped with an active revision is a
-			// stop requested earlier that has not finished, still running or
-			// failed (finding D765). A failed read keeps the plain notice.
 			idle, stopping := false, false
-			if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
-				resource, _ := before.(map[string]any)
-				active, _ := resource["activeRevisionId"].(string)
-				idle = resource["desiredRuntimeState"] == "stopped" && active == ""
-				stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+			if expectedActiveRevisionID == "" {
+				// A readable Agent can distinguish an idle Agent from an earlier
+				// stop with a still-active revision. A failed read keeps the plain notice.
+				if before, readErr := client.GetAgent(namespace, args[0]); readErr == nil {
+					resource, _ := before.(map[string]any)
+					active, _ := resource["activeRevisionId"].(string)
+					idle = resource["desiredRuntimeState"] == "stopped" && active == ""
+					stopping = resource["desiredRuntimeState"] == "stopped" && active != ""
+				}
 			}
-			agent, err := client.StopAgent(namespace, args[0])
+			agent, err := client.StopAgent(namespace, args[0], expectedActiveRevisionID)
 			if err != nil {
 				return err
 			}
 			resource, _ := agent.(map[string]any)
-			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" {
+			if resource["id"] != args[0] || resource["namespaceId"] != namespace || resource["desiredRuntimeState"] != "stopped" ||
+				(expectedActiveRevisionID != "" && resource["activeRevisionId"] != expectedActiveRevisionID) {
 				return fmt.Errorf("OCC returned an invalid Agent stop response; the stop outcome is unknown. Run \"occ --namespace %s agent get %s\" to check the Agent's state", namespace, args[0])
 			}
 			if err := app.printAgent(agent, false); err != nil {
@@ -1062,6 +1080,7 @@ func (app *application) agentCommand() *cobra.Command {
 			return err
 		},
 	}
+	stop.Flags().StringVar(&expectedActiveRevisionID, "if-active-revision", "", "Request stop only for the exact active, newest, successfully deployed revision ID")
 	deleteAgent := &cobra.Command{
 		Use:   "delete ID",
 		Short: "Begin asynchronous Agent deletion",
@@ -1101,7 +1120,7 @@ func (app *application) agentCommand() *cobra.Command {
 	return command
 }
 
-// retainedHarnessOverrides returns the Harness overrides that an exact revision
+// readRetainedHarnessOverrides reads the Harness overrides that an exact revision
 // requested. OCC returns a revision whose saved settings it cannot decode with a
 // read error instead of its settings. That happens for a revision saved before
 // OCC recorded Harness settings, but also for other invalid or legacy saved
@@ -1109,7 +1128,18 @@ func (app *application) agentCommand() *cobra.Command {
 // revision summary is not decoded as strictly and carries the overrides only
 // when OCC recorded them: retain those, and retain none only when none were
 // recorded.
-func retainedHarnessOverrides(client *occclient.Client, namespace, agentID string, record map[string]any, notices io.Writer) (map[string]any, error) {
+func readRetainedHarnessOverrides(client *occclient.Client, namespace, agentID, revisionID string, notices io.Writer) (map[string]any, error) {
+	previous, err := client.GetAgentRevision(namespace, agentID, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	record, ok := previous.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("the selected revision is unavailable")
+	}
+	if !matchesRevisionIdentity(record, namespace, agentID, revisionID) {
+		return nil, fmt.Errorf("OCC returned a revision that does not match the requested revision, Namespace, and Agent")
+	}
 	harness, ok := record["harness"].(map[string]any)
 	if ok {
 		overrides, ok := harness["overrides"].(map[string]any)
@@ -1124,7 +1154,6 @@ func retainedHarnessOverrides(client *occclient.Client, namespace, agentID strin
 	}
 	code, _ := readError["code"].(string)
 	field, _ := readError["field"].(string)
-	revisionID, _ := record["id"].(string)
 	number, _ := record["revision"].(float64)
 	summary, err := revisionSummary(client, namespace, agentID, revisionID, number)
 	if err != nil {
@@ -1147,6 +1176,10 @@ func retainedHarnessOverrides(client *occclient.Client, namespace, agentID strin
 	return overrides, nil
 }
 
+func matchesRevisionIdentity(record map[string]any, namespace, agentID, revisionID string) bool {
+	return record["id"] == revisionID && record["namespaceId"] == namespace && record["agentId"] == agentID
+}
+
 // revisionSummary finds one revision in the Agent's revision list, newest first.
 // It stops below the revision's number, or returns nil when the list does not
 // include it.
@@ -1160,6 +1193,9 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 		for _, item := range page.Revisions {
 			summary, _ := item.(map[string]any)
 			if summary["id"] == revisionID {
+				if !matchesRevisionIdentity(summary, namespace, agentID, revisionID) {
+					return nil, fmt.Errorf("OCC returned a revision summary that does not match the requested Namespace and Agent")
+				}
 				return summary, nil
 			}
 			if listed, ok := summary["revision"].(float64); ok && number > 0 && listed < number {
@@ -1171,6 +1207,17 @@ func revisionSummary(client *occclient.Client, namespace, agentID, revisionID st
 		}
 		cursor = page.NextCursor
 	}
+}
+
+// A lost connection or interrupted request can leave a mutation unconfirmed.
+// HTTP responses and certificate errors do not trigger recovery guidance.
+func lostMutationReply(err error) bool {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return op.Op == "read" || op.Op == "write"
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error, overridesFile string) {
@@ -1519,11 +1566,12 @@ func (app *application) validateOptions(command *cobra.Command) error {
 var emptyFlagValues = map[string]string{
 	"facet":                               "a sandbox policy facet such as networking",
 	"file":                                "a JSON document",
+	"if-active-revision":                  "a revision ID",
 	"key-output":                          "a key file path",
 	"sandbox-network-policy-ceiling-file": "a Sandbox network policy ceiling file",
 	"sandbox-network-policy-file":         "a Sandbox network policy file",
 	"level":                               "error, warn, info or debug",
-	"out":                                 "a key file path",
+	"out":                                 "an output file path",
 	"pod":                                 "a Pod",
 	"revision":                            "a revision ID",
 	"service-key-file":                    "a bootstrap or service-key response file",

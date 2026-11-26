@@ -146,7 +146,7 @@ export function startupFailureObservation() {
         }
         candidates++;
         const match =
-          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
+          /^\[occ-dev-startup\] primary_stage=(unknown|canceled|deadline|controller-image-import|codex-sandbox-preparation|routing|network-verification|network-cleanup|registry-detach|platform-namespace|openshell-preparation|rollback) cleanup_failed=(true|false) parent_context_done=(true|false)(?: routing_operation=(manifest-download|gateway-api-readiness|manifest-filter|manifest-write|manifest-apply|controller-crd-readiness|controller-rollout|gateway-class-apply|gateway-class-readiness|node-pod-cidr)(?: routing_controller=(cert-manager|envoy-gateway))?)?$/.exec(
             line,
           );
         if (
@@ -542,7 +542,7 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context, { modelCredential } = {}) {
+export async function localFirstAgentStack(context, { modelCredential, nativeModelGrant } = {}) {
   if (modelCredential !== undefined && modelCredential !== "openai") {
     throw new Error("Unsupported local first-Agent model credential selection.");
   }
@@ -562,6 +562,7 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
   if (existing) {
     return {
       directory: selected,
+      ownsInstallation: false,
       environment: {
         ...testEnvironment,
         OCC_URL: await existingOrigin(selected, existing, testEnvironment),
@@ -651,6 +652,25 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
     );
     context.after(() => rm(policyFile, { force: true }));
     startupArguments.push("--sandbox-network-policy-file", policyFile);
+    if (nativeModelGrant) {
+      const { OPEN_SHELL_CODEX_BINARIES } =
+        await import("../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts");
+      const ceilingFile = `${directory}-network-policy-ceiling.json`;
+      const codexGrants = OPEN_SHELL_CODEX_BINARIES.flatMap((binary, architecture) =>
+        ["api.openai.com", "auth.openai.com", "chatgpt.com"].map((host) => ({
+          id: `codex-${architecture}-${host.split(".")[0]}`,
+          binary,
+          host,
+          ports: [{ from: 443, to: 443 }],
+        })),
+      );
+      await writeFile(ceilingFile, JSON.stringify({ grants: [nativeModelGrant, ...codexGrants] }), {
+        mode: 0o600,
+        flag: "wx",
+      });
+      context.after(() => rm(ceilingFile, { force: true }));
+      startupArguments.push("--sandbox-network-policy-ceiling-file", ceilingFile);
+    }
   }
   const controllerImage = environment.OCC_TEST_LOCAL_FIRST_AGENT_CONTROLLER_IMAGE;
   if (controllerImage !== undefined) {
@@ -706,5 +726,5 @@ export async function localFirstAgentStack(context, { modelCredential } = {}) {
       context,
     ),
   );
-  return { directory, environment };
+  return { directory, environment, ownsInstallation: true };
 }

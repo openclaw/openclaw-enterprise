@@ -11,6 +11,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 
 export const calls = { validate: 0, create: 0, lifecycle: 0, close: 0 };
+export const closeProbe = { fail: false };
 export const exchangeProbe = {
   decisions: [] as unknown[],
   rejectsSecondOwner: undefined as (() => boolean) | undefined,
@@ -222,6 +223,17 @@ export function createDriver({
         },
         removeRevision: outsideProfile,
       },
+      // This external package advertises staged delivery but refuses every operation. Startup
+      // selects that role only when OCC TokenService is actually configured.
+      credential_proxy_delivery: {
+        id,
+        implementation,
+        capability: "credential_proxy_delivery",
+        deployProxy: outsideProfile,
+        configureDeployment: outsideProfile,
+        getDeploymentStatus: outsideProfile,
+        removeDeployment: outsideProfile,
+      },
     },
     namespaceLifecycleHooks: {
       async ensureNamespace({ namespace }) {
@@ -231,6 +243,9 @@ export function createDriver({
     },
     close() {
       calls.close++;
+      if (closeProbe.fail) {
+        throw new Error("Fixture registration close failed.");
+      }
     },
   };
 }

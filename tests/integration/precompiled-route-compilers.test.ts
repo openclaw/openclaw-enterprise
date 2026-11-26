@@ -23,7 +23,7 @@ import {
 } from "../../apps/controller/src/http/route-compilers.ts";
 import { createRouteGenerationApp } from "../../apps/controller/src/route-generation-app.ts";
 import { perturbValue, sampleValue, seededRandom } from "../helpers/json-schema-samples.ts";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const VALID_SAMPLES = 40;
 const PERTURBED_SAMPLES = 80;
@@ -154,7 +154,7 @@ function validate(validator: unknown, value: unknown) {
 }
 
 function sourceWithoutSchemaIds(serializer: Serializer) {
-  return serializer.toString().replaceAll(/__fjs_root_\d+/gu, "__fjs_root");
+  return serializer.toString().replaceAll(/__fjs_(root|merged)_\d+(?=#)/gu, "__fjs_$1");
 }
 
 function serialize(serializer: Serializer, value: unknown) {

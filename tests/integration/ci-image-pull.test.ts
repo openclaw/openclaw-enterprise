@@ -13,10 +13,12 @@ import {
   isTransientFetchError,
 } from "../../scripts/ci/routing.ts";
 import { listen } from "../helpers/listen.ts";
-import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.ts";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
+// The same digest from the Docker Hub cache, without the tag.
+const seed = `mirror.gcr.io/otel/opentelemetry-collector-contrib${image.slice(image.indexOf("@"))}`;
 
 function pullFailure(
   stderr: string,
@@ -79,7 +81,7 @@ test("image pulls retry only registry and network blips", () => {
   );
 });
 
-function scriptedPull(outcomes: Error[]) {
+function scriptedPull(outcomes: (Error | undefined)[]) {
   const calls: { command: string; args: string[]; options: { timeoutMs: number } }[] = [];
   const execFile = async (command: string, args: string[], options: { timeoutMs: number }) => {
     calls.push({ command, args, options });
@@ -109,12 +111,15 @@ test("pullImage retries transient failures with backoff and a per-attempt timeou
     log: (message) => logs.push(message),
   });
 
-  assert.equal(calls.length, 3);
-  for (const call of calls) {
-    assert.equal(call.command, "podman");
-    assert.deepEqual(call.args, ["pull", image]);
-    assert.equal(call.options.timeoutMs, 120_000);
-  }
+  // The timed-out attempt also seeds the layers once before the retry.
+  assert.deepEqual(
+    calls,
+    [image, image, seed, image].map((reference) => ({
+      command: "podman",
+      args: ["pull", reference],
+      options: { timeoutMs: 120_000 },
+    })),
+  );
   assert.deepEqual(sleeps, [5_000, 10_000]);
   assert.ok(logs[1] !== undefined && logs[3] !== undefined);
   assert.match(logs[1], /toomanyrequests.*attempt 2\/4/);
@@ -174,13 +179,19 @@ setInterval(() => {}, 1000);
     }),
     (error) => error === failures.at(-1),
   );
-  assert.equal(failures.length, 2);
+  // Attempt 1, the seed it starts and attempt 2 each ran as a real child and timed out.
+  assert.equal(failures.length, 3);
   assert.ok(
     failures.every(
       (error) =>
         "killed" in error && error.killed && "signal" in error && error.signal === "SIGTERM",
     ),
   );
+  const seedFailures = logs.filter((line) => line.startsWith(`Seeding layers from ${seed} failed`));
+  assert.equal(seedFailures.length, 1);
+  // The seed's diagnostic keeps the same bounded, private-text-free layer progress.
+  assert.match(seedFailures[0]!, /\(timeout\); 9 of 11 layers still downloading; /);
+  assert.doesNotMatch(seedFailures[0]!, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
   const diagnostics = logs.filter((line) => line.startsWith("Image pull attempt "));
   assert.equal(diagnostics.length, 2, "retain the final attempt even when no retry follows");
   for (const [index, diagnostic] of diagnostics.entries()) {
@@ -188,9 +199,10 @@ setInterval(() => {}, 1000);
       diagnostic,
       new RegExp(`attempt ${index + 1}/2 failed after \\d+ ms \\(timeout\\)`),
     );
-    assert.match(diagnostic, /000000000008: Downloading/);
-    assert.match(diagnostic, /000000000009: Download complete/);
-    assert.match(diagnostic, /bbbbbbbbbbbb: Extracting/);
+    // Nine layers still download; the eight unchanged longest are named.
+    assert.match(diagnostic, /; 9 of 11 layers still downloading; 000000000000: Downloading;/);
+    assert.match(diagnostic, /000000000007: Downloading$/);
+    assert.doesNotMatch(diagnostic, /000000000008|000000000009|bbbbbbbbbbbb/);
     assert.equal([...diagnostic.matchAll(/[a-f0-9]{12}: /g)].length, 8);
     assert.doesNotMatch(diagnostic, /aaaaaaaaaaaa|private-marker|https:|12345678901234567890/);
     assert.equal(diagnostic.includes(String.fromCharCode(27)), false);
@@ -223,11 +235,39 @@ test("pullImage never reports a truncated line as layer progress", async () => {
         );
         assert.equal(logs.length, 1);
         assert.ok(logs[0] !== undefined);
-        const progress = logs[0].split("; ").slice(1);
+        const progress = logs[0].split("; ").slice(2);
         assert.deepEqual(progress, [...(retained ? [first] : []), "bbbbbbbbbbbb: Pull complete"]);
       }
     }
   }
+});
+
+test("pullImage names the layer a timed-out pull still waits on after later layers finish", async () => {
+  // The shape of a stalled CI pull: one layer never leaves "Pulling fs layer"
+  // while ten others download and unpack after it.
+  const finished = Array.from({ length: 10 }, (_, index) => {
+    const layer = (index + 1).toString(16).padStart(12, "0");
+    return `${layer}: Download complete\n${layer}: Pull complete\n`;
+  });
+  const stdout = `aaaaaaaaaaaa: Pulling fs layer\n${finished.join("")}`;
+  const logs: string[] = [];
+  const failure = pullFailure("", { timedOut: true, stdout });
+  await assert.rejects(
+    pullImage(image, {
+      ...scriptedPull([failure]),
+      attempts: 1,
+      log: (message) => logs.push(message),
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(logs.length, 1);
+  const progress = logs[0]!.split("; ").slice(1);
+  assert.deepEqual(progress.slice(0, 3), [
+    "1 of 11 layers still downloading",
+    "aaaaaaaaaaaa: Pulling fs layer",
+    "00000000000a: Pull complete",
+  ]);
+  assert.equal(progress.length, 9);
 });
 
 test("pullImage preserves its terminal failure when the diagnostic sink throws", async () => {
@@ -278,6 +318,147 @@ test("pullImage stops at its attempt limit and its retry budget", async () => {
     /503/,
   );
   assert.equal(budgeted.calls.length, 2);
+});
+
+test("pullImage seeds a timed-out Docker Hub pull once from mirror.gcr.io by digest after the backoff, then retries the original", async () => {
+  // The 11-19 CI stalls: one large layer stayed stuck through all four attempts.
+  const logs: string[] = [];
+  const { calls, execFile } = scriptedPull([
+    pullFailure("", { timedOut: true }),
+    undefined, // the seed
+    pullFailure("", { timedOut: true }),
+  ]);
+  // The number of commands run when each backoff starts.
+  const backoffs: [commands: number, ms: number][] = [];
+  await pullImage(image, {
+    execFile,
+    sleep: async (ms) => {
+      backoffs.push([calls.length, ms]);
+    },
+    log: (message) => logs.push(message),
+  });
+
+  // The seed starts after the backoff, when the killed attempt's transfer has been
+  // cancelled, so it cannot join that stalled transfer.
+  assert.deepEqual(backoffs, [
+    [1, 5_000],
+    [3, 10_000],
+  ]);
+  // One seed, without the tag and with the original digest; every attempt pulls the
+  // original reference, so callers get the image from its own registry.
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ["pull", image],
+      ["pull", seed],
+      ["pull", image],
+      ["pull", image],
+    ],
+  );
+  assert.equal(calls[1]?.options.timeoutMs, 120_000);
+  assert.ok(logs.includes(`Seeding layers from ${seed} (same digest, 120000 ms limit)`));
+  assert.ok(logs.some((line) => line.startsWith(`Seeded layers from ${seed} in `)));
+});
+
+test("pullImage seeds only a digest-pinned docker.io reference, and only after a timeout", async () => {
+  const pinned = `sha256:${"a".repeat(64)}`;
+  const cases: [reference: string, seed?: string | undefined, failure?: Error][] = [
+    [image, seed, pullFailure("", { timedOut: true })],
+    // Official images live under library/ on the mirror.
+    [`docker.io/postgres:16.15@${pinned}`, `mirror.gcr.io/library/postgres@${pinned}`],
+    [`docker.io/library/postgres@${pinned}`, `mirror.gcr.io/library/postgres@${pinned}`],
+    // A tag names no fixed content, and another registry has its own copy or none.
+    ["docker.io/otel/opentelemetry-collector-contrib:0.159.0"],
+    [`otel/opentelemetry-collector-contrib:0.159.0@${pinned}`],
+    [`ghcr.io/open-telemetry/opentelemetry-collector-contrib:0.159.0@${pinned}`],
+    [`quay.io/keycloak/keycloak:26.4.0@${pinned}`],
+    [`registry.example/docker.io/library/postgres@${pinned}`],
+    // A failure the registry answered is retried at once, without a seed.
+    [image, undefined, pullFailure("received unexpected HTTP status: 503 Service Unavailable")],
+    [image, undefined, pullFailure("toomanyrequests: You have reached your pull rate limit.")],
+  ];
+  for (const [reference, expected, failure] of cases) {
+    const { calls, execFile } = scriptedPull([failure ?? pullFailure("", { timedOut: true })]);
+    await pullImage(reference, { execFile, sleep: async () => {}, log: () => {} });
+    assert.deepEqual(
+      calls.map(({ args }) => args),
+      [["pull", reference], ...(expected ? [["pull", expected]] : []), ["pull", reference]],
+      reference,
+    );
+  }
+});
+
+test("a failed seed changes neither the pull's error nor its retries nor its budget", async (t) => {
+  // Each backoff advances the clock the budget is measured on.
+  t.mock.timers.enable({ apis: ["Date"] });
+  const sleepOnClock = async (ms: number) => {
+    t.mock.timers.tick(ms);
+  };
+  for (const seedFailure of [
+    pullFailure("Error response from daemon: manifest unknown: manifest unknown"),
+    pullFailure("", { timedOut: true }),
+  ]) {
+    // A permanent-looking seed error must not stop the retries of the original.
+    const failures = [1, 2, 3, 4].map(() => pullFailure("", { timedOut: true }));
+    const sleeps: number[] = [];
+    const logs: string[] = [];
+    const exhausted = scriptedPull([failures[0]!, seedFailure, ...failures.slice(1)]);
+    await assert.rejects(
+      pullImage(image, {
+        execFile: exhausted.execFile,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        log: (message) => logs.push(message),
+      }),
+      (error) => error === failures[3],
+    );
+    assert.deepEqual(
+      exhausted.calls.map(({ args }) => args[1]),
+      [image, seed, image, image, image],
+    );
+    assert.deepEqual(sleeps, [5_000, 10_000, 20_000]);
+    assert.ok(logs.some((line) => line.startsWith(`Seeding layers from ${seed} failed after `)));
+
+    // The seed gets only the time left before the retry must start, here 15 s of a 20 s
+    // budget after the 5 s backoff, and the retries still run as without a seed.
+    const budgeted = scriptedPull([failures[0]!, seedFailure, failures[1]!, failures[2]!]);
+    await assert.rejects(
+      pullImage(image, {
+        execFile: budgeted.execFile,
+        budgetMs: 20_000,
+        sleep: sleepOnClock,
+        log: () => {},
+      }),
+      (error) => error === failures[2],
+    );
+    assert.deepEqual(
+      budgeted.calls.map(({ args }) => args[1]),
+      [image, seed, image, image],
+    );
+    assert.equal(budgeted.calls[1]?.options.timeoutMs, 15_000);
+  }
+});
+
+test("pullImage skips a seed the budget would cut below 10 s", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  // 7 s of a 12 s budget are left after the 5 s backoff: no seed, the same retry.
+  const failures = [1, 2, 3].map(() => pullFailure("", { timedOut: true }));
+  const { calls, execFile } = scriptedPull(failures);
+  const error = await pullImage(image, {
+    execFile,
+    budgetMs: 12_000,
+    sleep: async (ms) => t.mock.timers.tick(ms),
+    log: () => {},
+  }).catch((rejection: unknown) => rejection);
+  assert.deepEqual(
+    calls.map(({ args }) => args),
+    [
+      ["pull", image],
+      ["pull", image],
+    ],
+  );
+  assert.equal(error, failures[1]);
 });
 
 async function flakyServer(t: TestContext, handlers: RequestListener[]) {

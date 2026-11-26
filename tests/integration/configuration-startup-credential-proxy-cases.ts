@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { cp, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   InstallationFieldError,
@@ -8,8 +11,39 @@ import {
 } from "../../apps/controller/src/composition/installation-fields.ts";
 import { openShellRepositoryConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
+import type { validateSelectedBackendDrivers as validateBackendSelection } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { setEnvironment } from "../helpers/environment.ts";
+import {
+  createCredentialProxyInstallationConfiguration,
+  createInstallationDriverConfiguration,
+} from "../helpers/installation-driver-configuration.ts";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { createChatGPTInstallation } from "./configuration-startup-resolution-cases.ts";
+import type {
+  StartupProcessFixtures,
+  StartupSiblingWait,
+} from "./configuration-startup-resolution-cases.ts";
+
+type ProxyInput = ReturnType<typeof createCredentialProxyInstallationConfiguration>;
+type ProxySelection = ProxyInput["drivers"]["credential_proxy"];
+type RetiredProxy = string | ProxySelection | null;
+type MutableProxyInput = Omit<ProxyInput, "backend" | "drivers"> & {
+  backend: [
+    Omit<ProxyInput["backend"][0], "drivers"> & {
+      drivers: Omit<ProxyInput["backend"][0]["drivers"], "credential_proxy"> & {
+        credential_proxy?: string;
+        conduit?: RetiredProxy;
+      };
+    },
+  ];
+  drivers: Omit<ProxyInput["drivers"], "credential_proxy" | "sandbox"> & {
+    credential_proxy?: ProxySelection;
+    sandbox?: ProxyInput["drivers"]["sandbox"] & { package?: string };
+    conduit?: RetiredProxy;
+    repo?: { id: string; configuration: Record<string, never> };
+  };
+};
 
 type StartupMode = Parameters<typeof loadInstallationConfiguration>[0]["mode"];
 type ExpectedFields = readonly (readonly [path: string, code: InstallationFieldDetail["code"]])[];
@@ -19,12 +53,9 @@ type StartupDiagnosticSource =
   | { readonly script: string; readonly event: "startup-error" | "worker.startup-error" }
   | { readonly script: string; readonly event: null };
 
-interface StartupCredentialProxyFixtures {
-  boot(script: string, env: NodeJS.ProcessEnv): Promise<unknown>;
-  fixture(context: TestContext, configuration: Readonly<Record<string, unknown>>): Promise<string>;
-  productionServer: NodeJS.ProcessEnv;
-  settled(boots: readonly Promise<void>[]): Promise<unknown>;
-}
+type StartupCredentialProxyFixtures = StartupProcessFixtures & {
+  settled: StartupSiblingWait;
+};
 
 const api = { script: "apps/controller/src/server.mjs", event: "startup-error" } as const;
 const worker = { script: "apps/controller/src/worker.mjs", event: "worker.startup-error" } as const;
@@ -122,12 +153,207 @@ function startupDiagnostic(stderr: string, source: StartupDiagnosticSource) {
   return { code: diagnostic.code, details: fieldDetails(diagnostic.details) };
 }
 
+export async function checkCredentialProxySelection(
+  t: TestContext,
+  configuration: ProxyInput,
+  path: string,
+  load: () => ReturnType<typeof loadInstallationConfiguration>,
+  validateSelectedBackendDrivers: typeof validateBackendSelection,
+): Promise<void> {
+  // This is real startup composition; no gateway connection or listener is started.
+  const loaded = await load();
+  assert.ok(loaded);
+  const { proxyDriver, protectedDriver, sandboxDriver } = loaded;
+  assert.ok(proxyDriver && protectedDriver && sandboxDriver);
+  const backend = loaded.installation.backend[0];
+  assert.ok(backend?.type === "openshell" && loaded.installation.drivers.credential_proxy);
+  assert.equal(proxyDriver.capability, "credential_proxy");
+  assert.equal(proxyDriver.id, "openshell-egress");
+  assert.equal(loaded.installation.drivers.credential_proxy.id, proxyDriver.id);
+  assert.equal(backend.drivers.credential_proxy, proxyDriver.id);
+  assert.equal(protectedDriver.require("credential_proxy"), proxyDriver);
+  assert.equal(typeof proxyDriver.bindExchange, "function");
+
+  for (const [member, selected] of [
+    [true, false],
+    [false, true],
+    [false, false],
+    [true, true],
+  ] as const) {
+    await t.test(
+      `Credential Proxy: Backend member=${member}, Installation selection=${selected}`,
+      async () => {
+        const candidate: MutableProxyInput = structuredClone(configuration);
+        if (!member) {
+          delete candidate.backend[0].drivers.credential_proxy;
+        }
+        if (!selected) {
+          delete candidate.drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(candidate));
+
+        // Direct OCC composition must enforce the same membership rule as Installation startup.
+        const validateSelection = () =>
+          validateSelectedBackendDrivers(
+            candidate.backend,
+            {
+              sandbox: sandboxDriver,
+              ...(selected ? { credential_proxy: proxyDriver } : {}),
+            },
+            protectedDriver,
+          );
+        if (member !== selected) {
+          await assert.rejects(
+            load(),
+            /credential_proxy must match the selected drivers\.credential_proxy\.id/,
+          );
+          assert.throws(validateSelection, /Credential Proxy Driver/i);
+        } else {
+          const selectedDrivers = await load();
+          assert.ok(selectedDrivers);
+          assert.equal(selectedDrivers.proxyDriver?.id, selected ? proxyDriver.id : undefined);
+          validateSelection();
+        }
+      },
+    );
+  }
+
+  for (const boundary of ["installation", "backend"]) {
+    for (const scenario of ["retired only", "both", "null retired"]) {
+      await t.test(`${boundary}: ${scenario}`, async () => {
+        const invalid: MutableProxyInput = structuredClone(configuration);
+        const drivers = boundary === "installation" ? invalid.drivers : invalid.backend[0].drivers;
+        // Even a null retired key must not silently disable or override protection.
+        assert.ok(drivers.credential_proxy);
+        drivers.conduit = scenario === "null retired" ? null : drivers.credential_proxy;
+        if (scenario !== "both") {
+          delete drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(invalid));
+        await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
+      });
+    }
+  }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ] as const) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
+      const invalid: MutableProxyInput = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (sandbox === "none") {
+        delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        assert.ok(invalid.drivers.sandbox);
+        invalid.drivers.sandbox.package = "@example/installed-sender";
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(load(), (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
+    });
+  }
+}
+
 export function registerStartupCredentialProxyCases({
   boot,
   fixture,
   productionServer,
   settled,
 }: StartupCredentialProxyFixtures): void {
+  test("API startup closes its installed registration when composition cannot start", async (t) => {
+    const id = "api-startup-protected-fixture";
+    const { directory } = await protectedDriverPackage(t, id);
+    const controller = fileURLToPath(new URL("../../apps/controller/", import.meta.url));
+    const owner = join(directory, "apps", "controller");
+    // Run the real API against its own installed dependency. Production package discovery reads
+    // the manifest next to this source, so stage it without modifying the checkout's dependencies.
+    await mkdir(owner, { recursive: true });
+    await mkdir(join(directory, "deploy"));
+    await writeFile(
+      join(owner, "package.json"),
+      JSON.stringify({ type: "module", dependencies: { [id]: "1.0.0" } }),
+    );
+    await rename(join(directory, "node_modules"), join(owner, "node_modules"));
+    await symlink(join(controller, "node_modules"), join(directory, "node_modules"), "dir");
+    await symlink(join(controller, "plugins"), join(owner, "plugins"), "dir");
+    await symlink(new URL("../../packages", import.meta.url), join(directory, "packages"), "dir");
+    await symlink(
+      new URL("../../deploy/presets", import.meta.url),
+      join(directory, "deploy", "presets"),
+      "dir",
+    );
+    await cp(join(controller, "src"), join(owner, "src"), { recursive: true });
+    const { startApi } = (await import(
+      join(owner, "src", "api-startup.ts")
+    )) as typeof import("../../apps/controller/src/api-startup.ts");
+    const { calls, closeProbe } = (await import(
+      join(owner, "node_modules", id, "index.mjs")
+    )) as typeof import("../fixtures/driver-packages/protected-execution-driver/index.ts");
+    const base = createInstallationDriverConfiguration();
+    const configuration = {
+      ...base,
+      drivers: {
+        ...base.drivers,
+        sandbox: { id, package: id, configuration: { endpoint: "https://127.0.0.1:1", ca: "" } },
+        credential_proxy: { id, configuration: {} },
+        token_service: { id: "occ", configuration: {} },
+      },
+    };
+
+    await t.test("missing ServiceAccount admin key", async (t) => {
+      const chatgpt = createChatGPTInstallation(createInstallationDriverConfiguration);
+      const backend = chatgpt.backend[0];
+      const path = await fixture(t, {
+        ...configuration,
+        backend: [
+          {
+            ...backend,
+            configuration: {
+              ...backend.configuration,
+              apiKeyPath: join(directory, "missing-admin-key"),
+            },
+          },
+        ],
+        drivers: { ...configuration.drivers, service_account: chatgpt.drivers.service_account },
+      });
+      await assert.rejects(startApi({ ...startupEnvironment(path), ...productionServer }), {
+        message: "The configured ChatGPT admin-key Secret is unavailable.",
+      });
+      assert.equal(calls.create, 1);
+      assert.equal(calls.close, 1, "startup must close the installed Driver exactly once");
+    });
+
+    await t.test("database pool refusal with failing Driver cleanup", async (t) => {
+      setEnvironment(t, { OCC_DATABASE_AUTH: "unsupported" });
+      closeProbe.fail = true;
+      const previousCloses = calls.close;
+      const path = await fixture(t, configuration);
+      await assert.rejects(startApi({ ...startupEnvironment(path), ...productionServer }), {
+        message: "Unsupported OCC_DATABASE_AUTH mode.",
+      });
+      assert.equal(calls.create, 2);
+      assert.equal(
+        calls.close,
+        previousCloses + 1,
+        "startup must attempt cleanup and preserve the pool error",
+      );
+    });
+  });
+
   async function checkBoots(
     entries: readonly { source: StartupDiagnosticSource; env: NodeJS.ProcessEnv }[],
     code: string,
@@ -136,9 +362,8 @@ export function registerStartupCredentialProxyCases({
     // Join every process before the shared Installation fixture can be removed.
     await settled(
       entries.map(async ({ source, env }) => {
-        const result = asRecord(await boot(source.script, env));
-        assert.equal(result?.status, 1, `${source.script} must refuse startup`);
-        assert.ok(typeof result?.stderr === "string", `expected stderr from ${source.script}`);
+        const result = await boot(source.script, env);
+        assert.equal(result.status, 1, `${source.script} must refuse startup`);
         const diagnostic = startupDiagnostic(result.stderr, source);
         assert.equal(diagnostic.code, code, source.script);
         assert.deepEqual(diagnostic.details, details, source.script);

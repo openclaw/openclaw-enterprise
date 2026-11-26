@@ -2,15 +2,20 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:
 
 import { ResourceStateConflictError } from "./errors.ts";
 
+export type DeviceAuthenticationState = DeviceAuthorizationSession & {
+  readonly kind: "device_authorization";
+  readonly id: string;
+  readonly version: number;
+};
+
 /** OCC stores the user challenge and provider handle as separate ciphertexts. */
 export interface DeviceAuthorizationSession {
   readonly actorId: string;
   readonly namespaceId: string;
   readonly agentId?: string;
   readonly harnessId: string;
-  readonly credentialGatewayId: string;
-  readonly credentialRefreshId: string;
-  readonly sourceId: string;
+  readonly tokenServiceInstanceId: string;
+  readonly sourceId?: string;
   readonly phase: "pending" | "polling" | "ready" | "cancelled";
   readonly expiresAt: string;
   readonly nextPollAt: string;
@@ -22,7 +27,12 @@ export interface DeviceAuthorizationSession {
 export function cancelledDeviceAuthorization(
   session: DeviceAuthorizationSession,
 ): DeviceAuthorizationSession {
-  const { encryptedChallenge: _challenge, privateState: _handle, ...metadata } = session;
+  const {
+    encryptedChallenge: _challenge,
+    privateState: _handle,
+    sourceId: _source,
+    ...metadata
+  } = session;
   return { ...metadata, phase: "cancelled" };
 }
 
@@ -69,8 +79,7 @@ export function deviceAuthorizationScope(
       session.agentId,
       session.harnessId,
       session.sourceId,
-      session.credentialGatewayId,
-      session.credentialRefreshId,
+      session.tokenServiceInstanceId,
       purpose,
     ]),
   );

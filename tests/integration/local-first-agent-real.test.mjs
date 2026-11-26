@@ -11,10 +11,10 @@ import { promisify } from "node:util";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.ts";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import { sha256Hex } from "../../packages/utils/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   failNativeProvisioningDeadline,
-  nativeProvisioningPath,
   runtimeLogSources,
   waitForNativeProvisioning,
   waitForNativeRedeploy,
@@ -33,6 +33,7 @@ import {
   recordFirstAgentPodTiming,
   sampleFirstAgentCapacity,
 } from "../helpers/local-first-agent-profile.mjs";
+import { waitUntil } from "../helpers/wait-for.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { verifyFirstAgentSandboxPolicy } from "../helpers/first-agent-sandbox-policy.ts";
 import { registerNativeTerminalFailureCases } from "./local-first-agent-native-failure-cases.ts";
@@ -58,11 +59,13 @@ const commandTimeout = 30 * 60_000;
 const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
 const nativeSetupExpiryTimeout = 11 * 60_000;
-const credentialVariable =
-  selectedSandboxDriver === "openshell" &&
-  process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE
-    ? "CODEX_ACCESS_TOKEN"
-    : "OPENAI_API_KEY";
+const credentialVariable = "OPENAI_API_KEY";
+const nativeModelGrant = {
+  id: "native-model",
+  binary: "/usr/local/bin/node",
+  host: "api.openai.com",
+  ports: [{ from: 443, to: 443 }],
+};
 const sensitiveValues = new Set(
   [process.env.OPENAI_API_KEY, process.env.CODEX_ACCESS_TOKEN].filter(Boolean),
 );
@@ -273,18 +276,6 @@ function nativeAgentPodSelector(agentId, revisionId) {
   return `openclaw.dev/agent=${agentId},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=agent`;
 }
 
-// Project only the fields needed to join the agent imageID to the model probe's log stream.
-function readNativeProbePod(kube, { namespaceId, agentId, revisionId }, signal) {
-  const selector = `${nativeAgentPodSelector(agentId, revisionId)},openclaw.dev/namespace=${namespaceId}`;
-  return readKubernetes(
-    kube,
-    ["get", "pods", "--all-namespaces", "--selector", selector],
-    "the native model probe's Harness Pod",
-    'jsonpath={range .items[*]}{.metadata.name} {.metadata.uid} {range .status.containerStatuses[?(@.name=="agent")]}{.restartCount} {.imageID}{end}{"\\n"}{end}',
-    signal,
-  );
-}
-
 async function readSecretResourceVersion({ stateDirectory, cluster, env, namespaceId, secretId }) {
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
@@ -334,6 +325,50 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
     "resourceVersion",
     /^[A-Za-z0-9._:-]+$/,
   );
+}
+
+async function readTokenServiceCustodyVersion(
+  kube,
+  { installationId, namespaceId, sourceId, secretNamespace },
+) {
+  // Read only owner and object metadata for this disposable Installation. The Source
+  // API deliberately exposes no private storage version or Secret reference.
+  const template = String.raw`{{range .items}}{{index .metadata.annotations "openclaw.dev/installation-id"}}{{"\t"}}{{index .metadata.annotations "openclaw.dev/private-secret-id"}}{{"\t"}}{{.metadata.uid}}{{"\t"}}{{.metadata.resourceVersion}}{{"\n"}}{{end}}`;
+  const metadata = await readKubernetes(
+    kube,
+    [
+      "get",
+      "secrets",
+      "--namespace",
+      secretNamespace,
+      "--selector",
+      "app.kubernetes.io/managed-by=openclaw-enterprise",
+    ],
+    "the TokenService Source custody metadata",
+    `go-template=${template}`,
+  );
+  const versions = metadata.split("\n").flatMap((line) => {
+    const [owner, privateIdentity, uid, resourceVersion] = line.split("\t");
+    if (owner !== installationId || !privateIdentity?.startsWith("[")) {
+      return [];
+    }
+    const ref = JSON.parse(privateIdentity);
+    return Array.isArray(ref) &&
+      ref.length === 5 &&
+      ref[0] === "token_service" &&
+      ref[2] === "credential_source" &&
+      ref[3] === namespaceId &&
+      ref[4] === sourceId
+      ? [{ uid, resourceVersion }]
+      : [];
+  });
+  assert.equal(
+    versions.length,
+    1,
+    "The selected TokenService must have one private Source receipt",
+  );
+  assert.ok(versions[0].uid && versions[0].resourceVersion);
+  return versions[0];
 }
 
 async function requestLocalApi(
@@ -695,13 +730,17 @@ test(
       `${credentialVariable} is required for the first invocation`,
     );
     if (selectedSandboxDriver === "openshell") {
-      assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for native OpenClaw");
+      assert.ok(
+        !process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE,
+        "The native First Agent proof requires the approved TokenService OpenAI preset.",
+      );
     }
     const own = ownFirstAgentWork(context);
     let finishCapacity = () => {};
     context.after(() => finishCapacity());
     const stack = await localFirstAgentStack(context, {
-      modelCredential: credentialVariable === "OPENAI_API_KEY" ? "openai" : undefined,
+      modelCredential: "openai",
+      ...(selectedSandboxDriver === "openshell" ? { nativeModelGrant } : {}),
     });
     const stateDirectory = stack.directory;
     assert.ok(
@@ -744,12 +783,7 @@ test(
     const env = { ...stack.environment, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" };
     delete env.OPENAI_API_KEY_FILE;
     delete env.CODEX_ACCESS_TOKEN_FILE;
-    // A custom native provider keeps its key separate from the Codex starter.
-    if (credentialVariable === "CODEX_ACCESS_TOKEN") {
-      delete env.OPENAI_API_KEY;
-    } else {
-      delete env.CODEX_ACCESS_TOKEN;
-    }
+    delete env.CODEX_ACCESS_TOKEN;
     const promptFor = (reply) => `Reply with exactly ${reply} and no other text.`;
     const resultOrigins = {
       apiOrigin: env.OCC_URL,
@@ -793,77 +827,51 @@ test(
           AbortSignal.any([nativeContext.signal, signal ?? AbortSignal.timeout(20_000)]),
         );
       const configuration = createHarnessConfiguration("openclaw", expectedModel);
-      const providerFile = process.env.OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE;
-      if (providerFile) {
-        const provider = await readPrivateJson(providerFile, "the native model provider catalog");
-        const model = provider.models?.[0]?.id;
-        assert.ok(typeof model === "string" && model.length > 0);
-        configuration.models.providers.openai = {
-          baseUrl: provider.baseUrl,
-          api: provider.api,
-          models: provider.models,
-          apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
-        };
-        configuration.agents.defaults.model = `openai/${model}`;
-        configuration.agents.defaults.models = {
-          [`openai/${model}`]: { agentRuntime: { id: "openclaw" } },
-        };
-      }
       const installation = await request("GET", "/installation");
       assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
-      assert.ok(
-        installation.capabilities?.credentialSources?.types.some(({ type }) => type === "openai"),
-      );
-      // Keep each Agent's source bound to its own provider destination.
-      const nativeSecret = await request("POST", `${base}/secrets`, {
-        name: `first-agent-native-${suffix}`,
-        value: process.env.OPENAI_API_KEY,
-      });
-      assert.equal(nativeSecret.ref.kind, "secret");
-      assert.equal(nativeSecret.ref.namespaceId, nativeNamespace.id);
+      assert.ok(installation.capabilities?.modelCredentialSourcePresets?.includes("openai"));
+      // Enroll the native Agent's own separate Source through the selected TokenService.
       const nativeSource = await request("POST", `${base}/credential-sources`, {
         name: `first-agent-native-${suffix}`,
-        type: "openai",
-        config: { authorized_base_url: configuration.models.providers.openai.baseUrl },
-        secrets: { api_key: nativeSecret.ref },
+        type: "static",
+        config: { provider_preset: "openai" },
+        secret: process.env.OPENAI_API_KEY,
       });
-      assert.equal(nativeSource.type, "openai");
+      assert.equal(nativeSource.type, "static");
       assert.equal(nativeSource.state, "ready");
-      assert.equal(
-        nativeSource.config.authorized_base_url,
-        new URL(configuration.models.providers.openai.baseUrl).href.replace(/\/$/u, ""),
-      );
-      assert.deepEqual(nativeSource.secrets.api_key, nativeSecret.ref);
-      // The regular Console API creates the Configuration, Agent, source
-      // grant, transport and revision; the Agent receives no Secret grant.
+      assert.equal(nativeSource.config.provider_preset, "openai");
+      // Regular staged deployment freezes the authorized Source and policy in one revision.
       const kube = { stateDirectory, cluster: recorded.cluster, env };
       const nativeRequestedAt = Date.now();
       const { revisionId: initialRevisionId, nativeAgent } = await measureFirstAgentStage(
         nativeContext,
         "native-deploy",
         async () => {
-          const submitted = await request("POST", `${base}/agents/provision`, {
-            requestId: `req_${randomUUID()}`,
+          const nativeConfiguration = await request("POST", `${base}/configurations`, {
+            kind: "agent",
+            values: { ...configuration, tools: { allow: ["exec"] } },
+          });
+          const agent = await request("POST", `${base}/agents`, {
             name: `first-agent-native-${suffix}`,
             executionMode: "dedicated",
+            configurationId: nativeConfiguration.id,
             harnessAuth: { method: "credential_source", sourceId: nativeSource.id },
-            configuration: {
-              kind: "agent",
-              values: {
-                ...configuration,
-                tools: { allow: ["exec"] },
-              },
-            },
+            credentialSources: [{ sourceId: nativeSource.id }],
             initialWorkspaceFiles: { ...WORKSPACE_DEFAULTS },
             workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
           });
-          return waitForNativeProvisioning({
+          const agentPath = `${base}/agents/${agent.id}`;
+          const revision = await request("POST", `${agentPath}/deploy`);
+          const ready = await waitForNativeRedeploy({
             request,
             namespaceId: nativeNamespace.id,
-            provisioningPath: nativeProvisioningPath(nativeNamespace.id, submitted.provisioning),
+            agentId: agent.id,
+            revisionId: revision.id,
             signal: nativeContext.signal,
-            readProbePod: (revision, signal) => readNativeProbePod(kube, revision, signal),
           });
+          assert.equal(ready.deployment?.status, "succeeded");
+          assert.equal(ready.agent?.activeRevisionId, revision.id);
+          return { revisionId: revision.id, nativeAgent: ready.agent };
         },
       );
       assert.equal(nativeAgent.executionMode, "dedicated");
@@ -917,14 +925,17 @@ test(
         path: join(workspaceRoot, "USER.md"),
         content: retainedFiles["USER.md"],
       };
-      const proofOptions = {
+      const proofOptions = (revisionId) => ({
         stateDirectory,
         state: recorded,
         environment: env,
         namespaceId: nativeNamespace.id,
         agentId: nativeAgent.id,
         workspaceFile,
-      };
+        credentialProxyScope: stack.ownsInstallation
+          ? { actorId: nativeAgent.servicePrincipalId, sourceId: nativeSource.id, revisionId }
+          : undefined,
+      });
       const readProviderRevision = async (revisionId, stage, requestedAt) => {
         const pods = await readKubernetesJson(
           kube,
@@ -1082,7 +1093,7 @@ test(
       const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
-          ...proofOptions,
+          ...proofOptions(initialRevisionId),
           expectedNodeId: initialProvider.expectedNodeId,
         }),
       );
@@ -1104,6 +1115,21 @@ test(
         nativeContext,
         "native-redeploy",
         async () => {
+          const stopped = await request(
+            "POST",
+            `${nativePath}/stop?expectedActiveRevisionId=${initialRevisionId}`,
+          );
+          assert.equal(stopped.desiredRuntimeState, "stopped");
+          await waitUntil(
+            "the initial staged OpenClaw revision to stop",
+            async () => {
+              const agent = await request("GET", nativePath);
+              return (
+                agent.desiredRuntimeState === "stopped" && agent.activeRevisionId === undefined
+              );
+            },
+            { timeoutMs: 4 * 60_000, intervalMs: 2000 },
+          );
           const replacement = await request("POST", `${nativePath}/deploy`);
           assert.notEqual(replacement.id, initialRevisionId);
           assert.equal(replacement.harness.id, "openclaw");
@@ -1158,7 +1184,7 @@ test(
         "native-resumed-model",
         () =>
           assertNativeWorkerProofInController(nativeContext, {
-            ...proofOptions,
+            ...proofOptions(replacement.id),
             expectedNodeId: replacementProvider.expectedNodeId,
             session: firstNativeProof.session,
             sessionFile: firstNativeProof.sessionFile,
@@ -1188,7 +1214,7 @@ test(
     const nativeTest =
       selectedSandboxDriver === "openshell"
         ? context.test(
-            "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution",
+            "staged native OpenClaw redeployment resumes the same session with retained files and required-worker execution",
             {
               timeout:
                 16 * 60_000 + 2 * nativeFirstAgentProofTimeout + nativeSetupExpiryTimeout + 30_000,
@@ -1221,6 +1247,8 @@ test(
       first.model,
       `${selectedHarness === "codex" ? "codex" : "openai"}/${expectedModel}`,
     );
+    const base = `/namespaces/${first.namespaceId}`;
+    const agentPath = `${base}/agents/${first.identity.agentId}`;
     if (selectedSandboxDriver === "openshell") {
       const kube = { stateDirectory, cluster: recorded.cluster, env };
       const deployments = await readKubernetesJson(
@@ -1336,6 +1364,23 @@ test(
           "Existing stack has no python-web startup rule; override delivery was not exercised.",
         );
       }
+      // Both OpenShell fixtures use single-cluster runtime Compute with private
+      // Gateway routing. The newly admitted first-Agent revision enables HTTP chat.
+      const { agentId, revisionId } = first.identity;
+      const admitted = await requestLocalApi(
+        first.origin,
+        serviceKey,
+        "GET",
+        `${agentPath}/revisions/${revisionId}`,
+      );
+      assert.equal(admitted.id, revisionId);
+      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
+      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
+      assert.equal(
+        admitted.configuration.gateway?.http?.endpoints?.chatCompletions?.enabled,
+        true,
+        "The admitted first-Agent revision must enable HTTP chat",
+      );
       const services = await readKubernetesJson(
         kube,
         [
@@ -1344,35 +1389,93 @@ test(
           "--namespace",
           namespaces.items[0].metadata.name,
           "--selector",
-          `openclaw.dev/agent=${first.identity.agentId}`,
+          `openclaw.dev/agent=${agentId}`,
         ],
-        "the Agent Service",
+        "the Agent Services",
       );
-      // Both Services share the canonical tenant namespace. The Gateway serves
-      // traffic, while OpenShell's advertised endpoint keeps the direct Harness
-      // Service parked so it cannot bypass the provider's authenticated route.
-      assert.equal(services.items.length, 2);
+      const agentSuffix = sha256Hex(agentId, 12);
+      const gatewayName = gateway.metadata.name;
+      const harnessName = `agent-${agentSuffix}`;
+      const chatName = `chat-${agentSuffix}-rev-${sha256Hex(revisionId, 12)}`;
+      assert.deepEqual(
+        services.items.map((service) => service.metadata.name).sort(),
+        [gatewayName, harnessName, chatName].sort(),
+        "The Agent must have exactly its Gateway, parked Harness and revision-scoped chat Services",
+      );
       const gatewayService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "gateway",
+        (service) => service.metadata.name === gatewayName,
       );
       const harnessService = services.items.find(
-        (service) => service.spec.selector["openclaw.dev/workload-role"] === "agent",
+        (service) => service.metadata.name === harnessName,
       );
-      assert.ok(gatewayService, "the Agent must retain its serving Gateway Service");
-      assert.ok(harnessService, "the direct Harness Service must remain parked");
-      assert.deepEqual(gatewayService.spec.selector, {
+      const chatService = services.items.find((service) => service.metadata.name === chatName);
+      const gatewaySelector = {
         "openclaw.dev/namespace": first.namespaceId,
-        "openclaw.dev/agent": first.identity.agentId,
+        "openclaw.dev/agent": agentId,
         "openclaw.dev/workload-role": "gateway",
         "app.kubernetes.io/name": gateway.spec.template.metadata.labels["app.kubernetes.io/name"],
-      });
+      };
+      assert.deepEqual(gatewayService.spec.selector, gatewaySelector);
+      // The direct Harness Service stays parked so it cannot bypass the
+      // provider's authenticated route.
       assert.equal(harnessService.spec.selector["openclaw.dev/namespace"], first.namespaceId);
-      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], first.identity.agentId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/agent"], agentId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/revision"], revisionId);
+      assert.equal(harnessService.spec.selector["openclaw.dev/workload-role"], "agent");
       assert.equal(
-        harnessService.spec.selector["openclaw.dev/revision"],
-        first.identity.revisionId,
+        harnessService.spec.selector["app.kubernetes.io/name"],
+        `${harnessName}-inactive`,
       );
-      assert.match(harnessService.spec.selector["app.kubernetes.io/name"], /-inactive$/);
+      assert.equal(
+        chatService.metadata.labels["app.kubernetes.io/managed-by"],
+        "openclaw-enterprise",
+      );
+      assert.equal(chatService.metadata.labels["openclaw.dev/revision"], revisionId);
+      assert.equal(chatService.metadata.annotations?.["openclaw.dev/revision-id"], revisionId);
+      assert.equal(chatService.spec.type, "ClusterIP");
+      assert.deepEqual(chatService.spec.ports, gatewayService.spec.ports);
+      assert.deepEqual(chatService.spec.selector, {
+        ...gatewaySelector,
+        "openclaw.dev/revision": revisionId,
+      });
+      // The Service inventory cannot prove where the revision's HTTP chat route
+      // sends traffic. Bind that exact POST path to the observed Service and port.
+      const routes = await readKubernetesJson(
+        kube,
+        [
+          "get",
+          "httproutes",
+          "--namespace",
+          namespaces.items[0].metadata.name,
+          "--selector",
+          `openclaw.dev/agent=${agentId}`,
+        ],
+        "the Agent revision's HTTP chat route",
+      );
+      const chatPath = `/http-chat/namespaces/${first.namespaceId}/agents/${agentId}/revisions/${revisionId}/v1/chat/completions`;
+      const chatRoutes = routes.items.filter((route) =>
+        route.spec.rules.some((rule) =>
+          rule.matches.some((match) => match.path?.value === chatPath),
+        ),
+      );
+      assert.equal(chatRoutes.length, 1);
+      const chatRoute = chatRoutes[0];
+      assert.equal(chatRoute.metadata.annotations["openclaw.dev/agent-revision-id"], revisionId);
+      assert.equal(chatRoute.spec.rules.length, 1);
+      const chatRule = chatRoute.spec.rules[0];
+      assert.deepEqual(chatRule.matches, [
+        { method: "POST", path: { type: "Exact", value: chatPath } },
+      ]);
+      assert.equal(chatRule.backendRefs.length, 1);
+      const chatBackend = chatRule.backendRefs[0];
+      assert.equal(chatBackend.kind, "Service");
+      assert.equal(chatBackend.group, "");
+      assert.equal(chatBackend.name, chatService.metadata.name);
+      assert.equal(
+        chatBackend.namespace ?? chatRoute.metadata.namespace,
+        chatService.metadata.namespace,
+      );
+      assert.equal(chatBackend.port, chatService.spec.ports[0].port);
     }
     const reuseEnv = { ...env };
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
@@ -1441,14 +1544,13 @@ test(
       "Both invocations must use the same local controller and Namespace",
     );
 
-    const base = `/namespaces/${first.namespaceId}`;
-    const agentPath = `${base}/agents/${first.identity.agentId}`;
     const agent = await requestLocalApi(first.origin, serviceKey, "GET", agentPath);
     assert.ok(
       /^cfg_[A-Za-z0-9_-]+$/.test(agent.configurationId ?? ""),
       "The public Agent must expose its Configuration",
     );
-    let secretId;
+    const custodyKube = { stateDirectory, cluster: recorded.cluster, env: stack.environment };
+    let readCustodyVersion;
     if (selectedSandboxDriver === "openshell") {
       assert.match(agent.harnessAuth?.sourceId ?? "", /^cs_[A-Za-z0-9_-]+$/);
       assert.equal(agent.harnessAuth?.method, "credential_source");
@@ -1458,13 +1560,36 @@ test(
         "GET",
         `${base}/credential-sources/${agent.harnessAuth.sourceId}`,
       );
-      const sourceType = credentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
-      const secretField = credentialVariable === "CODEX_ACCESS_TOKEN" ? "access_token" : "api_key";
-      assert.equal(source.type, sourceType);
+      assert.equal(source.type, "static");
       assert.equal(source.state, "ready");
-      assert.equal(source.secrets[secretField]?.kind, "secret");
-      assert.equal(source.secrets[secretField]?.namespaceId, first.namespaceId);
-      secretId = source.secrets[secretField]?.id;
+      assert.equal(source.config.provider_preset, "openai");
+      assert.equal(source.secrets, undefined);
+      // Helm gives each release a private custody Namespace. Read the Namespace
+      // selected by the running API before comparing the Source receipt.
+      const secretNamespace =
+        recorded.deploymentMode === "k3d"
+          ? (
+              await readKubernetes(
+                custodyKube,
+                [
+                  "get",
+                  "deployment/openclaw-enterprise-api",
+                  "--namespace",
+                  recorded.platformNamespace,
+                ],
+                "the API's installation Secret Namespace",
+                'jsonpath={.spec.template.spec.containers[?(@.name=="api")].env[?(@.name=="OCC_INSTALLATION_SECRET_NAMESPACE")].value}',
+              )
+            ).trim()
+          : "oce-installation-secrets";
+      assert.ok(secretNamespace, "The local API must select an installation Secret Namespace");
+      readCustodyVersion = () =>
+        readTokenServiceCustodyVersion(custodyKube, {
+          installationId: recorded.installationId,
+          namespaceId: first.namespaceId,
+          sourceId: source.id,
+          secretNamespace,
+        });
 
       const bindings = await requestLocalApi(
         first.origin,
@@ -1490,23 +1615,22 @@ test(
         "The OpenShell Agent must not receive Secret access.",
       );
     } else {
-      secretId = agent.harnessAuth?.source?.id;
+      const secretId = agent.harnessAuth?.source?.id;
       assert.ok(
         agent.harnessAuth?.method === "api_key" &&
           agent.harnessAuth.source?.kind === "secret" &&
           agent.harnessAuth.source?.namespaceId === first.namespaceId,
         "The public Agent must reference an exact Secret in its Namespace",
       );
+      assert.match(secretId ?? "", /^sec_[A-Za-z0-9_-]+$/);
+      readCustodyVersion = () =>
+        readSecretResourceVersion({
+          ...custodyKube,
+          namespaceId: first.namespaceId,
+          secretId,
+        });
     }
-    assert.match(secretId ?? "", /^sec_[A-Za-z0-9_-]+$/);
-    const secretLookup = {
-      stateDirectory,
-      cluster: recorded.cluster,
-      env: stack.environment,
-      namespaceId: first.namespaceId,
-      secretId,
-    };
-    const originalSecretVersion = await readSecretResourceVersion(secretLookup);
+    const originalSecretVersion = await readCustodyVersion();
     const configurationPath = `${base}/configurations/${agent.configurationId}`;
     const original = await requestLocalApi(first.origin, serviceKey, "GET", configurationPath);
     assert.equal(original.values.agents.defaults.model, first.model);
@@ -1522,16 +1646,6 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
-    if (selectedSandboxDriver === "openshell") {
-      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
-      const admitted = await requestLocalApi(
-        first.origin,
-        serviceKey,
-        "GET",
-        `${agentPath}/revisions/${first.identity.revisionId}`,
-      );
-      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
-    }
     if (selectedControlUi) {
       assert.equal(original.generation, 2);
       assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);
@@ -1576,8 +1690,8 @@ test(
           timeout: refusalTimeout,
         }),
       );
-      const refusedSecretVersion = await readSecretResourceVersion(secretLookup);
-      assert.equal(
+      const refusedSecretVersion = await readCustodyVersion();
+      assert.deepEqual(
         refusedSecretVersion,
         originalSecretVersion,
         "A refused key replacement must not mutate the exact Kubernetes Secret",

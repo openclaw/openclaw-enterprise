@@ -4,7 +4,7 @@ import test from "node:test";
 import { tenantRequest as request } from "../helpers/tenant-reader-app.ts";
 import { InstallationSchema, NamespaceSchema } from "../../packages/contracts/src/api/resources.ts";
 import type { Restriction } from "../../packages/contracts/src/index.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import {
   bootstrap,
   bootstrappedDefaultNamespace,

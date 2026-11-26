@@ -56,7 +56,6 @@ export async function standInChart(
   );
   const key = yqRaw(yqOr(optionalField(installation, "key"), "installation.yaml"));
   const image = yqRaw(optionalField(optionalField(values, "images"), "controller"));
-  const channelDirectoryProxyUrl = optionalField(field(values, "api"), "channelDirectoryProxyUrl");
   const deployment = (component: "api" | "worker", placement: "containers" | "initContainers") => ({
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -81,14 +80,6 @@ export async function standInChart(
                   name: "OCC_CONFIG_PATH",
                   value: "/etc/openclaw/installation/installation.yaml",
                 },
-                ...(component === "api" && channelDirectoryProxyUrl
-                  ? [
-                      {
-                        name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-                        value: channelDirectoryProxyUrl,
-                      },
-                    ]
-                  : []),
               ],
               volumeMounts: [
                 {
@@ -245,7 +236,16 @@ export async function runPreflight(
   const spec = field(pod, "spec");
   const container = field(field(spec, "containers"), 0);
   const name = field(container, "name");
-  const scripted = optionalField(state.preflightResults, String(name));
+  const migrationMode = list(field(container, "args") ?? [], "preflight container arguments").find(
+    (argument) =>
+      argument === "--check" ||
+      argument === "--check-for-installation" ||
+      argument === "--apply-for-installation" ||
+      argument === "--require-current-for-installation",
+  );
+  const scripted =
+    optionalField(state.preflightResults, String(migrationMode ?? name)) ??
+    optionalField(state.preflightResults, String(name));
   if (scripted) {
     return scripted;
   }
@@ -253,9 +253,13 @@ export async function runPreflight(
   // execute source; the installed migration test owns real database proof.
   // providerCompleted is a supported earlier receipt lineage with migrations pending.
   if (name === "migration") {
+    const event =
+      migrationMode === "--check-for-installation"
+        ? "migration.checked-for-installation"
+        : "migration.checked";
     return {
       phase: "Succeeded",
-      log: '{"event":"migration.checked","history":"providerCompleted"}\n',
+      log: JSON.stringify({ event, history: "providerCompleted" }) + "\n",
     };
   }
   const variables = field(container, "env");

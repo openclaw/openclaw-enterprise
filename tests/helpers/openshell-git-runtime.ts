@@ -1,5 +1,5 @@
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
+import type { AgentRevision, RepositoryRevisionState } from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -75,7 +75,7 @@ type Owner = {
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
-  revision: AgentRevision;
+  revision: AgentRevision & { readonly repositoryCredentials: RepositoryRevisionState };
   resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   runtime: OpenShellGitRuntime;
   sandbox: {
@@ -162,7 +162,7 @@ export function openShellGitRuntimeFixture({
         deadlineWallMs: Date.now() + 3_600_000,
         bindings: [admitted],
       },
-    })) as unknown as AgentRevision;
+    })) as unknown as World["revision"];
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
   // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {
@@ -171,7 +171,7 @@ export function openShellGitRuntimeFixture({
     workspace: "team-workspace",
     phase: "SANDBOX_PHASE_READY",
     restartCount: 0,
-    spec: { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" },
+    spec: { restart_policy: "SANDBOX_RESTART_POLICY_ALWAYS" },
   };
   const supervisor = world?.supervisor ?? {
     supervisorSessionId: "session-one",
@@ -188,9 +188,9 @@ export function openShellGitRuntimeFixture({
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
-  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
-  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
-  const prepared = /^oce-git-[0-9a-f]{32}$/;
+  // Bootstrap writes prepared Git profiles and providers under these prefixes.
+  // Any other name belongs to the Agent's model provider.
+  const prepared = /^oce-(?:git|github-installation)-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
   const providers = new Map<string, FixtureProvider>();
   const answer = (method: string, name?: string) => {
@@ -294,6 +294,9 @@ export function openShellGitRuntimeFixture({
     },
   };
   const provider = {
+    // The seeded Provider can only model legacy observations. Repository network
+    // policy cases use the real Provider, which establishes its own lease.
+    repositoryPolicyIsFresh: () => entry.authorization.repositoryNetworkPolicy === undefined,
     observe: async (
       binding: Entry["binding"],
       sandboxId: string,

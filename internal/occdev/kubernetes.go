@@ -438,7 +438,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"secret":        map[string]any{"id": "secret-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
-				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
+				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "20"}, "containerDefaults": resources}},
 				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "pluginStatusProxySourceCidrs": []string{statusProxySource}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
@@ -481,10 +481,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"port":    8080,
 		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
-		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id": openShellCredentialGatewayID,
-			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
-			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
+		config["drivers"].(map[string]any)["token_service"] = map[string]any{
+			"id": "occ", "configuration": map[string]any{},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -495,10 +493,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	return exclusiveWrite(filepath.Join(s.directory, "installation.yaml"), data, 0644)
 }
 
-const (
-	openShellSandboxID           = "sandbox-openshell-development"
-	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-)
+const openShellSandboxID = "sandbox-openshell-development"
 
 // Match the kernel-resolved executable on both architectures of the pinned runtime.
 // The container engine may run remotely, so the launcher's architecture is not authoritative.
@@ -509,11 +504,10 @@ func openShellCodexBinaries() []string {
 	}
 }
 
-// openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
-// Credential Gateway Drivers.
+// openShellBackendConfiguration owns the OpenShell management connection.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
 	if s.authenticatedOpenShell() {
-		drivers := map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID}
+		drivers := map[string]string{"sandbox": openShellSandboxID}
 		return map[string]any{
 			"id": "openshell", "type": "openshell",
 			"configuration": map[string]any{
@@ -538,7 +532,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 			"insecureTransport": "network-policy",
 			"requestTimeoutMs":  30000,
 		},
-		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"drivers": map[string]string{"sandbox": openShellSandboxID},
 	}
 }
 
@@ -554,8 +548,8 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			"integrationMode": "legacy",
 			"gateway": map[string]any{
-				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{
 					openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue,
 				},

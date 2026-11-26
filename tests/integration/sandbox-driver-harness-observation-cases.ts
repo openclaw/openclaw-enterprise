@@ -42,7 +42,7 @@ type FixtureDependencies = {
   };
   sandboxInstallation: () => {
     drivers: {
-      sandbox: { configuration: SandboxConfiguration & { gateway: { workspaceMode: string } } };
+      sandbox: { configuration: SandboxConfiguration & { integrationMode: "legacy" | "service" } };
     };
   };
 };
@@ -64,6 +64,7 @@ export async function verifySandboxDriverHarnessObservation({
   const observed: GatewayReadCall[] = [];
   let document: Awaited<ReturnType<GatewayReads["getServiceDocument"]>> = { status: 502 };
   let handshake = false;
+  let expectedPat = false;
   const reads: GatewayReads = {
     getService: async (...args) => {
       observed.push(["getService", ...args]);
@@ -80,7 +81,7 @@ export async function verifySandboxDriverHarnessObservation({
     },
     serviceCodexReadinessStatus: async (...args) => {
       const [, , requirePat] = args;
-      assert.equal(requirePat, false);
+      assert.equal(requirePat, expectedPat);
       observed.push(["serviceCodexReadinessStatus", ...args]);
       return handshake ? "serving" : "unavailable";
     },
@@ -122,6 +123,41 @@ export async function verifySandboxDriverHarnessObservation({
     observed.map(([operation]) => operation),
     ["getService", "serviceCodexReadinessStatus"],
   );
+  // PAT uses the same static custody type as API keys, but its frozen model binding selects
+  // Codex's personalAccessToken readiness observation. No loginMode is persisted on the Source.
+  const patRevision: typeof revision = {
+    ...revision,
+    executionAdmission: { version: 8, mode: "standalone" },
+    harnessAuth: {
+      method: "credential_source",
+      sourceId: "cs_pat",
+      sourceType: "static",
+      tokenServiceInstanceId: "tokens",
+    },
+    credentialDeployment: {
+      proxyDriverId: driver.id,
+      driver: {
+        id: driver.id,
+        implementation: driver.implementation,
+        configurationId: "a".repeat(64),
+      },
+      networkAccessPolicy: { allowed: [] },
+      bindings: [
+        {
+          bindingRef: "model",
+          consumer: { kind: "model", providerId: "codex" },
+          sourceRef: { kind: "credential_source", id: "cs_pat", namespaceId: revision.namespaceId },
+          projection: { environment: "CODEX_ACCESS_TOKEN", presentation: "bearer" },
+        },
+      ],
+      injectionPolicies: [],
+    },
+  };
+  expectedPat = true;
+  assert.deepEqual(await driver.harnessStatus({ ...statusContext, revision: patRevision }), {
+    state: "serving",
+  });
+  expectedPat = false;
   handshake = false;
 
   // A held failure answers the upgrade 503; it is returned unvalidated for Compute.
@@ -277,11 +313,11 @@ export async function verifySandboxDriverHarnessObservation({
     /another Sandbox Driver/,
   );
   const managedConfiguration = sandboxInstallation().drivers.sandbox.configuration;
-  managedConfiguration.gateway.workspaceMode = "managed";
+  managedConfiguration.integrationMode = "service";
   const managed = openShellDriver(gatewayClient, managedConfiguration);
   await assert.rejects(
     managed.harnessStatus(statusContext),
-    /managed workspace mode is not implemented; cannot observe a Harness/,
+    /service integration requires the service Sandbox implementation; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
 

@@ -1,3 +1,5 @@
+import { validRequestPath } from "./request-path.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -11,7 +13,7 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
-/** An approved HTTP request that can receive a static bearer credential. */
+/** An allowed HTTP request that can receive a static bearer credential. */
 export interface StaticKeyDestination extends ConnectionEndpoint {
   readonly method: string;
 }
@@ -21,20 +23,32 @@ export const staticKeyHttpMethodPattern = /^[!#$%&'*+.^_`|~0-9A-Z-]{1,16}$/;
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
-/** A client may send its credentials only to its explicitly approved provider endpoints. */
-export interface OAuthClient {
+interface CredentialClientRegistration {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
+  readonly createdAt: string;
+}
+
+/** A client may send its credentials only to its configured provider endpoints. */
+export interface OAuthClient extends CredentialClientRegistration {
+  readonly kind: "oauth2";
   readonly issuer: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  readonly createdAt: string;
 }
 
-/** Public metadata observed during MCP discovery. The administrator approves a subset. */
+/** The signing key is used only within the selected TokenService. */
+export interface GitHubAppClient extends CredentialClientRegistration {
+  readonly kind: "github-app";
+  readonly appId: string;
+}
+
+export type CredentialClient = OAuthClient | GitHubAppClient;
+
+/** Public metadata observed during MCP discovery. The administrator selects a subset. */
 export interface McpAuthorizationMetadata {
   readonly serverUrl: string;
   readonly resource: string;
@@ -56,7 +70,6 @@ export interface ConnectionTemplateValues {
   readonly authorizationUrl: string;
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
-  readonly oauthClientId?: string;
   /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
@@ -87,7 +100,7 @@ export interface ConnectionTemplate {
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
-  readonly current: Readonly<OAuthConnectionTemplateVersion>;
+  readonly current: Readonly<ConnectionTemplateVersion>;
   readonly createdAt: string;
 }
 
@@ -235,14 +248,14 @@ function compareStaticDestination(left: StaticKeyDestination, right: StaticKeyDe
   return compareEndpoint(left, right) || compareText(left.method, right.method);
 }
 
-/** Canonicalize the complete approved HTTP destination set, including each method. */
+/** Canonicalize the configured HTTP destination set, including each method. */
 export function normalizeStaticKeyDestinations(
   rows: readonly StaticKeyDestination[],
 ): StaticKeyDestination[] {
   if (!rows.length || rows.length > 128) {
     throw new ConnectionTemplateValidationError(
       "destinations",
-      "Choose 1 to 128 approved HTTP destinations.",
+      "Choose 1 to 128 HTTP destinations.",
     );
   }
   const destinations = rows
@@ -251,6 +264,7 @@ export function normalizeStaticKeyDestinations(
       if (
         !isApprovedDestinationHost(host) ||
         !validEndpoint(port, path) ||
+        !validRequestPath(path, true) ||
         !staticKeyHttpMethodPattern.test(method)
       ) {
         throw new ConnectionTemplateValidationError(
@@ -267,7 +281,22 @@ export function normalizeStaticKeyDestinations(
 }
 
 /** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
-export function validateConnectionTemplateDestinations(values: ConnectionTemplateValues): void {
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateSettings): void {
+  if (values.mode === "static_bearer") {
+    const canonical = normalizeStaticKeyDestinations(values.destinations);
+    if (
+      values.destinations.length !== canonical.length ||
+      values.destinations.some(
+        (row, index) => compareStaticDestination(row, canonical[index]!) !== 0,
+      )
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "destinations",
+        "The saved static destinations must be canonical.",
+      );
+    }
+    return;
+  }
   const canonical = normalizeConnectionDestinations(values.destinations);
   if (
     !sameDestinations(values.destinations, canonical) ||
@@ -290,7 +319,7 @@ function sameDestinations(
   );
 }
 
-/** True when `next` changes a value a person approved, so it needs a new version. */
+/** True when `next` changes settings that require a new template version. */
 export function connectionValuesChanged(
   current: Readonly<ConnectionTemplateSettings>,
   next: Readonly<ConnectionTemplateSettings>,
@@ -306,7 +335,6 @@ export function connectionValuesChanged(
     current.mode !== next.mode ||
     current.mcp?.serverUrl !== next.mcp?.serverUrl ||
     current.mcp?.resource !== next.mcp?.resource ||
-    current.oauthClientId !== next.oauthClientId ||
     current.issuer !== next.issuer ||
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
@@ -342,33 +370,10 @@ function sameParameters(
   );
 }
 
-/** One connected credential source: who consented in this Namespace and which template version they approved. */
-export interface SavedConnection {
-  readonly namespaceId: string;
-  readonly credentialSourceId: string;
-  /** Revocation survives process restarts until the worker retires the grant. */
-  readonly revocationRequestedBy?: string;
-  readonly revokedAt?: string;
-  readonly ownerPrincipalId: string;
-  readonly oauthClientId: string;
-  readonly clientId: string;
-  readonly issuer: string;
-  readonly tokenUrl: string;
-  readonly mcpServerUrl?: string;
-  readonly destinations: ConnectionTemplateValues["destinations"];
-  readonly resource?: string;
-  readonly requestedScopes: readonly string[];
-  readonly grantedScopes: readonly string[];
-  readonly connectionTemplateId: string;
-  readonly connectionTemplateVersion: number;
-  readonly createdAt: string;
-}
-
 /** A pending browser authorization, found by the SHA-256 of its `state` and consumed once. */
 export interface ConnectionSession {
   readonly stateHash: string;
   readonly namespaceId: string;
-  readonly credentialSourceId: string;
   /** Server-private PKCE state, erased when the callback consumes the attempt. */
   readonly pkceVerifier: string;
   readonly selectedScopes: readonly string[];
@@ -378,6 +383,7 @@ export interface ConnectionSession {
   readonly actorId: string;
   readonly connectionTemplateId: string;
   readonly connectionTemplateVersion: number;
+  readonly oauthClientId: string;
   readonly createdAt: string;
   readonly expiresAt: string;
 }
