@@ -4,7 +4,8 @@ import {
   readCredentialSourceMetadata,
   type CredentialSourceSummary,
 } from "./credential-source-metadata.mjs";
-import { button, element, replaceChildrenIfChanged, setUnavailable } from "./dom.mjs";
+import { button, element, field, replaceChildrenIfChanged, setUnavailable } from "./dom.mjs";
+import type { createDraftStore } from "./drafts.mjs";
 import type { NamespacePageContext } from "./namespaces.mjs";
 
 type PickerContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
@@ -306,4 +307,182 @@ export function createCredentialSourcePicker<Criteria>(
       return acceptedSelection();
     },
   };
+}
+
+/** Select or enroll a ready static Source without coupling enrollment to its consumer. */
+export function createInlineStaticCredentialSourcePicker(
+  context: PickerContext & { drafts?: ReturnType<ReturnType<typeof createDraftStore>["scope"]> },
+  body: HTMLFormElement,
+  options: {
+    id: string;
+    label: string;
+    initial: CredentialSourceReference | null;
+    inputClassName: string;
+    deliveryHint: string;
+    onChange(source: CredentialSourceReference | null): void;
+    onPending(pending: boolean): void;
+  },
+) {
+  const { id, label, initial } = options;
+  const enrollmentKey = `credential-source-create-${id}`;
+  const retained = context.drafts?.get(enrollmentKey);
+  let unresolvedName = typeof retained === "string" ? retained : undefined;
+  const picker = createCredentialSourcePicker(context, {
+    ...staticCredentialSourceSelection,
+    listStatus: (hasEligible) =>
+      hasEligible
+        ? staticCredentialSourceSelection.listStatus(true)
+        : "No ready static Credential Sources are readable in this Namespace. Select Add new credential… to create one here.",
+    id,
+    label,
+    addNew: { label: "Add new credential…" },
+    initial,
+    ...(initial ? { currentId: initial.id } : {}),
+    onChange: (source) => {
+      options.onChange(source);
+      feedback.textContent = "";
+      renderEnrollment();
+    },
+  });
+  const sourceName = element("input", {
+    id: `${id}-name`,
+    autocomplete: "off",
+    maxlength: "200",
+    "data-credential-enrollment": "",
+  });
+  const token = element("input", {
+    id: `${id}-value`,
+    type: "password",
+    autocomplete: "new-password",
+  });
+  const feedback = element("p", { className: "hint", role: "status" });
+  const create = button("Create credential", () => void enroll(), { tone: "secondary" });
+  const cancel = button("Cancel", () => picker.cancelCreating());
+  const enrollment = element(
+    "div",
+    { className: "credential-enrollment", hidden: true },
+    element(
+      "p",
+      { className: "hint" },
+      `This creates a reusable Source with the Installation’s selected TokenService. It remains in Credentials if you cancel. ${options.deliveryHint}`,
+    ),
+    field({
+      label: `${label} Source name`,
+      control: sourceName,
+      className: options.inputClassName,
+    }),
+    field({ label: `${label} value`, control: token, className: options.inputClassName }),
+    element("div", { className: "dialog-actions" }, cancel, create),
+  );
+  picker.field.append(enrollment, feedback);
+  function renderEnrollment() {
+    const blocked = unresolvedName !== undefined;
+    enrollment.hidden = !picker.creating;
+    if (!picker.creating) {
+      sourceName.value = "";
+      token.value = "";
+    }
+    sourceName.required = picker.creating;
+    token.required = picker.creating;
+    create.disabled = blocked;
+    picker.setAddNewDisabled(blocked);
+    if (blocked) {
+      feedback.textContent = `The credential save for "${unresolvedName}" could not be confirmed. Check Credential Sources and the credential owner, then reload this page before creating another Source.`;
+    }
+  }
+  async function enroll() {
+    if (unresolvedName !== undefined || !sourceName.reportValidity() || !token.reportValidity()) {
+      return;
+    }
+    const requestedName = sourceName.value.trim();
+    if (!requestedName) {
+      sourceName.setCustomValidity("Enter a Source name.");
+      sourceName.reportValidity();
+      return;
+    }
+    sourceName.setCustomValidity("");
+    const controls = [
+      ...body.querySelectorAll<
+        HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement
+      >("input, button, select, textarea"),
+    ];
+    const disabled = controls.map((control) => control.disabled);
+    for (const control of controls) {
+      control.disabled = true;
+    }
+    options.onPending(true);
+    const dialog = body.closest("dialog");
+    const preventCancel = (event: Event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    dialog?.addEventListener("cancel", preventCancel, true);
+    feedback.textContent = "Creating credential…";
+    try {
+      const request = context.request(
+        `/namespaces/${encodeURIComponent(context.namespaceId)}/credential-sources`,
+        {
+          method: "POST",
+          expectedStatus: 201,
+          body: { name: requestedName, type: "static", secret: token.value },
+        },
+      );
+      token.value = "";
+      const response = await request;
+      const source = readCredentialSourceMetadata(response, context.namespaceId);
+      if (
+        !source ||
+        source.name !== requestedName ||
+        source.type !== "static" ||
+        source.state !== "ready"
+      ) {
+        throw new Error("The create response did not confirm the requested Source.");
+      }
+      picker.selectCreated(source);
+      sourceName.value = "";
+      feedback.textContent = `Credential Source created: ${source.id}. Using it requires exact Source operate permission.`;
+    } catch (cause) {
+      token.value = "";
+      const { status } = requestFailure(cause);
+      if (status === 401) {
+        context.onExpired();
+      } else if (status === 403) {
+        feedback.textContent =
+          namedDenial(cause) ?? "You need Credential Source create on this Namespace.";
+      } else if (status === 400 || status === 404) {
+        feedback.textContent = "The Source was refused. Check its name and value.";
+      } else if (status === 429) {
+        feedback.textContent = "The request was rate limited. Try again later.";
+      } else if (status === 501) {
+        feedback.textContent = "The selected credential owner does not support this operation.";
+      } else {
+        // A 409 can occur after the owner has stored the value. As in Credentials, do not
+        // submit another create until the inventory and owner have been checked.
+        unresolvedName = requestedName;
+        if (context.drafts) {
+          const capture = () => requestedName;
+          context.drafts.track(enrollmentKey, capture);
+          context.drafts.unsavedWhen(enrollmentKey, () => false);
+          context.drafts.record(enrollmentKey, capture);
+        }
+      }
+    } finally {
+      dialog?.removeEventListener("cancel", preventCancel, true);
+      controls.forEach((control, index) => {
+        control.disabled = disabled[index]!;
+      });
+      options.onPending(false);
+      renderEnrollment();
+      body.dispatchEvent(new Event("change"));
+    }
+  }
+  sourceName.addEventListener("input", () => sourceName.setCustomValidity(""));
+  enrollment.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.target === sourceName || event.target === token)) {
+      event.preventDefault();
+      create.click();
+    }
+  });
+  renderEnrollment();
+  return picker;
 }

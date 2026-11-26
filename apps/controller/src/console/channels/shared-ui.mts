@@ -863,7 +863,7 @@ function openDrawer(
   // Only ordinary channel controls belong to this draft. Enrollment fields own their input.
   const fields = [
     ...body.querySelectorAll<Control>(
-      "input[id]:not([type=password]):not([data-channel-enrollment]), select[id]:not([data-channel-binding]), textarea[id]",
+      "input[id]:not([type=password]):not([data-credential-enrollment]), select[id]:not([data-channel-binding]), textarea[id]",
     ),
   ];
   const fieldValues = (list: Control[]): Record<string, FieldValue> =>

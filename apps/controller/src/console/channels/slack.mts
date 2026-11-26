@@ -1,11 +1,6 @@
 import type { SecretBinding } from "@openclaw-enterprise/contracts";
-import { button, element } from "../dom.mjs";
-import { namedDenial, requestFailure } from "../api-client.mjs";
-import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
-import {
-  createCredentialSourcePicker,
-  staticCredentialSourceSelection,
-} from "../credential-source-picker.mjs";
+import { element } from "../dom.mjs";
+import { createInlineStaticCredentialSourcePicker } from "../credential-source-picker.mjs";
 import { SLACK_SECRET_BINDINGS } from "../agents/credentials.mjs";
 import { createSlackDirectoryField, isSlackConfigTarget } from "../agents/slack-directory.mjs";
 import {
@@ -276,10 +271,6 @@ function activeSecretBindings(context: ChannelDrawerContext) {
   return context.draftSecretBindings ?? context.secretBindings ?? {};
 }
 
-function activeSecretBinding(binding: BindingField, context: ChannelDrawerContext) {
-  return activeSecretBindings(context)[binding.key];
-}
-
 function credentialReferenceField(
   binding: BindingField,
   context: ChannelDrawerContext,
@@ -287,24 +278,13 @@ function credentialReferenceField(
   onSelected: (key: string) => void,
   onEnrollmentPending: (value: boolean) => void,
 ) {
-  const initial = bindingSource(activeSecretBinding(binding, context), context.namespaceId);
-  const currentId = initial?.id;
-  const enrollmentKey = `slack-source-create-${binding.key}`;
-  const retained = context.drafts?.get(enrollmentKey);
-  let unresolvedName = typeof retained === "string" ? retained : undefined;
-  const id = `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`;
-  const picker = createCredentialSourcePicker(context, {
-    ...staticCredentialSourceSelection,
-    listStatus: (hasEligible) =>
-      hasEligible
-        ? staticCredentialSourceSelection.listStatus(true)
-        : "No ready static Credential Sources are readable in this Namespace. Select Add new credential… to create one here.",
-    id,
+  const picker = createInlineStaticCredentialSourcePicker(context, body, {
+    id: `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`,
     label: binding.label,
-    addNew: { label: "Add new credential…" },
-    initial,
-    ...(currentId ? { currentId } : {}),
-    onChange: (source) => {
+    initial: bindingSource(activeSecretBindings(context)[binding.key], context.namespaceId),
+    inputClassName: "channel-field",
+    deliveryHint: "Slack delivery currently requires OCC TokenService and Kubernetes Compute.",
+    onChange(source) {
       const next = { ...activeSecretBindings(context) };
       if (source) {
         next[binding.key] = { source, delivery: { type: "env" } };
@@ -313,146 +293,9 @@ function credentialReferenceField(
       }
       context.draftSecretBindings = next;
       onSelected(binding.key);
-      feedback.textContent = "";
-      renderEnrollment();
     },
+    onPending: onEnrollmentPending,
   });
-  const sourceName = element("input", {
-    id: `${id}-name`,
-    autocomplete: "off",
-    maxlength: "200",
-    "data-channel-enrollment": "",
-  });
-  const token = element("input", {
-    id: `${id}-value`,
-    type: "password",
-    autocomplete: "new-password",
-  });
-  const feedback = element("p", { className: "hint", role: "status" });
-  const create = button("Create credential", () => void enroll(), { tone: "secondary" });
-  const cancel = button("Cancel", () => picker.cancelCreating());
-  const enrollment = element(
-    "div",
-    { className: "credential-enrollment", hidden: true },
-    element(
-      "p",
-      { className: "hint" },
-      "This creates a reusable Source with the Installation’s selected TokenService. It remains in Credentials if you cancel. Slack delivery currently requires OCC TokenService and Kubernetes Compute.",
-    ),
-    field(`${binding.label} Source name`, sourceName),
-    field(`${binding.label} value`, token),
-    element("div", { className: "dialog-actions" }, cancel, create),
-  );
-  picker.field.append(enrollment, feedback);
-  function renderEnrollment() {
-    const blocked = unresolvedName !== undefined;
-    enrollment.hidden = !picker.creating;
-    if (!picker.creating) {
-      sourceName.value = "";
-      token.value = "";
-    }
-    sourceName.required = picker.creating;
-    token.required = picker.creating;
-    create.disabled = blocked;
-    picker.setAddNewDisabled(blocked);
-    if (blocked) {
-      feedback.textContent = `The credential save for "${unresolvedName}" could not be confirmed. Check Credential Sources and the credential owner, then reload this page before creating another Source.`;
-    }
-  }
-  async function enroll() {
-    if (unresolvedName !== undefined || !sourceName.reportValidity() || !token.reportValidity()) {
-      return;
-    }
-    const requestedName = sourceName.value.trim();
-    if (!requestedName) {
-      sourceName.setCustomValidity("Enter a Source name.");
-      sourceName.reportValidity();
-      return;
-    }
-    sourceName.setCustomValidity("");
-    const controls = [
-      ...body.querySelectorAll<
-        HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement
-      >("input, button, select, textarea"),
-    ];
-    const disabled = controls.map((control) => control.disabled);
-    for (const control of controls) {
-      control.disabled = true;
-    }
-    onEnrollmentPending(true);
-    const dialog = body.closest("dialog");
-    const preventCancel = (event: Event) => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    };
-    dialog?.addEventListener("cancel", preventCancel, true);
-    feedback.textContent = "Creating credential…";
-    try {
-      const request = context.request(
-        `/namespaces/${encodeURIComponent(context.namespaceId)}/credential-sources`,
-        {
-          method: "POST",
-          expectedStatus: 201,
-          body: { name: requestedName, type: "static", secret: token.value },
-        },
-      );
-      token.value = "";
-      const response = await request;
-      const source = readCredentialSourceMetadata(response, context.namespaceId);
-      if (
-        !source ||
-        source.name !== requestedName ||
-        source.type !== "static" ||
-        source.state !== "ready"
-      ) {
-        throw new Error("The create response did not confirm the requested Source.");
-      }
-      picker.selectCreated(source);
-      sourceName.value = "";
-      feedback.textContent = `Credential Source created: ${source.id}. Using it requires exact Source operate permission.`;
-    } catch (cause) {
-      token.value = "";
-      const { status } = requestFailure(cause);
-      if (status === 401) {
-        context.onExpired();
-      } else if (status === 403) {
-        feedback.textContent =
-          namedDenial(cause) ?? "You need Credential Source create on this Namespace.";
-      } else if (status === 400 || status === 404) {
-        feedback.textContent = "The Source was refused. Check its name and value.";
-      } else if (status === 429) {
-        feedback.textContent = "The request was rate limited. Try again later.";
-      } else if (status === 501) {
-        feedback.textContent = "The selected credential owner does not support this operation.";
-      } else {
-        // A 409 can occur after the owner has stored the value. As in Credentials, do not
-        // submit another create until the inventory and owner have been checked.
-        unresolvedName = requestedName;
-        if (context.drafts) {
-          const capture = () => requestedName;
-          context.drafts.track(enrollmentKey, capture);
-          context.drafts.unsavedWhen(enrollmentKey, () => false);
-          context.drafts.record(enrollmentKey, capture);
-        }
-      }
-    } finally {
-      dialog?.removeEventListener("cancel", preventCancel, true);
-      controls.forEach((control, index) => {
-        control.disabled = disabled[index]!;
-      });
-      onEnrollmentPending(false);
-      renderEnrollment();
-      body.dispatchEvent(new Event("change"));
-    }
-  }
-  sourceName.addEventListener("input", () => sourceName.setCustomValidity(""));
-  enrollment.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && (event.target === sourceName || event.target === token)) {
-      event.preventDefault();
-      create.click();
-    }
-  });
-  renderEnrollment();
   picker.field.classList.add("channel-field", "channel-reference");
   picker.control.classList.add("channel-select");
   picker.control.dataset.channelBinding = "";
