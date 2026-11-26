@@ -9,7 +9,10 @@ import {
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 import { createNamespaceOperations, type NamespaceOperations } from "./namespace-operations.ts";
-import { createConnectionAdministration } from "./connection-administration.ts";
+import {
+  createConnectionAdministration,
+  type OAuthIssuerOperations,
+} from "./connection-administration.ts";
 import { CONNECTION_OPERATION_TIMEOUT_MS, createOAuthConsent } from "./oauth-consent.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
@@ -159,6 +162,7 @@ import { createConfigurationOperations } from "./configuration-operations.ts";
 import { createServiceAccountOperations } from "./service-account-operations.ts";
 
 export interface ControllerOptions {
+  readonly oauthIssuer?: OAuthIssuerOperations;
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
@@ -485,6 +489,7 @@ function createCredentialServices({
   publicController,
   preparedTokens,
   credentialSourceDelivery,
+  oauthIssuer,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -507,6 +512,7 @@ function createCredentialServices({
   >;
   preparedTokens: TokenService | undefined;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
+  oauthIssuer: ControllerOptions["oauthIssuer"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -622,6 +628,7 @@ function createCredentialServices({
     tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
     tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    oauthIssuer,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
   });
@@ -633,6 +640,7 @@ function createCredentialServices({
     selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
     currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     withOAuthClientSecret: (client, use) => publicController.withOAuthClientSecret(client, use),
+    oauthIssuer,
     timestamp: resourceValues.timestamp,
   });
   function createProxyAuthority(exchangeOwner: EgressExchangeOwner) {
@@ -747,6 +755,7 @@ export function createControllerComposition(
     publicController,
     preparedTokens,
     credentialSourceDelivery: options.credentialSourceDelivery,
+    oauthIssuer: options.oauthIssuer,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });

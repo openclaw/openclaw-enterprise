@@ -23,6 +23,12 @@ startup configuration; Source creation does not change that configuration.
 Open **Pages/Credentials → Credentials**. The single **Credentials** tab shows readable
 static, OAuth, and protected Proxy Source metadata alongside Namespace Secrets. Confirm that
 the page does not show OAuth consent, Proxy configuration, or credential values.
+Open **Create Source** with the keyboard. If you Tab to **Cancel** while templates load,
+focus should stay on **Cancel** when the form appears. Press Enter to close the dialog.
+If you leave focus on the heading, **Source name** should receive focus instead. The
+Credentials browser test delays the response so it can check Cancel even when the
+preview loads too quickly.
+
 In **Create a Credential Source**, choose an OpenAI or Codex PAT model purpose, or
 an available static Bearer Template. Enter a dummy value and select **Create Source**.
 Confirm that the Source appears in the inventory and its value is not returned.

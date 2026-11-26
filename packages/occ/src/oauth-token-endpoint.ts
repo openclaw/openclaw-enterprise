@@ -67,6 +67,7 @@ export async function requestOAuthTokens(
   client: Pick<OAuthConnectionRegistration, "clientId" | "tokenEndpointAuthMethod" | "resource">,
   clientSecret: string | undefined,
   signal: AbortSignal,
+  fetchToken?: (init: RequestInit) => Promise<Response>,
 ) {
   const headers = new Headers({
     "Content-Type": "application/x-www-form-urlencoded",
@@ -96,13 +97,14 @@ export async function requestOAuthTokens(
     parameters.set("resource", client.resource);
   }
   const startedAt = Date.now();
-  const response = await fetch(tokenUrl, {
+  const init: RequestInit = {
     method: "POST",
     redirect: "error",
     headers,
     body: parameters,
     signal: AbortSignal.any([signal, AbortSignal.timeout(OAUTH_EXCHANGE_TIMEOUT_MS)]),
-  });
+  };
+  const response = await (fetchToken ? fetchToken(init) : fetch(tokenUrl, init));
   if (response.status >= 500 || response.status === 429) {
     await response.body?.cancel();
     // A proxy failure does not establish whether the issuer consumed the one-use grant.
@@ -165,6 +167,7 @@ export function refreshPinnedOAuthGrant(
   >,
   signal: AbortSignal,
   clientSecret: string | undefined,
+  fetchToken?: (init: RequestInit) => Promise<Response>,
 ) {
   return requestOAuthTokens(
     grant.tokenUrl,
@@ -177,5 +180,6 @@ export function refreshPinnedOAuthGrant(
     grant,
     clientSecret,
     signal,
+    fetchToken,
   );
 }

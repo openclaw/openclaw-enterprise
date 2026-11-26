@@ -1,3 +1,4 @@
+import { oauthIssuerOperations } from "./connections/oauth-issuer.ts";
 import { isNativeStagedRepositoryRevision } from "@openclaw-enterprise/contracts";
 import { admitOpenShellRepositoryCredentials } from "./composition/openshell-credential-admission.ts";
 import { OCCTokenServiceDriver } from "./drivers/token-service/occ.ts";
@@ -1680,6 +1681,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioningOptions = {
+      oauthIssuer: oauthIssuerOperations,
       namespaceLifecycleBindings: this.namespaceLifecycleBindings,
       credentialSourceDelivery: credentialSourceDeliveryBinding(this.tokenServiceDrivers),
       preparedTokens: this.preparedTokens,

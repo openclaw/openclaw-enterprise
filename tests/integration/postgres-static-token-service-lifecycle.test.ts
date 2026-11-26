@@ -22,6 +22,7 @@ import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, testPool } from "../helpers/postgres-database.mjs";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 
 const migratorUrl = process.env.OCC_TEST_STATIC_TOKEN_SERVICE_MIGRATION_DATABASE_URL;
@@ -64,12 +65,18 @@ test(
       "Audit constraints require a role-separated disposable loopback database.",
     );
     const migrator = testPool(t, { connectionString: migratorUrl });
+    const oauthEndpoints = {
+      issuer: "https://issuer.example.test",
+      authorizationUrl: "https://issuer.example.test/authorize",
+      tokenUrl: "https://issuer.example.test/token",
+    };
     const { controller, inject, pool, principal, state } = await createPostgresAgentApp(t, {
       label: "staged-token-service",
       authSecret: "staged-token-service-session-secret",
       requestAudit: false,
       controllerOptions: {
         iamConfiguration: controllerIAMConfiguration(defaultUsersIAM()),
+        oauthIssuer: fixtureOAuthIssuer(oauthEndpoints, ["none"]),
       },
       appOptions: {
         provisionAuthAccount: (
@@ -648,32 +655,49 @@ test(
       namespaceId,
       displayName: "OAuth authorization",
       mode: "manual",
-      issuer: "https://issuer.example.test",
-      authorizationUrl: "https://issuer.example.test/authorize",
-      tokenUrl: "https://issuer.example.test/token",
+      ...oauthEndpoints,
       scopes: [],
       destinations: [{ host: "api.example.test", port: 443, path: "/**" }],
     });
     assert.equal(template.statusCode, 201, template.body);
     const templateId: string = template.json().data.id;
-    const insertInvalid = (templateId: string | null, invalidAccount: object) =>
+    const version: number = template.json().data.current.version;
+    const client = await inject("POST", "/credential-clients", {
+      kind: "oauth2",
+      namespaceId,
+      displayName: "Public OAuth client",
+      issuer: oauthEndpoints.issuer,
+      clientId: randomUUID(),
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(client.statusCode, 201, client.body);
+    const clientId: string = client.json().data.id;
+    const insertInvalid = (
+      association: { templateId: string; version: number; clientId: string } | null,
+      invalidAccount: object,
+    ) =>
       pool.query(
         `INSERT INTO occ.credential_sources
            (id,namespace_id,name,type,config,state,created_at,owner_capability,token_service_instance_id,
-            connection_template_id,oauth_provenance,oauth_account,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes)
+            connection_template_id,oauth_consent_version,oauth_client_id,oauth_provenance,oauth_account,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes)
          SELECT $2,namespace_id,$3,type,config,state,created_at,owner_capability,token_service_instance_id,
-                $4,oauth_provenance,$5::jsonb,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes
+                $4,$5,$6,oauth_provenance,$7::jsonb,oauth_owner_principal_id,oauth_requested_scopes,oauth_granted_scopes
          FROM occ.credential_sources WHERE id=$1`,
         [
           builtin.id,
           `cs_${randomUUID()}`,
           randomUUID(),
-          templateId,
+          association?.templateId ?? null,
+          association?.version ?? null,
+          association?.clientId ?? null,
           JSON.stringify(invalidAccount),
         ],
       );
     // Persisted provenance cannot combine the built-in preset with a Template or smuggle fields into account metadata.
-    await assert.rejects(insertInvalid(templateId, codexAccount), { code: "23514" });
+    await assert.rejects(insertInvalid({ templateId, version, clientId }, codexAccount), {
+      code: "23514",
+      constraint: "credential_sources_oauth_shape",
+    });
     for (const extra of [{ arbitrary: "value" }, { accessToken }, { refreshToken }]) {
       await assert.rejects(insertInvalid(null, { ...codexAccount, ...extra }), {
         code: "23514",
@@ -681,6 +705,7 @@ test(
       });
     }
     assert.equal((await inject("DELETE", `${base}/${builtin.id}`)).statusCode, 204);
+    assert.equal((await inject("DELETE", `/credential-clients/${clientId}`)).statusCode, 204);
     assert.equal((await inject("DELETE", `/connection-templates/${templateId}`)).statusCode, 204);
   },
 );
