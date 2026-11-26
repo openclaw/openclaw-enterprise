@@ -724,7 +724,8 @@ export function liveHolderKeepsStateTest(title: string): void {
     const refused = /does not belong to the supplied namespace/;
     const contender = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ output }: { output: string }) => waitingForOwner.test(output),
+      until: ({ output, phases }: StartupProbeSnapshot) =>
+        phaseAt(phases, "native-spawn") !== undefined && waitingForOwner.test(output),
       act: async ({
         containerName,
         collect,
@@ -732,13 +733,17 @@ export function liveHolderKeepsStateTest(title: string): void {
         containerName: string;
         collect: () => Promise<{ output: string; running: boolean }>;
       }) => {
-        // The contender holds nothing while it waits; end it uncleanly there.
+        // Tini runs the wrapper, which runs the waiting native Gateway. Match
+        // that process relationship so the test does not depend on the CLI title.
         await runDocker([
           "exec",
           containerName,
           "sh",
           "-ec",
-          "kill -KILL $(pgrep -of '^openclaw-gateway')",
+          String.raw`wrapper=$(pgrep -P 1)
+pid=$(pgrep -P "$wrapper")
+case "$pid" in *[!0-9]*|'') echo "Expected one native Gateway child" >&2; exit 1;; esac
+kill -KILL "$pid"`,
         ]);
         const deadline = Date.now() + budgetMs;
         for (;;) {
