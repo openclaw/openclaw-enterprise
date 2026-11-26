@@ -133,7 +133,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 }
 
 func (app *application) installationCommand() *cobra.Command {
-	command := commandGroup("installation", "Inspect the singleton Installation")
+	command := commandGroup("installation", "Inspect, install, and upgrade the singleton Installation")
 	get := &cobra.Command{
 		Use:   "get",
 		Short: "Show the Installation",

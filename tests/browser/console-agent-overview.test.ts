@@ -29,6 +29,7 @@ import {
   fileBrowser,
   grantSecretOperate,
   holdRequests,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -37,6 +38,8 @@ import {
   routeOneVersionPerPage,
   settledView,
   takeLayoutShifts,
+  versionChooser,
+  versionOption,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
@@ -76,17 +79,6 @@ import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 
 type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
-function desktopAndPhoneViewports() {
-  return [
-    { width: 1440, height: 900 },
-    { width: 390, height: 844 },
-  ];
-}
-
-const versionChooser = (scope: Page | Locator) =>
-  scope.getByLabel("Viewing version", { exact: true });
-const versionOption = (scope: Page | Locator, n: number) =>
-  versionChooser(scope).getByRole("option", { name: new RegExp(`^v${n}(?: ·|$)`) });
 const deploymentActivity = (page: Page) => page.locator(".deployment-status");
 async function deploymentDetailsOpen(page: Page) {
   const open: unknown = await legacyDeploymentDetailsOpen(page);
@@ -122,10 +114,6 @@ async function requiredAnswer(answer: Promise<Parameters<Route["fulfill"]>[0]> |
 function required<T>(value: T | null | undefined): T {
   assert.ok(value !== null && value !== undefined);
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -2372,7 +2360,7 @@ for (const c of [
     primary: "Open v1 Logs",
   },
 ]) {
-  for (const viewport of desktopAndPhoneViewports()) {
+  for (const viewport of consoleViewports) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's banner shows the ${c.code} next step in view at ${size}`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, `Next step ${c.code}`, runtimeLogs());
@@ -2582,6 +2570,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "CREDENTIAL_SOURCE_UNAVAILABLE",
       "CREDENTIAL_WITHDRAWN",
       "EGRESS_PROVIDER_UNAVAILABLE",
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
       "HARNESS_AUTH_REQUIRED",
       "HARNESS_AUTH_SOURCE_UNAVAILABLE",
       "INVALID_ACTIVE_REVISION",
@@ -3191,7 +3180,7 @@ for (const c of [
     update: false,
   },
 ]) {
-  for (const viewport of desktopAndPhoneViewports()) {
+  for (const viewport of consoleViewports) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's ${c.label} link brings ${c.name} into view at ${size}`, async (t) => {
       const { fixture, namespace } = await readyNamespace(t, `Recovery ${c.name} ${size}`);
@@ -3381,7 +3370,7 @@ async function pendingDeploy(
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
-  const open = async (outcome = "In progress", tab = "access") => {
+  const open = async (outcome = "In progress", tab = "access", heldReadPath?: string) => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, tab));
     await expectDeploymentOutcome(page, outcome, { reveal: false });
@@ -3389,7 +3378,7 @@ async function pendingDeploy(
     if (tab === "access") {
       await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     }
-    await waitForIdleFetches(page);
+    await waitForIdleFetches(page, { except: heldReadPath });
   };
   return { page, recordUrl, agent, pending, open };
 }
@@ -3506,7 +3495,7 @@ test("Draft shows deployment in progress for the selected version until it compl
 // changed one only what changed, and the details keep their space until the deploy is over. Kept
 // after that, the space was an empty band under the outcome (finding 2369), so the settle gives
 // it back.
-for (const viewport of desktopAndPhoneViewports()) {
+for (const viewport of consoleViewports) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -3877,7 +3866,7 @@ test("a deploy's details keep their queued height when its first claim starts", 
 // scroll position unchanged. The browser anchors on the first box crossing the top of the view:
 // here the details at 390 and their "Latest visible deployment" label at 1440. Neither is an
 // anchor any more, so the page scrolls by the change and the record stays where it is read.
-for (const viewport of desktopAndPhoneViewports()) {
+for (const viewport of consoleViewports) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a settling deploy keeps the version's record in place on the Deployment tab at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -3939,12 +3928,157 @@ for (const viewport of desktopAndPhoneViewports()) {
   });
 }
 
+test("Workspace preserves focus on Deployment when the first version activates", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, "First deployment", "Workspace");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  await trackSettledFetches(page);
+  let outcome: DeploymentResponseOptions["status"] = "queued";
+  await page.route(recordUrl, (route) =>
+    route.fulfill(deploymentStatusResponse(pending, { status: outcome })),
+  );
+
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "workspace"));
+  await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  const strip = page.getByRole("tablist", { name: "Agent configuration views" });
+  const deployment = strip.getByRole("tab", { name: "Deployment", exact: true });
+  const panel = page.getByRole("tabpanel", { name: "Workspace files" });
+  const heading = panel.getByRole("heading", { name: "Workspace files", exact: true });
+  const before = required(await heading.elementHandle());
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await strip.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
+  await strip.getByRole("tab", { name: "Workspace files" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await nextFrames(page);
+
+  const expectDeploymentFocus = async () => {
+    assert.equal(await panel.isVisible(), true);
+    assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "Workspace files");
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+    assert.equal(
+      await deployment.evaluate((node) => node.matches(":focus")),
+      true,
+      "Deployment keeps focus while Workspace files is selected",
+    );
+    assert.equal(await strip.locator('[role="tab"][tabindex="0"]').textContent(), "Deployment");
+  };
+  await expectDeploymentFocus();
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+  // Only the worker outcome is modeled. The Agent read sees the fixture's real selection.
+  await fixture.activateRevision(namespace.id, agent.id, pending.id);
+  outcome = "succeeded";
+  const read = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await page.waitForFunction((node) => !node.isConnected, before);
+  await before.dispose();
+  await heading.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  await expectDeploymentFocus();
+
+  // Enter goes to the browser's current focus. Pressing it on a locator would move focus first.
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("tabpanel", { name: "Deployment", exact: true })
+    .getByText("Recorded outcome: Completed", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getAttribute("aria-selected"), "true");
+  assert.equal(new URL(page.url()).searchParams.get("revision"), pending.id);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+  assert.deepEqual(writeRequests(writes), []);
+});
+
+test("A failed deployment keeps a parked click on its Deployment tab", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { page, recordUrl, pending, open } = await pendingDeploy(
+    t,
+    { width: 920, height: 900 },
+    "Parked Deployment tab",
+  );
+  let record = deploymentStatusResponse(pending, { status: "queued" });
+  await page.route(recordUrl, (route) => route.fulfill(record));
+  const permissionsUrl = new URL("../permissions", recordUrl);
+  const permissions = await holdRequests(t, page, permissionsUrl.href, {
+    method: "GET",
+    once: true,
+    afterServer: true,
+  });
+  await open("Queued", "configuration", permissionsUrl.pathname);
+  assert.equal(required(await permissions.requested).status(), 200);
+  const tabs = page.getByRole("tablist", { name: "Agent configuration views", exact: true });
+  const configuration = tabs.getByRole("tab", { name: "Configuration", exact: true });
+  const deployment = tabs.getByRole("tab", { name: "Deployment", exact: true });
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  const notice = page.locator(".agent-deployment-attention");
+  const queuedNotice = notice.getByText("A deployment is queued or in progress.", { exact: true });
+  await queuedNotice.waitFor();
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await deployment.hover();
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // The poll delivers the failure before the permissions response can show recovery.
+  record = deploymentStatusResponse(pending, {
+    status: "failed",
+    error: persistedDeploymentError("EXECUTION_ADMISSION_UNAVAILABLE"),
+  });
+  const read = page.waitForResponse(
+    (response) => response.url() === recordUrl && response.request().method() === "GET",
+  );
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await versionChooser(page)
+    .locator("option:checked")
+    .filter({ hasText: /^v2 · Failed$/ })
+    .waitFor({ state: "attached" });
+  await waitForIdleFetches(page, { except: permissionsUrl.pathname });
+  assert.equal(await settledFetches(page, permissionsUrl.pathname), 0);
+  assert.equal(await recovery.isVisible(), false);
+  assert.equal(await queuedNotice.isVisible(), false);
+  const interimFailure = notice.getByText("The latest visible deployment failed.", { exact: true });
+  const showedInterimFailure = await interimFailure.isVisible();
+
+  permissions.release();
+  const failure = recovery.getByRole("heading", { name: "v2 deployment failed", exact: true });
+  await failure.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  assert.equal(await configuration.getAttribute("aria-selected"), "true");
+
+  // A locator click would find and scroll to the moved tab, hiding a missed physical click.
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await deployment.getAttribute("aria-selected"),
+    "true",
+    "the original click still opens Deployment after the failure appears",
+  );
+  assert.equal(showedInterimFailure, true, "the notice shows the failure while permissions load");
+  assert.equal(await focusedTab(page), "Deployment");
+  const panel = page.getByRole("tabpanel", { name: "Deployment", exact: true });
+  await panel.getByText("Recorded outcome: Failed", { exact: true }).waitFor();
+  assert.equal(await versionChooser(page).inputValue(), pending.id);
+  assert.equal(await failure.isVisible(), true);
+});
+
 // Watching a deploy that failed, the "Deployment needs attention" card appeared above the
 // overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
 // sat under the open Deployment details, below the fold at 1440, and the failure's error showed
 // once more than after a reload, which put the card first (finding 2094). A watched failure now
 // renders as a reload of the same page does: the card leads the page and the details fold.
-for (const viewport of desktopAndPhoneViewports()) {
+for (const viewport of consoleViewports) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a watched deploy that fails shows its recovery as a reload does at ${size}`, async (t) => {
     const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
@@ -4260,7 +4394,7 @@ const GUARANTEES = [
   "Deployment records don’t verify live serving or model access.",
   "Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
 ];
-for (const viewport of desktopAndPhoneViewports()) {
+for (const viewport of consoleViewports) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`The Agent's facts are a stat row with one disclosure at ${size}`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, `Stat row ${size}`);
@@ -4877,7 +5011,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
 // A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
 // say what is done, then Deploy on the first screen with its status beside it. The deploy
 // explanation moved into the page's disclosure, and the empty Deployment activity card left.
-for (const viewport of desktopAndPhoneViewports()) {
+for (const viewport of consoleViewports) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`A draft's next-step card brings Deploy up at ${size}`, async (t) => {
     const { fixture, namespace } = await readyNamespace(t, `Next step ${size}`);

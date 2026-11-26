@@ -1002,6 +1002,28 @@ function progress(message: string) {
   process.stderr.write(`${message}\n`);
 }
 
+function pendingDeploymentReason(progress: unknown): string | undefined {
+  if (typeof progress !== "object" || progress === null || !("lastAttempt" in progress)) {
+    return;
+  }
+  switch (errorCode(progress.lastAttempt)) {
+    case "REVISION_INCOMPLETE":
+      return "was waiting for the Agent runtime to become ready";
+    case "WORKSPACE_NODE_PENDING":
+      return "was waiting for the workspace node to connect to the gateway";
+    case "WORKSPACE_NODE_BINDING_PENDING":
+      return "was waiting for the gateway to apply the workspace node binding";
+    case "REVISION_IMAGE_PULL_FAILED":
+      return "could not pull a container image for this Agent. Ask an Installation administrator to check the image reference and the cluster's registry access";
+    case "REVISION_UNSCHEDULABLE":
+      return "found that the cluster could not schedule this Agent's Pods";
+    case "NAMESPACE_POD_QUOTA_EXCEEDED":
+      return "found that the Namespace's Pod quota was full. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota";
+    case "PREDECESSOR_STOP_YIELDED":
+      return "was waiting for the previous gateway to stop";
+  }
+}
+
 async function main(options: Options) {
   let local: Awaited<ReturnType<typeof loadLocalInstallation>>;
   try {
@@ -1386,6 +1408,7 @@ async function main(options: Options) {
     }
     await followNewestRevision();
     progress("Waiting for the selected revision and Kubernetes gateway...");
+    let lastWaitReason: string | undefined;
     await waitFor("the Agent revision to become active", async () => {
       const [observedValue, deploymentValue] = await Promise.all([
         api("GET", agentPath),
@@ -1404,6 +1427,7 @@ async function main(options: Options) {
           "REVISION_SUPERSEDED" &&
         (await followNewestRevision())
       ) {
+        lastWaitReason = undefined;
         return false;
       }
       if (deployment.status === "failed") {
@@ -1418,6 +1442,13 @@ async function main(options: Options) {
             "The Codex runtime's managed permission policy is incompatible with this deployment. Review the configured sandbox, permission profile, and approval reviewer with your policy administrator before deploying again.";
         }
         throw new Error(`The Agent deployment failed${code}. ${advice}`);
+      }
+      if (deployment.status === "queued" || deployment.status === "running") {
+        const reason = pendingDeploymentReason(deployment.progress);
+        if (reason !== undefined && reason !== lastWaitReason) {
+          progress(`The last deployment attempt ${reason}.`);
+          lastWaitReason = reason;
+        }
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });

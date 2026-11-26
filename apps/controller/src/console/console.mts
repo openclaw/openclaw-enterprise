@@ -7,7 +7,7 @@ import type {
 import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-context.mjs";
 import { renderCredentialClients } from "./credential-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
-import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
+import { finishConsentTab } from "./credential-consent.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -52,6 +52,7 @@ import {
   createNavigation,
   pages,
   type AgentsLanding,
+  type RestoreHistory,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -1108,14 +1109,14 @@ function forgetRetainedView(taken: ReturnType<typeof peekRetainedView>) {
 }
 
 // Names a pending recheck so a held page is not mistaken for a stuck one (finding 1442).
-// Mounted Agent checks stay visible beside scrolled drafts.
-function showStillChecking({ mountedAgent = false } = {}) {
-  const container = mountedAgent ? app : app.querySelector(".content .page-actions");
-  if (!container) {
+// Floating Agent checks stay in view without moving the page.
+function showStillChecking(floatingIn: Element | null = null) {
+  const container = floatingIn ?? app.querySelector(".content .page-actions");
+  if (!container?.isConnected) {
     return () => {};
   }
   const note = element("p", {
-    className: mountedAgent ? "checking-status checking-status--mounted" : "checking-status",
+    className: floatingIn ? "checking-status checking-status--mounted" : "checking-status",
     role: "status",
   });
   container.prepend(note);
@@ -1183,6 +1184,43 @@ function holdShownView({ busyCue = true, keepFocus = false } = {}) {
     app.querySelector<HTMLHeadingElement>(".content h1")!.focus({ preventScroll: true });
   }
   return shell;
+}
+
+// After popstate, native restoration can apply the list's offset while the Agent is still on
+// screen. Check once before paint, after the shell's own focus transfer.
+function keepHeldAgentScroll(view: HTMLElement, scrollY: number, listScrollY: number) {
+  const focused = document.activeElement;
+  const href = location.href;
+  const { signal, stop } = watchForReaderMovement(["touchstart", "visibilitychange", "popstate"]);
+  requestAnimationFrame(() => {
+    if (signal.aborted) {
+      return;
+    }
+    stop();
+    if (
+      document.hidden ||
+      !document.hasFocus() ||
+      document.activeElement !== focused ||
+      location.href !== href ||
+      !view.isConnected ||
+      !view.inert ||
+      view.getAttribute("aria-busy") !== "true" ||
+      window.scrollY === scrollY
+    ) {
+      return;
+    }
+    const scroller = document.scrollingElement;
+    if (scroller) {
+      // The held Agent may be shorter than the list. Leave other scroll movement alone.
+      const restoredY = Math.max(
+        0,
+        Math.min(listScrollY, scroller.scrollHeight - scroller.clientHeight),
+      );
+      if (Math.abs(window.scrollY - restoredY) <= 1) {
+        window.scrollTo({ top: scrollY, left: window.scrollX, behavior: "instant" });
+      }
+    }
+  });
 }
 
 const agentSearchSelector = 'input[type="search"][data-refocus-key="agent-search"]';
@@ -1745,6 +1783,64 @@ function showCheckingSession(checking = () => true) {
   }, startupStatusDelayMs);
 }
 
+function watchForReaderMovement(additionalEvents: string[] = []) {
+  const cancel = new AbortController();
+  const signal = AbortSignal.any([cancel.signal, lifetime.signal]);
+  const stop = () => cancel.abort();
+  for (const event of [
+    "focusin",
+    "blur",
+    "keydown",
+    "input",
+    "pointerdown",
+    "wheel",
+    "pagehide",
+    ...additionalEvents,
+  ]) {
+    window.addEventListener(event, stop, { capture: true, passive: true, signal });
+  }
+  return { signal, stop };
+}
+
+// Chrome restores the previous scroll position after the return popstate. Wait for that
+// frame before focusing the existing explanation, unless the reader has already moved on.
+function revealAfterReturn(feedback: HTMLElement) {
+  const message = feedback.firstChild;
+  const { signal, stop } = watchForReaderMovement();
+  // A canceled traversal has no popstate. A later visit to that same entry must not
+  // inherit its focus request. Older browsers still use the ordinary history path.
+  window.navigation?.addEventListener(
+    "navigate",
+    (event) => event.signal.addEventListener("abort", stop, { signal }),
+    { once: true, signal },
+  );
+  return () => {
+    requestAnimationFrame(() => {
+      if (signal.aborted) {
+        return;
+      }
+      stop();
+      if (
+        !resumePending &&
+        !loggingOut &&
+        document.hasFocus() &&
+        feedback.isConnected &&
+        feedback.firstChild === message
+      ) {
+        // Calling focus() again does not reveal a message the reader scrolled away from.
+        if (document.activeElement === feedback) {
+          const { top, bottom } = feedback.getBoundingClientRect();
+          if (top < 0 || bottom > window.innerHeight) {
+            feedback.scrollIntoView({ block: "center" });
+          }
+        } else {
+          shellUI.focusLeaveFeedback(feedback);
+        }
+      }
+    });
+  };
+}
+
 async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
@@ -1762,7 +1858,7 @@ async function loadPage({
   reuseView?: boolean;
   fromRefresh?: boolean;
   confirmAgentPermissions?: boolean;
-  restoreHistory?: ((url: string) => void) | null;
+  restoreHistory?: RestoreHistory | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
   agentsLanding?: AgentsLanding | null;
@@ -1795,11 +1891,20 @@ async function loadPage({
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
-  const tabNavigation = fromNavigation && navigateAgentTab?.(current.url);
+  let feedback: HTMLElement | undefined;
+  const tabNavigation =
+    fromNavigation &&
+    navigateAgentTab?.(current.url, (node) => {
+      feedback = node;
+    });
   if (tabNavigation === "blocked") {
     // Back or Forward already moved to an existing entry. Return to the tab we kept open,
     // leaving that entry intact; only a newly requested navigation needs its URL replaced.
-    (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    if (restoreHistory && feedback) {
+      restoreHistory(mountedRouteKey!, revealAfterReturn(feedback));
+    } else {
+      (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    }
     return;
   }
   if (tabNavigation) {
@@ -1886,6 +1991,15 @@ async function loadPage({
     shownFeature === "secrets" &&
     current.agentId &&
     focused?.matches("button[data-refocus-key]");
+  const outgoingAgentView =
+    fromNavigation &&
+    restoreHistory !== null &&
+    reuseView &&
+    !current.url.hash &&
+    previousMountedRouteKey &&
+    mountedAgent?.namespaceId === current.namespace
+      ? mountedViewState?.view
+      : undefined;
   const active = resetReads({
     retainView: knownPrivateState,
     // Namespaces rows and snapshot shortcuts mark themselves for return focus too.
@@ -1910,6 +2024,7 @@ async function loadPage({
     forgetRetainedView(taken);
   }
   const retainedView = taken?.retained ?? null;
+  const retainedFocus = retainedView?.returnFocus;
   let retained = retainedView !== null;
   // An Agent link opens its destination immediately. Other visits keep the shown page inert
   // until a retained view revalidates or admission and the destination's first read settle.
@@ -1932,10 +2047,22 @@ async function loadPage({
       : null);
   let searchForRetry: AgentSearchFocus | null = null;
   let admittedSearch: AgentSearchFocus | null = null;
+  const outgoingScrollY = listRoute && outgoingAgentView ? window.scrollY : 0;
   let shell: LoadingShell | null =
     knownPrivateState && !openingAgent
       ? holdShownView({ busyCue: !resumingView, keepFocus: !resumingView })
       : null;
+  const heldAgentReturn =
+    listRoute &&
+    outgoingAgentView &&
+    shell?.view === outgoingAgentView &&
+    retainedView &&
+    retainedFocus &&
+    "href" in retainedFocus;
+  const heldAgentShell = heldAgentReturn ? outgoingAgentView.closest(".shell") : null;
+  if (heldAgentReturn) {
+    keepHeldAgentScroll(outgoingAgentView, outgoingScrollY, retainedView.scrollY);
+  }
   let held = shell !== null;
   // The stand-in's heading while it holds focus for the page loading behind it.
   let heldHeading =
@@ -1946,7 +2073,6 @@ async function loadPage({
       : null;
   // A reader who moves away and back has still moved on. Exempt only our own heading transfer.
   let expectedHeading: HTMLElement | null = null;
-  const retainedFocus = retainedView?.returnFocus;
   const trackSecretReturn =
     fromNavigation &&
     restoreHistory !== null &&
@@ -2072,7 +2198,7 @@ async function loadPage({
         ? setTimeout(() => {
             loadingTimer = null;
             if (lifetime.isCurrent(active) && held) {
-              showStillChecking();
+              showStillChecking(heldAgentShell);
             }
           }, stillCheckingDelayMs)
         : setTimeout(() => {
@@ -2531,7 +2657,8 @@ async function loadPage({
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       // The shell already restores Namespace focus. Keep that control in view too.
       const keptNamespaceFocus =
-        switchingVersion && restoredShell.scopeSelector?.contains(document.activeElement);
+        (switchingVersion || (fromNavigation && listRoute !== null)) &&
+        restoredShell.scopeSelector?.contains(document.activeElement);
       if (!headerFocus && !keptNamespaceFocus) {
         window.scrollTo({ top: retainedView.scrollY, left: 0 });
       }
@@ -2845,7 +2972,7 @@ async function loadPage({
           // An Agent page still hidden behind a stand-in leaves tab navigation to a full load: it
           // must not switch tabs, or mark its route mounted, while another page is on screen
           // (finding 1542).
-          const navigateTab: TabNavigation = (next) => shownStandIn === null && handler(next);
+          const navigateTab: TabNavigation = (...args) => shownStandIn === null && handler(...args);
           viewState.tabNavigation = navigateTab;
           navigateAgentTab = navigateTab;
         }
@@ -3183,7 +3310,7 @@ async function loadPage({
                 panel(
                   denied.view,
                   status === 403 ? "Access denied" : "Namespace unavailable",
-                  `The Source was created, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
+                  `Your change succeeded, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
                 );
                 if (requestId) {
                   denied.view.querySelector(".state-panel")?.append(requestIdDisclosure(requestId));
@@ -3757,7 +3884,7 @@ async function revalidateMountedAgent(current: Route) {
   let clearStillChecking: (() => void) | undefined;
   const showPendingStatus = () => {
     if (isCurrent()) {
-      clearStillChecking ??= showStillChecking({ mountedAgent: true });
+      clearStillChecking ??= showStillChecking(app);
     }
   };
   const concealDetails = () => {
@@ -4419,6 +4546,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-if (!finishPluginConsentTab()) {
+if (!finishConsentTab()) {
   void loadPage();
 }

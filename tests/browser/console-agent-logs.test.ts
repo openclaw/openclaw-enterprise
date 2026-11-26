@@ -129,6 +129,12 @@ async function logsFixture(t: TestContext) {
   return { fixture, computeDriver, namespace, agent, revisionId: active.revision.id };
 }
 
+async function pollAgentRead(page: Page, agentPath: string) {
+  const agentReads = await settledFetches(page, agentPath);
+  await page.clock.runFor(10_000);
+  await waitForSettledFetches(page, agentPath, agentReads + 1);
+}
+
 function line(second: number, raw: string) {
   return { time: `2026-09-30T12:00:${String(second).padStart(2, "0")}.000000001Z`, raw };
 }
@@ -1843,9 +1849,7 @@ test("Logs of a version replaced while the Agent runs name the new version and k
 
   await open.focus();
   for (let poll = 0; poll < 2; poll += 1) {
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
     assert.equal(
       await open.evaluate((node) => node === globalThis.document.activeElement),
@@ -1878,9 +1882,7 @@ test("Logs of a stopped version show a deletion from elsewhere", async (t) => {
   assert.equal(after.status, "deleting");
   assert.equal(after.activeRevisionId, before.activeRevisionId);
   assert.equal(after.desiredRuntimeState, before.desiredRuntimeState);
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await page.locator(".badge").filter({ hasText: "Deleting" }).waitFor();
   assert.equal(await page.getByRole("log", { name: "Runtime log output" }).count(), 0);
 });
@@ -1957,9 +1959,7 @@ async function openStoppedLogs(
     // The runtime status route admits each caller 2 reads a second per Agent after a burst of
     // 10, in real time; longer runs of polls stay under that.
     await new Promise((resolve) => setTimeout(resolve, 500));
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
     return settledFetches(page, revisionsPath);
   };
@@ -2365,9 +2365,7 @@ for (const viewport of [
     await waitForIdleFetches(page);
     const denied = authorizationDenials(fixture.auditSink).length;
     const poll = async () => {
-      const agentReads = await settledFetches(page, agentPath);
-      await page.clock.runFor(10_000);
-      await waitForSettledFetches(page, agentPath, agentReads + 1);
+      await pollAgentRead(page, agentPath);
       await waitForIdleFetches(page);
     };
     const view = page.locator("section.agent-logs");
@@ -2472,9 +2470,7 @@ test("Logs of a version a reader without operate cannot read show a stop made el
   const denied = authorizationDenials(fixture.auditSink).length;
 
   await stopElsewhere();
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await shows(/Selected for service\s+None/);
   await namesFormerVersion();
   await waitForIdleFetches(page);
@@ -2512,9 +2508,7 @@ test("Logs whose runtime status is denied show a stop and a redeploy made elsewh
   const denied = authorizationDenials(fixture.auditSink).length;
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const poll = async () => {
-    const agentReads = await settledFetches(page, agentPath);
-    await page.clock.runFor(10_000);
-    await waitForSettledFetches(page, agentPath, agentReads + 1);
+    await pollAgentRead(page, agentPath);
     await waitForIdleFetches(page);
   };
 
@@ -2578,9 +2572,7 @@ test("Logs whose first status read is refused show a stop made elsewhere", async
   const stopped = await fixture.request("POST", `${agentPath}/stop`);
   assert.ok(stopped.status < 300, JSON.stringify(stopped.body));
   computeDriver.state.podlessRevisions.push(revisionId);
-  const agentReads = await settledFetches(page, agentPath);
-  await page.clock.runFor(10_000);
-  await waitForSettledFetches(page, agentPath, agentReads + 1);
+  await pollAgentRead(page, agentPath);
   await page.getByText("Stop requested", { exact: true }).waitFor();
   await waitForIdleFetches(page);
 
@@ -3447,7 +3439,6 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
   });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
   const sandbox = createProviderSandboxDriver();
-  const sandboxState: { lines: SandboxLogLine[]; error: Error | undefined } = sandbox.state;
   const fixture = await createConsoleAppFixture(t, {
     computeDriver,
     sandboxDriver: sandbox.driver,
@@ -3475,7 +3466,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
     source: "sandbox",
     fields,
   });
-  sandboxState.lines = [
+  sandbox.state.lines = [
     sandboxLine(
       1,
       `PROC:LAUNCH [INFO] git(42) [cmd:git clone https://x-access-token:${secret}@github.com/acme/repo.git]`,
@@ -3540,7 +3531,7 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
   assert.equal(sandbox.logRequests.at(-1)?.namespace, "tenant-console");
 
   const { RuntimeLogsForbiddenByClusterError } = await import("../../packages/occ/src/index.ts");
-  sandboxState.error = new RuntimeLogsForbiddenByClusterError();
+  sandbox.state.error = new RuntimeLogsForbiddenByClusterError();
   await page.getByRole("button", { name: "Refresh logs" }).click();
   await page
     .getByText(/grant the OpenClaw Enterprise gateway identity the sandbox:read scope/)

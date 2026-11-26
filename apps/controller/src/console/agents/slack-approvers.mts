@@ -5,7 +5,7 @@ import { createSlackDirectoryField, type SlackDirectoryContext } from "./slack-d
 export function createSlackApproverField({
   context,
   label,
-  getSecretId,
+  getSourceId,
   agentId,
   getValue,
   onChange,
@@ -13,10 +13,11 @@ export function createSlackApproverField({
   allowInherit = true,
   lazyNames = false,
   directorySetup = null,
+  onDirectoryVisibilityChange,
 }: {
   context: SlackDirectoryContext;
   label: string;
-  getSecretId(): string | null | undefined;
+  getSourceId(): string | null | undefined;
   agentId?: string;
   getValue(): PluginApprovers | undefined;
   onChange(approvers: PluginApprovers | undefined): void;
@@ -24,6 +25,7 @@ export function createSlackApproverField({
   allowInherit?: boolean;
   lazyNames?: boolean;
   directorySetup?: HTMLElement | null;
+  onDirectoryVisibilityChange?(visible: boolean): void;
 }) {
   const select = element(
     "select",
@@ -42,7 +44,7 @@ export function createSlackApproverField({
     kind: "users",
     control,
     label: `${label} people`,
-    getSecretId,
+    getSourceId,
     agentId,
     qualifyUsers: true,
     lazyNames,
@@ -85,6 +87,7 @@ export function createSlackApproverField({
     if (directorySetup) {
       directorySetup.hidden = picker.hidden;
     }
+    onDirectoryVisibilityChange?.(!picker.hidden);
   }
   function refresh() {
     const current = getValue();

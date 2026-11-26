@@ -12,6 +12,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   AGENT_READ,
   apiRequests,
+  createSlackSourceConsoleFixture,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -23,8 +24,6 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   waitForEnabled,
-  selectSecret,
-  waitForInputValue,
   grantMember,
   grantStaleConfigurationUpdate,
   revokeMemberGrant,
@@ -70,36 +69,54 @@ function createReader(
   return fixture.createNamespaceMember(READER, namespace.id, AGENT_READ);
 }
 
-async function readOnlyMember(t: TestContext, name: string) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
-  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-refusal");
-  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-refusal");
+async function readOnlyMember(t: TestContext, name: string, slack = false) {
+  const prepared = slack ? await createSlackSourceConsoleFixture(t, name) : undefined;
+  const fixture = prepared?.fixture ?? (await createConsoleAppFixture(t));
+  if (!prepared) {
+    await fixture.bootstrap();
+  }
+  const namespace = prepared?.namespace ?? (await fixture.createNamespace(name, { ready: true }));
+  const harness = await fixture.createSecret(namespace.id, `${name} model key`, "hidden-model-key");
+  const app = prepared ? (await prepared.enroll(`${name} app token`, "xapp")).source : undefined;
+  const bot = prepared ? (await prepared.enroll(`${name} bot token`, "xoxb")).source : undefined;
   const agent = await fixture.createAgent(
     namespace.id,
     name,
     nativeValues("refusal", {
       harnessId: "codex",
-      channels: {
-        slack: {
-          enabled: true,
-          mode: "socket",
-          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          channels: {},
-        },
-      },
+      channels:
+        app && bot
+          ? {
+              slack: {
+                enabled: true,
+                mode: "socket",
+                appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+                botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+                channels: {},
+              },
+            }
+          : {},
     }),
     {
       executionMode: "dedicated",
-      secretBindings: {
-        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
-        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-      },
+      harnessAuth: { method: "api_key", source: harness.ref },
+      secretBindings:
+        app && bot
+          ? {
+              SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+              SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+            }
+          : {},
     },
   );
   const member = await createReader(fixture, namespace);
+  if (slack) {
+    grantMember(fixture, READER, [
+      ["read", "credential_source"],
+      ["operate", "credential_source"],
+      ["operate", "secret"],
+    ]);
+  }
   const { page } = await newPage(t, fixture, { browser });
   await grantStaleConfigurationUpdate(page);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -139,7 +156,11 @@ const configurationSaves = [
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
       return async () => {
-        await dialog.getByText(CONFIGURATION_SAVE_DENIED).waitFor();
+        await dialog
+          .getByText(
+            /^Not authorized: this needs Configuration update on Configuration cfg_.+\. Ask an Installation administrator to grant it\. Request ID: req_/,
+          )
+          .waitFor();
         assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
       };
     },
@@ -149,7 +170,7 @@ const configurationSaves = [
 for (const c of configurationSaves) {
   test(`a refused ${c.name} save names Configuration update and keeps the edits`, async (t) => {
     const { fixture, namespace, agent, member, page, configurationPath, refusedPatch } =
-      await readOnlyMember(t, `Refused ${c.name}`);
+      await readOnlyMember(t, `Refused ${c.name}`, c.tab === "channels");
     const before = (await fixture.request("GET", configurationPath)).data;
     await login(
       page,
@@ -285,8 +306,8 @@ test("a member without Agent update sees the Agent-side saves and fields disable
   );
 });
 
-// Each Agent update also checks operate on every source the Agent and its Configuration bind:
-// here the Slack token Secrets and the Harness authentication Secret. A member with Agent update
+// Each Agent update also checks operate on every source the Agent binds:
+// here the Harness authentication Secret. A member with Agent update
 // but no Secret operate was offered these saves, and each answered 403 (finding 2441).
 test("an Agent editor without operate on the bound Secrets sees the Agent-side saves disabled", async (t) => {
   const member = await readOnlyMember(t, "Agent Sources Off");
@@ -1151,130 +1172,6 @@ for (const reply of [
     assert.equal(policy.application?.state, preview ? undefined : "pending");
     assert.equal(policy.version, preview ? 2 : 3);
     assert.deepEqual(policy.additions, preview ? [grant] : []);
-  });
-}
-
-// Binding persistence precedes access grants. A failed retry must retain that fact without
-// retaining any of the binding metadata or replaying the already successful PATCH.
-for (const { resource, status } of [
-  { resource: "agent", status: 403 },
-  { resource: "configuration", status: 403 },
-  { resource: "configuration", status: 503 },
-] as const) {
-  test(`saved channel bindings retain a sanitized receipt when ${resource} retry read answers ${status}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Saved binding retry", { ready: true });
-    const original = await fixture.createSecret(
-      namespace.id,
-      "Original retry app",
-      "synthetic-original",
-    );
-    const replacement = await fixture.createSecret(
-      namespace.id,
-      "Replacement retry app",
-      "synthetic-replacement",
-    );
-    const bot = await fixture.createSecret(namespace.id, "Retry bot", "synthetic-bot");
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Saved binding retry Agent",
-      nativeValues("retry-document", {
-        channels: {
-          slack: {
-            enabled: true,
-            mode: "socket",
-            appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-          },
-        },
-      }),
-      {
-        executionMode: "dedicated",
-        secretBindings: {
-          SLACK_APP_TOKEN: { source: original.ref, delivery: { type: "env" } },
-          SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
-        },
-      },
-    );
-    const { page } = await newPage(t, fixture, { browser });
-    const requests = apiRequests(page, fixture.origin);
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
-    );
-    await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), original.name);
-    await selectSecret(page, "Slack app token", replacement);
-    const noGrant = restrict(fixture.policy, "administer", "installation");
-    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
-    const retry = page.getByRole("button", { name: "Retry Secret access", exact: true });
-    await waitForEnabled(retry);
-    const configPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-    assert.equal(
-      (await fixture.request("GET", configPath)).data.secretBindings.SLACK_APP_TOKEN.source.id,
-      replacement.id,
-    );
-    assert.equal(pathRequests(requests, "PATCH", configPath).length, 1);
-    liftRestriction(fixture.policy, noGrant);
-    const deniedPath =
-      resource === "agent" ? `/namespaces/${namespace.id}/agents/${agent.id}` : configPath;
-    const denial =
-      status === 403
-        ? restrict(fixture.policy, "read", resource, {
-            namespaceId: namespace.id,
-            resourceId: resource === "agent" ? agent.id : agent.configurationId,
-          })
-        : null;
-    if (status === 503) {
-      await page.route(`${fixture.origin}${deniedPath}`, (route) =>
-        route.request().method() === "GET"
-          ? route.fulfill(
-              apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Temporarily unavailable"),
-            )
-          : route.continue(),
-      );
-    }
-    requests.length = 0;
-    const response = page.waitForResponse(
-      (r) => r.url().endsWith(deniedPath) && r.request().method() === "GET",
-    );
-    await retry.click();
-    assert.equal((await response).status(), status);
-    await page
-      .getByText(
-        new RegExp(
-          `Channel Secret bindings are saved\\. Could not read the ${resource === "agent" ? "Agent" : "Configuration"} before retrying Secret access`,
-        ),
-      )
-      .waitFor();
-    if (denial) {
-      const requestId = (await (await response).json()).meta.requestId;
-      assert.ok(requestId);
-      assert.equal((await page.locator("body").innerText()).split(requestId).length - 1, 1);
-      const html = await page.content();
-      for (const secret of [original, replacement, bot]) {
-        assert.equal(html.includes(secret.id), false);
-        assert.equal(html.includes(secret.name), false);
-      }
-      liftRestriction(fixture.policy, denial);
-      await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    } else {
-      await page.unroute(`${fixture.origin}${deniedPath}`);
-    }
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
-    await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), replacement.name);
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
-    await page.getByRole("button", { name: "Retry Secret access", exact: true }).click();
-    await page.getByText("This Agent can use its saved Slack Secrets.", { exact: false }).waitFor();
-    assert.equal(pathRequests(requests, "PATCH", configPath).length, 0);
-    const grants = requests.filter(
-      ({ method, path }) => method === "POST" && path.endsWith("/iam/access-bindings"),
-    );
-    assert.equal(grants.length, 1);
-    const granted = grants[0]?.body;
-    assert.ok(granted && typeof granted === "object" && "resourceId" in granted);
-    assert.equal(granted.resourceId, replacement.id);
   });
 }
 

@@ -16,6 +16,7 @@ import type { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import {
   AGENT_READ,
   apiRequests,
+  createSlackSourceConsoleFixture,
   denyRevisionRead,
   detailUrl,
   expireSessions,
@@ -28,8 +29,6 @@ import {
   newPage,
   nonAuthWriteRequests,
   recordFocusTrail,
-  secretOptionLabel,
-  selectSecret,
   settledView,
   stopFocusTrail,
   waitForEnabled,
@@ -48,7 +47,7 @@ import {
   viewTag,
   waitForFocusedLabel,
 } from "./console-refocus-helpers.ts";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
+import { slackAgentValues } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { waitForResult, within } from "../helpers/wait-for.ts";
@@ -348,6 +347,7 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   const list = view.getByRole("table", { name: "Agents", exact: true });
   const link = (name: string) => list.getByRole("link", { name, exact: true });
   const opened = link(target.name);
+  const detailHeading = page.getByRole("heading", { level: 1, name: target.name, exact: true });
   await opened.waitFor();
   const requests = apiRequests(page, fixture.origin);
   const listUrl = page.url();
@@ -359,7 +359,7 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   await page.keyboard.press("ArrowDown");
   assert.equal(await hasFocus(opened), true, "Down Arrow reaches the second match");
   await page.keyboard.press("Enter");
-  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await detailHeading.waitFor();
   await view.waitFor();
   await waitForIdleFetches(page);
 
@@ -387,14 +387,100 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   assert.equal(await search.inputValue(), query);
   assert.equal(await link(unrelated.name).count(), 0, "the saved filter excludes unrelated Agents");
   assert.equal(await hasFocus(opened), true, "Back restores focus to the opened Agent");
-  const box = await opened.boundingBox();
-  assert.ok(
-    box && box.y >= 0 && box.y + box.height <= viewport.height,
-    "the focused Agent link is within the viewport",
-  );
-  // Reopen the focused Agent. On this return the list no longer contains its focus target.
+  const fullyInView = async (control: Locator) => {
+    const box = await control.boundingBox();
+    return Boolean(
+      box &&
+      box.width > 0 &&
+      box.height > 0 &&
+      box.x >= 0 &&
+      box.x + box.width <= viewport.width &&
+      box.y >= 0 &&
+      box.y + box.height <= viewport.height,
+    );
+  };
+  assert.equal(await fullyInView(opened), true, "the focused Agent link is within the viewport");
+
+  // A late keyboard choice should stay in view when Back reuses the unchanged list.
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  await tagView(page);
+  await page.mouse.move(viewport.width / 2, viewport.height / 2);
+  await page.mouse.wheel(0, viewport.height);
+  await page.waitForFunction(() => {
+    const selector = document.querySelector("#namespace-selector");
+    return selector && selector.getBoundingClientRect().bottom <= 0;
+  });
   await page.keyboard.press("Enter");
-  await page.getByRole("heading", { level: 1, name: target.name, exact: true }).waitFor();
+  await detailHeading.waitFor();
+  await view.waitFor();
+  await waitForIdleFetches(page);
+  const detailScrollY = await page.evaluate(() => window.scrollY);
+  assert.equal(await fullyInView(detailHeading), true, "the Agent heading starts fully in view");
+  const detailHeadingTop = await detailHeading.evaluate((node) => node.getBoundingClientRect().top);
+  const status = page.getByRole("status").filter({ hasText: /^Still checking…$/u });
+
+  const read = await holdRequests(t, page, agentsUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const delivered = responseTo(page, "GET", agentsUrl);
+  try {
+    await page.goBack();
+    assert.equal(
+      (await read.requested)?.status(),
+      200,
+      "the Controller admitted the unchanged list",
+    );
+    await page.locator(heldView).waitFor();
+    // Sample after native history restoration and before the reader moves focus.
+    const heldScrollY = await page.evaluate(
+      () => new Promise<number>((resolve) => requestAnimationFrame(() => resolve(window.scrollY))),
+    );
+    assert.equal(
+      heldScrollY,
+      detailScrollY,
+      "Back keeps the outgoing Agent at its previous scroll position",
+    );
+    assert.equal(
+      await fullyInView(detailHeading),
+      true,
+      "the held Agent heading stays fully in view",
+    );
+    await status.waitFor();
+    assert.equal(await fullyInView(status), true, "the delayed status is fully in view");
+    assert.equal(
+      await detailHeading.evaluate((node) => node.getBoundingClientRect().top),
+      detailHeadingTop,
+      "the delayed status leaves the held Agent heading in place",
+    );
+    await waitForEnabled(selector);
+    assert.equal(await hasFocus(selector), false, "focus starts outside the Namespace selector");
+    for (let step = 0; step < 6 && !(await hasFocus(selector)); step += 1) {
+      await page.keyboard.press("Tab");
+    }
+    assert.equal(await hasFocus(selector), true, "Tab reached the Namespace selector");
+    assert.equal(await fullyInView(selector), true, "the chosen selector is fully in the viewport");
+  } finally {
+    read.release();
+  }
+  assert.equal((await delivered).status(), 200);
+  await page.waitForURL(listUrl);
+  await opened.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await status.count(), 0, "the status leaves with the held Agent");
+  assert.equal(await viewTag(page), "kept", "Back reused the unchanged list");
+  assert.equal(await hasFocus(selector), true, "Back keeps focus on the Namespace selector");
+  assert.equal(
+    await fullyInView(selector),
+    true,
+    "the focused Namespace selector stays fully in view",
+  );
+
+  // Reopen the Agent. On this return the list no longer contains its focus target.
+  await opened.focus();
+  await page.keyboard.press("Enter");
+  await detailHeading.waitFor();
   await view.waitFor();
   await waitForIdleFetches(page);
   await fulfillMethod(page, agentsUrl, "GET", {
@@ -412,13 +498,9 @@ test("Back keeps the keyboard-focused Agent in view when the filtered list chang
   assert.equal(await opened.count(), 0, "the stale Agent link is gone");
   const heading = page.getByRole("heading", { level: 1, name: "Agents", exact: true });
   assert.equal(await hasFocus(heading), true, "Back falls back to the Agents heading");
-  const bounds = await heading.boundingBox();
-  assert.ok(
-    bounds &&
-      bounds.x >= 0 &&
-      bounds.x + bounds.width <= viewport.width &&
-      bounds.y >= 0 &&
-      bounds.y + bounds.height <= viewport.height,
+  assert.equal(
+    await fullyInView(heading),
+    true,
     "the focused heading is fully within the viewport",
   );
   assert.deepEqual(nonAuthWriteRequests(requests), [], "opening and returning send no writes");
@@ -2185,54 +2267,48 @@ test("switching Namespace during the refocus retry drops the stale Agent result"
 
 for (const revoked of ["configuration", "agent"] as const) {
   test(`Credentials preflight scrubs bindings when ${revoked} read is revoked`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(
+    const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
       t,
       `Revoked ${revoked} preflight`,
     );
-    const appSecret = await fixture.createSecret(
-      namespace.id,
-      "Original app binding",
-      "xapp-original",
-    );
-    const botSecret = await fixture.createSecret(
-      namespace.id,
-      "Original bot binding",
-      "xoxb-original",
-    );
-    const replacement = await fixture.createSecret(
-      namespace.id,
-      "Replacement app binding",
-      "xapp-replacement",
-    );
+    const appSource = (await enroll("Original app binding", "xapp")).source;
+    const botSource = (await enroll("Original bot binding")).source;
+    const replacement = (await enroll("Replacement app binding", "xapp")).source;
     const agent = await fixture.createAgent(
       namespace.id,
       "Credential refocus Agent",
       slackAgentValues("binding-review"),
-      slackTokenBindings(appSecret, botSecret),
+      {
+        executionMode: "dedicated",
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: appSource.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSource.ref, delivery: { type: "env" } },
+        },
+      },
     );
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
+    await waitForInputValue(page.getByLabel("Slack bot token"), botSource.id);
     await page.locator(settledView).waitFor();
 
     // A granted administrator keeps the readable form on refocus. Only the later exact
-    // read restriction changes admission; Configuration update and Secret operate stay granted.
+    // read restriction changes admission; Configuration update and Source operate stay granted.
     await refocusHeld(t, page);
-    await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-    await selectSecret(page, "Slack app token", replacement);
+    await waitForInputValue(page.getByLabel("Slack bot token"), botSource.id);
+    await page.getByLabel("Slack app token", { exact: true }).selectOption(replacement.id);
     restrict(fixture.policy, "read", revoked, {
       namespaceId: namespace.id,
       resourceId: revoked === "agent" ? agent.id : agent.configurationId,
     });
-    await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+    await page.getByRole("button", { name: "Save channel credentials", exact: true }).click();
     await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
     const assertScrubbed = async () => {
       assert.equal(await page.getByLabel("Slack bot token").count(), 0);
       const html = await page.content();
-      for (const secret of [appSecret, botSecret, replacement]) {
-        assert.equal(html.includes(secret.name), false, "no cached binding name remains");
-        assert.equal(html.includes(secret.id), false, "no cached binding reference remains");
+      for (const source of [appSource, botSource, replacement]) {
+        assert.equal(html.includes(source.name), false, "no cached binding name remains");
+        assert.equal(html.includes(source.id), false, "no cached binding reference remains");
       }
       assert.deepEqual(nonAuthWriteRequests(requests), [], "denied preflight sends no write");
     };

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-11-25
-last_updated_session: authoring-run/8d6879f5-e9be-4828-a054-6fb620189dfb
+updated: 2026-11-26
+last_updated_session: authoring-run/b6362a0b-1ad4-4db1-9018-9dba014291fc
 ---
 
 # Credential source lifecycle flow
@@ -135,7 +135,11 @@ OCC checks permission on the exact Source and dispatches static credential repla
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-API composition binds Proxy to trusted Namespace placement for OCC custody. After committing a replacement or renewal, TokenService sends the Source, version, and instance-bound resolver. If delivery Providers exist, Proxy resolves the credential once. For each Provider, Proxy issues one conditional update and verifies receipts from activated Sandboxes.
+For OCC custody, Proxy uses trusted Namespace placement. TokenService sends the
+Source, committed version, and instance-bound resolver. Proxy resolves the
+credential once for existing Providers, updates copies as needed, and checks
+active Sandbox receipts. A versioned retry checks serving readiness for matching copies
+without rewriting them.
 
 With OpenShell custody, TokenService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
 
@@ -190,6 +194,8 @@ For a failed retry result, check `credential.resolution_failed` or `credential.d
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 09:03: Check serving readiness for an already-persisted Source version without rewriting the Provider. (authoring-run/b6362a0b-1ad4-4db1-9018-9dba014291fc - fdd646b4ab8a8c9ad44a10ecfe09f88acae35735)
 
 - 2026-11-25 13:09: Trace Client continuity during GitHub Source persistence. (authoring-run/2f7e175f-ccea-4569-8017-cb40f1852076 - 1fdc956c0c6f8e9c2d94f22adf220cc4dec92d19)
 - 2026-11-25 11:27: Trace Credential Client persistence and direct GitHub issuance before the Source save transaction. (authoring-run/4cdd2925-8687-45e2-8e5f-6bc296f9f54c - b29bb40f04d07fb306f87aa8c1c260bb2a6e1e19)

@@ -30,6 +30,7 @@ import type { PlatformReadView } from "./ports/platform-read-view.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
+import type { OAuthIssuerOperations } from "./connection-administration.ts";
 import { exactNamespace, lockNamespace } from "./resource-scope.ts";
 
 export interface StartNamespaceConnectionInput {
@@ -114,6 +115,7 @@ interface OAuthConsentDependencies
   ) => IAMDriver;
   readonly selectedTokenServiceDriver: () => TokenServiceDriver;
   readonly currentTokenServiceInstanceId: () => string;
+  readonly oauthIssuer: OAuthIssuerOperations | undefined;
   readonly withOAuthClientSecret: <T>(
     client: Readonly<OAuthClient>,
     use: (value: string | undefined) => Promise<T>,
@@ -306,6 +308,11 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       const owner = deps.selectedTokenServiceDriver();
       const tokenServiceInstanceId = deps.currentTokenServiceInstanceId();
       const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
+      const issuer = requireIssuer();
+      await issuer.revalidate(
+        { ...version, tokenEndpointAuthMethod: client.tokenEndpointAuthMethod },
+        signal,
+      );
       const grant = await deps.withOAuthClientSecret(client, (secret) =>
         exchangeAuthorizationCode(
           browserAuthorizationRequest(version, client, session.redirectUri, session.selectedScopes),
@@ -313,6 +320,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
           input.code!,
           secret,
           signal,
+          (init) => issuer.fetchToken(version, init),
         ),
       );
       const source = await owner.createSource(
@@ -362,7 +370,7 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
     ref: OAuthAccountRef,
     registrationSource?: Readonly<OAuthCredentialSource>,
   ): Promise<OAuthConnectionClient> {
-    return deps.read(async (view) => {
+    const { version, client } = await deps.read(async (view) => {
       const source =
         registrationSource ??
         (await view.credentialSources.findCredentialSource(ref.namespaceId, ref.sourceId));
@@ -392,26 +400,44 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
         version,
         source.consent.oauthClientId,
       );
-      return {
-        registration: {
-          issuer: client.issuer,
-          clientId: client.clientId,
-          tokenUrl: client.tokenUrl,
-          tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
-          ...(version.mcp && { resource: version.mcp.resource }),
-        },
-        ...(client.tokenEndpointAuthMethod !== "none" && {
-          readSecret: (signal: AbortSignal) =>
-            deps.withOAuthClientSecret(client, async (value) => {
-              signal.throwIfAborted();
-              if (value === undefined) {
-                throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
-              }
-              return value;
-            }),
-        }),
-      };
+      return { version, client };
     });
+    const issuer = requireIssuer();
+    // Registration stores the grant already obtained by the verified callback. Revalidate
+    // only when resolving a saved Source for a new issuer request, before opening its secret.
+    if (registrationSource === undefined) {
+      await issuer.revalidate(
+        { ...version, tokenEndpointAuthMethod: client.tokenEndpointAuthMethod },
+        AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
+      );
+    }
+    return {
+      registration: {
+        issuer: client.issuer,
+        clientId: client.clientId,
+        tokenUrl: version.tokenUrl,
+        tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+        ...(version.mcp && { resource: version.mcp.resource }),
+      },
+      ...(client.tokenEndpointAuthMethod !== "none" && {
+        readSecret: (signal: AbortSignal) =>
+          deps.withOAuthClientSecret(client, async (value) => {
+            signal.throwIfAborted();
+            if (value === undefined) {
+              throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+            }
+            return value;
+          }),
+      }),
+      fetchToken: (init: RequestInit) => issuer.fetchToken(version, init),
+    };
+  }
+
+  function requireIssuer(): OAuthIssuerOperations {
+    if (!deps.oauthIssuer) {
+      throw new DependencyUnavailableError("OAuth issuer validation is unavailable.");
+    }
+    return deps.oauthIssuer;
   }
   function eligibleClient(
     client: Extract<StoredCredentialClient, { kind: "oauth2" }>,
@@ -426,12 +452,9 @@ export function createOAuthConsent(deps: OAuthConsentDependencies) {
       owner.clientScopes.oauth2?.includes(scope) === true &&
       (client.tokenEndpointAuthMethod === "none" || client.tokenServiceInstanceId === instanceId) &&
       client.issuer === version.issuer &&
-      client.tokenUrl === version.tokenUrl &&
-      (version.revocationUrl === undefined || client.revocationUrl === version.revocationUrl) &&
-      (version.observed === undefined ||
-        (version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
-          client.tokenEndpointAuthMethod,
-        ))
+      version.issuerVerification?.tokenEndpointAuthMethods.includes(
+        client.tokenEndpointAuthMethod,
+      ) === true
     );
   }
 

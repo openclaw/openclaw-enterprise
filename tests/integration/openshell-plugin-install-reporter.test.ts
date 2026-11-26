@@ -17,13 +17,20 @@ import {
 const reporter = new URL("../helpers/openshell-plugin-install-reporter.ts", import.meta.url).href;
 const stages = new URL("../helpers/openshell-stage.ts", import.meta.url).href;
 const progress = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url).href;
+const installationFields = new URL(
+  "../../apps/controller/src/composition/installation-fields.ts",
+  import.meta.url,
+).href;
 const caseName = "OpenShell installs selected Codex plugins before WebSocket startup";
 const sentinel = "invented-plugin-diagnostic-sentinel";
+const driverOptionValue = "invented-driver-option-value";
 const incomplete =
   "OpenShell plugin installation did not complete one exact passing case; child details withheld.";
 
 for (const scenario of [
   "installation",
+  "unsupported-driver-option",
+  "unsupported-driver-lookalike",
   "exposure-auth",
   "plugin-check",
   "plugin-teardown",
@@ -37,8 +44,14 @@ for (const scenario of [
   test(`plugin reporter preserves strict ${scenario} through the Node and CI transports`, async (t) => {
     const root = await createRunnerFixture(t);
     const child = join(root, "child.test.ts");
-    // These are real Node test workers and real stage emitters, without a product
-    // fixture. Noise includes a valid stderr stage and an extra-field stdout event.
+    const rejectsDriverOption =
+      scenario === "unsupported-driver-option" || scenario === "unsupported-driver-lookalike";
+    // Use the actual validator in the child. A multiline key looks like the recognized
+    // rejection on its first line and must still receive the generic failure.
+    const rejectedKey =
+      scenario === "unsupported-driver-lookalike" ? `${sentinel}.\nextra` : sentinel;
+    // Run real Node test workers and stage emitters without provisioning an Installation.
+    // Noise includes a valid stderr stage and an extra-field stdout event.
     await writeFile(
       child,
       `import test from "node:test";
@@ -48,6 +61,10 @@ import { openShellProgressPrefix, emitOpenShellProgress } from ${JSON.stringify(
 test(${JSON.stringify(caseName)}, ${JSON.stringify({ skip: scenario === "skip", todo: scenario === "todo" })}, async (t) => {
   await runOpenShellStage(t, "installation", async () => {
     if (${JSON.stringify(scenario)} === "installation") assert.fail(${JSON.stringify(sentinel)});
+    if (${rejectsDriverOption}) {
+      const { closed } = await import(${JSON.stringify(installationFields)});
+      closed({ [${JSON.stringify(rejectedKey)}]: ${JSON.stringify(driverOptionValue)} }, [], "drivers");
+    }
     ${scenario === "success" ? 'for (let index = 0; index < 1024; index += 1) emitOpenShellProgress("installation", "started");' : ""}
   });
   await runOpenShellStage(t, "exposure-auth", async () => {
@@ -104,7 +121,7 @@ test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${sc
       total: 1,
     });
     const output = run.stdout + run.stderr + resultText;
-    assert.doesNotMatch(output, new RegExp(sentinel));
+    assert.doesNotMatch(output, new RegExp(`${sentinel}|${driverOptionValue}`));
     assert.doesNotMatch(
       output,
       /initial-model|openshell-stage-failure|openshell-installation|elapsedMs/,
@@ -114,6 +131,17 @@ test("plugin wrapper", () => runPluginInstallCase(${JSON.stringify(child)}, ${sc
     if (passed) {
       assert.equal(message, undefined);
       assert.doesNotMatch(run.stderr, /Last reported OpenShell stage/);
+      return;
+    }
+    if (rejectsDriverOption) {
+      const summary =
+        scenario === "unsupported-driver-option"
+          ? "Installation configuration contains an unsupported option under drivers. Check the Installation configuration reference for supported Driver entries."
+          : "OpenShell plugin installation case failed; child details withheld.";
+      const stage = "Last reported OpenShell stage was installation (failed).";
+      assert.equal(message, `${summary}\n${stage}`);
+      assert.ok(run.stderr.includes(summary));
+      assert.ok(run.stderr.includes(stage));
       return;
     }
     if (["installation", "exposure-auth", "plugin-check", "plugin-teardown"].includes(scenario)) {

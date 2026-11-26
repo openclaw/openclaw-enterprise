@@ -22,6 +22,7 @@ import {
   routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
+  createSlackSourceConsoleFixture,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -577,10 +578,13 @@ const badgeState = (locator: Locator) =>
 // Status badges share one pattern. The version list's "Current version" label read as
 // "Currentversion" (audit 2.2), and the Credentials tab's Slack token states had their own chrome.
 test("The version picker names the service selection, and bindings and Namespaces use badges and cards", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badges and cards");
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Badges and cards",
+  );
   const versioned = await fixture.createAgent(namespace.id, "Badge Agent", nativeValues("badge"));
   await fixture.seedActiveAgentRevision(namespace.id, versioned.id);
-  const bot = await fixture.createSecret(namespace.id, "Badge bot token", "xoxb-badge");
+  const bot = (await enroll("Badge bot token", "xoxb")).source;
   const slack = await fixture.createAgent(
     namespace.id,
     "Credential badges",

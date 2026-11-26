@@ -9,7 +9,11 @@ import {
   type NamespaceLifecycleEvidence,
 } from "./namespace-lifecycle.ts";
 import { createNamespaceOperations, type NamespaceOperations } from "./namespace-operations.ts";
-import { createConnectionAdministration } from "./connection-administration.ts";
+import {
+  createConnectionAdministration,
+  type OAuthIssuerOperations,
+} from "./connection-administration.ts";
+import { createCredentialClientAdministration } from "./credential-client-administration.ts";
 import { CONNECTION_OPERATION_TIMEOUT_MS, createOAuthConsent } from "./oauth-consent.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
@@ -20,6 +24,7 @@ import {
 import {
   createRepositoryPolicyOperations,
   type InstallationRepositoryAdmission,
+  type StagedRepositoryCredentialAdmission,
   type SupportsStagedRepositoryRecipient,
   validateRepositoryBrokerNetworkProxy,
 } from "./repository-policy.ts";
@@ -63,15 +68,12 @@ import { createDeviceAuthorizationFlow } from "./device-authorization-flow.ts";
 import type {
   Agent,
   AgentRevision,
-  AdmittedRepositoryBinding,
   ComputeDriver,
   ConfigurationValidationOptions,
   CredentialProxyDriver,
   CredentialSourceReference,
   DeploymentPolicy,
-  DeploymentRequestMatch,
   HarnessAuthSnapshot,
-  GitHubAppInstallationCredentialSource,
   Installation,
   InstallationCapabilities,
   InstallationDeploymentInventory,
@@ -81,12 +83,12 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   PresetDraftDefinition,
-  RepositoryNetworkGrant,
   BackendDefinition,
   RevisionHarnessDescriptor,
   ResourceKind,
   SandboxDriver,
   SecretBindings,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isName, NAME_RULE, normalizeLoggingLevel } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -159,6 +161,7 @@ import { createConfigurationOperations } from "./configuration-operations.ts";
 import { createServiceAccountOperations } from "./service-account-operations.ts";
 
 export interface ControllerOptions {
+  readonly oauthIssuer?: OAuthIssuerOperations;
   /** Key material for sealed authentication-state payloads (device-login challenge and handle). */
   readonly authenticationStateEncryptionSecret?: string;
   readonly namespaceLifecycleBindings?: readonly NamespaceLifecycleBinding[] | undefined;
@@ -172,6 +175,11 @@ export interface ControllerOptions {
       ) => Promise<void>)
     | undefined;
   readonly preparedTokens?: TokenService | undefined;
+  /** Code-only qualification of the selected Gateway Source delivery composition. */
+  readonly gatewayStartupSourceDelivery?: (
+    compute: ComputeDriver,
+    owner: TokenServiceDriver,
+  ) => boolean;
   readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
@@ -179,12 +187,7 @@ export interface ControllerOptions {
     readonly harness: RevisionHarnessDescriptor;
   }) => ModelCredentialPreset | undefined;
   /** Bundled composition verifies finite Git Source coverage against the current Repo registry. */
-  readonly repositoryCredentialAdmission?: (input: {
-    readonly namespaceId: string;
-    readonly source: Readonly<GitHubAppInstallationCredentialSource>;
-    readonly bindings: readonly AdmittedRepositoryBinding[];
-    readonly grants: readonly RepositoryNetworkGrant[];
-  }) => readonly DeploymentRequestMatch[] | undefined;
+  readonly repositoryCredentialAdmission?: StagedRepositoryCredentialAdmission;
   /** Qualify the exact selected native recipient without extending a Driver contract. */
   readonly supportsStagedRepositoryRecipient?: SupportsStagedRepositoryRecipient;
   /** Composition qualifies the selected implementations against the complete deployment policy. */
@@ -243,7 +246,6 @@ interface ControllerDispatch
     Pick<NamespaceOperations, "getNamespace">,
     Pick<ReturnType<typeof createAgentQueries>, "getRevision">,
     Pick<ReturnType<typeof createSandboxPolicyOperations>, "getAgentSandboxPolicy">,
-    Pick<ReturnType<typeof createConnectionAdministration>, "withOAuthClientSecret">,
     Pick<CredentialSourceOperations, "createCredentialSource">,
     Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
@@ -330,8 +332,7 @@ function createComputeConfigurationPolicy(
     }
   }
 
-  // On the bundled Kubernetes Compute, which delivers channel credentials only from bindings, the
-  // channel credential rule its deployment admission applies (finding 2319).
+  // Configuration writes and Kubernetes admission apply the same channel binding rule.
   function requireBundledChannelBindings(
     values: OpenClawConfigurationDocument,
     secretBindings: SecretBindings,
@@ -340,7 +341,9 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name) => Object.hasOwn(secretBindings, name),
+        (name, requiresSource) =>
+          Object.hasOwn(secretBindings, name) &&
+          (!requiresSource || secretBindings[name]?.source.kind === "credential_source"),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -485,6 +488,7 @@ function createCredentialServices({
   publicController,
   preparedTokens,
   credentialSourceDelivery,
+  oauthIssuer,
   deviceCipher,
   canUseNativeAuthorization,
 }: {
@@ -502,11 +506,11 @@ function createCredentialServices({
     | "transact"
     | "createCredentialSource"
     | "deleteCredentialSource"
-    | "withOAuthClientSecret"
     | "refreshTokenServiceSource"
   >;
   preparedTokens: TokenService | undefined;
   credentialSourceDelivery: ControllerOptions["credentialSourceDelivery"];
+  oauthIssuer: ControllerOptions["oauthIssuer"];
   deviceCipher: ReturnType<typeof deviceAuthorizationCipher> | undefined;
   canUseNativeAuthorization: boolean;
 }) {
@@ -563,7 +567,7 @@ function createCredentialServices({
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,
     cipher: deviceCipher,
-    nextSessionId: () => resourceValues.nextIdentifier("secret"),
+    nextSessionId: resourceValues.nextDeviceAuthorizationSessionId,
     timestamp: resourceValues.timestamp,
     transactions,
     authority,
@@ -619,6 +623,14 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    oauthIssuer,
+    timestamp: resourceValues.timestamp,
+  });
+  const credentialClientAdministration = createCredentialClientAdministration({
+    installationId,
+    transactions,
+    authority,
     tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
     tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
@@ -632,7 +644,8 @@ function createCredentialServices({
     iamPolicyDriver: iamPolicy.iamPolicyDriver,
     selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
     currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
-    withOAuthClientSecret: (client, use) => publicController.withOAuthClientSecret(client, use),
+    withOAuthClientSecret: credentialClientAdministration.withOAuthClientSecret,
+    oauthIssuer,
     timestamp: resourceValues.timestamp,
   });
   function createProxyAuthority(exchangeOwner: EgressExchangeOwner) {
@@ -668,6 +681,7 @@ function createCredentialServices({
   return {
     agentCredentialAccess,
     connectionAdministration,
+    credentialClientAdministration,
     createProxyAuthority,
     credentialSourceDrivers,
     credentialSourceOperations,
@@ -733,6 +747,8 @@ export function createControllerComposition(
     validateComputeConfiguration,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
@@ -747,6 +763,7 @@ export function createControllerComposition(
     publicController,
     preparedTokens,
     credentialSourceDelivery: options.credentialSourceDelivery,
+    oauthIssuer: options.oauthIssuer,
     deviceCipher,
     canUseNativeAuthorization: !authorization,
   });
@@ -991,7 +1008,8 @@ export function createControllerComposition(
       publicController.getAgentSandboxPolicy(principalId, namespaceId, agentId, facet),
     selectCompute: selectedCompute,
     selectChannel: () => publicController.selectedDriver("channel"),
-    secretDriver: secretOperations.secretDriver,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const runtimeCredentials: AgentRuntimeCredentials = new AgentRuntimeCredentials({
     transactions,
@@ -1066,7 +1084,9 @@ export function createControllerComposition(
     selectedChannel: () => publicController.selectedDriver("channel"),
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
-    ownedSecretDriver: secretOperations.ownedSecretDriver,
+    selectedCompute,
+    ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
   });
   const provisioningRequests = createProvisioningRequests({
     installationId: admittedInstallation.id,
@@ -1125,6 +1145,7 @@ export function createControllerComposition(
     backendId: (requested) => resolveAgentBackendId(backendMap, requested),
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,

@@ -522,7 +522,12 @@ export function createShell({
     );
     copy.style.flexShrink = "0";
     copy.append(copyIcon());
-    return element("span", { className: "page-meta-id" }, id, copy, status);
+    return element(
+      "span",
+      { className: "page-meta-id" },
+      element("span", { className: "page-meta-id-controls" }, id, copy),
+      status,
+    );
   }
 
   // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
@@ -1100,6 +1105,7 @@ export function createShell({
       observabilityLink?.remove();
       observabilityLink = null;
     },
+    focusLeaveFeedback,
     setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
     },

@@ -52,8 +52,7 @@ Configuration response status. This is simulated UI proof, not an IAM grant test
 Open **Pages / Agent detail / Recover a Configuration read on tab return** in its
 own tab. Choose **Edit Configuration**, make an unsaved edit, and select some
 text in the editor. Scroll until the page header is out of view. Switch to
-another browser tab, then return. The fixture delays the retry after a simulated
-503. When the draft hides for the automatic retry, confirm **Still checking…**
+another browser tab, then return. The fixture delays the retry after a simulated 503. When the draft hides for the automatic retry, confirm **Still checking…**
 appears immediately and only once at the bottom of the viewport, then switch
 away again. Let the retry finish with the preview tab hidden.
 Return to the preview and wait for the next access check to succeed. Confirm
@@ -71,35 +70,10 @@ becomes unreadable and the replacement view cannot confirm permission to save.
 
 Open **Pages / Agent detail / Retry an Agent read on tab return** on desktop.
 Choose **Edit Configuration**, make an unsaved edit, and scroll down. Switch to
-another browser tab and return. The exact Agent read returns one simulated HTTP
-408. Confirm **Agent details** replaces the Agent name. Use the keyboard to
+another browser tab and return. The exact Agent read returns one simulated HTTP 408. Confirm **Agent details** replaces the Agent name. Use the keyboard to
 activate **Retry**. Confirm the original draft and scroll position return, and
 the Agent name appears only after the access check succeeds. Repeat at phone
 width.
-
-## Binding preflight refusal and Save recovery
-
-Open **Components / Credentials / Channel binding read denied**. This separate
-story starts with readable bindings and stages **Slack backup token (simulated)**.
-
-1. Note the staged app token, then select **Save channel Secrets**. The one-shot
-   Configuration GET returns 403 before any PATCH. Confirm **Access denied** and
-   the failed-preflight receipt, with no saved binding summaries or token pickers.
-2. Refocusing alone must not restore stale bindings. Select **Refresh**. The next
-   reads succeed and restore **Slack app token (simulated)**, the original saved
-   binding. Refresh does not save the staged replacement.
-3. Select **Slack backup token (simulated)** again and select **Save channel
-   Secrets** once. Confirm the fresh preflight succeeds, one Configuration PATCH
-   saves the replacement, and the success receipt names the saved bindings. Do not
-   interpret a failed preflight as a completed save or replay the write automatically.
-4. Record the staged value, scrubbed receipt, refreshed original, and explicitly
-   saved replacement, pausing long enough to read each result. Repeat at phone
-   width; keep captures outside the checkout.
-
-In a real Console session, an Installation administrator must restore the exact
-Configuration read grant before Refresh can recover. Native IAM browser tests
-cover that authorization boundary. This story proves only UI recovery with
-simulated responses; it does not prove persistence or Secret propagation.
 
 ## Save read revocation and prior-save receipts
 
@@ -113,13 +87,6 @@ In **Pages / Agent detail / Configuration Save read denied**, select **Save
 Configuration**. Confirm the staged document disappears with the same causal
 receipt. Refocus, then select **Retry** once reads recover. The discarded edit
 must not return from another tab or browser history.
-
-Open **Components / Credentials / Saved channel bindings, retry read denied**.
-The prepared state has saved the replacement but failed its grant. Select **Retry
-Secret access**. The receipt must retain the generic fact that bindings are saved,
-identify the failed Configuration read, and expose no binding name or identifier.
-Select **Refresh**, then explicitly retry the missing grant. There must be no
-second Configuration PATCH and no duplicate successful grant.
 
 Record desktop and phone walkthroughs at normal speed. Pause before each action
 and on its visible result. These stories simulate API failures; Native IAM tests

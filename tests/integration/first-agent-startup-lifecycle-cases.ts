@@ -42,10 +42,18 @@ export function registerFirstAgentFailureAdviceCases({
   runFirstAgentAsync,
 }: LifecycleDependencies): void {
   test("first-Agent deployment failure advice follows the reported cause", async (t) => {
-    for (const code of [
-      "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
-      "RUNTIME_AUTHENTICATION_FAILED",
-      "RUNTIME_STARTUP_FAILED",
+    for (const { code, waitCode, pendingReads } of [
+      {
+        code: "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE",
+        waitCode: "REVISION_IMAGE_PULL_FAILED",
+        pendingReads: 1,
+      },
+      {
+        code: "RUNTIME_AUTHENTICATION_FAILED",
+        waitCode: "WORKSPACE_NODE_PENDING",
+        pendingReads: 2,
+      },
+      { code: "RUNTIME_STARTUP_FAILED", waitCode: "NAMESPACE_POD_QUOTA_EXCEEDED", pendingReads: 1 },
     ]) {
       await t.test(code, async (t) => {
         const suffix = "00000000-0000-4000-8000-000000000001";
@@ -259,21 +267,32 @@ export function registerFirstAgentFailureAdviceCases({
               case `GET ${agentPath}/revisions/${revisionId}`:
                 data = revision;
                 break;
-              case `GET ${agentPath}/deployments/${revisionId}`:
+              case `GET ${agentPath}/deployments/${revisionId}`: {
                 deploymentReads++;
                 assert.ok(agent);
                 assert.ok(revision);
+                const pending = deploymentReads <= pendingReads;
                 data = {
                   namespaceId: namespaceId,
                   agentId: agent.id,
                   deploymentId: revision.id,
-                  status: "failed",
+                  status: pending ? "running" : "failed",
                   cleanup: null,
-                  progress: null,
+                  progress: pending
+                    ? {
+                        lastAttempt: {
+                          at: new Date().toISOString(),
+                          code: waitCode,
+                          message: "private-progress-message",
+                        },
+                        nextAttemptAt: null,
+                      }
+                    : null,
                   warnings: [],
-                  error: { code, message: "private-provider-message" },
+                  error: pending ? null : { code, message: "private-provider-message" },
                 };
                 break;
+              }
               default:
                 unexpected.push(`${request.method} ${request.url}`);
             }
@@ -353,22 +372,42 @@ export function registerFirstAgentFailureAdviceCases({
         }
         const output = await runFirstAgentAsync(env, "--harness", "codex");
         assert.match(output, new RegExp(`The Agent deployment failed \\(${code}\\)`));
-        assert.doesNotMatch(output, /private-provider-message/);
+        assert.doesNotMatch(
+          output,
+          /private-provider-message|private-progress-message|WORKSPACE_NODE_PENDING|REVISION_IMAGE_PULL_FAILED|NAMESPACE_POD_QUOTA_EXCEEDED/,
+        );
         if (code === "RUNTIME_AUTHENTICATION_FAILED") {
           assert.match(output, /Check the model key.*--replace-key/);
+          assert.equal(
+            output.match(/last deployment attempt was waiting for the workspace node/g)?.length,
+            1,
+            "repeated attempts with the same reason produce one progress update",
+          );
         } else {
           assert.doesNotMatch(output, /Check the model key|--replace-key/);
           if (code === "RUNTIME_CODEX_PERMISSION_POLICY_INCOMPATIBLE") {
+            assert.match(
+              output,
+              /could not pull a container image for this Agent\. Ask an Installation administrator to check the image reference and the cluster's registry access\./,
+            );
             assert.match(output, /managed permission policy.*incompatible/);
             assert.match(output, /sandbox.*permission profile.*approval reviewer/);
           } else {
+            assert.match(
+              output,
+              /Namespace's Pod quota was full\. Stop an unused Agent you own in this Namespace or ask an Installation administrator to raise the quota\./,
+            );
             assert.match(
               output,
               /Inspect the deployment in the Console and the controller worker logs/,
             );
           }
         }
-        assert.equal(deploymentReads, 1, "terminal failure stops polling immediately");
+        assert.equal(
+          deploymentReads,
+          pendingReads + 1,
+          "terminal failure stops polling immediately",
+        );
         // A later controller outage must not hide the saved revision's own failure.
         // This is the repeat path; it reads the existing deployment without provisioning.
         const repeated = await runFirstAgentAsync(
@@ -378,7 +417,7 @@ export function registerFirstAgentFailureAdviceCases({
         );
         assert.ok(repeated.includes(`The Agent deployment failed (${code})`), repeated);
         assert.doesNotMatch(repeated, /Checking the managed Agent Sandbox controller/);
-        assert.equal(deploymentReads, 2);
+        assert.equal(deploymentReads, pendingReads + 2);
         assert.deepEqual(unexpected, [], "no runtime or model request follows failed deployment");
         await assert.rejects(readFile(engineLog), { code: "ENOENT" });
       });
