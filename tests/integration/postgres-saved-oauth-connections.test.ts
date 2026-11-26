@@ -25,7 +25,7 @@ import {
   rotateKeycloakClientSecret,
 } from "../helpers/ci-keycloak-realm.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
-import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
+import { createBackendFixture } from "../helpers/postgres-backend-runtime.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";

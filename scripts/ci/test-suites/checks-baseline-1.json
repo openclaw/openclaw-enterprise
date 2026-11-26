@@ -82,6 +82,7 @@
     "tests/conformance/update-contributors.test.ts",
     "tests/conformance/socket-directory.test.ts",
     "tests/conformance/temporary-directory.test.mjs",
+    "tests/conformance/postgres-backend-state.test.ts",
     "tests/integration/production-controller-security.test.ts",
     "tests/conformance/kubernetes-runtime-credentials.test.ts",
     "tests/conformance/openshell-gateway-wire.test.ts",
@@ -441,6 +442,13 @@
     },
     {
       "path": "tests/conformance/temporary-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-backend-state.test.ts",
+      "expectedTests": [
+        "Backend cleanup releases its client and preserves the write failure when rollback also fails",
+        "Backend binding fault applies once across leases and never to a direct pool query"
+      ]
     },
     {
       "path": "tests/conformance/utils.test.ts"

@@ -12,7 +12,7 @@ import { PostgresPlatformState, type OpenClawController } from "../../packages/o
 import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-runtime.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";

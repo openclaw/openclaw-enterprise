@@ -20,7 +20,7 @@ import {
   KubernetesSecretWriteForbiddenError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import {
   assertFailedDeployment,

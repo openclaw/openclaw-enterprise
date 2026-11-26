@@ -7,7 +7,7 @@ import {
   type ComputeDriver,
 } from "../../packages/contracts/src/index.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
   advanceCleanupRetries,
   completion,

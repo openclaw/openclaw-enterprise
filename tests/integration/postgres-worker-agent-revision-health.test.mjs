@@ -1,7 +1,7 @@
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import test, { after } from "node:test";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   preserveOtherDatabaseClaim,

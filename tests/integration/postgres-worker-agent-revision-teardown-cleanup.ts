@@ -10,7 +10,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/controller-work.ts";
 import { repositoryCleanupWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import {
   advanceCleanupRetries,
   completion,

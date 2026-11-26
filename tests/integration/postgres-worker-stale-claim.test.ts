@@ -32,10 +32,8 @@ import {
 import { deferred } from "../helpers/deferred.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.ts";
 import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
-import {
-  createBackendWorkerDrivers,
-  ensureInstallation,
-} from "../helpers/postgres-backend-state.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-runtime.mjs";
+import { ensureInstallation } from "../helpers/postgres-backend-state.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";

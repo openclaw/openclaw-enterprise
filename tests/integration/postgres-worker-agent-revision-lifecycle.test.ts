@@ -22,7 +22,7 @@ import {
 import type { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import type { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { jsonLineDestination, requireLogRecord } from "../helpers/json-lines.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import type { WorkerEvent } from "../helpers/postgres-worker-refused-candidate.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";

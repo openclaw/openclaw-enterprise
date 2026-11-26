@@ -15,7 +15,7 @@ import {
   computeStopShouldYield,
   computeWorkWaiting,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";

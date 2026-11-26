@@ -4,25 +4,24 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { NativeIAMDriver, createAuthPrincipalSeed } from "../../packages/iam/src/index.ts";
-import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
-import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { createDevelopmentComputeDriver } from "./development.mjs";
-import { authorizedPrincipal, createDevelopmentIAMState } from "./development-iam-state.ts";
-import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
-import { createTestConfigurationDriver } from "./configuration-driver.ts";
-import { createTestSecretDriver } from "./secret-driver.mjs";
-import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import type { ChatGPTBackendDefinition } from "../../packages/contracts/src/index.ts";
+import { createAuthPrincipalSeed } from "../../packages/iam/src/index.ts";
+import {
+  PostgresPlatformState,
+  type PostgresClient,
+  type PostgresPool,
+  type PostgresQueryClient,
+} from "../../packages/occ/src/index.ts";
+import { createDevelopmentIAMState } from "./development-iam-state.ts";
 import { stopProcess } from "./stop-process.mjs";
 import { waitFor } from "./wait-for.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { reservedPortArgs } from "./available-port.ts";
-import { databaseUrl, requiresPostgres } from "./postgres-database.mjs";
+import { reservedPortArgs, type reservePort } from "./available-port.ts";
+import { databaseUrl } from "./postgres-database.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
-
-export { databaseUrl, requiresPostgres };
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const controllerEntrypoint = fileURLToPath(
@@ -33,8 +32,14 @@ export const serviceAccountDriverId = "chatgpt-service-accounts";
 export const workspaceId = "11111111-1111-4111-8111-111111111111";
 export const alternateWorkspaceId = "22222222-2222-4222-8222-222222222222";
 export const apiKeyPath = "/etc/openclaw/chatgpt/admin-key";
-/** @returns {import("../../packages/contracts/src/index.ts").ChatGPTBackendDefinition} */
-export function backendDefinition(options = {}) {
+export function backendDefinition(
+  options: {
+    workspaceId?: string;
+    apiKeyPath?: string;
+    credentialTtlSeconds?: number;
+    serviceAccountDriverId?: string;
+  } = {},
+): ChatGPTBackendDefinition {
   return {
     id: backendId,
     type: "chatgpt",
@@ -49,7 +54,7 @@ export function backendDefinition(options = {}) {
   };
 }
 
-export async function ensureInstallation(state, label) {
+export async function ensureInstallation(state: PostgresPlatformState, label: string) {
   const existing = await state.loadInstallation();
   if (existing !== undefined) {
     return existing;
@@ -75,7 +80,10 @@ export async function ensureInstallation(state, label) {
   await state.transact((unit) => unit.installations.createInstallation(installation));
   return installation;
 }
-async function inTransaction(pool, operation) {
+async function inTransaction(
+  pool: Pick<PostgresPool, "connect">,
+  operation: (client: PostgresClient) => Promise<void>,
+) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -89,7 +97,10 @@ async function inTransaction(pool, operation) {
   }
 }
 
-export async function cleanupNamespaces(pool, namespaceIds) {
+export async function cleanupNamespaces(
+  pool: Pick<PostgresPool, "connect">,
+  namespaceIds: readonly string[],
+) {
   if (namespaceIds.length === 0) {
     return;
   }
@@ -119,8 +130,12 @@ export async function cleanupNamespaces(pool, namespaceIds) {
   });
 }
 
-function trackNamespaces(context, pool, close) {
-  const namespaceIds = new Set();
+export function trackNamespaces(
+  context: Pick<TestContext, "after">,
+  pool: PostgresPool,
+  close?: () => Promise<void>,
+) {
+  const namespaceIds = new Set<string>();
   context.after(async () => {
     if (close !== undefined) {
       await close();
@@ -129,12 +144,14 @@ function trackNamespaces(context, pool, close) {
     await pool.end();
   });
   return {
-    track(namespace) {
+    track<T extends { id: string }>(namespace: T): T {
       namespaceIds.add(namespace.id);
       return namespace;
     },
-    async cleanup(...namespaces) {
-      const ids = namespaces.filter(Boolean).map(({ id }) => id);
+    async cleanup(...namespaces: ({ id: string } | null | undefined)[]) {
+      const ids = namespaces
+        .filter((namespace): namespace is { id: string } => Boolean(namespace))
+        .map(({ id }) => id);
       await cleanupNamespaces(pool, ids);
       for (const id of ids) {
         namespaceIds.delete(id);
@@ -143,7 +160,16 @@ function trackNamespaces(context, pool, close) {
   };
 }
 
-export async function seedBackendBinding(pool, account, options = {}) {
+export async function seedBackendBinding(
+  pool: PostgresQueryClient,
+  account: { id: string; namespaceId: string },
+  options: {
+    backendId?: string;
+    driverId?: string;
+    credentialIssued?: boolean;
+    workspaceId?: string;
+  } = {},
+) {
   await pool.query(
     `INSERT INTO occ.service_account_driver_bindings
        (service_account_id, namespace_id, backend_id, driver_id, external_account_id,
@@ -161,164 +187,16 @@ export async function seedBackendBinding(pool, account, options = {}) {
   );
 }
 
-export function registerCoreDrivers(controller, state, options = {}) {
-  const iam = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
-  const harnessAuthDriver = createTestKubernetesComputeDriver("backend-state-harness-auth");
-  const compute = {
-    ...createDevelopmentComputeDriver(),
-    validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
-  };
-  const configuration = createTestConfigurationDriver();
-  controller.registerDriver(iam);
-  controller.selectDriver("iam", iam.id);
-  controller.registerDriver(compute);
-  controller.selectDriver("compute", compute.id);
-  controller.registerDriver(configuration);
-  controller.selectDriver("configuration", configuration.id);
-  if (options.serviceAccountDriverId !== undefined) {
-    const driver = {
-      id: options.serviceAccountDriverId,
-      capability: "service_account",
-      implementation: "chatgpt",
-      async create() {
-        assert.fail("Backend fixtures seed external account bindings directly.");
-      },
-      async createCredential() {
-        assert.fail("Backend fixtures seed external credentials directly.");
-      },
-      async delete() {
-        assert.fail("Backend fixtures do not delete upstream accounts.");
-      },
-    };
-    controller.registerDriver(driver);
-    controller.selectDriver("service_account", driver.id);
-  }
-  return { compute, configuration };
-}
-
-export function createBackendWorkerDrivers(
-  computeDriver,
-  backends = [backendDefinition()],
-  options = {},
+export async function createBootstrappedBackendState(
+  context: TestContext,
+  options: {
+    email: string;
+    password: string;
+    authSecret: string;
+    authBaseURL: string;
+    installationName: string;
+  },
 ) {
-  const installation = createInstallationDriverConfiguration();
-  installation.backend = backends;
-  installation.drivers.compute.id = computeDriver.id;
-  if (options.secretDriver !== undefined) {
-    installation.drivers.secret.id = options.secretDriver.id;
-  }
-  if (options.tokenServiceDriverId !== undefined) {
-    installation.drivers.token_service = { id: options.tokenServiceDriverId };
-  }
-  if (backends.length > 0) {
-    installation.drivers.service_account = {
-      id: backends[0]?.drivers.service_account ?? serviceAccountDriverId,
-    };
-  }
-  return {
-    installation,
-    computeDriver,
-    ...(options.tokenService && { tokenService: options.tokenService }),
-    configurationDriver: createTestConfigurationDriver({
-      id: installation.drivers.configuration.id,
-    }),
-    secretDriver:
-      options.secretDriver ?? createTestSecretDriver({ id: installation.drivers.secret.id }),
-    createIAMDriver(platformState) {
-      return new NativeIAMDriver(platformState, {
-        id: installation.drivers.iam.id,
-        implementation: "native",
-      });
-    },
-  };
-}
-
-export function createBackendController(fixture, options = {}) {
-  const backends = options.backends ?? [backendDefinition()];
-  const controller = new OpenClawController(fixture.installation, {
-    state: fixture.state,
-    backends,
-    driverConfigurations: options.driverConfigurations,
-    nativeWorkerSupport: options.nativeWorkerSupport,
-    now: options.now,
-  });
-  registerCoreDrivers(controller, fixture.state, {
-    serviceAccountDriverId: backends[0]?.drivers.service_account,
-  });
-  return controller;
-}
-
-export async function createBackendFixture(context) {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
-  const workerPool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
-  const state = new PostgresPlatformState(pool);
-  let worker;
-  const namespaces = trackNamespaces(context, pool, async () => {
-    if (worker === undefined) {
-      await workerPool.end();
-    } else {
-      await worker.stop();
-    }
-  });
-
-  const installation = await ensureInstallation(state, "backend-ownership");
-  const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
-    ["create", "configuration"],
-    ["create", "agent"],
-    ["update", "agent"],
-    ["deploy", "agent"],
-    ["read", "configuration"],
-    ["read", "service_account"],
-    ["read", "agent_revision"],
-  ]);
-  assert.ok(actor, "persisted IAM must contain an unrestricted backend-ownership Principal");
-
-  function startWorker(options = {}) {
-    const calls = [];
-    const harnessAuthDriver = createTestKubernetesComputeDriver("backend-worker-harness-auth");
-    const compute = {
-      ...createDevelopmentComputeDriver(),
-      validateHarnessAuth: harnessAuthDriver.validateHarnessAuth.bind(harnessAuthDriver),
-    };
-    const backends = options.backends ?? [backendDefinition()];
-    const drivers = createBackendWorkerDrivers(
-      {
-        ...compute,
-        async prepareRevision(revision, operationContext) {
-          calls.push({
-            action: "prepare",
-            revisionId: revision.id,
-            backendId: revision.backendId,
-          });
-          return compute.prepareRevision(revision, operationContext);
-        },
-        async retireRevision(revision) {
-          calls.push({
-            action: "retire",
-            revisionId: revision.id,
-            backendId: revision.backendId,
-          });
-          return compute.retireRevision(revision);
-        },
-      },
-      backends,
-      options,
-    );
-    worker = createControllerWorker({
-      pool: workerPool,
-      drivers,
-      pollIntervalMs: 15,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      emit: () => {},
-    });
-    return { worker, calls };
-  }
-
-  return { pool, state, workerPool, installation, actor, ...namespaces, startWorker };
-}
-
-export async function createBootstrappedBackendState(context, options) {
   await ensureDevelopmentBootstrap(context, {
     databaseUrl,
     email: options.email,
@@ -337,9 +215,11 @@ export async function createBootstrappedBackendState(context, options) {
   return { pool, state, configurationRoot, ...namespaces };
 }
 
-export function poolWithOneBackendBindingReadFault(pool) {
+type QueryPool = PostgresPool & PostgresQueryClient;
+
+export function poolWithOneBackendBindingReadFault(pool: QueryPool): QueryPool {
   let remainingFailures = 1;
-  const shouldFault = (text) =>
+  const shouldFault = (text: string) =>
     remainingFailures > 0 &&
     typeof text === "string" &&
     text.includes("FROM occ.service_account_driver_bindings AS b") &&
@@ -363,7 +243,15 @@ export function poolWithOneBackendBindingReadFault(pool) {
   };
 }
 
-export async function startBackendlessDevelopmentServer(context, options) {
+export async function startBackendlessDevelopmentServer(
+  context: TestContext,
+  options: {
+    configurationRoot?: string;
+    reservation: Awaited<ReturnType<typeof reservePort>>;
+    authBaseURL: string;
+    authSecret: string;
+  },
+) {
   const configurationRoot =
     options.configurationRoot ?? (await mkdtemp(join(tmpdir(), "openclaw-backend-repair-config-")));
   if (options.configurationRoot === undefined) {
@@ -397,8 +285,8 @@ export async function startBackendlessDevelopmentServer(context, options) {
   let output = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.on("data", (chunk) => (output += chunk));
+  child.stdout.on("data", (chunk: string) => (output += chunk));
+  child.stderr.on("data", (chunk: string) => (output += chunk));
 
   await waitFor(
     "backendless development API to start despite stale Backend references",

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ComputeDriver } from "../../packages/contracts/src/index.ts";
 import type { ControllerWorkState } from "../../packages/occ/src/controller-work.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { completedPasses, expireWorkLease } from "../helpers/postgres-worker-revision-queue.ts";
 import {
   repositoryBoundary,

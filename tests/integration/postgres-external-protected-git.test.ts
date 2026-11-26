@@ -36,7 +36,7 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.ts";
-import { registerCoreDrivers } from "../helpers/postgres-backend-state.mjs";
+import { registerCoreDrivers } from "../helpers/postgres-backend-runtime.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { injectJson } from "../helpers/inject-json.ts";

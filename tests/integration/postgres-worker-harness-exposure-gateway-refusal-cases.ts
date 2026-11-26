@@ -5,7 +5,7 @@ import type { Agent, AgentRevision, ComputeDriver } from "../../packages/contrac
 import { SandboxGatewayUnauthorizedError } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { occLogLine } from "../helpers/occ-log-line.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import type { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 
 type WorkerRevisionFixtures = ReturnType<typeof createWorkerRevisionFixtures>;

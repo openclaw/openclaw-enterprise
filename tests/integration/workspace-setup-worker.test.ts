@@ -26,12 +26,9 @@ import {
 } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { authorizedPrincipal } from "../helpers/development-iam-state.ts";
-import {
-  createBackendWorkerDrivers,
-  databaseUrl,
-  ensureInstallation,
-  requiresPostgres,
-} from "../helpers/postgres-backend-state.mjs";
+import { createBackendWorkerDrivers } from "../helpers/postgres-backend-runtime.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { ensureInstallation } from "../helpers/postgres-backend-state.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 
 type WorkRow = {
