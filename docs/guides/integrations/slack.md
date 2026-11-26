@@ -37,9 +37,10 @@ go to the Agent's gateway; model credentials are configured separately.
   ready **Static credential** Sources for the app token and bot token.
 - First deployment generates required connection credentials. It requires Agent
   `deploy`, plus Agent `read` and `operate` when generation is needed.
-  Selecting Sources requires readable Source metadata and caller `operate` on each exact Source. Saving token bindings requires Configuration update and
-  [Namespace IAM administration](../../reference/authorization.md#manage-namespace-policy)
-  to grant the Agent access to each Source. Creating a Source requires Source creation permission in the Namespace.
+  Selecting a Source from the picker requires readable Source metadata. Saving token
+  bindings requires Configuration `update` and caller `operate` on each exact Source.
+  During deployment, OCC grants the admitted Agent service principal exact Source
+  `operate` access. Creating a Source requires Source `create` in the Namespace.
 
 <a id="configure-both-slack-proxies"></a>
 
