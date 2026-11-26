@@ -159,9 +159,8 @@ See [observability](../guides/observability.md) for collection settings.
 
 ### Installation settings
 
-The Harness has no Driver registration settings. The Installation selects Compute
-and, optionally, Sandbox. Their capabilities determine which execution modes an
-Agent can use. See [Driver selection and configuration discovery](drivers/selection.md#configuration-definitions-and-discovery).
+The Harness has no Driver registration settings. The Installation’s Compute
+and optional Sandbox capabilities determine Agent execution modes. See [Driver selection and configuration discovery](drivers/selection.md#configuration-definitions-and-discovery).
 
 #### Native worker support
 
