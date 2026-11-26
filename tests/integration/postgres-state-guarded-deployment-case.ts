@@ -104,6 +104,8 @@ export async function persistGuardedDeployment(context: TestContext, databaseUrl
     return controller;
   };
   const controller = await createController(state);
+  // This isolated fixture performs trusted API initialization before deployment admission.
+  await controller.initializeSandboxNetworkPolicyCeiling(principalId);
   const namespace = await controller.createNamespace(principalId, {
     name: `guarded-${randomUUID()}`,
   });
