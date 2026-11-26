@@ -159,12 +159,6 @@ test("a Gateway CONNECT probe reports fixed progress and requires a successful e
   const proxy = createServer();
   const headerMatched: boolean[] = [];
   proxy.on("connect", (request, socket) => {
-    if (request.url === "pending.example:443") {
-      // This request has started, but the transport will close before any response.
-      socket.on("end", () => socket.destroy());
-      socket.resume();
-      return;
-    }
     headerMatched.push(request.headers["x-probe-test"] === syntheticSecret);
     socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
   });
@@ -175,6 +169,7 @@ test("a Gateway CONNECT probe reports fixed progress and requires a successful e
   assert.ok(address && typeof address !== "string");
 
   const temp = await temporaryDirectory(t, "oce-connect-diagnostic-");
+  const calls = join(temp, "calls");
   const kubectl = await writeCommand(
     temp,
     "kubectl",
@@ -182,12 +177,12 @@ test("a Gateway CONNECT probe reports fixed progress and requires a successful e
 const secret = ${JSON.stringify(syntheticSecret)};
 const args = process.argv.slice(2);
 const mode = args[args.indexOf('exec') + 2];
+// Record only whether the header was present, and still exercise the requested failure.
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, mode + (args.some(arg => arg.includes(secret)) ? ' header-in-argv' : '') + '\\n');
 if (mode === 'before-entry') {
   process.stdout.write(secret);
   process.stderr.write(secret);
   process.exitCode = 1;
-} else if (args.some((arg) => arg.includes(secret))) {
-  process.exitCode = 9;
 } else {
   const child = spawn(process.execPath, args.slice(args.indexOf('--') + 2), {
     stdio: [mode === 'incomplete-input' ? 'ignore' : 'inherit', 'pipe', 'inherit'],
@@ -196,19 +191,21 @@ if (mode === 'before-entry') {
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', (chunk) => {
     output += chunk;
-    if (mode === 'incomplete-input' ||
-        (mode === 'pending-request' && output.includes('channel-probe: request started\\n'))) {
-      child.kill();
-    }
+    if (mode === 'incomplete-input') child.kill();
   });
   child.on('close', (code) => {
-    if (mode === 'after-result') {
+    // Simulate an exec stream ending immediately before or after its JSON result.
+    if (mode === 'lost-result' || mode === 'after-result') {
+      const resultStart = output.indexOf('{');
+      process.stdout.write(mode === 'lost-result' ? output.slice(0, Math.max(0, resultStart)) : output);
       process.stderr.write(secret);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(mode === 'malformed'
+        ? output.replace('{"status":403,"tlsVerified":false}', secret)
+        : output);
+      process.exitCode = code ?? 1;
     }
-    process.stdout.write(mode === 'malformed'
-      ? output.replace('{"status":403,"tlsVerified":false}', secret)
-      : output);
-    process.exitCode = mode === 'after-result' ? 1 : (code ?? 1);
   });
 }`,
     { interpreter: process.execPath },
@@ -218,15 +215,15 @@ if (mode === 'before-entry') {
     OCC_TEST_KUBERNETES_KUBECONFIG: join(temp, "unused-kubeconfig"),
     OCC_TEST_KUBERNETES_CONTEXT: "probe-test",
   });
-  const connect = (mode: string, target = "refused.example") =>
-    probeChannelConnect("test", mode, `http://127.0.0.1:${address.port}`, target, {
+  const connect = (mode: string) =>
+    probeChannelConnect("test", mode, `http://127.0.0.1:${address.port}`, "refused.example", {
       headers: { "x-probe-test": syntheticSecret },
     });
 
-  for (const [mode, expected, target] of [
+  for (const [mode, expected] of [
     ["before-entry", /exit 1\).*no entry marker, no result marker/],
     ["incomplete-input", /exit 1\).*probe started, no result marker/],
-    ["pending-request", /exit 1\).*request submitted locally, no result marker/, "pending.example"],
+    ["lost-result", /exit 1\).*request submitted locally, no result marker/],
     ["after-result", /exit 1\).*request submitted locally, result marker received/],
     [
       "malformed",
@@ -234,9 +231,9 @@ if (mode === 'before-entry') {
     ],
   ] as const) {
     await t.test(mode, async () => {
-      await assert.rejects(connect(mode, target), (error: unknown) => {
+      await assert.rejects(connect(mode), (error: unknown) => {
         assert.ok(error instanceof Error);
-        assert.match(error.message, expected);
+        assert.ok(expected.test(error.message), "missing the expected probe progress");
         assert.equal(error.stack?.includes(syntheticSecret.slice(0, 10)), false);
         assert.equal(error.message.includes("403"), false);
         return true;
@@ -245,7 +242,15 @@ if (mode === 'before-entry') {
   }
 
   assert.deepEqual(await connect("successful-exec"), { status: 403, tlsVerified: false });
-  assert.deepEqual(headerMatched, [true, true, true]);
+  assert.deepEqual(headerMatched, [true, true, true, true]);
+  assert.deepEqual(await commandCalls(calls), [
+    "before-entry",
+    "incomplete-input",
+    "lost-result",
+    "after-result",
+    "malformed",
+    "successful-exec",
+  ]);
 });
 
 test("running hook diagnostics keep logs when Kubernetes has no start time", async () => {
