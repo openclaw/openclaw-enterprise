@@ -113,18 +113,17 @@ graph TD
 
 ### 1. Project choices and resolve Namespace policy during Agent admission
 
-`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`,
-then reads the current Repo catalog if Compute supports it. Installation
-administrators see access limits. A missing selection adds `meta.notConfigured`.
-Discovery failure returns `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
+`listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
+and reads the catalog if Compute supports it. Installation admins see limits.
+Missing selection adds `meta.notConfigured`. Discovery failure returns
+`503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 The catalog accepts 1,000 repositories plus the Installation option. Overflow
 returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
 `repositorySettings` resolves explicit and inherited selections. PostgreSQL
-checks bindings. Empty drafts save during catalog outages.
+checks bindings. Outages allow empty drafts.
 
-Reuse a saved Configuration after an Agent rejection. Reload choices before
-retrying a scope failure. Read both resources after an uncertain save.
+Read both resources after an uncertain save.
 
 Requests carry Repository references and optional profiles. TokenService Git saves
 a Client and access per Repository. Legacy GitHub defaults to `git-write`.
@@ -148,30 +147,22 @@ can also register programmatically.
 identity and grants. Legacy sessions include the configured deadline.
 `validateRepositoryBrokerNetworkProxy` rejects Codex settings that block the broker.
 
-For TokenService Git, the deployment pins the Source and its request policy.
 `apps/controller/src/composition/openshell-credential-admission.ts:admitOpenShellRepositoryCredentials`
-adds the stock `gh` publication match for an eligible Write target when every
-repository covered by the token has an Agent grant. OCC saves network and
-injection matches on the same revision.
-`apps/controller/src/worker.ts:ControllerWorker.authorizedCredentialDeployment`
-checks that the frozen publication rules still match current Source and
-Repository authority. `openshell-repository-policy.ts:narrowOpenShellRepositoryRoutes`
-checks the saved match before attaching it to the same Provider used by Git.
-Token renewal retains the revision policy. Withdrawal removes both kinds of
-repository request.
+adds stock `gh` PR access for eligible Write targets when Agent grants cover the
+Source's repositories. OCC freezes the Source and matching network and
+injection rules. Worker `authorizedCredentialDeployment` rechecks authority.
+Proxy `narrowOpenShellRepositoryRoutes` validates the match and binds the Git
+Provider. Renewal preserves rules. Withdrawal removes Git and PR access.
 
-After approval lookup, changed bound ownership returns 503 before invocation.
-Unbound deploys recheck their Driver. Denial or changes to binding or scope
-block revision creation.
+After approval lookup, ownership changes return 503 before invocation. Unbound
+deploys recheck their Driver. Denial or changed bindings or scope block creation.
 
-Protected `repository.preparedGitHub` uses the installed Sandbox/Credential
-Proxy Driver. Finite sessions need no native sender, control socket, broker CA
-or session files.
+The installed Sandbox and Credential Proxy serve finite `repository.preparedGitHub`
+sessions without a native sender, control socket, broker CA or files.
 
-`repository.nativeSender` selects `GitHubNativeRepositorySender` to own native
-sessions and files without an App key. The worker's prepared provider issues
-and holds credentials. Cleanup uses recorded identity without policy resolution
-or reauthorization.
+`repository.nativeSender` selects `GitHubNativeRepositorySender` for sessions and
+files without an App key. The worker's prepared provider issues and holds
+credentials. Cleanup uses recorded identity alone.
 
 ### 3. Record ownership before opening a session
 
@@ -196,8 +187,7 @@ session; invalidation blocks replacement. Closing raises `REPOSITORY_CLEANUP_PEN
 within Work and revision bounds. Cleanup retries at its configured interval; other
 obligations retain their code and retry at `age / 40`, capped by that interval and ten minutes.
 
-`apps/controller/src/drivers/repo/access/control.ts:createControlAdmission`
-reserves before release.
+`createControlAdmission` reserves before release.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
 retains fences and original-broker disposal evidence after pruning; transport failure proves no absence.
 Unmarked v1 requests only recover or close original IDs.
@@ -255,27 +245,20 @@ Embedded `repositoryNativeConfiguration` puts the `gh` router first in
 `allow_login_shell=false` and `shell_environment_policy.set.PATH` and retains
 the Pod's `NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication
 persists. Consumer material excludes App keys, JWTs, installation tokens and
-the control socket. The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
-defines Codex plugin and repository-bound filesystem and proxy access, explicit
-denies and dedicated/embedded eligibility. Unbound policy, broker authorization
-and TLS verification still apply. Codex checks the named profile at thread start,
-resume, fork and turns.
+the control socket. See the [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+Codex checks the named profile at thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-The runtime image installs the `github-repository-rest` skill in Codex's admin
-skill directory. For Dedicated OpenClaw with a TokenService Repository binding,
-`apps/controller/src/drivers/compute/kubernetes/index.ts:projectGatewayRevision`
-adds that directory to the Gateway's skill discovery and disables the `github`
-skill by key. The Gateway includes the selected skill in the worker's catalog.
-An explicit skill list that selected `github` selects the managed skill instead.
-The skill explains how to publish with stock `gh api` and the binding placeholder.
-The frozen network and injection rules authorize the request.
+The image installs `github-repository-rest` in Codex's admin skill directory.
+For Dedicated OpenClaw with a TokenService Git Source, `projectGatewayRevision`
+adds that skill to Gateway discovery, disables `github` by key and replaces it
+in explicit skill selections. The Gateway includes it in the worker catalog.
+The skill uses stock `gh api` and the binding placeholder.
 
-Configuration routes canonical HTTPS hosts to the gateway. Before returning a
-bearer, the helper checks host, path, generation and deadline.
-`OCE_REPOSITORY_REF` selects bindings.
-[Routing limits](../reference/repository-credentials.md#client-routing-and-limits) describe command preflight and egress.
+Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
+host, path, generation and deadline before returning a bearer.
+`OCE_REPOSITORY_REF` selects bindings. See [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
 `pushRefAllowlist` selects image-owned hooks. `scripts/build-repository-credentials.ts:stage`
 builds launchers that resolve dispatcher URLs through symlinks and relocations.
 `apps/controller/src/drivers/repo/github/access/client/hook-dispatch.ts:checkPush`
@@ -297,8 +280,7 @@ uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`.
 Draft heads require concrete refs. Receive-pack rejects disallowed refs before approval.
 [Access levels](../reference/repository-credentials/access-levels.md) define the grants.
 
-[Service exchange](repository-credentials.md#4-reserve-acquire-and-dispatch)
-checks bearer, fixed repository/profile, capacity and deadlines; token refresh uses that grant until expiry.
+See the [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch).
 
 ### 6. Maintain, recover and retire ownership
 
@@ -368,22 +350,19 @@ Stop preserves newer resources. Cleanup retries partial failure. Service restart
 
 ## Debugging and Verification
 
-The [worker installation check](../snippets/openshell-quickstart/verify-github-installation.mts)
-sends a signed, bodyless GET after TLS verification. It requires matching IDs,
-rejects replies above 65,536 bytes, and reports only status and connection diagnostics.
+The [installation check](../snippets/openshell-quickstart/verify-github-installation.mts)
+verifies TLS before a signed, bodyless GET. It checks IDs, rejects replies above
+65,536 bytes and reports only status and connection diagnostics.
 
-Use `occ agent get AGENT_ID --output json` to read `activeRevisionId`.
-Check registry identity and expiry before retry.
-`apps/controller/src/worker.ts:processRepositoryCleanup` logs
-`worker.repository-cleanup-warning` with `cause` once per worker.
+Read `activeRevisionId` with `occ agent get AGENT_ID --output json`.
+Check registry identity and expiry before retry. `processRepositoryCleanup`
+logs one `worker.repository-cleanup-warning` with `cause` per worker.
 
 `repository-not-admitted` identifies unselected targets; `name-one-repository-target`
 and `name-one-repository-ref` require explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-See [repository credential tests](../testing/repository-credentials.md) for installed
-runtime and live provider checks. [Docker and Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
-exclude CNI.
+See [repository credential tests](../testing/repository-credentials.md).
 
 ## Related docs
 
@@ -399,9 +378,7 @@ exclude CNI.
 
 ## Changelog
 
-- 2026-11-26 12:46: Trace discovery of the GitHub REST skill for Dedicated Harnesses. (authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6 - 8e891c9a583e1412aff1b7b1d0a603a55039748f)
-
-- 2026-11-26 12:32: Trace GitHub pull request admission and delivery from the shared Source. (authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd - 4866499d13714a97fc5cade0f0d1cb915d1adbfc)
+- 2026-11-26 12:46: Trace shared Source PR admission, delivery and skill discovery. (authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd - 4866499d13714a97fc5cade0f0d1cb915d1adbfc, authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6 - 8e891c9a583e1412aff1b7b1d0a603a55039748f)
 
 - 2026-11-24 17:19: Trace the lifetime of Source-backed Git authorization. (authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796 - 936baaa9652b5008437647a818ad3c09eed317f1)
 
