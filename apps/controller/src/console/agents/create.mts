@@ -4183,13 +4183,14 @@ function renderAgentForm(
               authMethod.disabled = false;
               apiKey.disabled = false;
             }
-            // Channel settings bind their own Secrets into the Configuration the request
+            // Channel settings bind their own credentials into the Configuration the request
             // resubmits, so a deleted one is dropped the same way: the filtered record
             // leaves the unlocked form no missing ID to send again, and the re-rendered
             // editor shows the binding gone for the operator to replace. The pickers that
-            // read the bindings follow the filtered record.
+            // read the bindings follow the filtered record. Channel bindings are Credential
+            // Sources since the credential cutover; a Secret match only covers a legacy draft.
             if (
-              deleted?.[1] === "Secret" &&
+              (deleted?.[1] === "Secret" || deleted?.[1] === "Credential source") &&
               Object.values(configurationSecretBindings).some(
                 (channelBinding) => channelBinding.source.id === deleted[2],
               )
@@ -4199,7 +4200,16 @@ function renderAgentForm(
                   ([, channelBinding]) => channelBinding.source.id !== deleted[2],
                 ),
               );
-              directorySecret.refresh();
+              if (directoryUsesChannelSource) {
+                directorySource = slackBotSource();
+                const previous = directorySourcePicker;
+                previous.setActive(false);
+                directorySourcePicker = createDirectorySourcePicker();
+                previous.field.replaceWith(directorySourcePicker.field);
+                directorySourcePicker.setActive(
+                  directoryApproversAvailable && !directorySetup.hidden,
+                );
+              }
               defaultApprovers.refreshDirectory();
               renderChannelEditor();
             }

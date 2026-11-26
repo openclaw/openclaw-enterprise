@@ -56,6 +56,7 @@ import {
   secretPostRequests,
   selectSecret,
   shippedPreset,
+  createSlackSourceConsoleFixture,
   takeLayoutShifts,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
@@ -1043,15 +1044,15 @@ test("Create answers a different-plan replay refusal with a fresh request ID", a
 // A channel binding names a Secret the channel editor selected, not the model credential, so a
 // deleted-resource refusal naming it must drop that binding from the Configuration the form
 // resubmits — the same recovery the model Secret case already has (PR #5036 review).
-test("Create drops a channel Secret binding the API reports deleted", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Deleted channel binding", { ready: true });
-  const slackSecret = await fixture.createSecret(
-    namespace.id,
-    "Existing Slack app token",
-    "never-visible-existing-slack-app-token",
+test("Create drops a channel Credential Source binding the API reports deleted", async (t) => {
+  // Channel bindings are Credential Sources since main's credential cutover, so the deleted
+  // resource the retry refusal names is a Source and the replacement must not resubmit it.
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Deleted channel binding",
+    { defaultPresets: [defaultCodexPreset] },
   );
+  const slackAppSource = (await enroll("Existing Slack app token", "xapp")).source;
   const { page } = await newPage(t, fixture);
   await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
@@ -1124,17 +1125,17 @@ test("Create drops a channel Secret binding the API reports deleted", async (t) 
     });
   };
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_*`, routeJob);
-  // The retry is refused naming the channel Secret as deleted: the request is unrecoverable,
+  // The retry is refused naming the channel Source as deleted: the request is unrecoverable,
   // so the form unlocks with a fresh request ID and must not resubmit the deleted binding.
-  const deletedSlackSecret =
-    `Secret ${slackSecret.id}, which this provisioning request uses, was deleted.` +
+  const deletedSlackSource =
+    `Credential source ${slackAppSource.id}, which this provisioning request uses, was deleted.` +
     " Submit a new Agent provisioning request.";
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_1/retry`, (route) =>
     route.fulfill({
       status: 409,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "RESOURCE_CONFLICT", message: deletedSlackSecret },
+        error: { code: "RESOURCE_CONFLICT", message: deletedSlackSource },
         meta: conflictMeta,
       }),
     }),
@@ -1148,12 +1149,14 @@ test("Create drops a channel Secret binding the API reports deleted", async (t) 
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  // Stage the Slack app token binding the form will resubmit with its Configuration.
+  // Stage the Slack app token Source binding the form will resubmit with its Configuration.
   await page.getByRole("button", { name: "Configure Slack" }).click();
   const channelDialog = page.getByRole("dialog", { name: /^(Configure|Edit) Slack$/ });
   // The default direct-message policy requires allowed senders; disabled keeps the drawer valid.
   await channelDialog.getByLabel("Direct-message policy").selectOption("disabled");
-  await selectSecret(channelDialog, "Slack app token", slackSecret);
+  await channelDialog
+    .getByLabel("Slack app token", { exact: true })
+    .selectOption(slackAppSource.id);
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog.waitFor({ state: "hidden" });
   const create = page.getByRole("button", { name: "Create Agent" });
@@ -1164,11 +1167,11 @@ test("Create drops a channel Secret binding the API reports deleted", async (t) 
     .waitFor();
   const firstPlan = bodies[0]?.configuration as
     { secretBindings?: Record<string, { source: { id: string } }> } | undefined;
-  assert.equal(firstPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackSecret.id);
+  assert.equal(firstPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackAppSource.id);
   await retry.click();
   await page
     .getByText(
-      `${deletedSlackSecret} Replace the deleted resource, then select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
+      `${deletedSlackSource} Replace the deleted resource, then select Create Agent to submit a new request. Request ID: req_00000000-0000-4000-8000-000000000409`,
       { exact: true },
     )
     .waitFor();
@@ -1176,7 +1179,7 @@ test("Create drops a channel Secret binding the API reports deleted", async (t) 
   await waitForEnabled(page.getByLabel("Agent name"));
   // The dropped binding no longer shows in the channel editor the operator reopens.
   await page.getByRole("button", { name: "Edit Slack" }).click();
-  assert.equal(await channelDialog.getByLabel("Slack app token").inputValue(), "");
+  assert.equal(await channelDialog.getByLabel("Slack app token", { exact: true }).inputValue(), "");
   await channelDialog.getByRole("button", { name: "Apply channel settings" }).click();
   await channelDialog.waitFor({ state: "hidden" });
   // The replacement request carries a fresh request ID and no deleted Secret binding.
@@ -1185,7 +1188,7 @@ test("Create drops a channel Secret binding the API reports deleted", async (t) 
   assert.notEqual(requestIds[1], requestIds[0]);
   const replacementPlan = bodies.at(-1)?.configuration as
     { secretBindings?: Record<string, { source: { id: string } }> } | undefined;
-  assert.notEqual(replacementPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackSecret.id);
+  assert.notEqual(replacementPlan?.secretBindings?.SLACK_APP_TOKEN?.source.id, slackAppSource.id);
   assert.equal(replacementPlan?.secretBindings?.SLACK_APP_TOKEN, undefined);
   await page.waitForURL(/\/agents\/agt_00000000-0000-4000-8000-00000000c0d3\?/);
 });
