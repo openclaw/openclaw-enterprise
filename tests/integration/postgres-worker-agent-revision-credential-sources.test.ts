@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { after, type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { revisionCredentialSourceSnapshot } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
@@ -18,7 +18,11 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import {
+  gatewayStartupSourceDelivery,
+  installTokenServiceDriver,
+} from "../../apps/controller/src/composition/token-service.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   MANAGED_BY,
@@ -43,9 +47,14 @@ import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-cli
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
+import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
@@ -58,6 +67,415 @@ import {
 // through the shared fixture and the process owns its teardown backstop.
 const cases = createCredentialSourceRevisionCases(import.meta.url);
 after(cases.cleanup);
+
+async function gatewaySourceWorkerFixture(fixture: RevisionFixture, context: TestContext) {
+  const compute = createTestKubernetesComputeDriver(fixture.compute.id, {
+    gatewayRuntime: true,
+    privateStatus: true,
+  });
+  const installation = createInstallationDriverConfiguration();
+  installation.drivers.compute.id = compute.id;
+  Object.assign(installation.drivers, {
+    token_service: { id: "occ", configuration: {} },
+  });
+  const loaded = await loadInstallationFile(context, installation);
+  assert.ok(loaded);
+  const { core, driver: secretDriver } = useInstallationSecretDriver(fixture.controller);
+  core.secretUid = randomUUID();
+  const runtime = {
+    ...loaded,
+    computeDriver: compute,
+    secretDriver,
+    installation: {
+      ...loaded.installation,
+      drivers: {
+        ...loaded.installation.drivers,
+        secret: { ...loaded.installation.drivers.secret, id: secretDriver.id },
+      },
+    },
+  };
+  const controller = new OpenClawController(fixture.installation, {
+    state: fixture.state,
+    ...installationControllerOptions(runtime.installation),
+    gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(runtime),
+    recordOperations: true,
+  });
+  for (const capability of ["iam", "configuration"] as const) {
+    const driver = fixture.controller.selectedDriver(capability);
+    controller.registerDriver(driver);
+    controller.selectDriver(capability, driver.id);
+  }
+  for (const driver of [compute, secretDriver]) {
+    controller.registerDriver(driver);
+    controller.selectDriver(driver.capability, driver.id);
+  }
+  await installTokenServiceDriver(controller, runtime, fixture.state);
+  assert.ok(controller.selectedDriver("token_service") instanceof OCCTokenServiceDriver);
+
+  const namespaceId = fixture.namespace.id;
+  const namespace = core.addNamespace(namespaceId);
+  const namespaceObject = core.namespaces.get(namespace);
+  assert.ok(namespaceObject);
+  const placeholder = { id: "pending" };
+  const transport = createDedicatedDeployKubernetesFixture(
+    {
+      namespace,
+      gatewayName: "pending",
+      state: { gatewayAppliesBinding: false },
+      revision: placeholder,
+      sandboxDriver: undefined,
+      clock: undefined,
+    },
+    (save) => {
+      save({ apiVersion: "v1", kind: "Namespace", ...namespaceObject });
+      for (const policy of (compute as unknown as FixtureDriver).networkPolicies(
+        { namespaceId },
+        { name: namespace, plane: "control" },
+      )) {
+        save(policy);
+      }
+    },
+  );
+  const stagedWrites: string[] = [];
+  const createSecret = transport.clients.core.createNamespacedSecret!;
+  Reflect.set(
+    compute,
+    "apiClients",
+    Promise.resolve({
+      ...transport.clients,
+      core: {
+        ...transport.clients.core,
+        listNamespace: core.listNamespace.bind(core),
+        async createNamespacedSecret(request: Parameters<typeof createSecret>[0]) {
+          if (request.body.metadata.name.startsWith("gateway-secrets-")) {
+            stagedWrites.push(request.body.metadata.name);
+          }
+          return createSecret(request);
+        },
+        async listNamespacedPod() {
+          return { items: [] };
+        },
+      },
+      apps: {
+        ...transport.clients.apps,
+        async listNamespacedDeployment() {
+          return { items: [] };
+        },
+      },
+      version: {
+        async getCode() {
+          return { gitVersion: "v1.35.0" };
+        },
+      },
+    }),
+  );
+
+  const beforeEnrollment = new Set(core.secrets.keys());
+  const enroll = () =>
+    controller.createManagedCredentialSource(
+      fixture.actor.id,
+      namespaceId,
+      {
+        type: "static",
+        name: `Gateway startup ${randomUUID()}`,
+        lifecycleConfig: { settings: {} },
+        providerPreset: "openai",
+        secret: randomUUID(),
+      },
+      (ref, phase) => ({
+        ...auditEvent(
+          fixture.installation.id,
+          namespaceId,
+          fixture.actor.id,
+          "openclaw.credential_sources.create",
+          ref,
+        ),
+        ...(phase ? { details: { phase } } : {}),
+      }),
+    );
+  return {
+    compute,
+    controller,
+    core,
+    runtime,
+    transport,
+    namespaceId,
+    namespace,
+    placeholder,
+    stagedWrites,
+    enroll,
+    beforeEnrollment,
+  };
+}
+
+cases.revisionTest(
+  "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",
+  async (fixture, context) => {
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      namespaceId,
+      namespace,
+      placeholder,
+      stagedWrites,
+      enroll,
+      beforeEnrollment,
+    } = await gatewaySourceWorkerFixture(fixture, context);
+    const source = await enroll();
+    const secondSource = await enroll();
+    const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+    assert.equal(custodyKeys.length, 2);
+    const modelSecret = await controller.createSecret(fixture.actor.id, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const configuration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: {
+        ...createHarnessConfiguration("codex", "gpt-5"),
+        cron: { webhookToken: "${GW_HOOK_TOKEN}" },
+      },
+      secretBindings: {
+        GW_HOOK_ALIAS: { source: source.ref },
+        GW_HOOK_TOKEN: { source: source.ref },
+        GW_SECOND_TOKEN: { source: secondSource.ref },
+      },
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Gateway grant race ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    const grant = await fixture.observerPool.query<{ id: string }>(
+      `SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2`,
+      [agent.servicePrincipalId, secondSource.id],
+    );
+    assert.equal(grant.rowCount, 1);
+
+    // Pause the real Kubernetes Secret Driver's custody read after the API supplied bytes.
+    // PostgreSQL IAM remains live, so revocation can commit during owner I/O.
+    let reached = false;
+    let firstSourceReads = 0;
+    const release = Promise.withResolvers<void>();
+    const read = core.readNamespacedSecret.bind(core);
+    context.mock.method(
+      core,
+      "readNamespacedSecret",
+      async (request: { namespace: string; name: string }) => {
+        const secret = await read(request);
+        const key = `${request.namespace}/${request.name}`;
+        if (key === custodyKeys[0]) {
+          firstSourceReads += 1;
+        }
+        if (key === custodyKeys[1]) {
+          reached = true;
+          await release.promise;
+        }
+        return secret;
+      },
+    );
+    const events: unknown[] = [];
+    try {
+      await fixture.start(compute, {
+        transformDrivers: () => runtime,
+        emit: (event) => events.push(event),
+      });
+      await waitFor("the OCC TokenService custody read", async () => {
+        if (reached) {
+          return true;
+        }
+        const result = await fixture.workResult({
+          id: revision.id,
+          idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+        });
+        assert.equal(
+          result.rows[0]?.reason_code,
+          null,
+          `Worker failed before reading custody: ${JSON.stringify(events.slice(-2))}`,
+        );
+        return undefined;
+      });
+      await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, grant.rows[0]!.id);
+    } finally {
+      release.resolve();
+    }
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "AUTHORIZATION_DENIED");
+    assert.equal(firstSourceReads, 1, "the first Source's alias must not cause another owner read");
+    assert.deepEqual(
+      stagedWrites,
+      [],
+      "revoked material must never be written, even if cleanup runs",
+    );
+    assert.equal(
+      transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+  },
+);
+
+test(
+  "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 2 });
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      namespaceId,
+      namespace,
+      placeholder,
+      stagedWrites,
+      enroll,
+      beforeEnrollment,
+    } = await gatewaySourceWorkerFixture(fixture, context);
+    const source = await enroll();
+    const custodyKey = [...core.secrets.keys()].find((key) => !beforeEnrollment.has(key));
+    assert.ok(custodyKey);
+    const custody = structuredClone(core.secrets.get(custodyKey));
+    const modelSecret = await controller.createSecret(fixture.actor.id, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const configuration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5"),
+      secretBindings: { GW_HOOK_TOKEN: { source: source.ref } },
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Gateway abandonment ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+    const patchDeployment = clients.apps.patchNamespacedDeployment!;
+    const deleteDeployment = clients.apps.deleteNamespacedDeployment!;
+    const deleteSecret = clients.core.deleteNamespacedSecret!;
+    const order: string[] = [];
+    let applies = 0;
+    let gatewayDeleted = false;
+    let podObserved = false;
+    clients.apps.patchNamespacedDeployment = async (request) => {
+      if (!request.body.metadata.name.startsWith("gateway-")) {
+        return patchDeployment(request);
+      }
+      applies += 1;
+      // An uncertain apply can create the Deployment even though the client receives an error.
+      await patchDeployment(request);
+      throw new Error("controlled Gateway Deployment apply failure");
+    };
+    clients.apps.deleteNamespacedDeployment = async (request) => {
+      if (request.name.startsWith("gateway-")) {
+        gatewayDeleted = true;
+        order.push("deployment-deleted");
+      }
+      await deleteDeployment(request);
+    };
+    clients.core.listNamespacedPod = async (request) => {
+      if (
+        gatewayDeleted &&
+        request.labelSelector?.includes(`openclaw.dev/revision=${revision.id}`) &&
+        request.labelSelector.includes("openclaw.dev/workload-role=gateway")
+      ) {
+        if (!podObserved) {
+          podObserved = true;
+          assert.ok(transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)));
+          order.push("pod-present");
+          return {
+            items: [
+              {
+                apiVersion: "v1" as const,
+                kind: "Pod" as const,
+                metadata: {
+                  name: "terminating-gateway",
+                  namespace,
+                  labels: {
+                    "openclaw.dev/namespace": namespaceId,
+                    "openclaw.dev/agent": agent.id,
+                    "openclaw.dev/revision": revision.id,
+                    "openclaw.dev/workload-role": "gateway",
+                  },
+                },
+                status: {},
+              },
+            ],
+          };
+        }
+        order.push("pods-absent");
+      }
+      return { items: [] };
+    };
+    clients.core.deleteNamespacedSecret = async (request) => {
+      if (request.name.startsWith("gateway-secrets-")) {
+        order.push("staged-secret-deleted");
+      }
+      await deleteSecret(request);
+    };
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(applies, 2);
+    assert.equal(stagedWrites.length, 1);
+    assert.equal(
+      transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+      false,
+    );
+    assert.deepEqual(order, [
+      "deployment-deleted",
+      "pod-present",
+      "pods-absent",
+      "staged-secret-deleted",
+    ]);
+    assert.deepEqual(core.secrets.get(custodyKey), custody, "owner custody survives abandonment");
+  },
+);
 
 function recordingActiveGateway(
   namespaceId: string,

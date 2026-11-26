@@ -10,6 +10,7 @@ import type {
   SecretBinding,
   SecretBindings,
   SecretReference,
+  StaticCredentialSource,
 } from "@openclaw-enterprise/contracts";
 import type { Pool } from "pg";
 import type { PlatformStateStore, PlatformUnitOfWork } from "../../packages/occ/src/index.ts";
@@ -20,6 +21,15 @@ type ConfigurationInput = Parameters<
   PlatformUnitOfWork["configurations"]["createConfiguration"]
 >[0];
 type AgentInput = Parameters<PlatformUnitOfWork["agents"]["createAgent"]>[0];
+
+async function completeRevisionWork(pool: Pool, revisionId: string, reason: string) {
+  const { PostgresWorkQueue } = await import("../../packages/occ/src/index.ts");
+  const queue = new PostgresWorkQueue(pool);
+  const claim = await queue.claim();
+  assert.ok(claim, "expected queued revision work");
+  assert.equal(claim.revisionId, revisionId);
+  await queue.complete(claim, { code: reason });
+}
 
 function identifier(kind: string) {
   return `${kind}_${randomUUID()}`;
@@ -208,6 +218,46 @@ async function ensureInstallation(store: PlatformStateStore) {
       createdAt: new Date().toISOString(),
     }),
   );
+}
+
+async function gatewaySource(
+  store: PlatformStateStore,
+  pool: Pool,
+  namespaceId: string,
+): Promise<StaticCredentialSource> {
+  const existing = await pool.query<{ id: string }>(
+    "SELECT id FROM occ.token_service_instances LIMIT 1",
+  );
+  const instanceId =
+    existing.rows[0]?.id ??
+    (
+      await store.transact((state) =>
+        state.installations.selectTokenServiceInstance({
+          id: randomUUID(),
+          driverId: "state-test-token-service",
+          storeIdentity: "state-test-store",
+        }),
+      )
+    ).id;
+  return {
+    id: identifier("cs"),
+    namespaceId,
+    name: `Gateway Source ${randomUUID()}`,
+    type: "static",
+    config: {},
+    ownerCapability: "token_service",
+    tokenServiceInstanceId: instanceId,
+    state: "ready",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function gatewayBindingFor(source: StaticCredentialSource): SecretBindings {
+  return {
+    GW_TOKEN: {
+      source: { kind: "credential_source", namespaceId: source.namespaceId, id: source.id },
+    },
+  };
 }
 
 async function exerciseRepository(store: PlatformStateStore) {
@@ -511,6 +561,213 @@ test(
 );
 
 test(
+  "PostgreSQL Source deletion waits for a published replacement to retire its predecessor",
+  requiresPostgres,
+  async (context) => {
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const store = new PostgresPlatformState(pool);
+    await ensureInstallation(store);
+    const { namespace, configuration, agent: draft } = resources();
+    const harnessSecret = secret(namespace.id);
+    const source = await gatewaySource(store, pool, namespace.id);
+    const gatewayBindings = gatewayBindingFor(source);
+    const { agent, first } = await store.transact(async (state) => {
+      await state.namespaces.createNamespace(namespace);
+      await state.secrets.createSecret(harnessSecret);
+      await state.credentialSources.createCredentialSource(source);
+      await state.configurations.createConfiguration({
+        ...configuration,
+        secretBindings: gatewayBindings,
+      });
+      const agent = await state.agents.createAgent({
+        ...draft,
+        harnessAuth: { method: "codex_pat", source: bindingValue(harnessSecret).source },
+      });
+      const first = await state.revisions.createRevision({
+        ...revisionFor(agent, configuration, harnessSecret, 1),
+        secretBindings: gatewayBindings,
+        gatewayTokenServiceInstanceId: source.tokenServiceInstanceId,
+      });
+      await state.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId: namespace.id,
+        resourceId: first.id,
+        actorId: "principal-source-state",
+      });
+      await state.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, first.id);
+      return { agent, first };
+    });
+    await completeRevisionWork(pool, first.id, "REVISION_ACTIVATED");
+    // Publish a Source-free replacement while its reconcile still owes predecessor retirement.
+    const second = await store.transact(async (state) => {
+      const updated = await state.configurations.advanceConfigurationGeneration(
+        namespace.id,
+        configuration.id,
+        1,
+        {},
+      );
+      assert.ok(updated);
+      const second = await state.revisions.createRevision(
+        revisionFor(agent, updated, harnessSecret, 2),
+      );
+      await state.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId: namespace.id,
+        resourceId: second.id,
+        actorId: "principal-source-state",
+      });
+      await state.agents.compareAndSetActiveRevision(namespace.id, agent.id, first.id, second.id);
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        "reference",
+      );
+      return second;
+    });
+    // A superseded R2 can succeed without retiring R1. Publish R3 while its own retirement
+    // is still pending; R2's success must not let the Source disappear.
+    const third = await store.transact(async (state) => {
+      const configuration = await state.configurations.findConfiguration(
+        namespace.id,
+        agent.configurationId,
+      );
+      assert.ok(configuration);
+      const third = await state.revisions.createRevision(
+        revisionFor(agent, configuration, harnessSecret, 3),
+      );
+      await state.operations.append({
+        kind: "agent_revision",
+        action: "reconcile",
+        namespaceId: namespace.id,
+        resourceId: third.id,
+        actorId: "principal-source-state",
+      });
+      await state.agents.compareAndSetActiveRevision(namespace.id, agent.id, second.id, third.id);
+      return third;
+    });
+    await completeRevisionWork(pool, second.id, "REVISION_SUPERSEDED");
+    await store.transact(async (state) => {
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        "reference",
+      );
+    });
+    // Activation success is recorded after retirement. This proves the adapter predicate,
+    // not physical Kubernetes cleanup.
+    await completeRevisionWork(pool, third.id, "REVISION_ACTIVATED");
+    await store.transact(async (state) => {
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        undefined,
+      );
+      assert.equal(
+        await state.credentialSources.deleteCredentialSource(namespace.id, source.id),
+        true,
+      );
+    });
+  },
+);
+
+test(
+  "PostgreSQL provisioning plans retain their Gateway Source until cancellation",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { PostgresPlatformState },
+      { parseProvisioningPlan },
+      { agentDefaults, claimProvisioningWork },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/agent-provisioning.ts"),
+      import("./postgres-agent-provisioning-setup.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const store = new PostgresPlatformState(pool);
+    await ensureInstallation(store);
+    const { namespace } = resources();
+    const harnessSecret = secret(namespace.id);
+    const source = await gatewaySource(store, pool, namespace.id);
+    const workId = `agent-provisioning:${randomUUID().replaceAll("-", "")}`;
+    const record = await store.transact(async (state) => {
+      await state.namespaces.createNamespace(namespace);
+      await state.secrets.createSecret(harnessSecret);
+      await state.credentialSources.createCredentialSource(source);
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        undefined,
+      );
+      // No Agent or Configuration exists yet. The accepted plan alone selects this Source
+      // for the Gateway; Harness authentication uses a separate Namespace Secret.
+      const created = await state.provisioning.create({
+        workId,
+        namespaceId: namespace.id,
+        actorId: "principal-source-state",
+        requestId: `req_${randomUUID()}`,
+        requestFingerprint: "0".repeat(64),
+        plan: {
+          name: `Provisioned Gateway ${randomUUID()}`,
+          executionMode: "dedicated",
+          configuration: {
+            kind: "agent",
+            values: { agents: { defaults: agentDefaults() } },
+            secretBindings: gatewayBindingFor(source),
+          },
+          harnessAuth: { method: "api_key", source: bindingValue(harnessSecret).source },
+          drivers: {
+            compute: "compute-test",
+            configuration: "configuration-test",
+            iam: "native-iam",
+          },
+        },
+      });
+      return created.record;
+    });
+    parseProvisioningPlan(record);
+    assert.equal(record.status, "queued");
+    await assert.rejects(
+      store.transact((state) =>
+        state.credentialSources.deleteCredentialSource(namespace.id, source.id),
+      ),
+      { name: "ScopeViolationError" },
+    );
+    const claim = await claimProvisioningWork(pool, workId);
+    await store.transact(async (state) => {
+      const running = await state.provisioning.checkpoint(claim, {
+        completedPhase: "admitted",
+        status: "running",
+      });
+      assert.equal(running.status, "running");
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        "reference",
+      );
+      const cancelled = await state.provisioning.cancel(claim, {
+        code: "PROVISIONING_CANCELLED",
+        message: "Provisioning was cancelled before creating an Agent.",
+      });
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(
+        await state.credentialSources.findBlockingReference(namespace.id, source.id),
+        undefined,
+      );
+      assert.equal(
+        await state.credentialSources.deleteCredentialSource(namespace.id, source.id),
+        true,
+      );
+    });
+  },
+);
+
+test(
   "PostgreSQL state persists Secret metadata and enforces binding dependencies",
   requiresPostgres,
   async (context) => {
@@ -654,20 +911,17 @@ test(
       { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
     );
 
-    await pool.query(
-      `UPDATE occ.controller_work AS work
-       SET state = 'succeeded',
-           completed_at = clock_timestamp(),
-           reason_code = 'REVISION_ACTIVATED',
-           updated_at = clock_timestamp()
-       FROM occ.agent_revisions AS revision
+    const revisionWork = await pool.query<{ revision_id: string }>(
+      `SELECT work.revision_id FROM occ.controller_work AS work
+       JOIN occ.agent_revisions AS revision ON work.revision_id = revision.id
        WHERE work.namespace_id = $1
-         AND work.revision_id = revision.id
          AND revision.namespace_id = $1
          AND revision.admitted_spec #>> '{harness_auth,source,namespaceId}' = $1
          AND revision.admitted_spec #>> '{harness_auth,source,id}' = $2`,
       [namespace.id, revisionSecret.id],
     );
+    assert.equal(revisionWork.rowCount, 1);
+    await completeRevisionWork(pool, revisionWork.rows[0]!.revision_id, "REVISION_ACTIVATED");
     await store.transact(async (state) => {
       assert.equal(await state.secrets.hasReferences(namespace.id, revisionSecret.id), false);
       assert.equal(await state.secrets.deleteSecret(namespace.id, revisionSecret.id), true);

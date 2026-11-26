@@ -761,6 +761,9 @@ export function validStandaloneCredentialDeployment(
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
   assertExecutionAdmission(revision);
+  const gatewaySourceSelected = Object.values(revision.secretBindings ?? {}).some(
+    ({ source }) => source.kind === "credential_source",
+  );
   if (
     (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -806,6 +809,11 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
     (revision.executionAdmission.mode === "standalone" && revision.sandboxDriverId === undefined) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
+    gatewaySourceSelected !== (revision.gatewayTokenServiceInstanceId !== undefined) ||
+    (revision.gatewayTokenServiceInstanceId !== undefined &&
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        revision.gatewayTokenServiceInstanceId,
+      )) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
     !validCredentialSourceSnapshots(revision.credentialSources) ||
@@ -1109,8 +1117,9 @@ function normalizedSecretBindings(bindings?: SecretBindings): SecretBindings | u
   try {
     const normalized = normalizeSecretBindings(bindings);
     for (const { source } of Object.values(normalized)) {
-      if (!namespaceIdentifier.test(source.namespaceId) || !secretIdentifier.test(source.id)) {
-        throw new ScopeViolationError("Secret bindings must reference exact Secrets.");
+      const identifier = source.kind === "secret" ? secretIdentifier : credentialSourceIdentifier;
+      if (!namespaceIdentifier.test(source.namespaceId) || !identifier.test(source.id)) {
+        throw new ScopeViolationError("Secret bindings must reference exact resources.");
       }
     }
     return Object.keys(normalized).length === 0 ? undefined : immutableCopy(normalized);
@@ -1122,43 +1131,55 @@ function normalizedSecretBindings(bindings?: SecretBindings): SecretBindings | u
   }
 }
 
-function secretBindingRefs(
-  bindings?: SecretBindings,
-): readonly { namespaceId: string; id: string }[] {
+function secretBindingRefs(bindings?: SecretBindings): readonly SecretBindings[string]["source"][] {
   const normalized = normalizedSecretBindings(bindings);
   if (normalized === undefined) {
     return [];
   }
-  return Object.freeze(
-    Object.values(normalized).map(({ source }) => ({
-      namespaceId: source.namespaceId,
-      id: source.id,
-    })),
-  );
+  return Object.freeze(Object.values(normalized).map(({ source }) => source));
 }
 
 function secretBindingsReference(
   bindings: SecretBindings | undefined,
   namespaceId: string,
   secretId: string,
+  kind: "secret" | "credential_source" = "secret",
 ): boolean {
   return secretBindingRefs(bindings).some(
-    (source) => source.namespaceId === namespaceId && source.id === secretId,
+    (source) =>
+      source.kind === kind && source.namespaceId === namespaceId && source.id === secretId,
   );
 }
 
 async function assertSecretBindingsAvailable(
   secrets: Pick<SecretReadRepository, "findSecret">,
+  credentialSources: Pick<CredentialSourceReadRepository, "findCredentialSource">,
   namespaceId: string,
   bindings: SecretBindings | undefined,
+  gatewayTokenServiceInstanceId?: string,
 ): Promise<void> {
   for (const source of secretBindingRefs(bindings)) {
     if (source.namespaceId !== namespaceId) {
       throw new ScopeViolationError("Secret bindings cannot cross Namespace boundaries.");
     }
-    const secret = await secrets.findSecret(namespaceId, source.id);
-    if (secret === undefined) {
-      throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
+    if (source.kind === "secret") {
+      const secret = await secrets.findSecret(namespaceId, source.id);
+      if (secret === undefined) {
+        throw new ScopeViolationError("Secret bindings reference unavailable Secret metadata.");
+      }
+    } else {
+      const credentialSource = await credentialSources.findCredentialSource(namespaceId, source.id);
+      if (
+        credentialSource?.type !== "static" ||
+        credentialSource.state !== "ready" ||
+        credentialSource.ownerCapability !== "token_service" ||
+        (gatewayTokenServiceInstanceId !== undefined &&
+          credentialSource.tokenServiceInstanceId !== gatewayTokenServiceInstanceId)
+      ) {
+        throw new ScopeViolationError(
+          "Secret bindings reference unavailable static CredentialSources.",
+        );
+      }
     }
   }
 }
@@ -1166,6 +1187,7 @@ async function assertSecretBindingsAvailable(
 async function assertConfigurationUsableByAgent(
   configurations: ConfigurationReadRepository,
   secrets: SecretReadRepository,
+  credentialSources: CredentialSourceReadRepository,
   namespaceId: string,
   configurationId: string,
 ): Promise<void> {
@@ -1173,7 +1195,12 @@ async function assertConfigurationUsableByAgent(
   if (configuration === undefined) {
     throw new ScopeViolationError("The Agent references an unavailable Configuration.");
   }
-  await assertSecretBindingsAvailable(secrets, namespaceId, configuration.secretBindings);
+  await assertSecretBindingsAvailable(
+    secrets,
+    credentialSources,
+    namespaceId,
+    configuration.secretBindings,
+  );
 }
 
 function assertSecret(secret: Secret): void {
@@ -2244,6 +2271,7 @@ function repositories(
             return secret === undefined ? undefined : immutableCopy(secret);
           },
         },
+        credentialSources,
         configuration.namespaceId,
         secretBindings,
       );
@@ -2274,7 +2302,7 @@ function repositories(
         nextSecretBindings === undefined
           ? current.secretBindings
           : normalizedSecretBindings(nextSecretBindings);
-      await assertSecretBindingsAvailable(secrets, namespaceId, secretBindings);
+      await assertSecretBindingsAvailable(secrets, credentialSources, namespaceId, secretBindings);
       const { secretBindings: _currentSecretBindings, ...withoutSecretBindings } = current;
       const updated = immutableCopy({
         ...withoutSecretBindings,
@@ -3111,10 +3139,70 @@ function repositories(
             );
           return (
             harnessCredentialSourceReference(revision?.harnessAuth, credentialSourceId) ||
-            agentCredentialSourceReference(revision?.credentialSources, credentialSourceId)
+            agentCredentialSourceReference(revision?.credentialSources, credentialSourceId) ||
+            secretBindingsReference(
+              revision?.secretBindings,
+              namespaceId,
+              credentialSourceId,
+              "credential_source",
+            )
           );
         });
+      let predecessorReferenced = false;
+      for (const agent of snapshot.agents.values()) {
+        if (agent.namespaceId !== namespaceId || agent.activeRevisionId === undefined) {
+          continue;
+        }
+        const history = snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? [];
+        const active = history.find(({ id }) => id === agent.activeRevisionId);
+        if (active === undefined) {
+          continue;
+        }
+        const predecessors = history
+          .filter(({ revision }) => revision <= active.revision)
+          .sort((left, right) => right.revision - left.revision);
+        for (const candidate of predecessors) {
+          if (
+            candidate.id !== active.id &&
+            secretBindingsReference(
+              candidate.secretBindings,
+              namespaceId,
+              credentialSourceId,
+              "credential_source",
+            )
+          ) {
+            predecessorReferenced = true;
+            break;
+          }
+          // The in-memory adapter has no durable Worker completion state. Its recorded
+          // revision operations represent outstanding work; absence ends the predecessor walk.
+          const operation = snapshot.operations.find(
+            (entry) =>
+              entry.kind === "agent_revision" &&
+              entry.target === undefined &&
+              entry.namespaceId === namespaceId &&
+              entry.resourceId === candidate.id,
+          );
+          if (operation === undefined) {
+            break;
+          }
+        }
+        if (predecessorReferenced) {
+          break;
+        }
+      }
       const referenced =
+        predecessorReferenced ||
+        Array.from(snapshot.configurations.values()).some(
+          (configuration) =>
+            configuration.namespaceId === namespaceId &&
+            secretBindingsReference(
+              configuration.secretBindings,
+              namespaceId,
+              credentialSourceId,
+              "credential_source",
+            ),
+        ) ||
         Array.from(snapshot.agents.values()).some((agent) => {
           const activeRevision = (
             snapshot.revisions.get(agentKey(namespaceId, agent.id)) ?? []
@@ -3124,9 +3212,19 @@ function repositories(
             (harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
               harnessCredentialSourceReference(activeRevision?.harnessAuth, credentialSourceId) ||
               agentCredentialSourceReference(agent.credentialSources, credentialSourceId) ||
-              agentCredentialSourceReference(activeRevision?.credentialSources, credentialSourceId))
+              agentCredentialSourceReference(
+                activeRevision?.credentialSources,
+                credentialSourceId,
+              ) ||
+              secretBindingsReference(
+                activeRevision?.secretBindings,
+                namespaceId,
+                credentialSourceId,
+                "credential_source",
+              ))
           );
-        }) || revisionOperations(false);
+        }) ||
+        revisionOperations(false);
       if (referenced) {
         return "reference";
       }
@@ -3562,6 +3660,7 @@ function repositories(
       await assertConfigurationUsableByAgent(
         configurations,
         secrets,
+        credentialSources,
         agent.namespaceId,
         agent.configurationId,
       );
@@ -3709,7 +3808,13 @@ function repositories(
       if ((await configurations.findConfiguration(namespaceId, configurationId)) === undefined) {
         throw new ScopeViolationError("The Agent references an unavailable Configuration.");
       }
-      await assertConfigurationUsableByAgent(configurations, secrets, namespaceId, configurationId);
+      await assertConfigurationUsableByAgent(
+        configurations,
+        secrets,
+        credentialSources,
+        namespaceId,
+        configurationId,
+      );
       // Like PostgreSQL, only a supplied binding must be available; omission keeps the stored one.
       if (harnessAuth !== undefined) {
         await assertHarnessAuthAvailable(
@@ -3953,7 +4058,13 @@ function repositories(
       );
       const secretBindings = normalizedSecretBindings(revision.secretBindings);
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
-      await assertSecretBindingsAvailable(secrets, revision.namespaceId, secretBindings);
+      await assertSecretBindingsAvailable(
+        secrets,
+        credentialSources,
+        revision.namespaceId,
+        secretBindings,
+        revision.gatewayTokenServiceInstanceId,
+      );
       const key = agentKey(revision.namespaceId, revision.agentId);
       const policy = snapshot.sandboxPolicies.get(key);
       const grants = policy?.repositoryNetworkPolicy;

@@ -13,6 +13,7 @@ import {
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
+import { gatewayStartupSourceDelivery } from "../../apps/controller/src/composition/token-service.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { openShellCredentialProviderName } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
@@ -72,6 +73,7 @@ async function controlledRetirementTransport(
   let reads = 0;
   let effectivePolicyPermissive = false;
   let receiptRevoked = true;
+  let sandboxCleanupRefused = false;
   const sandboxes = new Map<
     string,
     { sandbox: Wire; policyVersion: number; protectedRoute: { host: string; port: number } }
@@ -100,6 +102,11 @@ async function controlledRetirementTransport(
       return entry && { sandbox: entry.sandbox };
     },
     DeleteSandbox: (request) => {
+      if (sandboxCleanupRefused) {
+        throw Object.assign(new Error("Controlled Sandbox cleanup refusal"), {
+          code: grpc.status.FAILED_PRECONDITION,
+        });
+      }
       sandboxes.delete(String(request.name));
       return { outcome: "DELETION_OUTCOME_COMPLETED" };
     },
@@ -370,6 +377,9 @@ async function controlledRetirementTransport(
     },
     set receiptRevoked(value: boolean) {
       receiptRevoked = value;
+    },
+    set sandboxCleanupRefused(value: boolean) {
+      sandboxCleanupRefused = value;
     },
   };
 }
@@ -1481,6 +1491,16 @@ test(
       state,
       ...installationControllerOptions(runtime.installation),
       credentialSourceDelivery,
+      gatewayStartupSourceDelivery: gatewayStartupSourceDelivery({
+        ...runtime,
+        installation: {
+          ...runtime.installation,
+          drivers: {
+            ...runtime.installation.drivers,
+            token_service: { ...runtime.installation.drivers.token_service!, id: owner.id },
+          },
+        },
+      }),
       namespaceLifecycleBindings: runtime.namespaceLifecycleBindings,
       backends: runtime.installation.backend,
       recordOperations: true,
@@ -2489,6 +2509,7 @@ test(
     const { KubernetesObjectApi } = createRequire(
       new URL("../../apps/controller/package.json", import.meta.url),
     )("@kubernetes/client-node");
+    const admissionClients = Reflect.get(compute, "apiClients");
     assert.ok(
       Reflect.set(
         compute,
@@ -2918,6 +2939,191 @@ test(
         },
       );
     });
+
+    await t.test(
+      "a missing tenant Namespace cannot confirm a mixed Gateway and Proxy withdrawal",
+      async () => {
+        const retirementClients = Reflect.get(compute, "apiClients");
+        assert.ok(Reflect.set(compute, "apiClients", admissionClients));
+        const mixedMaterial = randomUUID();
+        material.push(mixedMaterial);
+        const mixedSource = await request(
+          "POST",
+          `${base}/credential-sources`,
+          {
+            name: "Mixed Gateway and Proxy Source",
+            type: "static",
+            config: { provider_preset: "openai" },
+            secret: mixedMaterial,
+          },
+          201,
+        );
+        const mixedValues = {
+          ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+          cron: { webhookToken: "${GW_HOOK_TOKEN}" },
+        };
+        const mixedConfiguration = await request(
+          "POST",
+          `${base}/configurations`,
+          {
+            kind: "agent",
+            values: mixedValues,
+            secretBindings: { GW_HOOK_TOKEN: { source: mixedSource.ref } },
+          },
+          201,
+        );
+        const mixedAgent = await request(
+          "POST",
+          `${base}/agents`,
+          {
+            name: "Mixed Gateway and Proxy Agent",
+            configurationId: mixedConfiguration.id,
+            executionMode: "dedicated",
+            harnessAuth: { method: "credential_source", sourceId: mixedSource.id },
+            credentialSources: [{ sourceId: mixedSource.id }],
+          },
+          201,
+        );
+        const mixedAgentPath = `${base}/agents/${mixedAgent.id}`;
+        const mixedNetworking = `${mixedAgentPath}/sandbox-policy/networking`;
+        await request("PATCH", `${mixedNetworking}/editing`, { enabled: true }, 200);
+        await request("PUT", mixedNetworking, { expectedVersion: 1, additions: [grant] }, 200);
+        const deployment = await request("POST", `${mixedAgentPath}/deploy`, {}, 202);
+        assert.ok(Reflect.set(compute, "apiClients", retirementClients));
+        const mixedRevision = await state.read((view) =>
+          view.revisions.findRevision(namespaceId, mixedAgent.id, deployment.id),
+        );
+        assert.ok(mixedRevision?.credentialDeployment);
+        assert.equal(mixedRevision.secretBindings?.GW_HOOK_TOKEN?.source.id, mixedSource.id);
+        assert.equal(mixedRevision.credentialDeployment.bindings[0]?.sourceRef.id, mixedSource.id);
+
+        // The API admitted the real mixed policy. Control only the external state reached after
+        // delivery; the test exercises actual withdrawal, Stop, Compute and Proxy decisions.
+        const mixedSandboxId = "controlled-mixed-sandbox";
+        const mixedTargetName = `credential-target-${digest(mixedAgent.id)}-rev-${digest(mixedRevision.id)}`;
+        const target = compute.manifest(
+          "v1",
+          "ConfigMap",
+          mixedTargetName,
+          {
+            namespaceId,
+            agentId: mixedAgent.id,
+            servicePrincipalId: mixedRevision.servicePrincipalId,
+            revisionId: mixedRevision.id,
+          },
+          { name: kubernetesNamespace, plane: "control" },
+        );
+        stopTransport.objects.set(stopTransport.key("ConfigMap", mixedTargetName), {
+          ...target,
+          metadata: { ...target.metadata, uid: "controlled-mixed-target", resourceVersion: "1" },
+          immutable: true,
+          data: { sandboxId: mixedSandboxId },
+        });
+        const mixedSandboxName = sandbox.harnessResource!({
+          namespace: placedNamespace,
+          revision: mixedRevision,
+        }).resourceName;
+        const mixedProvider = openShellCredentialProviderName(
+          mixedRevision.credentialDeployment.bindings[0]!,
+        );
+        nativeTransport.seed(mixedSource.id, mixedProvider);
+        nativeTransport.seedSandbox(mixedRevision, mixedSandboxName, mixedSandboxId);
+        await pool.query(
+          "UPDATE occ.controller_work SET available_at=clock_timestamp() + interval '1 hour' WHERE idempotency_key=$1 AND state='queued'",
+          [`agent_revision:${mixedRevision.id}:reconcile`],
+        );
+        const active = await state.transact((unit) =>
+          unit.agents.compareAndSetActiveRevision(
+            namespaceId,
+            mixedAgent.id,
+            undefined,
+            mixedRevision.id,
+          ),
+        );
+        assert.equal(active?.activeRevisionId, mixedRevision.id);
+        const mixedWithdrawal = `${mixedAgentPath}/credential-sources/${mixedSource.id}`;
+        await request("POST", `${mixedWithdrawal}/withdraw`, undefined, 202);
+        nativeTransport.effectivePolicyPermissive = true;
+        const mixedWorker = createWorker();
+        try {
+          await mixedWorker.start();
+          await waitFor("the mixed Proxy withdrawal to remain unconfirmed", async () => {
+            const status = await request("GET", `${mixedWithdrawal}/withdrawal`, undefined, 200);
+            return status.state === "pending" && status.reason === "DEPENDENCY_UNAVAILABLE"
+              ? status
+              : undefined;
+          });
+          assert.deepEqual((nativeTransport.sandbox(mixedSandboxName)!.spec as Wire).providers, [
+            mixedProvider,
+          ]);
+
+          // A Kubernetes Namespace can disappear while its independently managed Sandbox remains.
+          // Refuse external cleanup as well, so Stop must not claim that the shared Source is gone.
+          stopTransport.objects.delete(stopTransport.key("Namespace", kubernetesNamespace));
+          for (const key of stopTransport.objects.keys()) {
+            if (key.includes(`:${kubernetesNamespace}:`)) {
+              stopTransport.objects.delete(key);
+            }
+          }
+          nativeTransport.sandboxCleanupRefused = true;
+          const waitForStop = () =>
+            waitFor("the mixed Agent Stop work to settle", async () => {
+              const { rows } = await pool.query(
+                "SELECT state, reason_code FROM occ.controller_work WHERE namespace_id=$1 AND agent_id=$2 AND agent_target='stopped' ORDER BY created_at DESC LIMIT 1",
+                [namespaceId, mixedAgent.id],
+              );
+              return ["succeeded", "failed_permanent"].includes(rows[0]?.state)
+                ? rows[0]
+                : undefined;
+            });
+          await request("POST", `${mixedAgentPath}/stop`, undefined, 202);
+          const stopped = await waitForStop();
+          assert.equal(stopped.state, "failed_permanent", stopped.reason_code);
+          const status = await request("GET", `${mixedWithdrawal}/withdrawal`, undefined, 200);
+          assert.equal(status.state, "pending");
+          assert.deepEqual((nativeTransport.sandbox(mixedSandboxName)!.spec as Wire).providers, [
+            mixedProvider,
+          ]);
+          const { rows: audit } = await pool.query(
+            "SELECT count(*)::int AS count FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND action='openclaw.agents.lifecycle.credentials_withdraw' AND outcome='success'",
+            [namespaceId, mixedAgent.id],
+          );
+          assert.equal(audit[0].count, 0);
+
+          // On replay, confirmed removal of the exact Sandbox revokes this Agent's access even
+          // when the target ConfigMap vanished with the Namespace. The Source owner retires any
+          // remaining workspace Provider copy separately when the Source itself is retired.
+          nativeTransport.sandboxCleanupRefused = false;
+          await request("POST", `${mixedAgentPath}/stop`, undefined, 202);
+          const retried = await waitForStop();
+          assert.equal(retried.state, "succeeded", retried.reason_code);
+          assert.equal(nativeTransport.sandbox(mixedSandboxName), undefined);
+          const revoked = await state.read((view) =>
+            view.credentialSources.findCredentialWithdrawal(
+              namespaceId,
+              mixedRevision.id,
+              mixedSource.id,
+            ),
+          );
+          assert.equal(revoked?.state, "revoked");
+          assert.ok(
+            await nativeTransport.client.getProvider(kubernetesNamespace, mixedProvider, t.signal),
+            "per-Agent revocation does not claim Source-owned Provider custody was erased",
+          );
+          const { rows: confirmation } = await pool.query(
+            "SELECT actor_id, details->>'revisionId' AS revision_id FROM occ.audit_events WHERE namespace_id=$1 AND resource_id=$2 AND action='openclaw.agents.lifecycle.credentials_withdraw' AND outcome='success'",
+            [namespaceId, mixedAgent.id],
+          );
+          assert.deepEqual(confirmation, [
+            { actor_id: principal.id, revision_id: mixedRevision.id },
+          ]);
+        } finally {
+          await mixedWorker.stop();
+          nativeTransport.effectivePolicyPermissive = false;
+          nativeTransport.sandboxCleanupRefused = false;
+        }
+      },
+    );
 
     for (const value of material) {
       assert.equal(

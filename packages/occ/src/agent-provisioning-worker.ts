@@ -1390,8 +1390,13 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
     },
   ): Promise<readonly (SecretReference | CredentialSourceReference)[]> {
     const ids = new Set<string>();
+    const sourceIds = new Set<string>();
     for (const binding of Object.values(input.secretBindings ?? {})) {
-      ids.add(binding.source.id);
+      if (binding.source.kind === "secret") {
+        ids.add(binding.source.id);
+      } else {
+        sourceIds.add(binding.source.id);
+      }
     }
     if (isSecretHarnessAuth(input.harnessAuth)) {
       ids.add(input.harnessAuth.source.id);
@@ -1408,10 +1413,10 @@ export function createProvisioningWorker(dependencies: ProvisioningWorkerDepende
       sources.push({ kind: "secret", namespaceId, id: secret.id });
     }
     if (input.harnessAuth?.method === "credential_source") {
-      const source = await state.credentialSources.lockCredentialSource(
-        namespaceId,
-        input.harnessAuth.sourceId,
-      );
+      sourceIds.add(input.harnessAuth.sourceId);
+    }
+    for (const id of sourceIds) {
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, id);
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("Agent provisioning credential source is unavailable.");
       }

@@ -207,6 +207,7 @@
     {
       "path": "tests/integration/postgres-staged-agent-credential-binding.test.ts",
       "expectedTests": [
+        "a missing tenant Namespace cannot confirm a mixed Gateway and Proxy withdrawal",
         "public managed Source enrollment and active staged Agent withdrawal preserve custody",
         "Worker honors each withdrawal requester's authority at dispatch"
       ]
@@ -276,6 +277,8 @@
       "expectedTests": [
         "in-memory state persists Secret metadata and binding references without values",
         "PostgreSQL PAT Secret bindings enforce exact ownership and reject retired auth methods",
+        "PostgreSQL provisioning plans retain their Gateway Source until cancellation",
+        "PostgreSQL Source deletion waits for a published replacement to retire its predecessor",
         "PostgreSQL state persists Secret metadata and enforces binding dependencies"
       ]
     },
