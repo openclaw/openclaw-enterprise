@@ -31,7 +31,7 @@ import {
   repositoryRestartInventory,
   repositoryRestartState,
 } from "../helpers/postgres-repository-restart-inventory.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { waitFor, within } from "../helpers/wait-for.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {

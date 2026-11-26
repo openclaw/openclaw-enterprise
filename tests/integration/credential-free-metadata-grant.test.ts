@@ -18,6 +18,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 const digest = (grant: unknown) => createHash("sha256").update(JSON.stringify(grant)).digest("hex");
 type FixtureApp = {
   controller: OpenClawController;
+  principal: { id: string };
   request: (
     method: string,
     path: string,
@@ -46,14 +47,12 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
       app,
       agent,
       namespace,
-      path,
       origin,
       countSecretReads: readCount,
     }: {
       app: FixtureApp;
       agent: Agent;
       namespace: Namespace;
-      path: string;
       origin: string;
       countSecretReads: () => number;
     }) {
@@ -75,21 +74,19 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
       restoreProvider = () => {
         providers[index] = provider;
       };
-      const created = await app.request("POST", path, {
-        body: {
-          name: "metadata-order",
-          type: "credential-free-repository-metadata",
-          config: {
-            origin,
-            repository_id: "7311",
-            repository: "fixture/credential-free",
-            agent_id: agent.id,
-            authority: "execution",
-          },
+      const source = await app.controller.createCredentialSource(app.principal.id, {
+        namespaceId: namespace.id,
+        name: "metadata-order",
+        type: "credential-free-repository-metadata",
+        config: {
+          origin,
+          repository_id: "7311",
+          repository: "fixture/credential-free",
+          agent_id: agent.id,
+          authority: "execution",
         },
       });
-      assert.equal(created.status, 201);
-      driverGrant = provider.normalizeGrant([], created.data.config);
+      driverGrant = provider.normalizeGrant([], source.config);
       if (reordered) {
         driverGrant = Object.fromEntries(Object.entries(driverGrant).reverse());
         setGrant(driverGrant);
@@ -98,11 +95,11 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
         body: {
           configurationId: agent.configurationId,
           harnessAuth: { method: "runtime" },
-          credentialSources: [{ sourceId: created.data.id }],
+          credentialSources: [{ sourceId: source.id }],
         },
       });
       assert.equal(bound.status, 200);
-      return { agent: bound.data, source: created.data };
+      return { agent: bound.data, source };
     },
   };
   const f = await staticEgressFixture(t, options);
@@ -142,76 +139,6 @@ test("credential-free metadata exchange accepts a reordered Driver grant", async
   assert.equal(f.secretReads, reads);
 });
 
-test("Gateway-owned source admission consults its catalog despite a matching Proxy offer", async (t) => {
-  const f = await staticEgressFixture(t, { admitRevision: false });
-  // Runtime-managed authentication has no provider override; its supplemental source
-  // authorizes the native default so this case isolates catalog ownership.
-  const created = await f.request("POST", `/namespaces/${f.namespace.id}/credential-sources`, {
-    body: { name: "supplemental", type: "openai", config: {}, secrets: f.source.secrets },
-  });
-  assert.equal(created.status, 201);
-  const source = created.data;
-  const controller: OpenClawController = f.controller;
-  const gateway = controller.selectedDriver("credential_gateway");
-  const providers = controller.selectedDriver("credential_proxy").sourceControl
-    .providers as CredentialProviderDefinition[];
-  const index = providers.findIndex(
-    (provider) => provider.ref.id === "credential-free-repository-metadata",
-  );
-  const provider = providers[index];
-  assert.ok(provider);
-  // After the Gateway creates the source, make an offered Proxy provider advertise the same type.
-  providers[index] = { ...provider, sourceType: { ...provider.sourceType, type: source.type } };
-  const agentPath = `/namespaces/${f.namespace.id}/agents/${f.agent.id}`;
-  const bound = await f.request("PATCH", agentPath, {
-    body: {
-      configurationId: f.agent.configurationId,
-      harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.id }],
-    },
-  });
-  assert.equal(bound.status, 200);
-  // Grant the supplemental source through the regular IAM API.
-  const secretRole = await f.request("POST", `/namespaces/${f.namespace.id}/iam/roles`, {
-    body: {
-      name: "supplemental-source-use",
-      permissions: [{ action: "operate", resourceKind: "credential_source" }],
-    },
-  });
-  assert.equal(secretRole.status, 201);
-  const secretGrant = await f.request("POST", `/namespaces/${f.namespace.id}/iam/access-bindings`, {
-    body: {
-      subjectKind: "identity",
-      subjectId: f.agent.servicePrincipalId,
-      roleId: secretRole.data.id,
-      resourceKind: "credential_source",
-      resourceId: source.id,
-    },
-  });
-  assert.equal(secretGrant.status, 201);
-  const revisions = () =>
-    controller.transact((state) => state.revisions.listRevisions(f.namespace.id, f.agent.id));
-  const deployed = await f.request("POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  const admitted = await revisions();
-  assert.deepEqual(admitted[0]?.credentialSources, [
-    { sourceId: source.id, sourceType: source.type, credentialGatewayId: gateway.id },
-  ]);
-
-  const list = gateway.listSourceTypes.bind(gateway);
-  const catalog = t.mock.method(
-    gateway,
-    "listSourceTypes",
-    async (...args: Parameters<typeof list>) =>
-      (await list(...args)).filter((type) => type.type !== f.source.type),
-  );
-  const result = await f.request("POST", `${agentPath}/deploy`);
-  assertApiError(result, 409, "RESOURCE_CONFLICT");
-  assert.match(result.body.error.message, /Credential Gateway does not offer/);
-  assert.equal(catalog.mock.callCount(), 1);
-  assert.deepEqual(await revisions(), admitted);
-});
-
 test("credential-free route admission rejects changed, missing and undefined extra grant fields", async (t) => {
   const { f, setGrant, restoreProvider, effects } = await metadataFixture(t, false);
   const before = effects();
@@ -245,10 +172,6 @@ test("credential-free route admission rejects changed, missing and undefined ext
 test("source admission names the Proxy owner when its provider is no longer offered", async (t) => {
   const { f, effects } = await metadataFixture(t, false);
   const controller: OpenClawController = f.controller;
-  const gatewayCatalog = t.mock.method(
-    controller.selectedDriver("credential_gateway"),
-    "listSourceTypes",
-  );
   const providers = controller.selectedDriver("credential_proxy").sourceControl
     .providers as CredentialProviderDefinition[];
   const offered = [...providers];
@@ -268,10 +191,8 @@ test("source admission names the Proxy owner when its provider is no longer offe
     result.body.error.message,
     "The Credential Proxy does not offer this credential source type. An Installation administrator must check the selected Credential Proxy's provider configuration and any required token issuer.",
   );
-  assert.equal(gatewayCatalog.mock.callCount(), 0);
   assert.deepEqual(effects(), before);
   // Restoring the same provider makes this Agent admissible again.
   restore();
   await f.deployAgent(f.namespace.id, f.agent.id);
-  assert.equal(gatewayCatalog.mock.callCount(), 0);
 });

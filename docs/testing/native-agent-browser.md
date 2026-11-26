@@ -18,7 +18,7 @@ Prepare the [Kubernetes runtime prerequisites](kubernetes.md#kubernetes-model-tu
 and the [Keycloak host prerequisites](kubernetes.md#run-the-keycloak-lane).
 Use a disposable k3d cluster and a dedicated database. The lane requires an
 existing authorized model credential, digest-pinned runtime images, Chromium,
-and a free `127.0.0.1:443` for Keycloak. Keep credentials in the
+and the loopback port required by the selected container engine. Keep credentials in the
 [private test environment](README.md#requirements-and-credentials).
 
 From the repository root:

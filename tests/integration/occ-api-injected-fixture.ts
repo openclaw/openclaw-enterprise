@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Type, type Static, type TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { AuthAccountRoleNotFoundError } from "../../apps/controller/src/auth/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   createControllerApp,
@@ -13,6 +14,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   AgentResponse,
   ConfigurationResponse,
+  CredentialSourceResponse,
   InstallationResponse,
   JsonValue,
   NamespaceResponse,
@@ -31,7 +33,7 @@ import {
   type ComputeAgentBinding,
   type HarnessAuthBinding,
   type OpenClawConfigurationDocument,
-  type SecretReference,
+  type CredentialSourceReference,
 } from "../../packages/contracts/src/index.ts";
 import { NativeIAMDriver, type NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
@@ -42,6 +44,7 @@ import {
 } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 type ControllerOptions = NonNullable<ConstructorParameters<typeof OpenClawController>[1]>;
@@ -68,11 +71,12 @@ interface InjectedFixtureOptions extends Partial<
     | "configurationDriver"
     | "secretDriver"
     | "channelDriver"
-    | "readManagedMcpToolNames"
+    | "managedMcpDiscoveryTransport"
     | "logger"
   >
 > {
   readonly recordOperations?: ControllerOptions["recordOperations"];
+  readonly gatewayStartupSourceDelivery?: ControllerOptions["gatewayStartupSourceDelivery"];
   readonly backends?: FixtureBackends | undefined;
   readonly backendSummaries?: ControllerAppOptions["backendSummaries"];
   readonly provisionAuthAccount?: (
@@ -214,6 +218,9 @@ export async function createInjectedControllerFixture(
               controller = new OpenClawController(installation, {
                 state: platformState,
                 recordOperations: options.recordOperations ?? false,
+                ...(options.gatewayStartupSourceDelivery === undefined
+                  ? {}
+                  : { gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery }),
                 ...(options.backends === undefined ? {} : { backends: options.backends }),
               });
               if (options.channelDriver) {
@@ -254,9 +261,9 @@ export async function createInjectedControllerFixture(
         installationId,
       },
       auth: authFixture.auth,
-      ...(options.readManagedMcpToolNames === undefined
+      ...(options.managedMcpDiscoveryTransport === undefined
         ? {}
-        : { readManagedMcpToolNames: options.readManagedMcpToolNames }),
+        : { managedMcpDiscoveryTransport: options.managedMcpDiscoveryTransport }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       ...(options.provisionAuthAccount === undefined
         ? {}
@@ -434,10 +441,11 @@ export async function createAgent(
   namespaceId: string,
   name: string,
   values: OpenClawConfigurationDocument = {},
+  fields: { executionMode?: "dedicated" | "embedded" } = {},
 ) {
   const configuration = await createConfiguration(controller, namespaceId, values);
   const result = await controller.request("POST", `/namespaces/${namespaceId}/agents`, {
-    body: { name, configurationId: configuration.id },
+    body: { name, configurationId: configuration.id, ...fields },
   });
   const { data } = checkedInjectedBody(result, 201, AgentResponse);
   assert.equal(data.name, name);
@@ -474,8 +482,8 @@ export function slackValidationConfiguration({
   botToken,
   model,
 }: {
-  appSource: SecretReference;
-  botSource: SecretReference;
+  appSource: CredentialSourceReference;
+  botSource: CredentialSourceReference;
   appToken?: string;
   botToken?: string;
   model?: string;
@@ -483,7 +491,7 @@ export function slackValidationConfiguration({
   return {
     kind: "agent",
     values: {
-      ...(model === undefined ? {} : { agents: { defaults: { model } } }),
+      ...createHarnessConfiguration("codex", (model ?? "codex/gpt-4.1").replace(/^codex\//, "")),
       channels: {
         slack: {
           enabled: true,
@@ -498,6 +506,70 @@ export function slackValidationConfiguration({
       SLACK_BOT_TOKEN: { source: botSource, delivery: { type: "env" } },
     },
   };
+}
+
+const sourceOwners = new WeakMap<OpenClawController, OCCTokenServiceDriver>();
+
+/** Enroll a static Source through the HTTP caller using the selected OCC owner. */
+export async function enrollStaticSource(
+  controller: InjectedController,
+  namespaceId: string,
+  name: string,
+  secret: string,
+) {
+  const occ = controller.fixture.controller;
+  const state = controller.fixture.platformState;
+  assert(occ && state);
+  let owner = sourceOwners.get(occ);
+  if (!owner) {
+    const store = occ.selectedDriver("secret").privateSecrets;
+    assert(store);
+    const instance = await occ.activateTokenServiceInstance("fixture-tokens", randomUUID());
+    owner = new OCCTokenServiceDriver(
+      "fixture-tokens",
+      occ.installation.id,
+      store,
+      instance,
+      state,
+    );
+    occ.registerDriver(owner);
+    occ.selectDriver("token_service", owner.id);
+    sourceOwners.set(occ, owner);
+  }
+  const response = await controller.request(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources`,
+    {
+      body: { name, type: "static", secret },
+    },
+  );
+  return { owner, source: checkedInjectedBody(response, 201, CredentialSourceResponse).data };
+}
+
+/** The in-memory IAM fixture does not have transactional server-owned delegation. */
+export function grantAgentSourceOperate(
+  fixture: InjectedController["fixture"],
+  namespaceId: string,
+  agent: Pick<AgentWire, "id" | "servicePrincipalId">,
+  sourceId: string,
+) {
+  const roleId = `source-operate-${agent.id}`;
+  if (!fixture.state.roles.some((role) => role.id === roleId)) {
+    fixture.state.roles.push({
+      id: roleId,
+      namespaceId,
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    });
+  }
+  fixture.state.bindings.push({
+    id: `${roleId}-${sourceId}`,
+    namespaceId,
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId,
+    resourceKind: "credential_source",
+    resourceId: sourceId,
+  });
 }
 
 export async function bindHarnessKey(

@@ -289,7 +289,7 @@ const cases = [
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       message:
-        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+        "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryAccess.repositories`.",
     },
   ],
   [
@@ -490,7 +490,7 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message:
-        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryAccess.repositories, or select each repository with its own profile instead.",
     },
   ],
   [
@@ -601,7 +601,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_ROLE_MISMATCH",
-      message: "The selected Secret has the wrong token role for this field.",
+      message: "The selected credential has the wrong token role for this field.",
       details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -611,7 +611,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED",
-      message: "The channel provider rejected this credential. Check the selected Secret.",
+      message: "The channel provider rejected the selected credential. Check it and retry.",
       details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -621,7 +621,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
-      message: "Select an environment-backed Secret for this channel credential.",
+      message: "Select a bound environment credential for this channel field.",
       details: [{ path: "/channels/slack/appToken", code: "INVALID_VALUE" }],
     },
   ],
@@ -634,7 +634,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_CREDENTIAL_BINDING_REQUIRED",
-      message: "Select an environment-backed Secret for this channel credential.",
+      message: "Select a bound environment credential for this channel field.",
       details: [{ path: "/channels/slack/accounts", code: "INVALID_VALUE" }],
     },
   ],
@@ -654,7 +654,7 @@ const cases = [
     {
       status: 400,
       code: "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
-      message: "The channel provider rejected the selected credential. Check the Secret and retry.",
+      message: "The channel provider rejected the selected credential. Check it and retry.",
     },
   ],
   [
@@ -1139,7 +1139,7 @@ const cases = [
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
+        "OCC could not reach the sign-in service at auth.openai.com. Ask an operator to check API Pod DNS, routing, and HTTPS connectivity, then try again.",
     },
   ],
   [

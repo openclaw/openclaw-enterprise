@@ -5,7 +5,7 @@ import type { TestContext } from "node:test";
 import { isRecord } from "../helpers/egress-observation-values.ts";
 import { grpc, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
 import type { Exchange } from "../helpers/static-egress-exchange.ts";
-import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { protectedMetadataFixture } from "../helpers/static-egress.mjs";
 
 type Peer = () => Grpc.Metadata;
 type OpeningEvents = {
@@ -58,7 +58,7 @@ function exchangeHandler(authority: Grpc.Server): (call: OpeningCall) => void {
 }
 
 export async function verifyPendingOpeningCapacity(t: TestContext): Promise<void> {
-  const { authority, exchange: f } = await staticEgressFixture(t);
+  const { authority, exchange: f } = await protectedMetadataFixture(t);
   // A genuine signed exchange supplies the signing helper. The remainder exercises
   // the actual registered handler without opening 1,024 network connections.
   const signer = await f.beginExchange();

@@ -530,7 +530,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       # The runner starts with about 90 GB free; the smoke uses far less, so it
       # skips the SDK removal the large image lanes need.
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
@@ -633,8 +633,8 @@ jobs:
         timeout-minutes: 1
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: first-agent-smoke-timing-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/first-agent-smoke-timing.json
+          name: first-agent-smoke-timing-v2-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/first-agent-smoke-timing-v2.json
           if-no-files-found: ignore
           retention-days: 7
 

@@ -5,10 +5,8 @@ import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { Static } from "typebox";
 import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
 import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
-import type { ConnectionStartResponse } from "../../packages/contracts/src/api/connections.ts";
 import type {
   CredentialSourceListResponse,
   NamespaceResponse,
@@ -135,10 +133,9 @@ if (preparedTokens !== undefined) {
   const secretDriver = createTestSecretDriver();
   controller.registerDriver(secretDriver);
   controller.selectDriver("secret", secretDriver.id);
-  const {
-    OAuthAccountTokens,
-  }: typeof import("../../apps/controller/src/backends/token-service/oauth-connection.ts") =
-    await import(`${controllerPath}/backends/token-service/oauth-connection.ts`);
+  const { OAuthAccountTokens } = await import(
+    `${controllerPath}/backends/token-service/oauth-connection.ts`
+  );
   preparedTokens.registerIssuer(
     new OAuthAccountTokens(
       state,
@@ -293,8 +290,9 @@ try {
         payload: { connectionTemplateId: data.id },
       });
       assert.equal(started.statusCode, 201, started.body);
-      const sourceId =
-        started.json<Static<typeof ConnectionStartResponse>>().data.credentialSourceId;
+      // The released image uses its historical consent response, not the current API contract.
+      const sourceId = started.json<{ data: { credentialSourceId: string } }>().data
+        .credentialSourceId;
       const current = await app.inject({
         method: "GET",
         url: `/namespaces/${input.namespaceId}/credential-sources`,

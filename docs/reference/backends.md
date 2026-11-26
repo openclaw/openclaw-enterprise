@@ -9,8 +9,8 @@ authenticated client. The bundled ChatGPT client manages upstream service
 accounts. Its nullable Agent `backendId` association neither grants permissions
 nor changes model or Harness selection. The GitHub Backend owns repository
 credential configuration for the built-in GitHub policy and uses the separate
-Agent `repositoryBindings` selection. The OpenShell Backend owns the gateway
-connection shared by the OpenShell Sandbox and Credential Gateway Drivers.
+Agent `repositoryAccess` selection. The OpenShell Backend owns the gateway
+connection used for Sandbox and credential delivery.
 Backends have no OCC resource or write API. Installation administrators can
 discover nonsecret configured IDs and types through `GET /backends`.
 
@@ -136,9 +136,8 @@ Driver; admitted Agents must use a supported
 The OpenShell Backend holds the connection to one OpenShell gateway deployment.
 These paths are the files Helm `backend.openshell.clientSecretName` projects
 (`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
-mounts no bearer token file or separate `operatorTls` pair, so chart installs
-cannot retrieve Codex OAuth access tokens; other packaging must mount those files
-itself.
+mounts the mTLS files for the ordinary Gateway connection. If you use a bearer
+token file or separate `operatorTls` pair, mount those files separately.
 
 ```yaml
 backend:
@@ -153,8 +152,6 @@ backend:
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
     drivers:
       sandbox: openshell-sandbox
-      credential_gateway: openshell-credentials
-      credential_refresh: openshell-refresh
 ```
 
 Its closed `configuration` accepts:
@@ -172,10 +169,7 @@ Its closed `configuration` accepts:
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
-  `rootCertificatePath` is set. OAuth2 credential sources refuse `token_url`
-  hosts in the gateway's namespace only when OCE knows it: from a bare or
-  `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
-  `<service>.<namespace>.svc[.<cluster domain>]`.
+  `rootCertificatePath` is set.
 - `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
   `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
   mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
@@ -188,9 +182,9 @@ Its closed `configuration` accepts:
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
 - `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
-  paths. Required for OAuth access-token retrieval; requires HTTPS. It opens a
-  separate certificate-only channel to the same gateway, using the same server
-  CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
+  paths. This requires HTTPS. Authorized OpenShell TokenService callers can use
+  this separate certificate-only connection to read Provider credentials. Other
+  RPCs use the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
   bearer/mTLS authentication, and rejected otherwise. It cannot enable plaintext
   mTLS. It declares that
@@ -198,29 +192,23 @@ Its closed `configuration` accepts:
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
 
-Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the selected bundled
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md). Optional `drivers.credential_gateway`
-must match the selected legacy [Credential Gateway Driver](drivers/openshell-credential-gateway.md).
-The Gateway service transport does not require that legacy Driver. The
-optional `drivers.credential_refresh` member requires that Gateway Driver and must match the selected
-[Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
-refresh state on the gateway's provider records, so the two roles share this
-Backend. One
-OpenShell Backend is supported. Composition builds one gateway client object
-and injects it into all members. It caches ordinary and credential-export
-clients separately per resolved endpoint. The API and worker each construct it,
-so mount their required credential files there, never in the Harness or Agent
-Gateway. Restart these processes after rotating an operator certificate to replace
-cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+Either `endpoint` or `serviceName` is required. `drivers.sandbox` must match the
+selected bundled [OpenShell SandboxDriver](drivers/openshell-sandbox.md).
+With OCC TokenService, the Sandbox registration supplies native Credential Proxy
+delivery. The [OpenShell TokenService preview](credential-sources/managed-static.md#preview-openshell-custody)
+also requires a matching `token_service` Backend member. One OpenShell Backend
+is supported.
 
-Optional `drivers.credential_proxy` selects the paired
-[protected egress adapter](credential-sources/protected-inference.md). It requires an
-authenticated HTTPS gateway and the credential-access protocol. Released OpenShell
-`v0.1.4` supports OAuth refresh and operator `GetProviderCredentials`, but lacks
-the protected credential-access and loaded-enforcement contract. The protected
-counterpart has that contract, not the OAuth export RPC. Select and verify the
-deployed capability; the combined client schema is not a supplier capability claim.
-Protected revision admission refuses legacy credential attachments.
+The API and worker share the Backend connection within each process. Mount
+the configured credentials in those control-plane Pods. Restart them after
+rotating an operator certificate to replace cached TLS connections.
+
+The deprecated `drivers.credential_proxy` member identifies the paired legacy
+credential-egress adapter for qualified protected exchanges. It remains pending
+removal while those exchanges depend on it; it is not the native
+`credential_proxy_delivery` capability used with TokenService. Preserve the
+recorded authenticated Backend and enforcement boundary for existing protected
+work.
 
 For native OpenShell mTLS, a verified client certificate's CN becomes the User
 subject and OU values become roles. Without an OIDC administrator role configured,
@@ -320,28 +308,14 @@ backend:
     enabled: true
     secretName: occ-chatgpt-admin
     key: admin-key
-    providerCidr: "203.0.113.10/32" # Example only; replace with the approved destination.
 ```
 
 Enable it with the Installation Backend. The dedicated Secret mounts only in
 the API Pod at `/etc/openclaw/chatgpt/admin-key`; `apiKeyPath` must match.
-`providerCidr` is required when `enabled` is true: the chart refuses to render
-without exactly one IPv4 `/32`. It adds that destination on TCP/443 to the API
-Pod's NetworkPolicy. It configures no DNS, routing, or application proxy. The bundled
-client sends HTTPS directly to `api.chatgpt.com`; the upstream URL is fixed,
-and the chart configures no HTTP CONNECT or `HTTPS_PROXY` transport. Entering
-an ordinary forward proxy's IP will not cause the client to use it.
-
-Before enabling the Backend, have your network operator confirm that the
-address the NetworkPolicy sees for `api.chatgpt.com:443` is the configured
-destination. You can use a reviewed direct route where the hostname resolves
-to that address, or transparent egress already provided by your cluster that
-works with the client's direct HTTPS request and preserves the hostname and
-certificate validation. The chart provisions neither. It supports only one
-IPv4 address; if the direct hostname resolves to multiple or changing addresses,
-do not rely on a single DNS lookup. Arrange suitable egress before enabling the
-Backend. Disabled defaults keep `occ-chatgpt-admin`, `admin-key`, and an empty
-CIDR. See the [deployment guide](../guides/deploy.md) and
+The API uses unrestricted control-plane egress. The bundled client sends HTTPS
+directly to the fixed `api.chatgpt.com` origin. Verify DNS, routing, and TLS trust
+before enabling the Backend; the chart does not configure an HTTP CONNECT or
+`HTTPS_PROXY` transport. See the [deployment guide](../guides/deploy.md) and
 [security boundary](security.md).
 
 To verify the admin key and route, [issue a service-account credential](../guides/integrations/chatgpt.md#verify-backend-access).

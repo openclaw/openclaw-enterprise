@@ -29,6 +29,7 @@ export async function publishPrepared(
   producer: Producer,
   verify: () => unknown | Promise<unknown>,
   requestedAlias?: string,
+  expectedDigests?: ReadonlyMap<string, string>,
 ) {
   const aliasTag = requestedAlias === undefined ? undefined : publicationAlias(requestedAlias);
   await verify();
@@ -39,6 +40,13 @@ export async function publishPrepared(
     const dir = join(directory, `container-${image}-${producer.runId}-${producer.attempt}`);
     const metadata: unknown = JSON.parse(await readFile(join(dir, "metadata.json"), "utf8"));
     validatePreparedImage(metadata, { ...producer, image });
+    if (expectedDigests) {
+      assert.equal(
+        metadata.digest,
+        expectedDigests.get(image),
+        "Prepared archive differs from the expected image digest.",
+      );
+    }
     const archive = join(dir, "image.tar");
     assert.equal(await fileDigest(archive), metadata.archiveSha256, "OCI archive bytes changed.");
     assert.equal(inspectDigest(`oci-archive:${archive}`), metadata.digest, "OCI digest changed.");

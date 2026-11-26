@@ -2,20 +2,15 @@
 
 ## Repository access
 
-To change one Agent's access, choose **Edit repository permissions** on its Configuration snapshot
-or open its version draft and choose **Repositories → Manage permissions**.
-Save the first repository policy before you deploy. An Agent previously deployed without one needs a new Agent ID to use these controls.
+For native OpenShell Git, open the Agent draft's **Repositories** settings.
+Select its GitHub App Client, repositories, and **Read-only Git** or
+**Read/write Git** for each. Save the draft, then stop any active managed
+revision before deploying. OCC derives the Git rules from those choices.
+Clear the repository selections to withdraw running Git access.
 
-1. Enable policy editing if prompted. Choose **Add access** beside the repository you want.
-2. **Contributor** is the default where Write is permitted. The Agent can push code, open pull requests and create issues within its approved GitHub permissions. Choose **Read-only** to prevent direct writes.
-3. For example, to keep push access and prevent direct issue creation, open **Advanced** and set **Issues** to **Read-only**. Leave **Pull requests** on **Use role**. A limit persists even when current permissions already block that operation.
-4. Choose **Save repository policy** and deploy the new version. Saving alone leaves the running version unchanged. Manage permissions compares the saved policy with the active version. When reducing access, verify retirement of the previous Sandbox.
-
-**No access** blocks direct requests for a resource. To block unlisted resources, including future ones,
-select **Allow only explicit API selections**. Choose which resources to allow. Git access stays the same.
-**Reset to role defaults** removes these limits for this Agent and repository.
-
-[Namespace limits and GitHub permissions](../../reference/repository-credentials/access-levels.md#native-git-delivery) apply to every Agent using the registration. If a bound repository has no grant, the Agent can't open PRs anywhere. Unbind an unused repository and redeploy.
+Use an Agent draft without a separate repository network policy. A manually
+saved list, including an empty list, conflicts with Source-backed Git.
+[GitHub App setup and access levels](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
 ## Network denials
 
@@ -149,13 +144,17 @@ version and revision ID together without `--file`.
 occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version VERSION
 ```
 
-OCC returns HTTP 202 when it queues the application. The CLI prints the policy
-record with `application.state` set to `pending`. Keep the application ID,
-revision ID and policy version from that response. Run
-`occ agent policy get AGENT_ID` and match all three fields in
-`policy.application`. Wait for that application’s state to become `applied`.
-If you lose the response or see a different application, reconcile the original
-request before submitting another change.
+OCC returns HTTP 202 when it queues the application. From the CLI’s `apply`
+output, record `application.id`, `application.revisionId` and
+`application.policyVersion`. Run `occ agent policy get AGENT_ID` and match
+those three fields in `policy.application`.
+
+Poll only while the matching application is `pending`. Stop at `applied` or
+`failed`. After a failure, check `policy.application.reason` against the
+[reason codes](../../reference/sandbox-policies.md#desired-and-applied-versions).
+The provider may have applied the policy. If the outcome is unconfirmed, the
+response was lost, or the application is missing or no longer matches,
+reconcile the original request before submitting another change.
 
 An authorized administrator can enable editing with
 `occ agent policy editing AGENT_ID --enabled=true`. Policy commands print
@@ -166,31 +165,12 @@ for defaults and operator ceiling inputs.
 
 ## Set GitHub access before the first deployment
 
-In **Create Agent → Repository access**, check the repositories the Agent needs.
-For administrators who can read policies, a new empty picker defaults to
-**Per-repository access** when eligible GitHub repositories are available.
-Presets retain their selections. With no boxes checked, **Create Agent** saves
-no repository policy and can deploy immediately. To save an explicit deny-all
-list, use the policy editor on an undeployed draft. Once an Agent has deployed
-without a list, including with **Access profiles**, you need a new Agent to
-use per-repository access.
+In **Create Agent → Repository access**, choose the registered GitHub App
+Client and the repositories the dedicated Codex Agent needs. Use **Read-only
+Git** for clone and fetch. Choose **Read/write Git** when the Agent needs push
+access. These grants cover Git transport.
 
-Check each owner/name. Each selection starts at **Contributor** if
-the Installation and Namespace allow writes. Otherwise, it starts at **Read-only**.
-Read-only allows clone and fetch. Contributor adds push. Creating pull requests
-or issues also requires deployment support, GitHub permissions and applicable
-API rules. Choose Read-only wherever the Agent does not need write access.
-
-With one or more repositories selected, choose **Save Agent draft**. The Agent
-and its grants are saved together, with
-policy editing off. This requires Installation and Agent administration, permission
-to manage, read and update policy, and a supported Dedicated runtime and model
-Credential Source. If saving is refused, the Configuration and model credentials
-can remain saved. If the Console cannot confirm the grants, do not deploy.
-Select **Recheck saved GitHub access** to read the same draft again.
-
-Check the grants shown beside **Deploy new version**. Choose **Edit repository permissions** to adjust the saved grants.
-Close the dialog to change repository selections. The credential profiles listed
-in Configuration do not override the saved network policy. If the policy changes
-before deployment, the Console stops the request. Select **Review saved GitHub
-access** and check the current grants before you deploy again.
+Choose **Save Agent draft**. Confirm the saved access before deploying. If the
+Console cannot confirm it, select **Recheck saved GitHub access** and review
+the draft again. Deployment rechecks current approval and refuses a stale
+policy version. [GitHub App setup](../repository-credentials.md#set-github-app-access-for-an-openshell-agent)

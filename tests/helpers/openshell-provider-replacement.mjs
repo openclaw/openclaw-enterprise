@@ -255,7 +255,9 @@ async function prepareInstallation(
       executionMode: "dedicated",
       harnessAuth: { method: "credential_source", sourceId: sources[0].id },
       credentialSources: [{ sourceId: sources[0].id }],
-      ...(repositoryBindings ? { repositoryBindings } : {}),
+      ...(repositoryBindings
+        ? { repositoryAccess: { defaultProfile: "git-write", repositories: repositoryBindings } }
+        : {}),
     });
     agents.push(agent);
     await api("POST", `${base}/agents/${agent.id}/runtime-credentials`, {});
@@ -531,9 +533,10 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
     await turn(agents[1], peer);
     await api("PATCH", `${base}/agents/${agents[0].id}`, {
       configurationId: input.configurationId,
-      repositoryBindings: [
-        { repositoryRef: input.git.repositoryRef, profile: "github-repository" },
-      ],
+      repositoryAccess: {
+        defaultProfile: "git-write",
+        repositories: [{ repositoryRef: input.git.repositoryRef, profile: "github-repository" }],
+      },
     });
     first = await deploy(agents[0]);
     const enabled = await sandbox(agents[0]);
@@ -632,10 +635,13 @@ export async function verifyOpenShellProviderReplacement(context, { gitReplaceme
       assert.equal(oldProviders.length, current.annotations["openclaw.dev/git-scope"] ? 1 : 0);
       await api("PATCH", `${base}/agents/${agents[0].id}`, {
         configurationId: input.configurationId,
-        repositoryBindings: repositories.map((repositoryRef) => ({
-          repositoryRef,
-          profile: "github-repository",
-        })),
+        repositoryAccess: {
+          defaultProfile: "git-write",
+          repositories: repositories.map((repositoryRef) => ({
+            repositoryRef,
+            profile: "github-repository",
+          })),
+        },
       });
       const successor = await deploy(agents[0]);
       const after = await sandbox(agents[0]);

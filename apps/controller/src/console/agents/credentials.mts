@@ -1,12 +1,18 @@
 import type {
   Agent,
   Configuration,
+  CredentialSourceReference,
   OpenClawConfigurationDocument,
+  SecretBinding,
   SecretBindings,
   SecretMetadata,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import { requestFailure, responseFields } from "../api-client.mjs";
+import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import {
+  createCredentialSourcePicker,
+  staticCredentialSourceSelection,
+} from "../credential-source-picker.mjs";
 import { sameValue } from "../carry.mjs";
 import {
   element,
@@ -25,6 +31,7 @@ import {
   askInstallationAdministrator,
   CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
+  channelMissingBindingRefusal,
   configurationConflictMessage,
   isStaleGeneration,
   namespacePath,
@@ -35,26 +42,12 @@ import {
   ensureCredentialOperateBinding,
   type AgentAccessContext,
 } from "./credential-access.mjs";
-import {
-  createSecretReferenceField,
-  secretBinding,
-  secretIdForBinding,
-  secretSourceForBinding,
-} from "./secret-picker.mjs";
+import { secretBinding, secretIdForBinding, secretSourceForBinding } from "./secret-picker.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
-  { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
-  { key: "SLACK_BOT_TOKEN", label: "Slack bot token", secretName: "Slack bot token" },
+  { key: "SLACK_APP_TOKEN", label: "Slack app token" },
+  { key: "SLACK_BOT_TOKEN", label: "Slack bot token" },
 ];
-// Why the pickers are not offered when a default-account token reads a key other than its own
-// standard name, such as another `${NAME}` or the other token's name (finding 2526). The list may
-// hold a standard name too, so the hint never says it does not (finding 2540).
-const SLACK_OTHER_KEYS_HINT =
-  "The token pickers bind only SLACK_APP_TOKEN for the app token and SLACK_BOT_TOKEN for the bot token. The Slack settings read the keys listed above: bind them through the Configuration API.";
-// Beside the pickers, for the other keys the Slack settings read, such as a signing secret's
-// (finding 2554).
-const SLACK_EXTRA_KEYS_HINT =
-  "The Slack settings also read the other keys listed above: bind them through the Configuration API.";
 // Slack is off, but the Configuration still binds Secrets the Agent has no confirmed access to:
 // Deploy checks each bound Secret, so the tab lists them with Retry Secret access (finding 3018).
 const SLACK_OFF_BOUND_HINT =
@@ -64,7 +57,7 @@ const SLACK_OFF_RETRY_GRANTED = "Secret access granted. This Agent can use its b
 // A grant read after Reload draft found the grants an earlier Retry left unconfirmed, as when the
 // Retry's answer was lost after the grant was made (finding 3030).
 const SLACK_ACCESS_CONFIRMED =
-  "Secret access confirmed. This Agent can use its saved Slack Secrets.";
+  "Secret access confirmed. This Agent can use its bound Namespace Secrets.";
 const SLACK_OFF_ACCESS_CONFIRMED = "Secret access confirmed. This Agent can use its bound Secrets.";
 function channelPolicy(values: unknown, provider: string) {
   return responseFields(responseFields(values).channels)[provider];
@@ -112,30 +105,42 @@ const isSlackSecretInput = (keys: readonly (string | number)[]) =>
 // `requireChannelSecretBindings` reads it: an env SecretRef's id anywhere, each `${NAME}` without
 // a fallback, and in a secret-input field also `${NAME:-text}` and `$NAME`. That covers the
 // tokens and named accounts' keys, and the signing secret, user token and relay token, which a
-// save refuses unbound too (finding 2554).
+// save refuses unbound too (finding 2554). Record which names are used in an enabled credential
+// slot so a separate policy use of the same name cannot make a Namespace Secret eligible.
 function slackSettingReferences(
   value: unknown,
   keys: readonly (string | number)[] = [],
-  names = new Set<string>(),
+  names = new Map<string, boolean>(),
+  accountEnabled = true,
 ) {
+  const secretInput = isSlackSecretInput(keys);
+  const add = (name: string) =>
+    names.set(name, (secretInput && accountEnabled) || names.get(name) === true);
   if (typeof value === "string") {
-    const secretInput = isSlackSecretInput(keys);
     const shorthand = secretInput ? secretInputShorthandName(value) : undefined;
     for (const name of [
       ...environmentReferenceNames(value, { fallbacks: secretInput }),
       ...(shorthand === undefined ? [] : [shorthand]),
     ]) {
-      names.add(name);
+      add(name);
     }
   } else if (Array.isArray(value)) {
-    value.forEach((item, index) => slackSettingReferences(item, [...keys, index], names));
+    value.forEach((item, index) =>
+      slackSettingReferences(item, [...keys, index], names, accountEnabled),
+    );
   } else if (value !== null && typeof value === "object") {
     const record = responseFields(value);
     if (record.source === "env" && typeof record.id === "string" && record.id.length > 0) {
-      names.add(record.id);
+      add(record.id);
     }
     for (const [key, item] of Object.entries(record)) {
-      slackSettingReferences(item, [...keys, key], names);
+      slackSettingReferences(
+        item,
+        [...keys, key],
+        names,
+        accountEnabled &&
+          !(keys.length === 1 && keys[0] === "accounts" && responseFields(item).enabled === false),
+      );
     }
   }
   return names;
@@ -183,26 +188,98 @@ const usesNamedSlackAccounts = (values: unknown) => {
 // for, and the standard name a default-account token without a key reads. Named accounts must not
 // use the standard keys: OpenClaw reads SLACK_APP_TOKEN and SLACK_BOT_TOKEN as an extra implicit
 // default account, so for them only the referenced names count.
-function slackBindingKeys(values: unknown) {
+function slackBindingReferences(values: unknown) {
   const slack = responseFields(channelPolicy(values, "slack"));
-  const tokenKeys = usesNamedSlackAccounts(values)
-    ? []
-    : defaultSlackAccountReads(slack).map(({ key }) => key);
-  return [...new Set([...tokenKeys, ...slackSettingReferences(slack)])].sort();
+  const references = slackSettingReferences(slack);
+  if (!usesNamedSlackAccounts(values)) {
+    for (const { key } of defaultSlackAccountReads(slack)) {
+      references.set(key, true);
+    }
+  }
+  return references;
 }
 
-// The standard bindings the Credentials tab's form binds: those the default account's tokens
-// read, when each token reads its own standard name, so a picker's label names the token its
-// Secret reaches. HTTP mode often reads only SLACK_BOT_TOKEN, which keeps its picker (finding
-// 2540); swapped or other names get the list. Null when the tab only lists the keys.
-function slackFormBindings(values: unknown) {
-  if (usesNamedSlackAccounts(values)) {
-    return null;
+/** Slack references needing a binding. Given saved bindings, omit policy Secrets already bound. */
+export function slackCredentialBindingKeys(values: unknown, bindings?: SecretBindings) {
+  if (!channelEnabled(values, "slack")) {
+    return [];
   }
-  const reads = defaultSlackAccountReads(responseFields(channelPolicy(values, "slack")));
-  return reads.every(({ role, key }) => key === STANDARD_SLACK_KEYS[role])
-    ? SLACK_SECRET_BINDINGS.filter((binding) => reads.some(({ key }) => key === binding.key))
-    : null;
+  return [...slackBindingReferences(values)]
+    .filter(([key, credential]) => credential || secretSourceForBinding(bindings?.[key]) === null)
+    .map(([key]) => key)
+    .sort();
+}
+
+/** Stage Source bindings beside unsaved native Slack Configuration values. */
+export function createSlackCredentialBindingFields(
+  context: Parameters<typeof createCredentialSourcePicker>[0],
+  options: {
+    values: unknown;
+    bindings: SecretBindings;
+    currentBindings?: SecretBindings;
+    excludeKeys?: readonly string[];
+    disabled?: boolean;
+    onChange(key: string, binding: SecretBinding | undefined): void;
+  },
+) {
+  const excluded = new Set(options.excludeKeys ?? []);
+  const keys = slackCredentialBindingKeys(options.values, options.bindings).filter(
+    (key) => !excluded.has(key),
+  );
+  const fields = element("fieldset", {
+    className: "credential-binding-fields",
+    hidden: keys.length === 0,
+  });
+  fields.disabled = options.disabled === true;
+  if (!keys.length) {
+    return fields;
+  }
+  fields.append(
+    element("legend", {}, "Slack credential bindings"),
+    element(
+      "p",
+      { className: "hint" },
+      "Choose a ready static Credential Source for each referenced Slack credential. These bindings save with the Configuration.",
+    ),
+  );
+  for (const key of keys) {
+    const currentId = slackSourceForBinding(
+      options.currentBindings?.[key],
+      context.namespaceId,
+    )?.id;
+    const picker = createCredentialSourcePicker(context, {
+      ...staticCredentialSourceSelection,
+      id: `slack-binding-${key.toLowerCase().replaceAll("_", "-")}`,
+      label: slackBindingLabel(options.values, key),
+      initial: slackSourceForBinding(options.bindings[key], context.namespaceId),
+      ...(currentId ? { currentId } : {}),
+      onChange(source) {
+        options.onChange(key, source ? { source, delivery: { type: "env" } } : undefined);
+      },
+    });
+    picker.setActive(true);
+    fields.append(picker.field);
+  }
+  return fields;
+}
+
+// A familiar label is accurate only when the default account uses the standard key for that role.
+function slackBindingLabel(values: unknown, key: string) {
+  if (!usesNamedSlackAccounts(values)) {
+    const reads = defaultSlackAccountReads(responseFields(channelPolicy(values, "slack")));
+    const matches = reads.filter((read) => read.key === key);
+    if (matches.length === 1 && STANDARD_SLACK_KEYS[matches[0]!.role] === key) {
+      return SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key;
+    }
+  }
+  return key;
+}
+
+function slackFormBindings(values: unknown, bindings?: SecretBindings) {
+  return slackCredentialBindingKeys(values, bindings).map((key) => ({
+    key,
+    label: slackBindingLabel(values, key),
+  }));
 }
 
 function servicePrincipalId(agent: Pick<Agent, "servicePrincipalId">) {
@@ -215,6 +292,20 @@ export { secretBinding, secretIdForBinding };
 
 type ChannelBindings = Pick<Configuration, "secretBindings">;
 
+export function slackSourceForBinding(
+  binding: unknown,
+  namespaceId?: string,
+): CredentialSourceReference | null {
+  const source = responseFields(responseFields(binding).source);
+  return source.kind === "credential_source" &&
+    typeof source.namespaceId === "string" &&
+    (namespaceId === undefined || source.namespaceId === namespaceId) &&
+    typeof source.id === "string" &&
+    source.id
+    ? { kind: "credential_source", namespaceId: source.namespaceId, id: source.id }
+    : null;
+}
+
 export function channelCredentialBlockReason(values: unknown) {
   return channelEnabled(values, "msteams")
     ? "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams through the Configuration API to deploy here."
@@ -225,17 +316,22 @@ export function missingChannelCredentialGroups(values: unknown, configuration: C
   if (!channelEnabled(values, "slack")) {
     return [];
   }
-  const keys = slackBindingKeys(values);
-  const unbound = keys.filter((key) => !secretIdForBinding(configuration?.secretBindings?.[key]));
+  const keys = slackCredentialBindingKeys(values, configuration?.secretBindings);
+  const unbound = keys.filter(
+    (key) => !slackSourceForBinding(configuration?.secretBindings?.[key]),
+  );
   if (!unbound.length) {
     return [];
   }
   // The standard pair is what the form binds; other keys are named.
-  const form = slackFormBindings(values);
-  return form?.length === SLACK_SECRET_BINDINGS.length &&
-    unbound.every((key) => form.some((binding) => binding.key === key))
-    ? ["Slack Secret bindings"]
-    : [`Slack Secret bindings (${unbound.join(", ")})`];
+  const defaultReads = usesNamedSlackAccounts(values)
+    ? []
+    : defaultSlackAccountReads(responseFields(channelPolicy(values, "slack")));
+  return defaultReads.length === SLACK_SECRET_BINDINGS.length &&
+    defaultReads.every(({ role, key }) => STANDARD_SLACK_KEYS[role] === key) &&
+    unbound.every((key) => SLACK_SECRET_BINDINGS.some((binding) => binding.key === key))
+    ? ["Slack credential bindings"]
+    : [`Slack credential bindings (${unbound.join(", ")})`];
 }
 
 export function hasRequiredChannelCredentials(values: unknown, configuration: ChannelBindings) {
@@ -255,9 +351,9 @@ type SaveFailure = ReturnType<typeof requestFailure> & {
 // for a binding gets where the console binds one instead: the Configuration JSON editor saves no
 // bindings (finding 2542).
 const CHANNEL_SETTING_REMEDY =
-  "Fix that setting in the Configuration JSON on the Configuration tab: this tab saves only the SLACK_APP_TOKEN and SLACK_BOT_TOKEN bindings.";
+  "Fix that setting in the Configuration JSON editor on the Configuration tab. Select any newly required Credential Sources there before saving.";
 const channelRefusalRemedy = (refusal: string) =>
-  refusal.includes(" without a Configuration Secret binding: ")
+  channelMissingBindingRefusal(refusal)
     ? `To fix it, ${CHANNEL_BINDING_PLACES}`
     : CHANNEL_SETTING_REMEDY;
 
@@ -270,26 +366,26 @@ function credentialSaveError(error: SaveFailure) {
   } else if (error.status === 409) {
     text =
       configurationConflictMessage(error, true) ??
-      "Credential metadata conflicts with the saved Agent state or selected Secrets.";
+      "Credential metadata conflicts with the saved Agent state or selected Credential Sources.";
   } else if (error.status === 400) {
     // The save resends the stored values, so a channel setting saved before a rule refused its
     // form is refused here too: no Secret choice fixes it (finding 2529).
     const refusal = channelBindingRefusal(error);
     text =
       refusal === undefined
-        ? "Check the selected Secrets and reload this Agent."
+        ? "Check the selected Credential Sources and reload this Agent."
         : `${refusal} ${channelRefusalRemedy(refusal)}`;
   } else if (error.status === 429) {
     text = "Too many requests. Wait before trying again.";
   } else if (error.status === 404) {
     text = "Credential metadata is unavailable for this Agent. Check the ID and your access.";
   } else {
-    text = "Outcome unknown. Reload this Agent to confirm the saved Secret bindings.";
+    text = "Outcome unknown. Reload this Agent to confirm the saved credential bindings.";
   }
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
-// Why a saved Slack Secret or authentication source still waits for the Agent's access grant:
+// Why a saved Namespace Secret or authentication source still waits for an Agent access grant:
 // the grant was refused (403), its outcome could not be confirmed, the Namespace's IAM policy
 // shows none, or a session known not to administer the Installation sent no grant, so nothing
 // verified it (findings 1920, 2259).
@@ -317,17 +413,17 @@ export interface GrantWarningSubject {
 
 const SLACK_GRANT: GrantWarningSubject = {
   saved: "Configuration",
-  credential: "the saved Slack Secret",
-  refusal: "this Agent cannot use the saved Slack Secret until it is granted access",
+  credential: "the bound Namespace Secret",
+  refusal: "this Agent cannot use the bound Namespace Secret until it is granted access",
   access: "Secret access grants",
-  bound: "a bound Slack Secret",
+  bound: "a bound Namespace Secret",
   administratorStep: "Retry Secret access",
   retry: "Retry Secret access",
 };
 
 // Granting an Agent a credential writes Namespace IAM policy, which needs Installation
 // administration (UX plan A2): a refused or unverified grant names who finishes it and how. The
-// Slack Secret and harness authentication paths share these words (findings 1920, 2259).
+// Namespace Secret and harness authentication paths share these words (findings 1920, 2259).
 const ADMINISTRATOR_STEP = (step: string) =>
   askInstallationAdministrator(`open this Agent's Credentials and select ${step}`);
 // A retry saved nothing, so its outcome names only the grant problem (finding 3023).
@@ -396,7 +492,7 @@ export function grantProblemFor(status: number | undefined): SecretGrantProblem 
 }
 
 interface SecretDraft {
-  secretBindings: SecretBindings;
+  secretBindings: Record<string, SecretBinding>;
   changedSecrets: Record<string, SecretMetadata>;
 }
 
@@ -447,7 +543,7 @@ function confirmedConfiguration(
     !sameValue(saved.secretBindings, secretBindings)
   ) {
     // A successful but unrecognizable response cannot justify another write.
-    throw new Error("The save response did not confirm the submitted Secret bindings.");
+    throw new Error("The save response did not confirm the submitted credential bindings.");
   }
   return { ...previous, generation, values, secretBindings };
 }
@@ -460,59 +556,52 @@ function applyCarriedSecrets(state: ChannelState, carried: CarriedChannelSecrets
   }
   if (carried.configurationId !== state.configuration.id) {
     state.carriedNote =
-      "Your channel Secret choices were not reapplied: this Agent now uses another Configuration.";
+      "Your Credential Source choices were not reapplied: this Agent now uses another Configuration.";
     return;
   }
   // No Slack token form renders for these, so the note shows in the section instead
   // (finding 1525).
   if (!channelEnabled(state.values, "slack")) {
     state.carriedNote =
-      "Your channel Secret choices were not reapplied: Slack is off in the reloaded Configuration.";
+      "Your Credential Source choices were not reapplied: Slack is off in the reloaded Configuration.";
     return;
   }
   const form = slackFormBindings(state.values);
-  if (form === null) {
-    state.carriedNote = usesNamedSlackAccounts(state.values)
-      ? "Your channel Secret choices were not reapplied: the reloaded Configuration uses named Slack accounts."
-      : "Your channel Secret choices were not reapplied: the reloaded Configuration's Slack tokens use other keys.";
-    return;
-  }
   const saved = state.configuration.secretBindings ?? {};
   const secretBindings = { ...saved };
-  const changedSecrets: SecretDraft["changedSecrets"] = {};
   const names: string[] = [];
   for (const { key, label } of form) {
     const choice = carried.secretBindings[key];
-    const secret = carried.changedSecrets[key];
-    const initial = secretIdForBinding(carried.initialSecretBindings[key]);
-    const current = secretIdForBinding(saved[key]);
-    const selected = secretIdForBinding(choice);
-    if (
-      secret &&
-      choice &&
-      selected === secret.id &&
-      selected !== initial &&
-      selected !== current
-    ) {
+    const initial = slackSourceForBinding(carried.initialSecretBindings[key])?.id;
+    const current = slackSourceForBinding(saved[key])?.id;
+    const selected = slackSourceForBinding(choice)?.id;
+    if (choice && selected && selected !== initial && selected !== current) {
       secretBindings[key] = choice;
-      changedSecrets[key] = secret;
-      names.push(current === initial ? label : `${label} (also changed in another browser)`);
+      names.push(
+        sameValue(saved[key], carried.initialSecretBindings[key])
+          ? label
+          : `${label} (also changed in another browser)`,
+      );
     }
   }
   if (!names.length) {
-    state.carriedNote = "The reloaded bindings already include your Secret choices.";
+    state.carriedNote = "The reloaded bindings already include your Credential Source choices.";
     return;
   }
-  state.draftSeed = { secretBindings, changedSecrets };
-  state.carriedNote = `Your Secret choices are applied over the reloaded bindings: ${names.join(", ")}. Review them, then save.`;
+  state.draftSeed = { secretBindings, changedSecrets: {} };
+  state.carriedNote = `Your Credential Source choices are applied over the reloaded bindings: ${names.join(", ")}. Review them, then save.`;
 }
 
 // The Configuration's bound Secrets. Deploy checks that the Agent may operate each of them,
 // whether or not a Slack setting reads it (`apps/controller/src/worker.ts`), so grant checks,
 // outstanding grants and Retry Secret access cover them all (finding 2558).
-function boundSecrets(secretBindings: SecretBindings | undefined) {
+function boundSecrets(secretBindings: SecretBindings | undefined, values: unknown) {
   const secrets = new Map<string, SecretReference>();
-  for (const binding of Object.values(secretBindings ?? {})) {
+  const references = channelEnabled(values, "slack") ? slackBindingReferences(values) : undefined;
+  for (const [key, binding] of Object.entries(secretBindings ?? {})) {
+    if (references?.get(key)) {
+      continue;
+    }
     const secret = secretSourceForBinding(binding);
     if (secret !== null) {
       secrets.set(secret.id, secret);
@@ -527,27 +616,35 @@ function boundSecrets(secretBindings: SecretBindings | undefined) {
 function slackBindingRows(state: ChannelState) {
   // With Slack off, no Slack setting reads a bound key (finding 3018).
   const slackOn = channelEnabled(state.values, "slack");
-  const form = (slackOn ? slackFormBindings(state.values) : null) ?? [];
-  const listed = (slackOn ? slackBindingKeys(state.values) : [])
-    .filter((key) => !form.some((binding) => binding.key === key))
-    .map((key) => ({ key, label: key, unused: false }));
-  const shown = new Set([...form, ...listed].map(({ key }) => key));
+  const form = slackOn ? slackFormBindings(state.values) : [];
+  const shown = new Set(form.map(({ key }) => key));
   const unused = Object.keys(state.configuration.secretBindings ?? {})
     .filter(
       (key) =>
-        !shown.has(key) && secretIdForBinding(state.configuration.secretBindings?.[key]) !== null,
+        !shown.has(key) &&
+        (secretIdForBinding(state.configuration.secretBindings?.[key]) !== null ||
+          slackSourceForBinding(state.configuration.secretBindings?.[key]) !== null),
     )
     .sort()
     .map((key) => ({ key, label: key, unused: true }));
-  return [...form.map((binding) => ({ ...binding, unused: false })), ...listed, ...unused];
+  return [...form.map((binding) => ({ ...binding, unused: false })), ...unused];
 }
 
 function renderSlackBindings(state: ChannelState) {
   const list = element("dl", { className: "credential-status-list" });
+  const sourceKeys = new Set(
+    slackCredentialBindingKeys(state.values, state.configuration.secretBindings),
+  );
   for (const binding of slackBindingRows(state)) {
-    const id = secretIdForBinding(state.configuration.secretBindings?.[binding.key]);
+    const current = state.configuration.secretBindings?.[binding.key];
+    const id =
+      slackSourceForBinding(current)?.id ??
+      (sourceKeys.has(binding.key) ? null : secretIdForBinding(current));
     // A bound Secret the Agent may not use yet is not plainly Bound (finding 1920).
-    const ungranted = id !== null && id in state.pendingSecretGrants;
+    const ungranted =
+      id !== null &&
+      secretIdForBinding(state.configuration.secretBindings?.[binding.key]) === id &&
+      id in state.pendingSecretGrants;
     const bound = binding.unused ? "Bound · not read by the Slack settings" : "Bound";
     list.append(
       element("dt", {}, binding.label),
@@ -578,9 +675,9 @@ const DELIVER_ON_DEPLOY = " Deploy the new version to deliver them.";
 // operate a Secret that a save keeps bound, which each Configuration save also needs (finding
 // 2437). A save is checked on the Secrets it submits, not on those it replaces (finding 2444).
 export const CHANNEL_SECRETS_CONFIGURATION_READ_ONLY =
-  "Your access does not include editing this Configuration, so its channel Secrets are read-only.";
+  "Your access does not include editing this Configuration, so its channel credentials are read-only.";
 export const CHANNEL_SECRETS_OPERATE_READ_ONLY =
-  "Saving channel Secrets needs Secret operate on each Secret the saved Configuration keeps bound, which your access does not include.";
+  "Saving channel credentials needs operate permission on each credential the saved Configuration keeps bound, which your access does not include.";
 
 const bindingNames = (keys: readonly string[]) =>
   keys.map((key) => SLACK_SECRET_BINDINGS.find((binding) => binding.key === key)?.label ?? key);
@@ -602,13 +699,20 @@ export function channelBindingsToReplace(
       }
     | null
     | undefined,
+  values?: unknown,
+  bindings?: SecretBindings,
 ): readonly string[] | null {
   const denied = permissions?.configurationSecretsOperateDeniedBindings;
+  const replaceable = new Set(
+    values === undefined
+      ? SLACK_SECRET_BINDINGS.map(({ key }) => key)
+      : slackCredentialBindingKeys(values, bindings),
+  );
   return permissions?.configurationUpdate === true &&
     permissions.configurationSecretsOperate === false &&
     Array.isArray(denied) &&
     denied.length > 0 &&
-    denied.every((key) => SLACK_SECRET_BINDINGS.some((binding) => binding.key === key))
+    denied.every((key) => replaceable.has(key))
     ? denied
     : null;
 }
@@ -617,19 +721,20 @@ export function channelBindingsToReplace(
 export function channelSecretsOperateReadOnly(
   denied: readonly string[] | undefined,
   unlisted = CHANNEL_SECRETS_OPERATE_READ_ONLY,
+  saved?: SecretBindings,
 ) {
   const kept = (denied ?? []).filter(
     (key) => !SLACK_SECRET_BINDINGS.some((binding) => binding.key === key),
   );
   return kept.length
-    ? `Each Configuration save needs Secret operate on every Secret it keeps bound. Your access does not include it for ${listed(kept)}, which channel saves keep.`
+    ? `Each Configuration save needs operate permission on every credential it keeps bound. Your access does not include ${bindingOperateRequirement(kept, saved)} for ${listed(kept)}, which this save keeps.`
     : unlisted;
 }
 
 /** What a channel editor says while a bound Secret it must replace is still bound. */
-export function channelReplaceHint(keys: readonly string[]) {
+export function channelReplaceHint(keys: readonly string[], saved?: SecretBindings) {
   const names = listed(bindingNames(keys));
-  return `Your access does not include Secret operate on the Secret bound to ${names}. Each save needs it for every Secret it keeps bound, so choose another Secret for ${keys.length > 1 ? "them" : "it"} before saving.`;
+  return `Your access does not include ${bindingOperateRequirement(keys, saved)} for ${names}. Each save needs operate permission on every credential it keeps bound, so choose ${keys.length > 1 ? "replacement Credential Sources" : "a replacement Credential Source"} before saving.`;
 }
 
 /**
@@ -643,7 +748,7 @@ export function channelReplaceRefusal(
 ) {
   const kept = keptReplaceBindings(keys, saved, submitted);
   return kept.length
-    ? `This save keeps ${listed(bindingNames(kept))} on a Secret your access cannot operate. Choose another Secret for ${kept.length > 1 ? "them" : "it"}, then save.`
+    ? `This save keeps ${listed(bindingNames(kept))} unchanged, but your access does not include ${bindingOperateRequirement(kept, saved)}. Choose ${kept.length > 1 ? "replacement Credential Sources" : "a replacement Credential Source"}, then save.`
     : null;
 }
 
@@ -657,7 +762,7 @@ export function channelDisableRefusal(
 ) {
   const kept = keptReplaceBindings(keys, saved, undefined);
   return kept.length
-    ? `Disabling keeps ${listed(bindingNames(kept))} on a Secret your access cannot operate. Choose another Secret for ${kept.length > 1 ? "them" : "it"} in Edit Slack first, then disable.`
+    ? `Disabling keeps ${listed(bindingNames(kept))} unchanged, but your access does not include ${bindingOperateRequirement(kept, saved)}. Choose ${kept.length > 1 ? "replacement Credential Sources" : "a replacement Credential Source"} in Edit Slack first, then disable.`
     : null;
 }
 
@@ -667,9 +772,34 @@ function keptReplaceBindings(
   submitted: SecretBindings | undefined,
 ) {
   return (keys ?? []).filter((key) => {
-    const id = secretIdForBinding(submitted === undefined ? saved?.[key] : submitted[key]);
-    return id !== null && id === secretIdForBinding(saved?.[key]);
+    const stored = (submitted === undefined ? saved?.[key] : submitted[key])?.source;
+    const original = saved?.[key]?.source;
+    return (
+      stored !== undefined &&
+      original !== undefined &&
+      stored.kind === original.kind &&
+      stored.namespaceId === original.namespaceId &&
+      stored.id === original.id
+    );
   });
+}
+
+function bindingOperateRequirement(keys: readonly string[], saved: SecretBindings | undefined) {
+  const sources = new Set<string>();
+  const secrets = new Set<string>();
+  for (const key of keys) {
+    const source = saved?.[key]?.source;
+    if (source?.kind === "credential_source") {
+      sources.add(source.id);
+    } else if (source?.kind === "secret") {
+      secrets.add(source.id);
+    }
+  }
+  const requirements = [
+    ...(sources.size ? [`Credential Source operate on ${listed([...sources])}`] : []),
+    ...(secrets.size ? [`Secret operate on ${listed([...secrets])}`] : []),
+  ];
+  return requirements.length ? requirements.join(" and ") : "operate permission on the credential";
 }
 
 export function createChannelSecretsPanel({
@@ -683,6 +813,7 @@ export function createChannelSecretsPanel({
   outstandingGrants = null,
   checkGrants = false,
   canGrant = true,
+  sourceDiscoveryActive = true,
   readOnly = () => false,
   readOnlyReason = () => CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   bindingsToReplace = () => null,
@@ -709,6 +840,7 @@ export function createChannelSecretsPanel({
   checkGrants?: boolean;
   // False when this session is known not to administer the Installation, so it cannot grant.
   canGrant?: boolean;
+  sourceDiscoveryActive?: boolean;
   // True when the caller may not update this Configuration: the bindings are shown, not edited
   // (finding 2432). The page's permission answer can land after the panel is built.
   readOnly?(): boolean;
@@ -770,7 +902,7 @@ export function createChannelSecretsPanel({
     }
     const message =
       saveError.step === "preflight"
-        ? "Could not check the saved Configuration. Try again before saving channel Secrets." +
+        ? "Could not check the saved Configuration. Try again before saving channel credentials." +
           (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
         : credentialSaveError(saveError);
     // Report this failed save first. A grant can still be outstanding from an earlier save.
@@ -813,7 +945,7 @@ export function createChannelSecretsPanel({
   // Every bound Secret, which grants and their checks cover whether or not the form offers a
   // picker for it or a Slack setting reads it: Deploy checks them all (finding 2558).
   function referencedSecretIds(secretBindings: SecretBindings) {
-    return new Set(boundSecrets(secretBindings).map(({ id }) => id));
+    return new Set(boundSecrets(secretBindings, state.values).map(({ id }) => id));
   }
 
   function pendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
@@ -857,14 +989,8 @@ export function createChannelSecretsPanel({
     );
   }
 
-  function secretGrantTargets({ secretBindings, changedSecrets }: SecretDraft) {
+  function secretGrantTargets({ secretBindings }: SecretDraft) {
     prunePendingSecretGrants(secretBindings);
-    for (const binding of SLACK_SECRET_BINDINGS) {
-      const secret = changedSecrets[binding.key];
-      if (secret?.id && secretIdForBinding(secretBindings?.[binding.key]) === secret.id) {
-        state.pendingSecretGrants[secret.id] = secret.ref;
-      }
-    }
     return Object.values(state.pendingSecretGrants);
   }
 
@@ -950,7 +1076,7 @@ export function createChannelSecretsPanel({
       // A member who cannot read a saved Secret cannot pick it again: the picker offers the
       // unreadable binding only while the draft still holds it (finding 1649). A page reload
       // drops unsaved choices for every reader, with the page's other unsaved edits.
-      return "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
+      return "Save the channel Credential Source choices before deploying, or reload the page to discard unsaved changes.";
     }
     return "Ready to deploy.";
   }
@@ -965,6 +1091,7 @@ export function createChannelSecretsPanel({
     error?: HTMLElement;
     updateControls?: (() => void) | null;
   } = {};
+  let sourcePickers: ReturnType<typeof createCredentialSourcePicker>[] = [];
   // Saves started, so a grant check that a save overtook drops its answer.
   let saveCount = 0;
   let readDenied = false;
@@ -992,10 +1119,10 @@ export function createChannelSecretsPanel({
   function saveOutcomeText(outcome: typeof lastOutcome) {
     lastOutcome = outcome;
     const slackOn = channelEnabled(state.values, "slack");
-    let saved = "Channel Secret bindings saved.";
+    let saved = "Channel credential bindings saved.";
     if (outcome === "retry") {
       // With Slack off, Retry saved nothing about Slack: it granted the bound Secrets' access.
-      saved = slackOn ? "This Agent can use its saved Slack Secrets." : SLACK_OFF_RETRY_GRANTED;
+      saved = slackOn ? "This Agent can use its bound Namespace Secrets." : SLACK_OFF_RETRY_GRANTED;
     } else if (outcome === "confirmed") {
       saved = slackOn ? SLACK_ACCESS_CONFIRMED : SLACK_OFF_ACCESS_CONFIRMED;
     }
@@ -1005,6 +1132,7 @@ export function createChannelSecretsPanel({
   }
 
   function renderChannelForm(error: HTMLElement) {
+    sourcePickers = [];
     shown.save = null;
     shown.status = null;
     shown.updateControls = null;
@@ -1013,34 +1141,17 @@ export function createChannelSecretsPanel({
     if (!slackOn && !retryOnly()) {
       return null;
     }
-    // Keys the form has no pickers for are listed only; the form then keeps just Retry Secret
-    // access for their outstanding grants. With Slack off, every bound key is listed only.
-    const listOnly = !slackOn || slackFormBindings(state.values) === null;
-    const formBindings = (slackOn ? slackFormBindings(state.values) : null) ?? [];
-    const extraKeys =
-      slackOn &&
-      slackBindingKeys(state.values).some(
-        (key) => !formBindings.some((binding) => binding.key === key),
-      );
-    let hintText = extraKeys ? SLACK_EXTRA_KEYS_HINT : null;
-    if (!slackOn) {
-      // The section's introduction says why these Secrets are listed.
-      hintText = null;
-    } else if (listOnly) {
-      hintText = usesNamedSlackAccounts(state.values)
-        ? "Named Slack accounts use their own token keys. Bind them through the Configuration API."
-        : SLACK_OTHER_KEYS_HINT;
-    }
-    const listHint = hintText === null ? null : element("p", { className: "hint" }, hintText);
     const formId = "runtime-channel-secrets-form";
     const draft: SecretDraft = {
       secretBindings: { ...(state.configuration.secretBindings ?? {}) },
       changedSecrets: {},
       ...structuredClone(state.draftSeed ?? {}),
     };
+    const formBindings = slackFormBindings(state.values, draft.secretBindings);
+    const listOnly = formBindings.length === 0;
     // Reopen the form with its unsaved choices after a refused write or a draft reload.
     state.draftSeed = null;
-    const pickers: ReturnType<typeof createSecretReferenceField>[] = [];
+    const pickers = sourcePickers;
     const status = element(
       "p",
       { className: "hint", role: "status" },
@@ -1049,7 +1160,7 @@ export function createChannelSecretsPanel({
     const save = element(
       "button",
       { type: "submit", form: formId, className: "button button--primary" },
-      "Save channel Secrets",
+      "Save channel credentials",
     );
     const readOnlyNote = element("p", { className: "hint" }, readOnlyReason());
     const replaceNote = element("p", { className: "hint" });
@@ -1057,73 +1168,81 @@ export function createChannelSecretsPanel({
     const saveHint = element("p", { className: "hint", hidden: true });
     shown.status = status;
     shown.save = save;
-    function createTokenPicker(binding: (typeof SLACK_SECRET_BINDINGS)[number]) {
-      const picker = createSecretReferenceField({
-        context,
+    function createTokenPicker(binding: { key: string; label: string }) {
+      const initial = slackSourceForBinding(draft.secretBindings[binding.key], context.namespaceId);
+      const currentId = slackSourceForBinding(
+        state.configuration.secretBindings?.[binding.key],
+        context.namespaceId,
+      )?.id;
+      const picker = createCredentialSourcePicker(context, {
         id: `runtime-${binding.key.toLowerCase().replaceAll("_", "-")}`,
         label: binding.label,
-        getCurrentSource: () => draft.secretBindings[binding.key]?.source,
-        onSecretSelected(secret) {
-          draft.secretBindings = {
-            ...draft.secretBindings,
-            [binding.key]: secretBinding(secret),
-          };
-          draft.changedSecrets = { ...draft.changedSecrets, [binding.key]: secret };
-          state.saveError = null;
-          state.saveMessage = "";
-          state.carriedNote = "";
-          updateGrantWarning();
-          setStatusTone(error, "warning");
-          error.textContent = state.saveGrantWarning;
-          status.textContent = "";
+        initial,
+        ...(currentId === undefined ? {} : { currentId }),
+        ...staticCredentialSourceSelection,
+        onChange(source) {
+          const previous = slackSourceForBinding(
+            draft.secretBindings[binding.key],
+            context.namespaceId,
+          );
+          if (previous?.id !== source?.id) {
+            if (source) {
+              draft.secretBindings[binding.key] = { source, delivery: { type: "env" } };
+            } else {
+              delete draft.secretBindings[binding.key];
+            }
+            state.saveError = null;
+            state.saveMessage = "";
+            state.carriedNote = "";
+            setStatusTone(error, "warning");
+            error.textContent = state.saveGrantWarning;
+            status.textContent = "";
+          }
           updateControls();
           onChange();
         },
-        createSecretName: () => `${state.agent.name} ${binding.secretName}`,
-        createDialogTitle: `Create ${binding.label} Secret`,
-        createFixedKey: {
-          label: "Binding key",
-          value: binding.key,
-          hint: "This environment key is fixed for Slack Socket Mode.",
-        },
-        metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
-        required: true,
-        disabled: !canEnterChannelCredentials(),
       });
+      picker.setActive(sourceDiscoveryActive);
       pickers.push(picker);
       return picker.field;
     }
     const canSaveChannelSecrets = () =>
       canEnterChannelCredentials() &&
       formBindings.every(
-        (binding) => secretIdForBinding(draft.secretBindings[binding.key]) !== null,
+        (binding) =>
+          slackSourceForBinding(draft.secretBindings[binding.key], context.namespaceId) !== null,
       ) &&
-      (Object.values(draft.changedSecrets).length > 0 || retryableGrants());
+      (state.unsavedSecrets || retryableGrants());
     const updateControls = () => {
       // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
       // an unsaved authentication source does.
       state.unsavedSecrets = formBindings.some(
         (binding) =>
-          secretIdForBinding(draft.secretBindings[binding.key]) !==
-          secretIdForBinding(state.configuration.secretBindings?.[binding.key]),
+          slackSourceForBinding(draft.secretBindings[binding.key], context.namespaceId)?.id !==
+          slackSourceForBinding(
+            state.configuration.secretBindings?.[binding.key],
+            context.namespaceId,
+          )?.id,
       );
+      readOnlyNote.hidden = listOnly || !readOnly();
+      readOnlyNote.textContent = readOnlyReason();
       for (const picker of pickers) {
-        picker.setDisabled(state.saving || !canEnterChannelCredentials());
+        picker.setDisabled(state.saving || !canEnterChannelCredentials(), readOnlyNote);
         picker.setRequired(true);
       }
       // With the saved bindings shown, the button only retries their outstanding grants.
       save.textContent =
         !state.unsavedSecrets && pendingSecretGrants().length
           ? "Retry Secret access"
-          : "Save channel Secrets";
+          : "Save channel credentials";
       const saveUnavailable = !canSaveChannelSecrets();
       // A session that cannot grant gets no Retry the API would refuse (finding 2263). A reader
       // gets no Save the API would refuse either (finding 2432).
-      readOnlyNote.hidden = listOnly || !readOnly();
-      readOnlyNote.textContent = readOnlyReason();
       const replace = readOnly() || listOnly ? [] : (bindingsToReplace() ?? []);
       replaceNote.hidden = replace.length === 0;
-      replaceNote.textContent = replace.length ? channelReplaceHint(replace) : "";
+      replaceNote.textContent = replace.length
+        ? channelReplaceHint(replace, state.configuration.secretBindings)
+        : "";
       save.hidden =
         readOnly() ||
         (!state.unsavedSecrets && unverifiedGrants()) ||
@@ -1134,10 +1253,11 @@ export function createChannelSecretsPanel({
       let saveReason = "";
       if (!save.hidden && saveUnavailable && canEnterChannelCredentials()) {
         saveReason = formBindings.some(
-          (binding) => secretIdForBinding(draft.secretBindings[binding.key]) === null,
+          (binding) =>
+            slackSourceForBinding(draft.secretBindings[binding.key], context.namespaceId) === null,
         )
-          ? "Choose a Secret for each Slack token to save."
-          : "No channel Secret changes to save.";
+          ? "Choose a ready static Credential Source for each Slack credential."
+          : "No channel credential changes to save.";
       }
       saveHint.textContent = saveReason;
       saveHint.hidden = saveReason === "";
@@ -1152,7 +1272,6 @@ export function createChannelSecretsPanel({
     const form = element(
       "form",
       { id: formId, className: "credential-form", novalidate: "" },
-      listHint,
       readOnlyNote,
       replaceNote,
       ...formBindings.map((binding) => createTokenPicker(binding)),
@@ -1197,7 +1316,7 @@ export function createChannelSecretsPanel({
       state.saveGrantWarning = "";
       status.textContent = retry
         ? "Checking Secret access..."
-        : "Saving channel Secret bindings...";
+        : "Saving channel credential bindings...";
       error.textContent = "";
       updateControls();
       onChange();
@@ -1345,7 +1464,7 @@ export function createChannelSecretsPanel({
         }
         const refusal =
           step === "configuration" && failure.status === 403
-            ? await bindingRefusal(Object.values(draft.changedSecrets))
+            ? (namedDenial(cause) ?? (await bindingRefusal(Object.values(draft.changedSecrets))))
             : undefined;
         if (!context.isCurrent()) {
           return;
@@ -1361,7 +1480,7 @@ export function createChannelSecretsPanel({
           // grant check can recreate protected controls, but retain this attempt's receipt.
           readDenied = true;
           section.replaceChildren(
-            element("h2", {}, "Channel Secrets"),
+            element("h2", {}, "Channel credentials"),
             element(
               "p",
               { role: "alert", className: "status", "data-tone": "danger" },
@@ -1412,7 +1531,7 @@ export function createChannelSecretsPanel({
       return element(
         "p",
         { className: "status", "data-tone": "danger", role: "alert" },
-        "The API did not return this Agent's service principal, so the console cannot bind Secrets.",
+        "The API did not return this Agent's service principal, so the Console cannot edit credential bindings.",
       );
     }
     return null;
@@ -1428,7 +1547,7 @@ export function createChannelSecretsPanel({
       ? element(
           "p",
           { className: "status", "data-tone": "danger", role: "alert" },
-          "Configuration changed. Reload this draft before saving channel Secrets.",
+          "Configuration changed. Reload this draft before saving channel credentials.",
         )
       : null;
     // An unknown outcome always comes with its save error, which the error line above shows as a
@@ -1459,7 +1578,7 @@ export function createChannelSecretsPanel({
       if (state.carriedNote) {
         // Shown only to say carried Secret choices were not reapplied (finding 1525).
         section.replaceChildren(
-          element("h2", {}, "Channel Secrets"),
+          element("h2", {}, "Channel credentials"),
           element("p", { className: "hint", role: "status" }, state.carriedNote),
         );
       } else {
@@ -1471,12 +1590,12 @@ export function createChannelSecretsPanel({
     }
     section.replaceChildren(
       ...[
-        element("h2", {}, "Channel Secrets"),
+        element("h2", {}, "Channel credentials"),
         element(
           "p",
           { className: "muted" },
           slackOn
-            ? "Save Slack tokens as Secrets, then deploy a new version to apply them. Saved bindings do not confirm live channel readiness."
+            ? "Select ready static Credential Sources for Slack credentials, then deploy a new version. Saved bindings do not confirm live channel readiness."
             : SLACK_OFF_BOUND_HINT,
         ),
         bindings,
@@ -1496,7 +1615,7 @@ export function createChannelSecretsPanel({
   async function checkBoundSecretGrants() {
     grantRead += 1;
     const read = grantRead;
-    const bound = boundSecrets(state.configuration.secretBindings).filter(
+    const bound = boundSecrets(state.configuration.secretBindings, state.values).filter(
       (secret) => secret.namespaceId === context.namespaceId,
     );
     if (!bound.length || servicePrincipalId(state.agent) === null) {
@@ -1628,12 +1747,18 @@ export function createChannelSecretsPanel({
     void checkBoundSecretGrants();
   }
   return {
-    // What the Channels tab says while saved Slack Secrets wait for the Agent's grant.
+    setSourceDiscoveryActive(active: boolean) {
+      sourceDiscoveryActive = active;
+      for (const picker of sourcePickers) {
+        picker.setActive(active);
+      }
+    },
+    // What the Channels tab says while bound Namespace Secrets wait for the Agent's grant.
     grantWarning: () => (state.saving || !pendingSecretGrants().length ? "" : slackGrantWarning()),
     section:
       channelEnabled(values, "slack") ||
       state.carriedNote ||
-      boundSecrets(configuration.secretBindings).length
+      boundSecrets(configuration.secretBindings, values).length
         ? section
         : null,
     canDeploy,

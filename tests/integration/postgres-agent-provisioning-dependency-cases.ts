@@ -5,7 +5,10 @@ import {
   AgentProvisioningStatusResponse,
   InstallationResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { provisioningError } from "./postgres-agent-provisioning-setup.ts";
+import {
+  provisioningError,
+  type ProvisioningSecrets,
+} from "./postgres-agent-provisioning-setup.ts";
 
 import {
   CodexPluginDriver,
@@ -17,7 +20,6 @@ import {
   type OpenClawConfigurationDocument,
   type ProvisionAgentBody,
   type SandboxDriver,
-  type SecretWire,
 } from "../../packages/contracts/src/index.ts";
 import {
   ProvisioningSecretDriverError,
@@ -58,10 +60,6 @@ type WorkerEvent = Parameters<StopWorkerAfter>[0];
 type RuntimeComputeDriver = ReturnType<typeof createRuntimeComputeDriver>;
 type ExactConfigurationDriver = ConfigurationDriver &
   Required<Pick<ConfigurationDriver, "createExact" | "inspectExact">>;
-type ProvisioningSecrets = Record<
-  "modelKey" | "slackBotToken" | "slackSigningSecret" | "externalServiceToken",
-  SecretWire
->;
 type ProvisioningBody = ProvisionAgentBody & {
   configuration: {
     values: {

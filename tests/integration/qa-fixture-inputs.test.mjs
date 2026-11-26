@@ -285,6 +285,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     "git-write",
     "git-push-denied",
     "slack",
+    "gateway-startup-credentials",
   ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
@@ -294,6 +295,20 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.throws(() => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "" }), /invalid QA scenario/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui", OCC_TEST_QA_PRESET: "Codex" }),
+    /not applicable/,
+  );
+  const gateway = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "gateway-startup-credentials" });
+  assert.deepEqual(
+    gateway.cells.filter(({ scenarios }) => scenarios.length > 0).map(({ cell }) => cell),
+    ["kubernetes/Codex"],
+  );
+  assert.deepEqual(gateway.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  assert.throws(
+    () =>
+      selectQaMatrix({
+        OCC_TEST_QA_SCENARIOS: "gateway-startup-credentials",
+        OCC_TEST_QA_INSTALLATION: "compose",
+      }),
     /not applicable/,
   );
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });

@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { listen } from "../helpers/listen.ts";
 import {

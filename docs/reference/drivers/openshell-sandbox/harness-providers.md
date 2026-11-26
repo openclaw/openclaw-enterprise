@@ -1,27 +1,19 @@
 # OpenShell Harness providers and exposure
 
-How the [OpenShell SandboxDriver](../openshell-sandbox.md) attaches credential
-sources and each Agent revision's runtime provider to a Sandbox, and how
-dedicated Codex exposes its app-server.
+The [OpenShell Sandbox Driver](../openshell-sandbox.md) supplies runtime files
+through revision Providers and exposes the dedicated Codex app-server.
 
-## Credential attachments
+<a id="credential-attachments"></a>
 
-For an Agent revision that uses a [credential source](../../credential-sources.md),
-the paired Credential Gateway issues one attachment per source. Compute passes
-them to the OpenShell Sandbox Driver in `credentialAttachments`. The Driver
-appends each attachment's provider name to the static `providers` list in
-`SandboxSpec`, rejecting a name outside the OCC `oce-cs-` provider shape or one
-that repeats a static provider. Startup rejects
-static `providers` entries that use the OCC shape, so operator-configured
-providers cannot impersonate a credential source. After the Harness is ready,
-Compute requires every attachment to report `ready` before activation.
+## Managed credential delivery
+
+The paired [Credential Proxy](../credential-proxy.md) configures the admitted
+Source bindings before Compute releases the Harness. With OCC TokenService,
+Proxy prepares a Provider with the delivery copy. The native OpenShell
+TokenService preview attaches its existing Provider. The Harness receives
+placeholders for those bindings. [Source support](../../credential-sources.md#implementation-status)
 
 <span id="dedicated-codex-runtime-provider"></span>
-
-For external ChatGPT authentication, the Sandbox stores account metadata but
-omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
-its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
-Harness holds its authentication failure without starting Codex or using cached state.
 
 ## Dedicated runtime providers
 
@@ -99,7 +91,7 @@ node identity and completes rollout. A native worker's node opens its Gateway co
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation has none. A missing
-service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
+service or Sandbox is gone only if `GetWorkspace` answers
 and a second read still misses it (OpenShell hides unauthorized Sandboxes as
 missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
 sweep covers Agent revisions without a current reconciliation pass and failed candidates.

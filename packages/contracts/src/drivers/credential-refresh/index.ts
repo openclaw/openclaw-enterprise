@@ -1,4 +1,7 @@
-import type { CredentialRefreshStatus } from "../token-service/index.ts";
+import type {
+  CredentialRefreshStatus,
+  CredentialSourceDeviceAuthorization,
+} from "../token-service/index.ts";
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
 import type { Driver } from "../index.ts";
 
@@ -35,15 +38,6 @@ export interface CredentialRefreshDriver extends Driver {
   refreshStatus(context: CredentialSourceContext): Promise<CredentialRefreshStatus>;
   /** Idempotent; deletes the stored refresh material. */
   removeRefresh(context: CredentialSourceContext): Promise<void>;
-}
-
-export interface CredentialSourceDeviceAuthorization {
-  readonly verificationUrl: string;
-  readonly userCode: string;
-  readonly expiresAt: string;
-  readonly intervalSeconds: number;
-  /** Opaque Refresh Driver login handle; never an access or refresh token. */
-  readonly privateState: string;
 }
 
 export type CredentialSourceDeviceAuthorizationResult = { readonly status: "pending" | "ready" };

@@ -76,10 +76,10 @@ index 85906093b20..88cc90173f1 100644
  paired Gateway, without sending the local Gateway's password on restart.
  
 diff --git a/docs/plugins/sdk-runtime/gateway-and-nodes.md b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-index c55a0624429..f51a2ac9600 100644
+index 4506c87ee6b..e8f3e29126f 100644
 --- a/docs/plugins/sdk-runtime/gateway-and-nodes.md
 +++ b/docs/plugins/sdk-runtime/gateway-and-nodes.md
-@@ -551,8 +551,14 @@ applicable policy also requires fresh publication admission.
+@@ -578,8 +578,14 @@ applicable policy also requires fresh publication admission.
      Shared preparation callbacks run once per node registry initialization, not
      per invocation or reconnect. Optional providers should retain a known
      unavailable state on expected preparation failure and let `isAvailable`
@@ -1500,12 +1500,12 @@ index 00000000000..53feb1f3945
 +  }
 +});
 diff --git a/packages/gateway-client/src/client.ts b/packages/gateway-client/src/client.ts
-index 5805a94e363..f909e87b65d 100644
+index 542365f9acc..5c845acf7ab 100644
 --- a/packages/gateway-client/src/client.ts
 +++ b/packages/gateway-client/src/client.ts
-@@ -11,7 +11,12 @@ import {
-   readConnectErrorDetailCode,
+@@ -12,7 +12,12 @@ import {
    readGatewayOperatorAccessClose,
+   readPairingConnectErrorDetails,
  } from "@openclaw/gateway-protocol/connect-error-details";
 -import type { ConnectParams, EventFrame, HelloOk } from "@openclaw/gateway-protocol/frame-guards";
 +import {
@@ -1517,7 +1517,15 @@ index 5805a94e363..f909e87b65d 100644
  import { resolveGatewayStartupRetryAfterMs } from "@openclaw/gateway-protocol/startup-unavailable";
  import {
    MIN_CLIENT_PROTOCOL_VERSION,
-@@ -44,6 +49,7 @@ import {
+@@ -28,6 +33,7 @@ import {
+   formatGatewayClientErrorForLog,
+   isGatewayClientStoppedError,
+   normalizeGatewayErrorText,
++  normalizeTlsFingerprint,
+ } from "./client-address-utils.js";
+ import {
+   GatewayClientDeviceAuth,
+@@ -48,6 +54,7 @@ import {
    shouldRetryGatewayWithDeviceToken,
  } from "./connect-auth.js";
  import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
@@ -1525,7 +1533,7 @@ index 5805a94e363..f909e87b65d 100644
  import { resolveModelCatalogConnect } from "./model-catalog-connect.js";
  import {
    resolveNodeProtocolClientMetadata,
-@@ -148,6 +154,8 @@ type AssembledConnect = {
+@@ -106,6 +113,8 @@ type AssembledConnect = {
  
  const DEFAULT_GATEWAY_CLIENT_URL = "ws://127.0.0.1:18789";
  const DEFAULT_CLIENT_VERSION = "0.0.0";
@@ -1534,7 +1542,7 @@ index 5805a94e363..f909e87b65d 100644
  export type GatewayReconnectPausedInfo = {
    code: number;
    reason: string;
-@@ -163,6 +171,12 @@ export { isGatewayProtocolResponseError } from "./protocol-request.js";
+@@ -121,6 +130,12 @@ export { isGatewayProtocolResponseError } from "./protocol-request.js";
  
  class GatewayClientTransportPolicyError extends GatewayWebSocketTransportConfigurationError {}
  
@@ -1547,7 +1555,7 @@ index 5805a94e363..f909e87b65d 100644
  export type GatewayClientOptions = GatewayWebSocketTargetOptions &
    NonNullable<ConnectParams["auth"]> & {
      origin?: string;
-@@ -181,6 +195,12 @@ export type GatewayClientOptions = GatewayWebSocketTargetOptions &
+@@ -139,6 +154,12 @@ export type GatewayClientOptions = GatewayWebSocketTargetOptions &
      requestTimeoutMs?: number;
      /** Prefer one setup credential for the first successful device-auth exchange. */
      preferBootstrapToken?: boolean;
@@ -1560,7 +1568,7 @@ index 5805a94e363..f909e87b65d 100644
      instanceId?: string;
      clientName?: GatewayClientName;
      clientDisplayName?: string;
-@@ -238,10 +258,16 @@ export class GatewayClient {
+@@ -202,10 +223,16 @@ export class GatewayClient {
    private opts: GatewayClientOptions;
    private deps: Required<GatewayClientHostDeps>;
    private stopped = false;
@@ -1576,8 +1584,8 @@ index 5805a94e363..f909e87b65d 100644
 +  private bootstrapDeviceTokenRetryState?: "pending" | "attempted" | "complete";
    private approvalRuntimeTokenCompatibilityDisabled = false;
    private approvalRuntimeTokenRetryBudgetUsed = false;
-   // Track last tick to detect silent stalls.
-@@ -251,7 +277,11 @@ export class GatewayClient {
+   private approvedGrantRetryPending = false;
+@@ -216,7 +243,11 @@ export class GatewayClient {
    private readonly requestTimeoutMs: number;
    private pendingStop: PendingStop | null = null;
    private readonly deviceAuth: GatewayClientDeviceAuth;
@@ -1590,7 +1598,7 @@ index 5805a94e363..f909e87b65d 100644
    private transportValidated = false;
    private suppressedTransientPreHelloCleanCloses = 0;
  
-@@ -261,6 +291,20 @@ export class GatewayClient {
+@@ -226,6 +257,20 @@ export class GatewayClient {
      this.deviceAuth = new GatewayClientDeviceAuth(this.deps);
      this.opts = {
        ...opts,
@@ -1611,7 +1619,7 @@ index 5805a94e363..f909e87b65d 100644
        deviceIdentity:
          opts.deviceIdentity === null
            ? undefined
-@@ -296,6 +340,31 @@ export class GatewayClient {
+@@ -261,6 +306,31 @@ export class GatewayClient {
          const assemble = (storedAuth: DeviceAuthTokenRecord | null) => {
            authority.assertCurrent();
            const signedAtMs = challengeTs ?? Date.now();
@@ -1643,7 +1651,7 @@ index 5805a94e363..f909e87b65d 100644
            // Auth selection is intentionally centralized: retry decisions depend on
            // whether a token was explicit, cached, or compatibility-derived.
            const selectedAuth = selectGatewayConnectAuth({
-@@ -324,11 +393,41 @@ export class GatewayClient {
+@@ -289,11 +359,41 @@ export class GatewayClient {
              usingStoredDeviceToken,
            } = selectedAuth;
  
@@ -1686,7 +1694,7 @@ index 5805a94e363..f909e87b65d 100644
            const scopes = resolveGatewayConnectScopes({
              requestedScopes: this.opts.scopes,
              usingStoredDeviceToken,
-@@ -441,7 +540,13 @@ export class GatewayClient {
+@@ -406,7 +506,13 @@ export class GatewayClient {
              usingStoredDeviceToken,
            };
  
@@ -1701,7 +1709,7 @@ index 5805a94e363..f909e87b65d 100644
            return assembled;
          };
          const storedAuth = this.opts.deviceIdentity
-@@ -464,19 +569,76 @@ export class GatewayClient {
+@@ -429,19 +535,76 @@ export class GatewayClient {
          } else {
            this.logError(msg);
          }
@@ -1781,7 +1789,7 @@ index 5805a94e363..f909e87b65d 100644
              // This accepted receipt redeems setup auth even when its transport has retired.
              this.opts.token = undefined;
              this.opts.bootstrapToken = undefined;
-@@ -484,6 +646,37 @@ export class GatewayClient {
+@@ -449,6 +612,37 @@ export class GatewayClient {
              this.opts.preferBootstrapToken = false;
            }
          };
@@ -1819,7 +1827,7 @@ index 5805a94e363..f909e87b65d 100644
          let stored: MaybePromise<void> = undefined;
          if (authInfo?.deviceToken && this.opts.deviceIdentity) {
            const tokenRole = authInfo.role ?? role;
-@@ -506,6 +699,13 @@ export class GatewayClient {
+@@ -471,6 +665,13 @@ export class GatewayClient {
              persisted,
              (error) => {
                assembled.persistenceFailed = true;
@@ -1833,7 +1841,7 @@ index 5805a94e363..f909e87b65d 100644
                const reported = this.notifyConnectError(error);
                this.logError(
                  `gateway device token persistence failed: ${formatGatewayClientErrorForLog(error)}`,
-@@ -546,36 +746,98 @@ export class GatewayClient {
+@@ -511,36 +712,98 @@ export class GatewayClient {
              this.protocol.closeSocket(1012, "gateway protocol upgraded");
              return;
            }
@@ -1940,7 +1948,7 @@ index 5805a94e363..f909e87b65d 100644
          clearInterval(this.tickTimer ?? undefined);
          this.tickTimer = null;
          if (decision.notify) {
-@@ -597,7 +859,40 @@ export class GatewayClient {
+@@ -562,7 +825,40 @@ export class GatewayClient {
          this.notifyReconnectPaused({ code: 1008, reason: error.message, detailCode: null }),
        onParseError: (error) =>
          this.logDebug(`gateway client parse error: ${formatGatewayClientErrorForLog(error)}`),
@@ -1982,7 +1990,7 @@ index 5805a94e363..f909e87b65d 100644
        onGap: (info) => this.opts.onGap?.(info),
        onRequestTiming: (timing) => this.opts.onRequestTiming?.(timing),
        onActivity: () => {
-@@ -669,7 +964,27 @@ export class GatewayClient {
+@@ -634,7 +930,27 @@ export class GatewayClient {
    }
  
    private createSocket(handlers: GatewayProtocolSocketHandlers): GatewayProtocolSocket {
@@ -2010,7 +2018,7 @@ index 5805a94e363..f909e87b65d 100644
      const configuredEdgeAuthHeaders = this.opts.edgeAuthHeaders;
      const edgeAuthHeaders =
        configuredEdgeAuthHeaders && Object.keys(configuredEdgeAuthHeaders).length > 0
-@@ -826,6 +1141,8 @@ export class GatewayClient {
+@@ -791,6 +1107,8 @@ export class GatewayClient {
    }
  
    private beginStop(): Promise<void> | null {
@@ -2019,7 +2027,7 @@ index 5805a94e363..f909e87b65d 100644
      this.stopped = true;
      this.pendingDeviceTokenRetry = false;
      this.deviceTokenRetryBudgetUsed = false;
-@@ -865,6 +1182,12 @@ export class GatewayClient {
+@@ -830,6 +1148,12 @@ export class GatewayClient {
      return null;
    }
  
@@ -2032,7 +2040,7 @@ index 5805a94e363..f909e87b65d 100644
    private resolvePendingStop(ws: WebSocket): void {
      if (this.pendingStop?.ws !== ws) {
        return;
-@@ -907,6 +1230,10 @@ export class GatewayClient {
+@@ -888,6 +1212,10 @@ export class GatewayClient {
      error: GatewayProtocolRequestError,
      assembled: AssembledConnect,
    ) {
@@ -2043,7 +2051,7 @@ index 5805a94e363..f909e87b65d 100644
      if (this.shouldRetryWithAlternateNodeProtocol(error)) {
        const resetBackoff = !this.nodeProtocolTransitionPending;
        this.useLegacyNodeProtocolEnvelope = !this.useLegacyNodeProtocolEnvelope;
-@@ -922,6 +1249,13 @@ export class GatewayClient {
+@@ -903,6 +1231,13 @@ export class GatewayClient {
        return { closeCode: 1008, closeReason: "connect retry" };
      }
      this.nodeProtocolTransitionPending = false;
@@ -2054,10 +2062,10 @@ index 5805a94e363..f909e87b65d 100644
 +      this.notifyConnectError(error);
 +      return { closeCode: 1008, closeReason: "connect failed", stop: true };
 +    }
-     const detailCode =
-       error instanceof GatewayClientRequestError ? readConnectErrorDetailCode(error.details) : null;
-     const shouldRetryWithDeviceToken = shouldRetryGatewayWithDeviceToken({
-@@ -930,9 +1264,18 @@ export class GatewayClient {
+     const grantScopes = this.resolveApprovedGrantScopes(error);
+     if (grantScopes) {
+       this.opts = { ...this.opts, scopes: grantScopes };
+@@ -919,9 +1254,18 @@ export class GatewayClient {
        explicitToken: this.opts.token?.trim() || undefined,
        storedToken: assembled.storedToken,
        trustedEndpoint: this.isTrustedDeviceRetryEndpoint(),
@@ -2076,7 +2084,7 @@ index 5805a94e363..f909e87b65d 100644
        this.pendingDeviceTokenRetry = true;
        this.deviceTokenRetryBudgetUsed = true;
        this.protocol.resetReconnectBackoff(250);
-@@ -995,6 +1338,36 @@ export class GatewayClient {
+@@ -984,6 +1328,36 @@ export class GatewayClient {
        closeError instanceof GatewayClientRequestError ? closeError.details : undefined;
      const detailCode = readConnectErrorDetailCode(details);
      const info = describeGatewayClientClose(context, this.transportValidated, closeError);
@@ -2110,10 +2118,10 @@ index 5805a94e363..f909e87b65d 100644
 +      });
 +      return { retry: false, notify: true, pendingError: closeError };
 +    }
-     if (context.code === 1013 && context.connectFailure?.reconnectDelayMs !== undefined) {
-       return {
-         retry: true,
-@@ -1026,6 +1399,7 @@ export class GatewayClient {
+     if (this.approvedGrantRetryPending) {
+       this.approvedGrantRetryPending = false;
+       return { retry: true, notify: false };
+@@ -1019,6 +1393,7 @@ export class GatewayClient {
        shouldPauseGatewayReconnect({
          details,
          deviceTokenRetryPending: this.pendingDeviceTokenRetry,
@@ -2121,7 +2129,7 @@ index 5805a94e363..f909e87b65d 100644
          tokenMismatchIsTerminal: true,
          protocolMismatchIsTerminal: !this.nodeProtocolTransitionPending,
          clientVersionMismatchIsTerminal: true,
-@@ -1051,10 +1425,25 @@ export class GatewayClient {
+@@ -1044,10 +1419,25 @@ export class GatewayClient {
      ) {
        return;
      }
@@ -2149,7 +2157,7 @@ index 5805a94e363..f909e87b65d 100644
      void this.clearDeviceToken(
        this.opts.deviceIdentity.deviceId,
        observation,
-@@ -1111,6 +1500,12 @@ export class GatewayClient {
+@@ -1104,6 +1494,12 @@ export class GatewayClient {
    }
  
    private notifyReconnectPaused(info: GatewayReconnectPausedInfo): void {
@@ -2162,7 +2170,7 @@ index 5805a94e363..f909e87b65d 100644
      try {
        this.opts.onReconnectPaused?.(info);
      } catch (err) {
-@@ -1128,6 +1523,40 @@ export class GatewayClient {
+@@ -1121,6 +1517,40 @@ export class GatewayClient {
      return message.includes("invalid connect params") && message.includes(field);
    }
  
@@ -5267,10 +5275,10 @@ index aa230c27405..a44357f8dc0 100644
          ]),
        );
 diff --git a/src/daemon/program-args.ts b/src/daemon/program-args.ts
-index b7709f544b6..efefcbd7af0 100644
+index 5c80298170c..320f1529cad 100644
 --- a/src/daemon/program-args.ts
 +++ b/src/daemon/program-args.ts
-@@ -348,10 +348,10 @@ export async function resolveNodeProgramArguments(params: {
+@@ -365,10 +365,10 @@ export async function resolveNodeProgramArguments(params: {
      }
    }
    if (params.nodeId) {
@@ -6125,7 +6133,7 @@ index 25a2a7e3eb1..258b65c5ddb 100644
 +  };
 +}
 diff --git a/src/node-host/connection.test.ts b/src/node-host/connection.test.ts
-index a6f3e738832..bd20de41714 100644
+index 29709944f1e..709a4d2adea 100644
 --- a/src/node-host/connection.test.ts
 +++ b/src/node-host/connection.test.ts
 @@ -157,6 +157,7 @@ function startConnectionFixture(
@@ -9642,7 +9650,7 @@ index fc3ffba6c75..99e3e7ea7ab 100644
    notifyRegisteredNodeHostCommandDisconnect: mocks.disconnectPlugins,
    isRegisteredNodeHostCommandDuplex: vi.fn((command: string) => command === "test.duplex"),
 diff --git a/src/node-host/runtime.ts b/src/node-host/runtime.ts
-index 0b34d0d550a..91cb90cb306 100644
+index 505a03346937dc666274f86655f6710add44b84f..c67009586db6b6f5d46e008faea646d998f23841 100644
 --- a/src/node-host/runtime.ts
 +++ b/src/node-host/runtime.ts
 @@ -1,6 +1,6 @@
@@ -9653,7 +9661,7 @@ index 0b34d0d550a..91cb90cb306 100644
  import { NODE_CLAUDE_SKILLS_MESSAGE_BYTES } from "../infra/node-claude-skill-protocol.js";
  import {
    NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
-@@ -48,7 +48,7 @@ import {
+@@ -52,7 +52,7 @@ import {
    isRegisteredNodeHostCommandDuplex,
    listRegisteredNodeHostCapsAndCommands,
    notifyRegisteredNodeHostCommandDisconnect,
@@ -9662,7 +9670,7 @@ index 0b34d0d550a..91cb90cb306 100644
  } from "./plugin-node-host.js";
  import {
    requireRequestedCommands,
-@@ -146,595 +146,674 @@ export async function prepareNodeHostRuntime(params?: {
+@@ -150,599 +150,678 @@ export async function prepareNodeHostRuntime(params?: {
    const config = params?.config ?? (await captureRuntimeConfigAsyncReader()());
    const env = params?.env ?? process.env;
    const platform = process.platform;
@@ -9702,10 +9710,14 @@ index 0b34d0d550a..91cb90cb306 100644
 -    ? captureNodeWorkerManagedIdentityTransport(env)
 -    : undefined;
 -  const platformTrust = dedicatedNodeExecution ? captureNodeWorkerPlatformTrust(env) : undefined;
+-  const executionContext = dedicatedNodeExecution
+-    ? parseNodeExecutionContext(env[NODE_WORKER_EXECUTION_ENV])
+-    : undefined;
 -  const workspaceOptions = {
 +  const closePluginPreparation = await ensureNodeHostPluginRegistry({
 +    config,
      env,
+-    filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 -    ephemeral: params?.ephemeral,
 -    managedIdentityTransport,
 -    platformTrust,
@@ -9788,8 +9800,12 @@ index 0b34d0d550a..91cb90cb306 100644
 +      ? captureNodeWorkerManagedIdentityTransport(env)
 +      : undefined;
 +    const platformTrust = dedicatedNodeExecution ? captureNodeWorkerPlatformTrust(env) : undefined;
++    const executionContext = dedicatedNodeExecution
++      ? parseNodeExecutionContext(env[NODE_WORKER_EXECUTION_ENV])
++      : undefined;
 +    const workspaceOptions = {
 +      env,
++      filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 +      ephemeral: params?.ephemeral,
 +      managedIdentityTransport,
 +      platformTrust,
@@ -9819,9 +9835,7 @@ index 0b34d0d550a..91cb90cb306 100644
 -        capacity: config.nodeHost?.workerRuns?.capacity,
 -        workspace: preparedWorkerWorkspace,
 -        containerEngine,
--        ...(config.nodeHost?.workerRuns?.containerImage
--          ? { containerImage: config.nodeHost.workerRuns.containerImage }
--          : {}),
+-        containerImage: config.nodeHost?.workerRuns?.containerImage || undefined,
 -        onCapacityChanged: (capacity) => {
 -          preparedContainerCapacity = capacity;
 -          publishContainerCapacity?.(capacity);
@@ -9925,6 +9939,8 @@ index 0b34d0d550a..91cb90cb306 100644
 -              env,
 -              capacity: config.nodeHost?.workerRuns?.capacity,
 -              nativeInferenceSnapshot,
+-              executionContext,
+-              filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 -              managedIdentityTransport,
 -              platformTrust,
 -              onCapacityChanged: onRunnerCapacityChanged,
@@ -9949,9 +9965,7 @@ index 0b34d0d550a..91cb90cb306 100644
 +          capacity: config.nodeHost?.workerRuns?.capacity,
 +          workspace: preparedWorkerWorkspace,
 +          containerEngine,
-+          ...(config.nodeHost?.workerRuns?.containerImage
-+            ? { containerImage: config.nodeHost.workerRuns.containerImage }
-+            : {}),
++          containerImage: config.nodeHost?.workerRuns?.containerImage || undefined,
 +          onCapacityChanged: (capacity) => {
 +            preparedContainerCapacity = capacity;
 +            publishContainerCapacity?.(capacity);
@@ -10105,6 +10119,8 @@ index 0b34d0d550a..91cb90cb306 100644
 +                env,
 +                capacity: config.nodeHost?.workerRuns?.capacity,
 +                nativeInferenceSnapshot,
++                executionContext,
++                filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 +                managedIdentityTransport,
 +                platformTrust,
 +                onCapacityChanged: onRunnerCapacityChanged,
@@ -10203,17 +10219,17 @@ index 0b34d0d550a..91cb90cb306 100644
 -      const refreshAvailability = () => {
 -        if (closing) {
 -          return;
-+        };
-+        if (workerSupervisor && !preparedContainerInitialized) {
-+          initializeWorkerSupervisor();
-         }
+-        }
 -        const nextPluginNodeHost = resolvePluginNodeHost();
 -        const nextManifest = buildManifest(nextPluginNodeHost);
 -        currentPluginNodeHost = nextPluginNodeHost;
 -        if (!sameNodeHostManifest(currentManifest, nextManifest)) {
 -          currentManifest = nextManifest;
 -          onManifestChanged?.(nextManifest);
--        }
++        };
++        if (workerSupervisor && !preparedContainerInitialized) {
++          initializeWorkerSupervisor();
+         }
 -        publishInventory();
 -      };
 -      const stopAvailabilityWatch = onManifestChanged
@@ -11053,24 +11069,19 @@ index a1ca38135cb..0a906f7e2eb 100644
    invokeRegisteredNodeHostCommand: vi.fn(async () => null),
  }));
 diff --git a/src/node-host/startup-state-readiness.test.ts b/src/node-host/startup-state-readiness.test.ts
-index 8ea8b73e4fa..f0850de24e4 100644
+index 58839fc9a08..723434aa945 100644
 --- a/src/node-host/startup-state-readiness.test.ts
 +++ b/src/node-host/startup-state-readiness.test.ts
-@@ -185,9 +185,11 @@ describe("node-host state readiness", () => {
-       if (mode === "managed") {
-         stateDb.openOpenClawStateDatabase({ env });
-         await stateDb.closeOpenClawStateDatabaseAsync();
--        await expect(withExistingOpenClawStateSchema({ path: databasePath() }, run)).rejects.toBe(
--          fixture.admitted,
--        );
-+        await expect(
-+          withExistingOpenClawStateSchema({ path: databasePath() }, async () => {
-+            await run();
-+          }),
-+        ).rejects.toBe(fixture.admitted);
-       } else if (mode === "canonical") {
-         const canonical = identityStore.loadOrCreateDeviceIdentity({ env });
-         const { sourcePath, raw } = writeSource("identity/device.json", {
+@@ -56,3 +56,8 @@ const makeIdentity = () => generateStoredDeviceIdentity(1_700_000_000_000);
+ const entrypoints = [
+-  { name: "node runner", run: () => runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 }) },
++  {
++    name: "node runner",
++    run: async () => {
++      await runNodeHost({ gatewayHost: "127.0.0.1", gatewayPort: 18789 });
++    },
++  },
+   { name: "JSONL worker", run: runNodeHostWorker },
 diff --git a/src/node-host/worker-runtime.test.ts b/src/node-host/worker-runtime.test.ts
 index dd2612109e7..a5741cc7ef5 100644
 --- a/src/node-host/worker-runtime.test.ts

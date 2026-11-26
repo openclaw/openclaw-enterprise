@@ -403,6 +403,9 @@ test("registry refuses ambiguous repositories, wildcard policy, unsupported prof
     "unsafe installation ID": (value) => {
       value.githubInstallationId = "9007199254740992";
     },
+    "missing repository ID outside TokenService delivery": (value) => {
+      Reflect.deleteProperty(value.repositories[0], "repositoryId");
+    },
     "zero repository ID": (value) => {
       value.repositories[0].repositoryId = "0";
     },

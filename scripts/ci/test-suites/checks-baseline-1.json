@@ -15,7 +15,6 @@
     "tests/integration/occ-api-channel-directory.test.ts",
     "tests/integration/occ-api-auth-accounts.test.ts",
     "tests/integration/occ-api-namespace-iam-policy.test.ts",
-    "tests/integration/occ-api-joint-plugin-deployment.test.ts",
     "tests/integration/occ-service-account-lifecycle.test.ts",
     "tests/integration/stored-document-serialization.test.ts",
     "tests/integration/credential-source-wire-contract.test.ts",
@@ -37,13 +36,11 @@
     "tests/conformance/kubernetes-channel-egress-drain.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/external-sandbox-registration.test.ts",
-    "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.ts",
     "tests/integration/presets-controller.test.ts",
     "tests/integration/plugin-discovery-api.test.ts",
-    "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.ts",
     "tests/integration/secret-api.test.ts",
     "tests/integration/model-discovery-shipped-api.test.ts",
@@ -95,6 +92,7 @@
     "tests/conformance/openshell-managed-bootstrap.test.ts",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
+    "tests/conformance/token-service-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/conformance/strands-box-status.test.ts",
     "tests/integration/secret-driver-startup.test.ts",
@@ -103,7 +101,6 @@
     "tests/integration/controller-lifecycle.test.ts",
     "tests/conformance/configuration-occ.test.ts",
     "tests/conformance/configuration-model-policy.test.ts",
-    "tests/conformance/credential-source-occ.test.ts",
     "tests/conformance/kubernetes-real-kubectl.test.ts",
     "tests/conformance/k3d-failure-diagnostics.test.ts",
     "tests/conformance/secret-occ.test.ts",
@@ -166,7 +163,6 @@
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.ts",
-    "tests/integration/egress-prepared-github-metadata.test.mjs",
     "tests/integration/protected-source-refusals.test.ts",
     "tests/integration/refusal-answers.test.ts",
     "tests/integration/namespace-deletion-console-api.test.ts",
@@ -255,9 +251,6 @@
       ]
     },
     {
-      "path": "tests/conformance/credential-source-occ.test.ts"
-    },
-    {
       "path": "tests/conformance/docker-compute.test.ts"
     },
     {
@@ -274,9 +267,6 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
-    },
-    {
-      "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-runtime-logs.test.ts"
@@ -402,6 +392,9 @@
     },
     {
       "path": "tests/conformance/openshell-codex-device.test.mjs"
+    },
+    {
+      "path": "tests/conformance/token-service-codex-device.test.mjs"
     },
     {
       "path": "tests/conformance/openshell-harness-status.test.mjs"
@@ -577,7 +570,7 @@
       "path": "tests/integration/occ-api-mutation-refusals.test.ts",
       "expectedTests": [
         "credential withdrawal routes authorize the Agent, not the credential source",
-        "credential source registration names the missing Credential Gateway",
+        "credential source registration checks Namespace readiness before TokenService availability",
         "a duplicate Secret name answers 409 naming the taken Secret name",
         "Secret values with an unpaired surrogate are refused as an invalid value",
         "a state conflict names what blocks the request, after authorization only",
@@ -589,15 +582,16 @@
     {
       "path": "tests/integration/managed-mcp-tool-discovery.test.ts",
       "expectedTests": [
-        "managed MCP discovery reads tool names using one pinned authenticated session",
-        "managed MCP discovery refuses private DNS answers and redirects"
+        "MCP discovery reads tool names using one pinned authenticated session",
+        "MCP discovery refuses unsafe bearer values, private DNS answers, and redirects"
       ]
     },
     {
       "path": "tests/integration/occ-api-channel-directory.test.ts",
       "expectedTests": [
         "Channel directory accepts Slack's null terminal cursor without losing prior matches",
-        "Channel directory lookup checks the exact edit target and Secret before and after reading"
+        "Slack directory refuses a non-bot Source before sending its value to Slack",
+        "Channel directory lookup checks the exact edit target and Source before and after resolution"
       ]
     },
     {
@@ -622,9 +616,6 @@
         "Namespace IAM read routes serialize broad native policy without widening mutations",
         "Namespace IAM routes fail closed without policy management and roll back audit failures"
       ]
-    },
-    {
-      "path": "tests/integration/occ-api-joint-plugin-deployment.test.ts"
     },
     {
       "path": "tests/integration/occ-service-account-lifecycle.test.ts",
@@ -671,19 +662,7 @@
       "path": "tests/integration/model-discovery-shipped-api.test.ts"
     },
     {
-      "path": "tests/integration/credential-source-api.test.mjs",
-      "expectedTests": [
-        "Installation discovery serializes OpenShell model authentication and refresh source metadata"
-      ]
-    },
-    {
       "path": "tests/integration/plugin-discovery-api.test.ts"
-    },
-    {
-      "path": "tests/integration/openshell-plugin-source-reader.test.ts",
-      "expectedTests": [
-        "OpenShell source discovery uses the selected Backend reader with no Gateway callback"
-      ]
     },
     {
       "path": "tests/integration/device-authorization-api.test.ts"
@@ -734,6 +713,7 @@
     },
     {
       "path": "tests/integration/dev-up.test.mjs",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"],
       "expectedTests": [
         "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
         "Kubernetes Compute defaults to the Kubernetes control plane",
@@ -750,10 +730,12 @@
       ]
     },
     {
-      "path": "tests/integration/dev-up-compose.test.mjs"
+      "path": "tests/integration/dev-up-compose.test.mjs",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"]
     },
     {
       "path": "tests/integration/dev-up-compose-startup.test.ts",
+      "optionalEnv": ["OCC_TEST_DEV_UP_CLI"],
       "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
@@ -855,29 +837,7 @@
     {
       "path": "tests/integration/credential-proxy-provider-pin.test.ts",
       "expectedTests": [
-        "classification diagnostics reject contradictory reports and preserve audit-write refusal",
-        "live adoption refuses duplicate provider identity in either catalog order",
-        "live adoption keeps catalog order for distinct provider identities",
-        "live adoption refuses a provider duplicate added during material resolution",
-        "credential exchange refuses a conflicted eligible provider before route fallback",
-        "static deployment refuses ambiguous or incompatible providers without redirecting its exact binding",
-        "credential exchange refuses duplicate and substituted providers before material access",
-        "credential exchange refuses provider replacement during a pending Secret read",
-        "credential exchange withholds a response after provider method replacement",
-        "credential exchange preserves the original possible-send receipt after provider drift",
-        "credential exchange withholds an observed response after provider replacement",
-        "credential exchange cuts a cached stream lease after provider replacement",
-        "an unbound source update keeps its admitted provider when same-type providers reorder",
-        "a source update withholds resolved material after its provider or injector changes",
-        "explicit live adoption does not require Compute placement",
-        "fresh static source refuses duplicate provider identity in either catalog order",
-        "fresh static source keeps catalog order for distinct provider identities",
-        "fresh static source refuses a provider duplicate added during material resolution",
-        "live static registration does not require Compute placement",
-        "live static source validation does not consult backend Gateway placement",
-        "live static registration losing to DELETE preserves its deleting row without Gateway cleanup",
-        "capability discovery omits only conflicting static provider types",
-        "fresh protected enrollment rejects Gateway lifecycle mismatch before material or refresh setup"
+        "classification diagnostics reject contradictory reports and preserve audit-write refusal"
       ]
     },
     {
@@ -889,12 +849,7 @@
     {
       "path": "tests/integration/static-egress.test.mjs",
       "expectedTests": [
-        "Responses output text assembled across parts and messages cannot reveal selected material",
-        "Responses assistant projections protect independent items and seeded deltas",
-        "Responses incremental text snapshots cannot reveal selected material",
-        "Responses follow-up replays assistant text with empty provider metadata",
-        "signed Responses Plan projections protect completed and response-wide streamed text",
-        "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
+        "Source enrollment refuses retired Gateway inference without reading material",
         "protected admission refuses an Agent's network policy additions instead of dropping them",
         "the policy endpoint refuses additions and live application while the active revision is protected",
         "the policy endpoint refuses additions before an Agent's first protected deploy",
@@ -1104,18 +1059,11 @@
     {
       "path": "tests/integration/credential-proxy-stream-exchange.test.ts",
       "expectedTests": [
-        "OpenShell exchange: first-renewal outage, then recover",
-        "OpenShell exchange: first-renewal outage, then withdraw",
-        "OpenShell exchange: post-renewal outage, then recover",
-        "OpenShell exchange: post-renewal outage, then withdraw",
         "exchange reader rejects invalid reply envelopes and preserves terminal ordering"
       ]
     },
     {
       "path": "tests/integration/egress-installation-exchange.test.ts"
-    },
-    {
-      "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
     },
     {
       "path": "tests/integration/protected-source-refusals.test.ts"
