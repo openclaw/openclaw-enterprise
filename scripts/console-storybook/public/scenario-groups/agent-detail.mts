@@ -289,6 +289,11 @@ export function createAgentDetailScenarios({
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
+  const googleWorkspaceEntry = {
+    id: "occ-plugin:google@1.0.0",
+    name: "Google Workspace",
+    tools: [],
+  };
 
   const slackTool = {
     id: "slack_search_public",
@@ -1491,6 +1496,26 @@ export function createAgentDetailScenarios({
         ],
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
+      pluginsSearchWhileLoading: {
+        ...slackMcpBase,
+        name: "Keep the plugin search while the catalog loads",
+        path: draft,
+        credentialSources: [],
+        pluginDiscovery: {
+          ...slackMcpBase.pluginDiscovery,
+          pages: {
+            initial: { plugins: [googleWorkspaceEntry, slackEntry], nextCursor: null },
+          },
+        },
+        rules: [{ suffix: "/plugins/capabilities", method: "GET", delayMs: 10_000, once: true }],
+        description:
+          "Type a search before the catalog is available, then close the picker. When you reopen it, the results match what you typed.",
+        steps: [
+          "Select Plugins. While the catalog check is pending, open Configure plugins, type Workspace in Search plugins, and choose Done.",
+          "Let the check and background search finish. Reopen Configure plugins. Search plugins still shows Workspace, and only Google Workspace appears.",
+        ],
+        gap: "The Agent, capabilities, and searchable catalog are simulated.",
+      },
       slackMcpTools: {
         ...slackMcpBase,
         name: "Choose tools for a connected Slack account",
@@ -1640,7 +1665,7 @@ export function createAgentDetailScenarios({
         pluginDiscovery: {
           pages: {
             initial: {
-              plugins: [{ id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] }],
+              plugins: [googleWorkspaceEntry],
               nextCursor: null,
             },
           },
