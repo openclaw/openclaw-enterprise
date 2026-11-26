@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
@@ -73,7 +73,19 @@ test(
       "requires an owned prepared OCC TokenService Installation",
     timeout: 45 * 60_000,
   },
-  async (t) => {
+  verifyGitAgent({ publicMetadata: false }),
+);
+
+if (process.env[`${selection}_PUBLIC_METADATA_REAL`] === "1") {
+  test(
+    "Dedicated Codex Agent reads public metadata only for its selected Repository",
+    { timeout: 20 * 60_000 },
+    verifyGitAgent({ publicMetadata: true }),
+  );
+}
+
+function verifyGitAgent({ publicMetadata }: { publicMetadata: boolean }) {
+  return async (t: TestContext) => {
     const origin = loopback("OCC_URL", "http:");
     const endpoint = loopback(`${management}_GATEWAY_ENDPOINT`, "https:");
     const key = await serviceKey();
@@ -85,7 +97,9 @@ test(
     const runtimeImage = required(`${selection}_RUNTIME_IMAGE`);
     const clientId = required(`${selection}_GITHUB_APP_CLIENT_ID`);
     const allowedRef = required(`${selection}_ALLOWED_REPOSITORY_REF`);
-    const writableRepository = required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`);
+    const writableRepository = publicMetadata
+      ? undefined
+      : required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`);
     const deniedRef = required(`${selection}_DENIED_REPOSITORY_REF`);
     assert.ok(/^ns_[a-f0-9-]{36}$/.test(namespaceId) && /^cs_[a-f0-9-]{36}$/.test(modelSourceId));
     assert.ok(/^ccr_[a-f0-9-]{36}$/.test(clientId));
@@ -182,13 +196,14 @@ test(
         repositoryName.test(denied.repository),
       "Both repository references must be in the finite Namespace registry.",
     );
-    const hostName = required(`${selection}_TCP_CONTROL_HOST`);
-    const port = Number(required(`${selection}_TCP_CONTROL_PORT`));
-    const tcpProbe = await startNativeTcpProbe(t, {
-      host: hostName,
-      address: required(`${selection}_TCP_CONTROL_ADDRESS`),
-      port,
-    });
+    const tcpControl = publicMetadata
+      ? undefined
+      : {
+          host: required(`${selection}_TCP_CONTROL_HOST`),
+          address: required(`${selection}_TCP_CONTROL_ADDRESS`),
+          port: Number(required(`${selection}_TCP_CONTROL_PORT`)),
+        };
+    const tcpProbe = tcpControl && (await startNativeTcpProbe(t, tcpControl));
     const previous = new Set(
       (await data<CredentialSourceWire[]>("GET", `${base}/credential-sources`, 200)).map(
         ({ id }) => id,
@@ -240,7 +255,7 @@ test(
       const agentId = agent.id;
       agentIds.push(agentId);
       const agentPath = `${base}/agents/${agentId}`;
-      if (access === "read") {
+      if (access === "read" && tcpControl) {
         const path = `${agentPath}/sandbox-policy/networking`;
         await data("PATCH", `${path}/editing`, 200, { enabled: true });
         const current = await data<{ policy: { version: number } }>("GET", path, 200);
@@ -250,8 +265,8 @@ test(
             {
               id: "tcp-control",
               binary: "/usr/bin/curl",
-              host: hostName,
-              ports: [{ from: port, to: port }],
+              host: tcpControl.host,
+              ports: [{ from: tcpControl.port, to: tcpControl.port }],
             },
           ],
         });
@@ -318,7 +333,8 @@ test(
       gitSource.type === "github-app-installation" &&
         gitSource.clientId === clientId &&
         gitSource.scope.repositories.length === 1 &&
-        gitSource.scope.permissions.contents === "write",
+        (gitSource.scope.permissions.contents === "write" ||
+          (publicMetadata && gitSource.scope.permissions.contents === "read")),
       "Deployment must derive the finite Git Source from the selected Client.",
     );
     const allowedName = gitSource.scope.repositories[0]!.repository;
@@ -455,27 +471,6 @@ test(
         await exec(["sh", "-ceu", 'rm -f "$1" "$1.ok"', "sh", file]);
       }
     }
-    const url = `https://github.com/${allowedName}.git`;
-    const read = `git ls-remote --exit-code ${url} HEAD`;
-    await runInHarness(
-      reader,
-      `${read} >/dev/null && ! git ls-remote --exit-code https://github.com/${deniedName}.git HEAD >/dev/null 2>&1 || exit 1`,
-    );
-    await tcpProbe.verify((script) => runInHarness(reader, script));
-    // Write only to the disposable repository explicitly named for this run.
-    assert.ok(
-      allowedName === writableRepository,
-      "The installed repository must match the disposable write target.",
-    );
-    const contributor = await deploy("write");
-    assert.equal(contributor.gitSourceId, gitSourceId);
-    assert.ok(
-      Array.isArray(contributor.sandbox.spec?.providers) &&
-        contributor.sandbox.spec.providers.includes(gitProvider),
-    );
-    const version = (await gateway.getProvider(workspace, gitProvider, rpc()))?.config
-      .oce_source_version;
-    assert.ok(version);
     async function expectNativeDenial(
       matches: (line: OpenShellSandboxLogLine) => boolean,
       run: () => Promise<void>,
@@ -497,7 +492,7 @@ test(
       const before = await lastDenial();
       await run();
       await waitUntil(
-        "OpenShell reports a fresh denial for the reader's Git command",
+        "OpenShell reports a fresh denial for the reader's request",
         async () => {
           const after = await lastDenial();
           return after && after !== before;
@@ -505,6 +500,83 @@ test(
         { timeoutMs: 30_000, intervalMs: 500 },
       );
     }
+    if (publicMetadata) {
+      const apiHost = "api.github.com";
+      const selectedPath = `/repos/${allowedName}`;
+      const metadata = Object.values(policies).flatMap((entry) => {
+        const rule = asRecord(entry);
+        const endpoints = rule?.endpoints;
+        return Array.isArray(endpoints)
+          ? endpoints.flatMap((endpoint) => {
+              const route = asRecord(endpoint);
+              return route?.host === apiHost ? [{ binaries: rule?.binaries, route }] : [];
+            })
+          : [];
+      });
+      assert.equal(metadata.length, 1, "The loaded policy must have one GitHub metadata endpoint.");
+      const { binaries, route } = metadata[0]!;
+      assert.deepEqual(binaries, [{ path: "/usr/bin/curl" }]);
+      assert.deepEqual(route.ports, [443]);
+      assert.equal(route.path, selectedPath);
+      assert.equal(route.protocol, "rest");
+      assert.deepEqual(route.rules, [{ allow: { method: "GET", path: selectedPath } }]);
+      assert.deepEqual(route.deny_rules, [{ method: "HEAD", path: selectedPath }]);
+      assert.equal(route.credential_binding, undefined, "Metadata must have no Provider binding.");
+
+      // The running Harness makes the requests. Its script sends no credentials and returns
+      // only a success marker after validating the public GitHub response.
+      const repositoryId = gitSource.scope.repositories[0]!.repositoryId;
+      assert.match(repositoryId, /^\d+$/);
+      const curl = "/usr/bin/curl -q --silent --show-error --fail --max-time 20";
+      await runInHarness(
+        reader,
+        `${curl} 'https://${apiHost}${selectedPath}' | node -e '` +
+          'const repo = JSON.parse(require("node:fs").readFileSync(0, "utf8")); ' +
+          "process.exit(repo.full_name.toLowerCase() === process.argv[1] && String(repo.id) === process.argv[2] " +
+          `&& repo.private === false ? 0 : 1)' '${allowedName}' '${repositoryId}'`,
+      );
+      for (const { method, path } of [
+        { method: "GET", path: `/repos/${deniedName}` },
+        { method: "HEAD", path: selectedPath },
+      ]) {
+        await expectNativeDenial(
+          (line) =>
+            line.message.startsWith(`HTTP:${method} [MED] DENIED `) &&
+            line.message.includes(`L7_REQUEST deny ${method} ${apiHost}:443${path} reason=`),
+          () =>
+            runInHarness(
+              reader,
+              `code=0; ${curl}${method === "HEAD" ? " --head" : ""} -o /dev/null ` +
+                `'https://${apiHost}${path}' 2>/dev/null || code=$?; test "$code" -eq 22`,
+            ),
+        );
+      }
+      return;
+    }
+
+    const url = `https://github.com/${allowedName}.git`;
+    const read = `git ls-remote --exit-code ${url} HEAD`;
+    await runInHarness(
+      reader,
+      `${read} >/dev/null && ! git ls-remote --exit-code https://github.com/${deniedName}.git HEAD >/dev/null 2>&1 || exit 1`,
+    );
+    assert.ok(tcpProbe);
+    await tcpProbe.verify((script) => runInHarness(reader, script));
+    // Write only to the disposable repository explicitly named for this run.
+    assert.equal(
+      allowedName,
+      writableRepository,
+      "The installed repository must match the disposable write target.",
+    );
+    const contributor = await deploy("write");
+    assert.equal(contributor.gitSourceId, gitSourceId);
+    assert.ok(
+      Array.isArray(contributor.sandbox.spec?.providers) &&
+        contributor.sandbox.spec.providers.includes(gitProvider),
+    );
+    const version = (await gateway.getProvider(workspace, gitProvider, rpc()))?.config
+      .oce_source_version;
+    assert.ok(version);
     // OpenShell can redact the service query in the denial event. The stock push
     // and fetch choose different services on the same discovery path.
     function discoveryDenied(
@@ -589,5 +661,5 @@ test(
       modelNonce,
     );
     assert.equal((await data<Agent>("GET", agentPath, 200)).activeRevisionId, revision.id);
-  },
-);
+  };
+}

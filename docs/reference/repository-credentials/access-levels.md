@@ -1,9 +1,10 @@
 # GitHub access levels
 
-For Credential Design 1.0, choose repository **Read** or **Read/write**. These
-Source-backed grants admit Git operations only; GitHub enforces branch rules.
-They do not authorize GitHub REST or pull request creation. The separate prepared
-broker and deprecated protected profiles documented below are outside 1.0.
+For Credential Design 1.0, choose repository **Read** or **Read/write**.
+TokenService supplies credentials for admitted Git operations. GitHub enforces
+branch rules. OpenShell can also admit a separate public metadata request for
+the same repository. The prepared broker and deprecated protected profiles
+documented below are outside 1.0.
 
 ## Registry profiles
 
@@ -21,9 +22,8 @@ whose profile is not allowed by the Namespace policy.
 
 For `github-repository`, `profiles` must contain only that value and the Namespace
 policy must include the GitHub App token `permissions`, such as `contents: write`
-and `metadata: read`. These issuer permissions do not admit API routes; Source-backed
-Git remains Git-only. The profile has no OCE branch allowlist. GitHub applies its
-repository and branch rules.
+and `metadata: read`. These permissions set the scope of the App's installation
+token. GitHub applies its repository and branch rules.
 
 For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
@@ -103,14 +103,33 @@ without that list. [Repository network policy](../sandbox-policies.md#repository
 
 TokenService holds the installation token. Credential Proxy injects it only
 on each Agent's admitted Git requests. Read-only permits Git discovery, clone,
-and fetch. Read/write also permits push. These grants are Git-only. They do
-not authorize GitHub REST, GraphQL, issue or pull request operations. GitHub
-repository and branch rules still apply.
+and fetch. Read/write also permits push.
 
 Stop a running Agent before deploying changed grants. Removing repositories
 can [withdraw running Git access](../../guides/credential-proxy.md#withdraw-repository-access) without
 replacing its model credential. [Git token renewal](../../guides/repository-credentials/openshell-git-renewal.md)
 does not change the Agent's grants.
+
+### Public repository metadata
+
+For either access level, OpenShell adds a public metadata rule for each admitted
+repository when the Installation's `sandboxNetworkPolicyCeiling` permits
+`/usr/bin/curl` to reach `api.github.com:443`. Without this ceiling entry, the
+Agent can still deploy with its Git grants.
+
+The derived rule allows `/usr/bin/curl` to send `GET` to the exact
+`/repos/{owner}/{repository}` path. It grants no `HEAD`, other methods,
+subpaths, or routes for other repositories. OpenClaw Enterprise supplies no
+credential and leaves request headers intact. GitHub returns its full response
+and decides whether the repository is public for an unauthenticated request.
+
+If an existing Sandbox rule overlaps this request, OpenShell refuses to prepare
+the deployment. Remove the overlapping rule and keep the Installation ceiling
+entry to use the derived rule.
+
+The rule uses the Repository grants saved with the Agent revision. Withdrawing
+the Git Source leaves this public rule in place. Deploy a revision without the
+grant to remove the rule.
 
 <a id="api-limits"></a>
 <a id="preview-namespace-limits"></a>

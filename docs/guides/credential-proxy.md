@@ -14,11 +14,10 @@ contract.
 - For native Git, follow [GitHub App setup](repository-credentials.md#set-github-app-access-for-an-openshell-agent).
   TokenService renews the GitHub installation token, and Credential Proxy
   injects it only on requests admitted for the Agent.
-- For public GitHub metadata, admit ordinary network access to the endpoint.
-  GitHub returns its full response; no CredentialSource or credential injection is
-  involved. The Git grant does not authorize GitHub REST. Configure only the
-  restrictions supported by the selected Sandbox; current per-Agent policy
-  additions use executable, host, and port grants. [Sandbox network policy](../reference/sandbox-policies.md)
+- For public metadata on a native Git Agent, allow `/usr/bin/curl` to reach
+  `api.github.com:443` in the Installation's Sandbox network ceiling. OpenShell
+  limits the derived rule to the Agent's admitted repositories.
+  [Public repository metadata](../reference/repository-credentials/access-levels.md#public-repository-metadata)
 - For the separate Kubernetes prepared Git path without a Sandbox or
   Credential Proxy, use the [prepared native Git reference](../reference/repository-credentials/prepared-native-git.md).
 
@@ -58,9 +57,16 @@ unauthenticated request checks the Agent's entry point. To check Proxy enforceme
 use an approved request and a request outside the saved policy. Verify the allowed
 request at the upstream and confirm the denied request never reached it.
 
-For public metadata, verify the separately admitted network access and confirm
-that the request needs no credential. This path returns GitHub's response
-without the legacy sender's field filtering.
+To verify public metadata, run this command in the Agent's Sandbox. Replace
+`example/project` with an admitted public repository.
+
+```sh
+/usr/bin/curl -q --fail --silent --show-error https://api.github.com/repos/example/project
+```
+
+The command should return GitHub's repository response. Repeat it with a public
+repository outside the Agent's grants to check that the derived rule denies the
+request. Check the Sandbox policy logs to distinguish denial from a GitHub error.
 
 For an active managed model Source, [request withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent)
 and verify that the affected Agent can no longer use it. Wait for confirmed

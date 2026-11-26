@@ -30,6 +30,17 @@ completing its linked setup; see [lane execution and cleanup](ci/run-lanes.md#re
     --attempt "${PRIVATE_FRESH_ATTEMPT:?}"
   ```
 
+- For the read-only public Repository metadata case, use two public repositories
+  in the same prepared Installation and add `/usr/bin/curl` and `api.github.com:443`
+  to the Sandbox network ceiling. Use the same model Source, OpenShell, and GitHub App
+  inputs with the write and TCP inputs omitted. Run the named case directly:
+
+  ```sh
+  OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_PUBLIC_METADATA_REAL=1 \
+    node --test --test-name-pattern='Dedicated Codex Agent reads public metadata only for its selected Repository' \
+    tests/integration/openshell-token-service-git-agent-real.test.ts
+  ```
+
 - Run [`openshell-token-service-pat-agent`](../../scripts/ci/test-suites/openshell-token-service-pat-agent.json) against an active Dedicated Codex Agent bound to a ready `codex-pat` Source. With its Agent and Namespace IDs, a loopback OCC URL and an authorized service key, the test checks the model reply and a new allowed HTTPS request in that revision’s Supervisor log.
 - [`openshell-linear`](../../scripts/ci/test-suites/openshell-linear.json): starts a shipped OpenShell installation and verifies a Linear read through a normal Agent turn. It requires the connected-account file, model and read fixture from [Linear qualification](openshell.md#linear-tool-use-qualification).
 - [`k3d-two-cluster`](../../scripts/ci/test-suites/k3d-two-cluster.json): requires two separately prepared clusters, a private configuration file and an OpenAI API key. See [two-cluster validation](kubernetes.md#two-cluster-validation).

@@ -6297,7 +6297,7 @@ export class ControllerWorker {
           bindings: repository.bindings,
           grants,
         },
-      );
+      )?.credentialRequests;
       const injection = policy.injectionPolicies.find(
         ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
       );
