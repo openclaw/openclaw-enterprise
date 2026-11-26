@@ -265,7 +265,26 @@ async function slackChannelSourceFixture(fixture: RevisionFixture, context: Test
   };
   const harnessAuth = { method: "codex_pat" as const, source: model.ref };
   const callerId = `slack-source-caller-${randomUUID()}`;
-  await fixture.copyActorGrants(callerId, { withoutActions: ["operate"] });
+  await fixture.copyActorGrants(callerId, { withoutActions: ["operate", "create"] });
+  const targetGrants = {} as Record<"agent" | "configuration", { id: string; roleId: string }>;
+  for (const resourceKind of ["agent", "configuration"] as const) {
+    // Collection create grants are Installation policy, not Namespace AccessBindings.
+    const roleId = `role-slack-target-${randomUUID()}`;
+    const bindingId = `binding-slack-target-${randomUUID()}`;
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+      [
+        roleId,
+        `Slack target ${randomUUID()}`,
+        JSON.stringify([{ action: "create", resourceKind }]),
+      ],
+    );
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+      [bindingId, callerId, roleId],
+    );
+    targetGrants[resourceKind] = { id: bindingId, roleId };
+  }
   const credentialRole = await controller.createIAMRole(fixture.actor.id, {
     namespaceId,
     permissions: [
@@ -332,6 +351,8 @@ async function slackChannelSourceFixture(fixture: RevisionFixture, context: Test
     harnessAuth,
     callerId,
     botGrant,
+    targetGrants,
+    configurationDriver,
     request,
     effects,
     pauseBot,
@@ -436,6 +457,31 @@ cases.revisionTest(
          FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
         [apiCallerId, fixture.actor.id],
       );
+      // Old public Secret bindings must fail at provisioning admission before custody or Slack.
+      const legacyBinding = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Legacy Slack binding ${randomUUID()}`,
+          executionMode: "dedicated",
+          harnessAuth: { method: "codex_pat", source: model.ref },
+          configuration: {
+            ...configuration,
+            secretBindings: {
+              ...configuration.secretBindings,
+              SLACK_BOT_TOKEN: { source: model.ref },
+            },
+          },
+        },
+      });
+      assert.equal(legacyBinding.statusCode, 400, legacyBinding.body);
+      assert.equal(
+        legacyBinding.json().error.message,
+        "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Credential Source binding: bind SLACK_BOT_TOKEN to a Credential Source in secretBindings, or remove the reference.",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
       const refused = await api.inject({
         method: "POST",
         url: `/namespaces/${namespaceId}/agents/provision`,
@@ -540,6 +586,131 @@ cases.revisionTest(
     } finally {
       gate.release.resolve();
       await denied.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning rechecks target authority before custody and provider use",
+  async (fixture, context) => {
+    const {
+      controller,
+      namespaceId,
+      callerId,
+      targetGrants,
+      configurationDriver,
+      request,
+      effects,
+      pauseBot,
+    } = await slackChannelSourceFixture(fixture, context);
+    const configurationEntered = Promise.withResolvers<void>();
+    const configurationRelease = Promise.withResolvers<void>();
+    const validate = configurationDriver.validate.bind(configurationDriver);
+    let holdConfiguration = true;
+    context.mock.method(
+      configurationDriver,
+      "validate",
+      async (configuration: Parameters<typeof configurationDriver.validate>[0]) => {
+        await validate(configuration);
+        if (holdConfiguration) {
+          holdConfiguration = false;
+          configurationEntered.resolve();
+          await configurationRelease.promise;
+        }
+      },
+    );
+
+    // The Agent create grant can disappear while Configuration validation is outside the transaction.
+    const beforeCustody = controller.provisionAgent(callerId, request());
+    try {
+      await Promise.race([configurationEntered.promise, beforeCustody]);
+      const revokedAgent = await fixture.observerPool.query(
+        "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+        [targetGrants.agent.id],
+      );
+      assert.equal(revokedAgent.rowCount, 1);
+      configurationRelease.resolve();
+      await assert.rejects(
+        beforeCustody,
+        (error: Error) => error.name === "AuthorizationDeniedError",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      await fixture.observerPool.query(
+        "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+        [targetGrants.agent.id, callerId, targetGrants.agent.roleId],
+      );
+
+      // A Configuration create grant revoked during the actual custody read must fence Slack dispatch.
+      const gate = pauseBot();
+      const beforeProvider = controller.provisionAgent(callerId, request());
+      try {
+        await Promise.race([gate.entered.promise, beforeProvider]);
+        const revokedConfiguration = await fixture.observerPool.query(
+          "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+          [targetGrants.configuration.id],
+        );
+        assert.equal(revokedConfiguration.rowCount, 1);
+        gate.release.resolve();
+        await assert.rejects(
+          beforeProvider,
+          (error: Error) => error.name === "AuthorizationDeniedError",
+        );
+        assert.equal(effects.providerCalls, 0);
+      } finally {
+        gate.release.resolve();
+        await beforeProvider.catch(() => undefined);
+      }
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      configurationRelease.resolve();
+      await beforeCustody.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning refuses a Source deleted during custody before provider use",
+  async (fixture, context) => {
+    const { controller, namespaceId, bot, request, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    const gate = pauseBot();
+    // The administrator keeps broad Source authority after deletion, so this checks Source
+    // currentness itself rather than the removal of the caller's exact Source grant.
+    const pending = controller.provisionAgent(fixture.actor.id, request());
+    try {
+      await Promise.race([gate.entered.promise, pending]);
+      await controller.deleteCredentialSource(
+        fixture.actor.id,
+        namespaceId,
+        bot.id,
+        (_removed, phase) => ({
+          ...auditEvent(
+            fixture.installation.id,
+            namespaceId,
+            fixture.actor.id,
+            "openclaw.credential_sources.delete",
+            bot.ref,
+          ),
+          ...(phase === undefined ? {} : { details: { phase } }),
+        }),
+      );
+      gate.release.resolve();
+      await assert.rejects(pending, {
+        message: "Channel credentials require a ready static TokenService Credential Source.",
+      });
+      assert.equal(effects.providerCalls, 0);
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      gate.release.resolve();
+      await pending.catch(() => undefined);
     }
   },
 );

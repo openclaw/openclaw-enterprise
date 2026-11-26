@@ -51,7 +51,7 @@ export function enabledChannelEntries(
 }
 
 /**
- * Each listed channel's credential references need a Configuration Secret binding of that name
+ * Each listed channel's credential references need a Configuration Credential Source binding of that name
  * where the Compute delivers channel credentials only from bindings, as Kubernetes Compute does.
  * A reference is an env SecretRef's `id`, each `${NAME}` the runtime substitutes in a string
  * without a `:-fallback`, and in a secret-input field (`CHANNEL_SECRET_INPUTS`) also a `${NAME}`
@@ -186,7 +186,7 @@ const unboundRequirement = (name: string): string => {
   // message keeps its cap.
   const written =
     name.length <= 32 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : quotedSettingKey(name, 32);
-  return `references ${written} without a Configuration credential binding: bind ${written} to a stored credential in secretBindings, or remove the reference`;
+  return `references ${written} without a Credential Source binding: bind ${written} to a Credential Source in secretBindings, or remove the reference`;
 };
 
 // The text the runtime keeps as written may be the credential itself, so the refusal shows it only

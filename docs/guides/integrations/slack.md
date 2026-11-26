@@ -33,13 +33,13 @@ go to the Agent's gateway; model credentials are configured separately.
   Embedded OpenClaw execution cannot isolate channel credentials from the
   Harness, and Kubernetes Compute rejects embedded versions with external
   channels enabled. The Standard OpenClaw preset must leave channels disabled.
+- Select OCC TokenService and the qualified Kubernetes Compute Driver. In **Credentials**, create
+  ready **Static credential** Sources for the app token and bot token.
 - First deployment generates required connection credentials. It requires Agent
   `deploy`, plus Agent `read` and `operate` when generation is needed.
-  Selecting Secrets requires [readable Secret metadata](../../reference/drivers/secret.md#iam)
-  and caller `operate` on each selected Secret. Saving token bindings requires Configuration update and
+  Selecting Sources requires readable Source metadata and caller `operate` on each exact Source. Saving token bindings requires Configuration update and
   [Namespace IAM administration](../../reference/authorization.md#manage-namespace-policy)
-  to grant the Agent access to each exact Secret. Creating a token Secret also
-  requires Secret creation permission in the Namespace.
+  to grant the Agent access to each Source. Creating a Source requires Source creation permission in the Namespace.
 
 <a id="configure-both-slack-proxies"></a>
 
@@ -64,7 +64,7 @@ Customer upstream proxies are not supported.
 
 Verify both consumers before handing off the setup:
 
-1. In the Console, select the bot Secret and search for a known user and channel.
+1. In the Console, select the bot Source and search for a known user and channel.
 2. Deploy the Agent. Require its Gateway and Harness to be Ready and confirm
    that Slack Socket Mode connected. Complete the message proof below.
 3. Verify that the same Gateway cannot reach another Agent's listener, an
@@ -80,19 +80,12 @@ channel-enabled Gateway starts until its own listener and network grants are ins
 ## Connect and verify
 
 Open your Agent’s draft in the Console and follow the illustrated
-[Channels walkthrough](channels.md#add-slack-in-the-console) to bind the token
-Secrets, choose channels and people, save, deploy, and verify a threaded reply.
+[Channels walkthrough](channels.md#add-slack-in-the-console) to select the token
+Sources, choose channels and people, save, deploy, and verify a threaded reply.
+**Configured (enabled)** means the settings are saved; it does not prove that Slack is connected.
 
-![fred’s saved Slack card with one channel and both token Secrets bound](../../assets/slack-channel/saved-slack.png)
-
-_Storybook example. Configured (enabled) means the settings are saved.
-Deploy the new version and [verify a reply](channels.md#verify-a-reply) in Slack._
-
-For an older Configuration with missing token bindings, open **Credentials**,
-select the token Secrets, and choose **Save channel Secrets**. Bound tokens show
-a password mask. To replace one token, edit that field and leave the other
-unchanged. Follow [Secret updates](../../reference/drivers/kubernetes-secret.md#update-and-redeploy)
-and explicitly redeploy each consumer after a token value or channel change.
+To replace a token, update its Credential Source or select a replacement Source in the draft,
+then deploy a new version. Old Namespace Secrets are not imported; recreate their values as Sources and update the bindings.
 
 If you manage Configuration through the API, use the
 [native Slack Socket Mode example](../../reference/configuration/secrets.md#native-channel-configuration).
@@ -177,7 +170,7 @@ bot. To enable one-to-one messages:
   and whether the sender's Slack user ID is allowed by the native `allowFrom`
   setting and direct-message policy.
 - **Credential save failed or the response was lost:** reload the Agent and
-  inspect saved Secrets, IAM bindings, and Configuration before retrying after a
+  inspect Credential Sources, IAM bindings, and Configuration before retrying after a
   partial save; those writes are separate and are not automatically rolled back.
 - **Slack replies with a model error:** check the Agent's model authentication
   and selected version independently. Slack connection alone does not establish

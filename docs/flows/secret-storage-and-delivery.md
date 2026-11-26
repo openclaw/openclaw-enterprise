@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-11-21
-last_updated_session: authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f
+updated: 2026-11-26
+last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -250,10 +250,8 @@ preparation alone is not proof that the replacement runtime is ready.
 Kubelet obtains the bytes and creates the process environment. OpenClaw resolves
 its existing `{ source: "env", provider, id }` reference. This is the handoff to
 the native consumer, not a new OpenClaw provider or OCC text-substitution engine.
-Native channel credentials follow these same admitted bindings. No legacy
-per-Agent channel Secret injects additional values. Dedicated gateways receive
-channel bytes; the dedicated Harness receives only its separately admitted model
-authentication. Embedded channel credentials remain unsupported.
+Slack uses [Gateway Source bindings](../reference/drivers/kubernetes-compute/gateway-credentials.md).
+Compute stages each revision's copy only for the dedicated Gateway. Embedded channels are unsupported.
 
 The trusted worker reads canonical sources and manages Harness runtime projections; workload
 ServiceAccounts have no Secret API verbs. A trusted workload writer can still
@@ -286,8 +284,7 @@ A Harness Pod recreation reads its existing DP projection; it does not deliver
 current source values. This remains true when the Configuration and Secret reference
 are unchanged.
 
-Dedicated Gateway infrastructure restarts read canonical channel Secrets
-directly. Failed cutover does not restore old source values. Revoking `operate`
+Gateway Pod restarts reuse that copy. Revoking `operate`
 blocks new OCC admission, not kubelet process starts or already delivered bytes.
 
 [deleteSecret](../../packages/occ/src/secret-operations.ts) rejects current Configuration,
@@ -338,6 +335,7 @@ credential at its issuer.
 
 ## Changelog
 
+- 2026-11-26 10:21: Describe Slack Source delivery separately from remaining Namespace Secret bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 3733308f3a1a47555563c351f97f5113c8993091)
 - 2026-11-21 16:05: Allow simple formatting in assistant nonce proof. (authoring-run/1065fff4-04fa-4b9e-b140-4ed9dbdde80f - ff770f5bef21b30cc12018e776add31a606d6f0d)
 
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

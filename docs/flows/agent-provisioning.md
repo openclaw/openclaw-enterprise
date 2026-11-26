@@ -8,21 +8,20 @@ last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
 
 ## Overview
 
-Console saves Slack/model Secrets and submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent, grants credential access, and admits deployment. Its handle tracks activation or failure; later deployments use separate handles.
+Console selects Slack Credential Sources and model authentication, then submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent, grants credential access, and admits deployment. Its handle tracks activation or failure; later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mts`.
+- Console: `apps/controller/src/console/agents/create.mts`, with the Slack Source picker in `apps/controller/src/console/channels/slack.mts`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/agent-provisioning-requests.ts:provisionAgent`.
-- Preconditions: ready Namespace, Dedicated runtime, selected Drivers, PostgreSQL work storage, Agent/Configuration/deploy permissions, exact Secret access and transactional IAM authority. No provisioning-input keyring required.
+- Preconditions: ready Namespace, Dedicated runtime, selected Drivers, PostgreSQL work storage, Agent/Configuration/deploy permissions, exact credential access and transactional IAM authority. No provisioning-input keyring required.
 
 ## Flow
 
 ```mermaid
 graph TD
-  Console["<b>Console</b><br/>Save entered Secrets"] --> Secrets["<b>Existing Secrets API</b><br/>Return ordinary references"]
-  Secrets --> API["<b>Provision API</b><br/>Inline config and references"]
+  Console["<b>Console</b><br/>Select stored credentials"] --> API["<b>Provision API</b><br/>Inline config and references"]
   API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
   API -->|Managed model Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
@@ -44,7 +43,7 @@ graph TD
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
-  class Console,Secrets,API,Queue state
+  class Console,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
   class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,Gap condition
 ```
@@ -60,13 +59,13 @@ OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack modal saves Channel tokens through `POST /namespaces/:namespaceId/secrets` and stages the references for the Gateway process. Apply stages references and environment bindings. Cancel retains created Secrets.
+The Slack editor selects ready static Credential Sources created in Credentials. Apply stages their references in `Configuration.secretBindings` for the dedicated Gateway.
 
 When the Installation offers the selected model preset through TokenService, Console enrolls the credential as a Source and saves an Agent draft bound to that Source. Codex PAT enrollment can also happen before hosted Apps discovery. Retries reuse a confirmed Source. If Console cannot confirm enrollment, it asks the caller to check Credential Sources before retrying. For a model that uses direct authentication on the Installation, preflight precedes the Namespace Secret write and subsequent provisioning.
 
-Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants the Agent access to each selected credential. After uncertain admission, Retry sends the same ID and inputs without enrolling credentials again.
 
-For drafts, Console creates the Configuration and Agent, then grants Slack Secret access. Credential-access retry keeps the Agent.
+For drafts, Console creates the Configuration and Agent, then grants Slack Source access. Credential-access retry keeps the Agent.
 
 ### 2. OCC admits one job
 
@@ -82,7 +81,7 @@ For supported model presets with selected TokenService and native delivery, OCC 
 
 After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 
-OCC applies Configuration rules before Channel credential validation. A Slack app or bot token binds a ready static OCC-owned Source for a qualified dedicated Kubernetes Gateway. OCC requires exact caller `operate`; after TokenService resolution, it rechecks provisioning authority, Source ownership and the qualified Compute/TokenService pair before handing the value to Slack. Slack checks token roles and authenticates bot tokens. This does not pin credential versions or revalidate Slack credentials in queued work.
+OCC applies Configuration rules before Channel credential validation. Slack credential references require Source bindings; old Namespace Secret bindings are refused before provider use. A Slack app or bot token binds a ready static OCC-owned Source for a qualified dedicated Kubernetes Gateway. OCC requires exact caller `operate`; after TokenService resolution, it rechecks provisioning authority, Source ownership and the qualified Compute/TokenService pair before handing the value to Slack. Slack checks token roles and authenticates bot tokens. This does not pin credential versions or revalidate Slack credentials in queued work.
 
 OCC validates Namespace repository selections before queueing. Undeliverable bindings, including Sandbox repositories, retain Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup`; Compute delegates validation or refuses unsupported placement before staging. Deployment checks the Harness topology.
 
@@ -97,7 +96,7 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
 effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
 values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
-workspace selections, and grants its service principal the exact Secret permissions.
+workspace selections, and grants its service principal access to the exact credentials.
 
 The bundled worker uses the Installation's selected repository policy for saved selections and first revision admission. A programmatic controller without this binding uses its registered repository Driver. After fencing the claim and checking that the Namespace is ready, the worker checks the saved selections before creating the Agent. The Configuration Driver may already have written the Configuration. If the check refuses, the worker creates no new Agent or revision and follows the existing Configuration recovery rules.
 
@@ -213,7 +212,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 - If a failed job's accepted Secret, Credential Source or ServiceAccount was deleted, status and retry return `409`. Changed Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value. Other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes. An unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.ts` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
-- Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
+- Use Console browser coverage for channel Source selection before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
 
 ## Related docs
 
@@ -230,6 +229,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
 - 2026-11-20 19:04: Refresh sources. (authoring-run/8a8bde8b-71de-4de5-80bf-e32f0e335c34 - 220f62d86ceb3dfc6f66dbee7c6f86cda50e5d05)

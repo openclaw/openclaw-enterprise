@@ -2098,12 +2098,13 @@ function renderAgentForm(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : presetPluginApprovers,
   );
   function createDirectorySourcePicker() {
+    const currentId = slackBotSource()?.id;
     const picker = createCredentialSourcePicker(context, {
       ...staticCredentialSourceSelection,
       id: "approver-directory-source",
       label: "Slack bot Credential Source for people search",
       initial: directorySource,
-      currentId: slackBotSource()?.id,
+      ...(currentId === undefined ? {} : { currentId }),
       onChange(source) {
         directorySource = source;
         directoryUsesChannelSource = source?.id === slackBotSource()?.id;

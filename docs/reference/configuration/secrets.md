@@ -34,7 +34,7 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 `KUBERNETES_`, `OPENAI_`, `PATH`, `HOME`, or proxy variables. Model
 authentication destinations are reserved for `harnessAuth`.
 
-The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. All five Slack credential fields accept these bindings: `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken`, including named accounts. The Slack Channel Driver validates only app and bot tokens; the Gateway consumes the other fields directly.
+The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. All five Slack credential fields require Source bindings: `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken`, including named accounts. The Slack Channel Driver validates only app and bot tokens; the Gateway consumes the other fields directly.
 
 Kubernetes Compute stages Source values in a Secret for each Agent revision. A replacement Pod for that running revision reuses the staged value; a managed redeploy reads the current Source. Revocation prevents a later managed start but does not erase the running Gateway's environment. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md) for cleanup and access.
 
@@ -119,7 +119,7 @@ gateway. Dedicated OpenClaw or Codex can use a supported
 [managed model Source](../credential-sources.md#implementation-status) in
 `harnessAuth`. TokenService holds the credential and Credential Proxy delivers
 it for authorized model requests. Configuration `secretBindings`, including
-Channel Secrets, use their own delivery path. A general Secret Broker, Secret
+Channel credentials, use their own delivery path. A general Secret Broker, Secret
 value history, and automatic Namespace Secret rotation remain unimplemented.
 
 ### Native channel configuration
@@ -139,7 +139,7 @@ gateway-only credential values:
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
 On the bundled Kubernetes Compute, every `${NAME}` reference and environment
-SecretRef in an enabled native channel needs a matching `secretBindings` entry,
+SecretRef in an enabled native channel needs a matching Credential Source in `secretBindings`,
 including a reference inside other text (`xoxb-${NAME}`). Outside credential
 fields a reference with a fallback (`${NAME:-text}`) needs none: the fallback
 fills the unset name. `$${NAME}` is literal text, not a reference.

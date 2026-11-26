@@ -5056,7 +5056,7 @@ test(
   checkChannelPolicyDiagnostic,
 );
 
-test("native channel settings require readable Secret bindings", async () => {
+test("native channel settings require readable Credential Source bindings", async () => {
   const driver = new KubernetesComputeDriver(
     routedOptions({
       runtime: {
@@ -5088,24 +5088,24 @@ test("native channel settings require readable Secret bindings", async () => {
   const secretBindings = Object.freeze({
     SLACK_APP_TOKEN: {
       source: {
-        kind: "secret",
+        kind: "credential_source",
         namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000001",
+        id: "cs_00000000-0000-4000-8000-000000000001",
       },
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
       source: {
-        kind: "secret",
+        kind: "credential_source",
         namespaceId: tenant.id,
-        id: "sec_00000000-0000-4000-8000-000000000002",
+        id: "cs_00000000-0000-4000-8000-000000000002",
       },
       delivery: { type: "env" },
     },
   });
 
-  // Real Gateway/Harness projection and revocation now run in the credentialed
-  // Kubernetes workflow. These cases retain the distinct Secret parsing boundary.
+  // Real Gateway/Harness projection and revocation run in the credentialed
+  // Kubernetes workflow. This case checks credential-reference admission only.
   await assert.rejects(
     driver.prepareRevision({
       ...revision,
@@ -5133,6 +5133,31 @@ test("native channel settings require readable Secret bindings", async () => {
     },
   });
   const appBinding = { SLACK_APP_TOKEN: secretBindings.SLACK_APP_TOKEN };
+
+  // A Configuration stored before the cutover cannot start another revision with a
+  // public Namespace Secret in a Slack credential field.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        revision.harnessAuth,
+        slackToken({ source: "env", provider: "default", id: "SLACK_BOT_TOKEN" }),
+        {
+          ...appBinding,
+          SLACK_BOT_TOKEN: {
+            source: {
+              kind: "secret",
+              namespaceId: tenant.id,
+              id: "sec_00000000-0000-4000-8000-000000000002",
+            },
+          },
+        },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message: unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN"),
+    },
+  );
 
   assert.throws(
     () =>
@@ -5181,7 +5206,7 @@ test("native channel settings require readable Secret bindings", async () => {
         assert.match(error.message, /^Configuration setting channels\.slack\.accounts/);
         assert.ok(
           error.message.endsWith(
-            ` references ${shown} without a Configuration credential binding: bind ${shown} to a stored credential in secretBindings, or remove the reference.`,
+            ` references ${shown} without a Credential Source binding: bind ${shown} to a Credential Source in secretBindings, or remove the reference.`,
           ),
           error.message,
         );

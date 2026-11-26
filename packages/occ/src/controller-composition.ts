@@ -340,8 +340,7 @@ function createComputeConfigurationPolicy(
     }
   }
 
-  // On the bundled Kubernetes Compute, which delivers channel credentials only from bindings, the
-  // channel credential rule its deployment admission applies (finding 2319).
+  // Configuration writes and Kubernetes admission apply the same Channel Source binding rule.
   function requireBundledChannelBindings(
     values: OpenClawConfigurationDocument,
     secretBindings: SecretBindings,
@@ -350,7 +349,9 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name) => Object.hasOwn(secretBindings, name),
+        (name) =>
+          Object.hasOwn(secretBindings, name) &&
+          secretBindings[name]?.source.kind === "credential_source",
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -1091,7 +1092,6 @@ export function createControllerComposition(
     selectedChannel: () => publicController.selectedDriver("channel"),
     configurationDriver: configurationOperations.selectedDriver,
     requireBundledChannelBindings,
-    ownedSecretDriver: secretOperations.ownedSecretDriver,
     selectedCompute,
     ownedTokenServiceDriver: (id) => managedCredentialSources.ownedTokenServiceDriver(id),
     gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,

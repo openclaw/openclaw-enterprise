@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Static } from "typebox";
 import { Check } from "typebox/value";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
   AgentResponse,
   AgentRevisionListResponse,
   ConfigurationResponse,
+  CredentialSourceResponse,
   ErrorResponse,
   JsonValue,
   NamespaceSchema,
@@ -30,7 +33,7 @@ import {
   type UpdateAgentBody,
   type ValidateAgentCreateBody,
 } from "../../packages/contracts/src/index.ts";
-import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { createReadyComputeDriver } from "../helpers/development.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
@@ -71,7 +74,8 @@ type RequestBody =
   | CreateAgentBody
   | UpdateAgentBody
   | Static<typeof ValidateAgentCreateBody>
-  | { name: string; template: PresetDraftTemplate };
+  | { name: string; template: PresetDraftTemplate }
+  | { name: string; type: "static"; secret: string };
 
 interface HttpResponse {
   status: number;
@@ -121,6 +125,7 @@ async function channelFixture(
   const { context, request, readyAgent } = await fixture(options);
   assert.ok(typeof context === "object" && context !== null);
   assert.ok("controller" in context && context.controller instanceof OpenClawController);
+  assert.ok("platformState" in context && context.platformState instanceof InMemoryPlatformState);
   assert.ok("namespace" in context && Check(NamespaceSchema, context.namespace));
   assert.ok("collection" in context && typeof context.collection === "string");
   assert.ok("presets" in context && typeof context.presets === "string");
@@ -131,6 +136,7 @@ async function channelFixture(
 
   return {
     controller: context.controller,
+    platformState: context.platformState,
     namespace: context.namespace,
     collection: context.collection,
     presets: context.presets,
@@ -149,19 +155,45 @@ async function channelFixture(
   };
 }
 
-async function createEnvSecretBinding(
+const sourceOwners = new WeakSet<OpenClawController>();
+
+async function createEnvSourceBinding(
   context: Pick<
     Awaited<ReturnType<typeof channelFixture>>,
-    "controller" | "namespace" | "principalId"
+    "controller" | "platformState" | "namespace" | "request"
   >,
   name: string,
 ): Promise<SecretBinding> {
-  const secret = await context.controller.createSecret(context.principalId, {
-    namespaceId: context.namespace.id,
-    name,
-    value: `synthetic-${name}`,
-  });
-  return { source: secret.ref, delivery: { type: "env" } };
+  if (!sourceOwners.has(context.controller)) {
+    const store = context.controller.selectedDriver("secret").privateSecrets;
+    assert.ok(store);
+    const instanceId = await context.controller.activateTokenServiceInstance(
+      "configuration-source-owner",
+      randomUUID(),
+    );
+    const owner = new OCCTokenServiceDriver(
+      "configuration-source-owner",
+      context.controller.installation.id,
+      store,
+      instanceId,
+      context.platformState,
+    );
+    context.controller.registerDriver(owner);
+    context.controller.selectDriver("token_service", owner.id);
+    sourceOwners.add(context.controller);
+  }
+  const response = await context.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/credential-sources`,
+    {
+      name,
+      type: "static",
+      secret: `synthetic-${name}`,
+    },
+  );
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+  assert.ok(Check(CredentialSourceResponse, response.body));
+  return { source: response.body.data.ref, delivery: { type: "env" } };
 }
 
 async function writePastOcc(
@@ -433,8 +465,8 @@ export function registerConfigurationChannelCredentialCases(
     }
   });
 
-  test("Configuration create, update and Agent create's check refuse a channel credential reference without a Secret binding (finding 2319)", async () => {
-    // The bundled Kubernetes Compute delivers channel credentials only from Configuration Secret
+  test("Configuration create, update and Agent create's check refuse a channel credential reference without a Credential Source binding (finding 2319)", async () => {
+    // The bundled Kubernetes Compute delivers channel credentials only from Credential Source
     // bindings. Deployment refused an unbound reference; create and update carry values and
     // bindings in one request, so OCC refuses it where it is written, with the setting and the
     // missing name.
@@ -451,8 +483,8 @@ export function registerConfigurationChannelCredentialCases(
       secretName: "channel-bindings-key",
     });
     const bothBindings = {
-      SLACK_APP_TOKEN: await createEnvSecretBinding(context, "slack-app"),
-      SLACK_BOT_TOKEN: await createEnvSecretBinding(context, "slack-bot"),
+      SLACK_APP_TOKEN: await createEnvSourceBinding(context, "slack-app"),
+      SLACK_BOT_TOKEN: await createEnvSourceBinding(context, "slack-bot"),
     };
     const slackWith = (slack: OpenClawConfigurationDocument) => ({
       ...valid,
@@ -469,6 +501,25 @@ export function registerConfigurationChannelCredentialCases(
     const slack = slackWith({});
     const botRefusal = unboundReferenceRefusal("channels.slack.botToken", "SLACK_BOT_TOKEN");
     const appRefusal = unboundReferenceRefusal("channels.slack.appToken", "SLACK_APP_TOKEN");
+    const legacySecret = await context.controller.createSecret(context.principalId, {
+      namespaceId: context.namespace.id,
+      name: "old-slack-bot",
+      value: "synthetic-old-slack-bot",
+    });
+    // A public Namespace Secret is no longer a valid Slack credential binding, even if
+    // the caller can operate it. Users must recreate it as a Credential Source.
+    assertRefused(
+      await context.request("POST", context.collection, {
+        kind: "agent",
+        values: slack,
+        secretBindings: {
+          ...bothBindings,
+          SLACK_BOT_TOKEN: { source: legacySecret.ref, delivery: { type: "env" } },
+        },
+      }),
+      botRefusal,
+      { label: "old Namespace Secret binding" },
+    );
     const unchanged = async (label: string) => {
       const result = await context.request("GET", item);
       assert.ok(Check(schemaContext, ConfigurationResponse, result.body));
@@ -577,7 +628,7 @@ export function registerConfigurationChannelCredentialCases(
     assert.deepEqual(repaired.body.data.secretBindings, bothBindings);
 
     // Agent create's check refuses the reference when the caller sends the bindings it will save,
-    // before any Secret or Configuration is saved; without them, that check is skipped.
+    // before any credential or Configuration is saved; without them, that check is skipped.
     const validate = (configuration: DraftConfiguration) =>
       context.request("POST", `/namespaces/${context.namespace.id}/agents/validate`, {
         configuration: { kind: "agent", ...configuration },
@@ -617,8 +668,8 @@ export function registerConfigurationChannelCredentialCases(
       state.namespaces.transitionNamespaceStatus(context.namespace.id, "provisioning", "ready"),
     );
     const secretBindings = {
-      SLACK_APP_TOKEN: await createEnvSecretBinding(context, "slack-app"),
-      SLACK_BOT_TOKEN: await createEnvSecretBinding(context, "slack-bot"),
+      SLACK_APP_TOKEN: await createEnvSourceBinding(context, "slack-app"),
+      SLACK_BOT_TOKEN: await createEnvSourceBinding(context, "slack-bot"),
     };
     const appToken = { source: "env", provider: "default", id: "SLACK_APP_TOKEN" };
     const fileRef = { source: "file", provider: "default", id: "/run/slack/bot" };
@@ -747,8 +798,8 @@ export function registerConfigurationChannelCredentialCases(
         state.namespaces.transitionNamespaceStatus(context.namespace.id, "provisioning", "ready"),
       );
       const slackBindings = {
-        SLACK_APP_TOKEN: await createEnvSecretBinding(context, "slack-app"),
-        SLACK_BOT_TOKEN: await createEnvSecretBinding(context, "slack-bot"),
+        SLACK_APP_TOKEN: await createEnvSourceBinding(context, "slack-app"),
+        SLACK_BOT_TOKEN: await createEnvSourceBinding(context, "slack-bot"),
       };
       const values = {
         ...runtimeSelected,
@@ -778,7 +829,7 @@ export function registerConfigurationChannelCredentialCases(
       );
       const allBindings = {
         ...slackBindings,
-        SLACK_ALT_APP: await createEnvSecretBinding(context, "slack-alt-app"),
+        SLACK_ALT_APP: await createEnvSourceBinding(context, "slack-alt-app"),
       };
       const saved = await create(allBindings);
       assert.equal(saved.status, 201, JSON.stringify(saved.body));

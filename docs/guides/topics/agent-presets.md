@@ -61,9 +61,8 @@ Fill the Preset variables with:
 - A unique Agent name and the current Namespace ID.
 - A model supported by your installed Codex runtime and model credential,
   without a provider prefix; the template adds `codex/`.
-- Existing Secret IDs for the model API key, Slack app token, and Slack bot
-  token. All three Secrets must belong to that Namespace. Enter their IDs,
-  never credential values.
+- The model API-key Secret ID and ready static Credential Source IDs for the
+  Slack app and bot tokens, all in that Namespace. Enter IDs, never credential values.
 - The owner's Slack user ID, a channel ID where the bot is already invited,
   and an IANA timezone. The timezone defaults to `UTC`.
 

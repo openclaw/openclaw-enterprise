@@ -16610,7 +16610,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
           }
         }
-        return Object.hasOwn(bindings, name);
+        return Object.hasOwn(bindings, name) && bindings[name]?.source.kind === "credential_source";
       },
       callerSettingError,
     );

@@ -856,7 +856,7 @@ test("Secret consumers name only readable references, on GET and in the delete c
         body: {
           kind: "agent",
           values: {},
-          secretBindings: { SLACK_BOT_TOKEN: { source: key.data.ref } },
+          secretBindings: { SHARED_GATEWAY_KEY: { source: key.data.ref } },
         },
       },
     );
