@@ -139,6 +139,7 @@ import { checkManagedReleaseDelivery } from "./kubernetes-managed-release-cases.
 import { checkChannelPolicyDiagnostic } from "./kubernetes-channel-policy-diagnostic-case.ts";
 import {
   checkCanonicalGatewayChannelSecret,
+  checkGatewayCredentialAggregateLimit,
   checkDedicatedModelCredentialPreparation,
   checkExactAccountTokenEgress,
   checkPodModelCredentialPlacement,
@@ -7490,6 +7491,11 @@ test(
 test(
   "dedicated Gateway references canonical CP channel Secrets and rejects a replaced source",
   checkCanonicalGatewayChannelSecret,
+);
+
+test(
+  "Gateway credential staging refuses aggregate Secret data above 1 MiB",
+  checkGatewayCredentialAggregateLimit,
 );
 
 test(

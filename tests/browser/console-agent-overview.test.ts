@@ -2618,6 +2618,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "CREDENTIAL_SOURCE_UNAVAILABLE",
       "CREDENTIAL_WITHDRAWN",
       "EGRESS_PROVIDER_UNAVAILABLE",
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
       "HARNESS_AUTH_REQUIRED",
       "HARNESS_AUTH_SOURCE_UNAVAILABLE",
       "INVALID_ACTIVE_REVISION",

@@ -8,7 +8,7 @@ reads use separate Sandbox network access and return the upstream response; they
 do not need a Source. The older [protected metadata Source](credential-sources/protected-repository-metadata.md)
 is deprecated and retired from Credential Design 1.0, pending code removal.
 [Runtime Secret placement](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
-covers Channel and Gateway Secret delivery.
+covers Channel and Gateway Secret delivery. An authorized caller can also select a ready static OCC-owned Source for a dedicated Kubernetes Gateway through [Configuration secret bindings](configuration/secrets.md#secret-bindings), independently of any Proxy binding.
 
 <a id="intended-credential-flow"></a>
 
@@ -130,7 +130,7 @@ Withdrawal removes an Agent's access without deleting the Source. See [withdrawa
 
 Use `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId` to retire a Source. With OCC custody, Proxy retires delivery copies before TokenService removes the credential. A Proxy failure returns `503` and retains the Source and credential for retry. With OpenShell custody, TokenService deletes the authoritative Provider and profile.
 
-Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The Worker can retry pending OAuth retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source) and [OAuth consent](connection-templates.md#connect-an-account).
+Static deletion requires `credential_source:delete`. An OAuth owner can disconnect with exact Source read and operate permissions. Other callers need `credential_source:delete`. A blocking reference, including a Configuration Gateway binding or saved Plugin selection, returns `409` before OCC changes the Source or records OAuth revocation. Clear the saved selection and, for a deployed binding, use the authorized Agent withdrawal and remove the remaining references. The Worker can retry pending OAuth retirement after a Proxy failure. See [managed static deletion](credential-sources/managed-static.md#delete-a-source) and [OAuth consent](connection-templates.md#connect-an-account).
 
 ## Errors
 

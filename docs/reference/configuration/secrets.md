@@ -1,12 +1,10 @@
 # Configuration secrets and channels
 
-Configure credential references and native channels for [Namespace Configuration resources](../configuration.md). Secret values stay in the selected SecretDriver or documented service-account credential path.
+Configure Gateway credential references and native channels for [Namespace Configuration resources](../configuration.md). Credential values stay with their selected owner until delivery.
 
 ## Secret bindings
 
-Use `Configuration.secretBindings` only to map a Namespace-owned OCC Secret to a
-selected gateway environment variable. The referenced Secret must already belong
-to the same Namespace as the Configuration and deploying Agent. The native
+Use `Configuration.secretBindings` to map a Namespace Secret or supported static CredentialSource to a Gateway environment variable. Each reference must belong to the same Namespace as the Configuration and Agent. The native
 OpenClaw document in `values` then consumes that environment variable with its
 normal `env` SecretRef:
 
@@ -26,28 +24,47 @@ normal `env` SecretRef:
 
 For example, native Slack configuration consumes `SLACK_BOT_TOKEN` with
 `{ "source": "env", "provider": "default", "id": "SLACK_BOT_TOKEN" }`.
-Supply model authentication through [Agent harnessAuth](../agents.md#harness-authentication),
-not a Configuration binding.
+Supply model authentication through [Agent harnessAuth](../agents.md#harness-authentication). A Gateway binding is separate and never creates a Harness or Credential Proxy binding.
 
-Each binding value contains `source.kind: "secret"`, the source
-`namespaceId`, the source Secret `id`, and optional `delivery.type: "env"`.
+Each binding contains `source.kind: "secret" | "credential_source"`, the source
+`namespaceId` and `id`, and optional `delivery.type: "env"`.
 Omitting `delivery` normalizes to `{ "type": "env" }`; no other delivery mode is
 implemented. Binding names must be valid environment variable names and cannot
 use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 `KUBERNETES_`, `OPENAI_`, `PATH`, `HOME`, or proxy variables. Model
 authentication destinations are reserved for `harnessAuth`.
 
+For a dedicated Gateway on Kubernetes with OCC TokenService, select a ready static Source:
+
+```json
+{
+  "secretBindings": {
+    "GW_HOOK_TOKEN": {
+      "source": {
+        "kind": "credential_source",
+        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+        "id": "cs_123e4567-e89b-42d3-a456-426614174001"
+      }
+    }
+  }
+}
+```
+
+The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. Slack credential inputs still require Namespace Secrets.
+
+Kubernetes Compute stages Source values in a Secret for each Agent revision. A replacement Pod for that running revision reuses the staged value; a managed redeploy reads the current Source. Revocation prevents a later managed start but does not erase the running Gateway's environment. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md) for cleanup and access.
+
 OCC rejects cross-Namespace references and missing or foreign backend objects
 even if IAM would otherwise allow the operation. When a Configuration write or Agent
 provisioning submits bindings, a reserved or invalid destination or a Secret
 reference to another Namespace fails with `400 INVALID_REQUEST` and a message
 naming the rule; so does an Agent `harnessAuth` source in another Namespace. A
-reference to a Secret the Namespace does not hold fails with `404`. Creating or updating a
+reference to a Secret or Source the Namespace does not hold fails with `404`. Creating or updating a
 Configuration whose resulting document contains bindings requires the normal
-Configuration mutation permission and `operate` on every selected Secret,
+Configuration mutation permission and `operate` on every selected Secret or Source,
 including retained bindings when PATCH omits `secretBindings`. Creating or
 updating an Agent assignment to a bound Configuration requires the normal Agent
-mutation permission and `operate` on each exact Secret. Each check also requires
+mutation permission and `operate` on each exact Secret or Source. For Namespace Secrets, each check also requires
 the selected SecretDriver to own the Secret: after the Installation selects
 another SecretDriver, a write that keeps an old binding, and every create,
 update, or deployment of an Agent assigned to that Configuration, fails with `503` and a
@@ -55,7 +72,7 @@ message naming the fix. Update the Configuration with replacement
 `secretBindings`, or assign the Agent another Configuration. Namespace membership,
 Configuration access, Agent access, or possession of a ref does not grant
 consumption. Deployment stores normalized references and the selected
-SecretDriver identity in the AgentRevision; it does not store backend
+SecretDriver identity, or selected TokenService instance for Source bindings, in the AgentRevision; it does not store backend
 locators or value bytes. Secret storage CRUD, update/restart semantics,
 Kubernetes Secret RBAC, no-leakage rules, and troubleshooting are owned by the
 [Kubernetes Secret Driver](../drivers/kubernetes-secret.md).
