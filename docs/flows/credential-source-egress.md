@@ -9,17 +9,16 @@ last_updated_session: authoring-run/8062b878-7f8a-4aa8-a012-826e230839f4
 ## Overview
 
 OpenClaw Control Plane (OCC) authorizes GitHub identity replies.
-See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
-and [threat model](../reference/security/credential-proxy.md).
-[Online model requests](credential-source-egress/model-requests.md) have their own approval and release flow.
+See [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff),
+[threat model](../reference/security/credential-proxy.md) and
+[online model approval and release](credential-source-egress/model-requests.md).
 
 ## Entry Points
 
-- Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent);
-  current enforcement evidence is required.
-- The supervisor opens
-  `HttpInstallationExchange.Exchange`, for credential resolution, send
-  authorization and response release
+- Deployment establishes a [source route](../reference/credential-sources.md#bind-a-source-to-an-agent)
+  with current enforcement evidence.
+- The supervisor opens `HttpInstallationExchange.Exchange` to resolve credentials,
+  authorize sends and release responses
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
 
 ## Flow
@@ -127,8 +126,8 @@ The helper matches the manifest before opening the authenticated listener.
 The provider receives only the verifier; Compute withholds the private status
 revision, port, container name and Pod UID.
 
-The Harness waits before its first model probe. Compute awaits installation commit, rechecks evidence
-and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
+Before the first Harness model probe, Compute awaits installation commit,
+rechecks evidence and calls the Sandbox Driver. The Driver verifies the Sandbox and service and reads
 the execution/plan challenge. Compute signs the fresh process nonce and current
 installation with its control-plane key. The listener closes before Codex starts.
 Restart invalidates the old release. After 180 seconds startup fails closed and remains held.

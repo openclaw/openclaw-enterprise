@@ -1286,6 +1286,7 @@
             ],
             "hidden": [
               "contributing/rfc-template",
+              "reference/drivers/credential-proxy/capacity",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",

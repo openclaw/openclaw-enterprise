@@ -903,8 +903,10 @@ stateCase(
       "harnessAuth",
       "id",
       "namespaceId",
+      "networkEgressMode",
       "revision",
     ]);
+    assert.equal(firstRevision.networkEgressMode, "restricted");
     assert.equal(firstRevision.namespaceId, namespaceA);
     assert.equal(firstRevision.agentId, primary.id);
     assert.equal(firstRevision.revision, 1);
