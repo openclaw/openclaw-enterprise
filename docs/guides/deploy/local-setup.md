@@ -98,7 +98,7 @@ The launcher selects OCC TokenService and the OpenShell Sandbox that supplies
 native Credential Proxy delivery. See [Driver setup](../integrations/drivers.md#configure-managed-credential-delivery)
 before changing the generated configuration.
 
-Run the configuration script from the matching checkout. It removes the
+Run the [configuration script](../../snippets/openshell-quickstart/configure-installation.mts) from the matching checkout. It removes the
 generated rule that lets Git reach `github.com:443` without inspection and
 selects the curated Codex plugin catalog. Git access requires an explicit
 [repository grant](../repository-credentials.md#set-github-app-access-for-an-openshell-agent).

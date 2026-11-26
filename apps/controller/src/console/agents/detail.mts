@@ -5482,6 +5482,21 @@ export async function renderAgentDetail(
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
+        // Detaching the live editor keeps its selection but resets its internal scroll.
+        const editor =
+          mountedTab.id === "configuration"
+            ? content.querySelector<HTMLTextAreaElement>("#configuration-json")
+            : null;
+        if (editor) {
+          const { scrollTop, scrollLeft, scrollHeight } = editor;
+          mountedTab.resumeDrafts = () => {
+            resumeDrafts();
+            // If lines rewrapped while away, the old offset can hide the selection.
+            if (content.contains(editor) && editor.scrollHeight === scrollHeight) {
+              editor.scrollTo(scrollLeft, scrollTop);
+            }
+          };
+        }
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);
@@ -7703,7 +7718,7 @@ export async function renderAgentDetail(
   }
 
   view.append(dangerZone);
-  context.setTabNavigation((next) => {
+  context.setTabNavigation((next, onBlocked) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const requestedTab = next.searchParams.get("tab");
     const nextTab =
@@ -7729,7 +7744,9 @@ export async function renderAgentDetail(
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      showLeaveBlock();
+      showLeaveBlock(
+        selectedTab === "repositories" && !draftWriteInFlight() ? onBlocked : undefined,
+      );
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });

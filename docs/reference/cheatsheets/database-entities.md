@@ -189,9 +189,9 @@ Stores each immutable static Bearer template version, including the exact HTTP m
 
 Pins the saved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
-- `template_id`, `version`, `oauth_client_id`, `mode`
+- `template_id`, `version`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
-- `scopes`, `authorization_parameters`, `observed_metadata`
+- `scopes`, `authorization_parameters`, `observed_metadata`, `issuer_verification`
 - `destinations` (exact host, port, and path for each allowed HTTPS destination)
 - `created_at`
 
@@ -200,7 +200,7 @@ Pins the saved OAuth configuration and the HTTPS destinations that can receive t
 Stores Installation- or Namespace-scoped OAuth2 and GitHub App Client metadata. The selected TokenService owns private Client material. A cleanup deadline hides a retired Client until private cleanup completes.
 
 - `id`, `kind`, `namespace_id`, `display_name`, `issuer`, `client_id`
-- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `token_endpoint_auth_method`
 - `app_id`, `token_service_instance_id`, `cleanup_after`, `created_at`
 
 ### `connection_token_custody`

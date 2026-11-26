@@ -1573,8 +1573,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preInstallationNetworkPolicyCeiling"],
-      [97, "preDynamicInstallationNetworkPolicyCeiling"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preInstallationNetworkPolicyCeiling"],
+      [98, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2013,8 +2014,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preInstallationNetworkPolicyCeiling"],
-      [97, "preDynamicInstallationNetworkPolicyCeiling"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preInstallationNetworkPolicyCeiling"],
+      [98, "preDynamicInstallationNetworkPolicyCeiling"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -2464,6 +2466,94 @@ test(
       { code: "55000" },
     );
     assert.deepEqual(await readSource(), before);
+  },
+);
+
+test(
+  "OAuth endpoint authority refuses confidential Client custody before dropping its address",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "oauth_endpoint_authority", { prefix: 96 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const instanceId = randomUUID();
+    const confidentialId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.installation(id,name,created_at) VALUES($1,'OAuth fixture',now())",
+      [installationId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'OAuth fixture','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ','fixture')",
+      [installationId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_url,token_endpoint_auth_method,token_service_instance_id,created_at)
+       VALUES($1,'oauth2','Confidential','https://accounts.google.com','confidential','https://oauth2.googleapis.com/token','client_secret_post',$2,now())`,
+      [confidentialId, instanceId],
+    );
+    const before = await historySnapshot(db);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        const failure = error.cause ?? error;
+        assert.equal(failure.code, "55000");
+        assert.match(failure.message, /complete private-material cleanup/);
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(
+      (await db.app.query("SELECT token_url FROM occ.oauth_clients WHERE id=$1", [confidentialId]))
+        .rows,
+      [{ token_url: "https://oauth2.googleapis.com/token" }],
+    );
+
+    // Simulate the old release completing private-material cleanup before removing the row.
+    await db.app.query("DELETE FROM occ.oauth_clients WHERE id=$1", [confidentialId]);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preOAuthEndpointAuthority",
+    });
+    const starter = (
+      await db.app.query(
+        "SELECT t.id,v.issuer_verification FROM occ.connection_templates t JOIN occ.oauth_connection_template_versions v ON v.template_id=t.id AND v.version=t.current_oauth_version WHERE t.display_name='Google OAuth'",
+      )
+    ).rows[0];
+    assert.equal(starter.issuer_verification, null);
+    const publicId = `ccr_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.oauth_clients(id,kind,display_name,issuer,client_id,token_endpoint_auth_method,created_at) VALUES($1,'oauth2','Public','https://accounts.google.com','public','none',now())",
+      [publicId],
+    );
+    const matches = async (version) =>
+      (
+        await db.app.query("SELECT occ.oauth_client_matches_template($1,$2,$3,$4) AS matches", [
+          namespaceId,
+          starter.id,
+          version,
+          publicId,
+        ])
+      ).rows[0].matches;
+    assert.equal(await matches(1), false, "the seeded version remains unverified");
+    await db.app.query(
+      `INSERT INTO occ.oauth_connection_template_versions(template_id,version,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,issuer_verification,created_at)
+       SELECT template_id,2,issuer,mode,authorization_url,token_url,revocation_url,scopes,authorization_parameters,destinations,observed_metadata,'{"tokenEndpointAuthMethods":["none"]}'::jsonb,now()
+       FROM occ.oauth_connection_template_versions WHERE template_id=$1 AND version=1`,
+      [starter.id],
+    );
+    assert.equal(await matches(2), true, "verified methods admit the same-issuer client");
+    assert.deepEqual(
+      (
+        await db.migrator.query(
+          "SELECT column_name FROM information_schema.columns WHERE table_schema='occ' AND table_name='oauth_clients' AND column_name IN ('token_url','revocation_url')",
+        )
+      ).rows,
+      [],
+    );
   },
 );
 
@@ -3155,8 +3245,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preInstallationNetworkPolicyCeiling"],
-      [97, "preDynamicInstallationNetworkPolicyCeiling"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preInstallationNetworkPolicyCeiling"],
+      [98, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3295,8 +3386,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preInstallationNetworkPolicyCeiling"],
-      [97, "preDynamicInstallationNetworkPolicyCeiling"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preInstallationNetworkPolicyCeiling"],
+      [98, "preDynamicInstallationNetworkPolicyCeiling"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3468,8 +3560,9 @@ test(
       [93, "preTokenServiceSourceBackendRef"],
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
-      [96, "preInstallationNetworkPolicyCeiling"],
-      [97, "preDynamicInstallationNetworkPolicyCeiling"],
+      [96, "preOAuthEndpointAuthority"],
+      [97, "preInstallationNetworkPolicyCeiling"],
+      [98, "preDynamicInstallationNetworkPolicyCeiling"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3498,8 +3591,9 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [97, "ALTER TABLE"],
-                [96, "GRANT"],
+                [98, "ALTER TABLE"],
+                [97, "GRANT"],
+                [96, "ALTER TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
                 [93, "CREATE TRIGGER"],

@@ -738,6 +738,29 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     });
   });
 
+  await t.test("Repository collaborator stories serve the legacy network policy", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    for (const story of [
+      "repositoryCollaborator",
+      "repositoryCollaboratorSaved",
+      "repositoryCollaboratorReadOnly",
+    ]) {
+      const scenario = scenarios[story];
+      assert.ok(scenario && "repositoryAccess" in scenario, story);
+      installFixture(scenario, evidence());
+      const view = await readData(
+        await request(`agents/${id("agt", 1)}/sandbox-policy/networking`),
+        200,
+      );
+      assert.partialDeepStrictEqual(view, { editingEnabled: false, policy: { version: 1 } }, story);
+      assert.ok("policy" in view && view.policy && typeof view.policy === "object", story);
+      assert.ok("additions" in view.policy, story);
+      assert.deepEqual(view.policy.additions, [], story);
+      // An empty repositoryNetworkPolicy would deny all repositories.
+      assert.equal(Object.hasOwn(view.policy, "repositoryNetworkPolicy"), false, story);
+    }
+  });
+
   await t.test("Malformed policy editing flags return 400 without changing the flag", async () => {
     installFixture({ policyState: "ready" }, evidence());
     const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;

@@ -24,7 +24,9 @@ import {
   images,
   integerPattern,
   match,
+  validatePreparedImage,
 } from "./container-release/metadata.ts";
+import type { Producer } from "./container-release/metadata.ts";
 import { readChartVersion, verifyPreparedReleaseChart } from "./prepare-release-chart.ts";
 import { publishPrepared } from "./container-release/publication.ts";
 import {
@@ -157,8 +159,93 @@ async function verifyChartTag(version: string, sha256: string, authfile: string)
   return digest;
 }
 
+async function imagePublication(
+  phase: string,
+  directory: string,
+  env: NodeJS.ProcessEnv,
+  producer: Producer,
+  verify: () => Promise<void>,
+) {
+  const alias = publicationAlias(env.IMAGE_TAG);
+  const targets = await Promise.all(
+    images.map(async (image) => {
+      const destination = env[`GHCR_${image.toUpperCase()}_IMAGE`];
+      ghcrPackageName(destination);
+      assert.ok(destination);
+      const artifact = `container-${image}-${producer.runId}-${producer.attempt}`;
+      const metadata = await json(join(directory, artifact, "metadata.json"));
+      validatePreparedImage(metadata, { ...producer, image });
+      if (phase === "image-baseline") {
+        assert.equal(
+          metadata.digest,
+          env[`IMAGE_${image.toUpperCase()}`],
+          "Unexpected assembly digest.",
+        );
+      }
+      return { image, destination, digest: metadata.digest };
+    }),
+  );
+  assert.notEqual(targets[0]?.destination, targets[1]?.destination);
+  const expected = { ...producer, alias, targets };
+  const path = join(directory, "image-baseline.json");
+  const temporary = await mkdtemp(join(tmpdir(), "oce-image-publication-"));
+  const authfile = join(temporary, "auth.json");
+  try {
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
+    if (phase === "image-baseline") {
+      assert.equal(
+        producer.runId,
+        env.GITHUB_RUN_ID,
+        "Only the original run may record the baseline.",
+      );
+      const previous: Record<string, string | null> = {};
+      for (const target of targets) {
+        await verifyGhcr(target.destination, target.digest, `sha-${producer.sourceSha}`);
+        previous[target.image] = remoteTagDigest(target.destination, alias, authfile);
+      }
+      await save(path, { ...expected, previous });
+      return;
+    }
+    const original = await json(path);
+    const previous: Record<string, unknown> = {};
+    for (const target of targets) {
+      const digest = field(field(original, "previous"), target.image);
+      if (digest !== null) {
+        match(digest, digestPattern);
+      }
+      previous[target.image] = digest;
+    }
+    assert.deepEqual(
+      original,
+      { ...expected, previous },
+      "Inputs or archives differ from the original publication.",
+    );
+    for (const target of targets) {
+      aliasDigest(target, alias, previous, authfile);
+    }
+    const digests = new Map(targets.map((target) => [target.image, target.digest]));
+    const receipt = await publishPrepared(directory, env, producer, verify, undefined, digests);
+    await advanceReleaseAliases(targets, alias, previous, authfile, verify);
+    await save(
+      join(directory, "publication.json"),
+      receipt.map((image) => ({ ...image, aliasTag: alias })),
+    );
+    assert.ok(env.GITHUB_STEP_SUMMARY);
+    await appendFile(
+      env.GITHUB_STEP_SUMMARY,
+      `Verified both \`${alias}\` aliases from run ${producer.runId}, attempt 1. Full Integration was skipped.\n`,
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
+
 async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv) {
-  assert.ok(["preflight", "immutable", "aliases"].includes(phase), "Invalid registry phase.");
+  const imagesOnly = phase === "image-baseline" || phase === "publish-images";
+  assert.ok(
+    imagesOnly || ["preflight", "immutable", "aliases"].includes(phase),
+    "Invalid registry phase.",
+  );
   assert.equal(env.GITHUB_RUN_ATTEMPT, "1", "Start a fresh release or recovery dispatch.");
   const sourceSha = env.SOURCE_SHA;
   match(sourceSha, /^[a-f0-9]{40}$/);
@@ -173,6 +260,7 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
   assert.equal(env.PRODUCER_ATTEMPT, "1");
   assert.ok(env.GITHUB_EVENT_PATH);
   const inputs = field(await json(env.GITHUB_EVENT_PATH), "inputs");
+  assert.equal(field(inputs, "images_only") === "true", imagesOnly, "Unexpected release mode.");
   assert.equal(field(inputs, "source_sha"), sourceSha);
   assert.equal(field(inputs, "image_tag") ?? "", env.IMAGE_TAG ?? "");
   assert.equal(field(inputs, "recovery_run_id") || env.GITHUB_RUN_ID, env.PRODUCER_RUN_ID);
@@ -185,7 +273,11 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
   }
   const recovery = env.PRODUCER_RUN_ID !== env.GITHUB_RUN_ID;
   const producerWorkflowSha = recovery
-    ? await verifyProducer({ ...env, RECOVERY_RUN_ID: env.PRODUCER_RUN_ID })
+    ? await verifyProducer({
+        ...env,
+        IMAGES_ONLY: String(imagesOnly),
+        RECOVERY_RUN_ID: env.PRODUCER_RUN_ID,
+      })
     : workflowSha;
   const verify = async () => {
     await verifyMainSource(env, releaseWorkflow);
@@ -201,6 +293,10 @@ async function registry(phase: string, directory: string, env: NodeJS.ProcessEnv
     attempt: env.PRODUCER_ATTEMPT,
     nodeBaseImage: readReleaseNodeBase(sourceSha),
   };
+  if (imagesOnly) {
+    await imagePublication(phase, directory, env, producer, verify);
+    return;
+  }
   const chartEnv = { ...env, NODE_BASE_IMAGE: producer.nodeBaseImage };
   const prepared = await json(join(directory, "chart/chart-preparation.json"));
   const version = await readChartVersion(sourceSha);

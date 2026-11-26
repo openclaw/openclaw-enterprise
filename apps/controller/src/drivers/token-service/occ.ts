@@ -270,19 +270,18 @@ export class OCCTokenServiceDriver implements TokenServiceDriver {
     let authority: string;
     if (
       kind === "oauth2" &&
-      /^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(client.tokenUrl) &&
-      URL.canParse(client.tokenUrl)
+      /^https:\/\/[^/?#@\s\\]+(?:\/[^?#\s\\]*)?$/.test(client.issuer) &&
+      URL.canParse(client.issuer)
     ) {
       purpose = "oauth_client";
-      authority = client.tokenUrl;
+      authority = client.issuer;
     } else if (kind === "github-app" && parseGitHubNumericId(client.appId) !== undefined) {
       purpose = "github_app_client";
       authority = client.appId;
     } else {
       throw new ScopeViolationError("The client secret authority is invalid.");
     }
-    // Keep existing opaque addresses. OAuth Installations already use an explicit empty
-    // Namespace slot. A Namespace registration always includes its actual Namespace.
+    // A Namespace registration always includes its actual Namespace.
     const owner = kind === "github-app" && namespaceId === undefined ? [] : [namespaceId ?? null];
     return {
       installationId: this.installationId,

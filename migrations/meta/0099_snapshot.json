@@ -4783,18 +4783,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "startup_configuration": {
-          "name": "startup_configuration",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "management_mode": {
-          "name": "management_mode",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -4836,10 +4824,6 @@
         "installation_ceiling_rules": {
           "name": "installation_ceiling_rules",
           "value": "occ.sandbox_network_grants_are_valid(\"occ\".\"installation_network_policy_ceiling\".\"rules\")"
-        },
-        "installation_ceiling_mode": {
-          "name": "installation_ceiling_mode",
-          "value": "\"occ\".\"installation_network_policy_ceiling\".\"management_mode\" IN ('console', 'startup')"
         }
       },
       "isRLSEnabled": false
@@ -5394,18 +5378,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "token_url": {
-          "name": "token_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revocation_url": {
-          "name": "revocation_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "app_id": {
           "name": "app_id",
           "type": "text",
@@ -5491,19 +5463,11 @@
       "checkConstraints": {
         "oauth_clients_kind_shape": {
           "name": "oauth_clients_kind_shape",
-          "value": "CASE WHEN \"occ\".\"oauth_clients\".\"kind\"='oauth2' THEN\n          \"occ\".\"oauth_clients\".\"issuer\" IS NOT NULL AND \"occ\".\"oauth_clients\".\"client_id\" IS NOT NULL AND \"occ\".\"oauth_clients\".\"token_url\" IS NOT NULL\n          AND \"occ\".\"oauth_clients\".\"token_endpoint_auth_method\" IN ('none','client_secret_basic','client_secret_post')\n          AND \"occ\".\"oauth_clients\".\"app_id\" IS NULL\n          AND ((\"occ\".\"oauth_clients\".\"token_endpoint_auth_method\"='none')=(\"occ\".\"oauth_clients\".\"token_service_instance_id\" IS NULL))\n        WHEN \"occ\".\"oauth_clients\".\"kind\"='github-app' THEN\n          \"occ\".\"oauth_clients\".\"issuer\" IS NULL AND \"occ\".\"oauth_clients\".\"client_id\" IS NULL\n          AND \"occ\".\"oauth_clients\".\"token_url\" IS NULL AND \"occ\".\"oauth_clients\".\"revocation_url\" IS NULL AND \"occ\".\"oauth_clients\".\"token_endpoint_auth_method\" IS NULL\n          AND CASE WHEN \"occ\".\"oauth_clients\".\"app_id\" ~ '^[1-9][0-9]{0,15}$' THEN \"occ\".\"oauth_clients\".\"app_id\"::numeric <= 9007199254740991 ELSE false END\n          AND \"occ\".\"oauth_clients\".\"token_service_instance_id\" IS NOT NULL\n        ELSE false END IS TRUE"
+          "value": "CASE WHEN \"occ\".\"oauth_clients\".\"kind\"='oauth2' THEN\n          \"occ\".\"oauth_clients\".\"issuer\" IS NOT NULL AND \"occ\".\"oauth_clients\".\"client_id\" IS NOT NULL\n          AND \"occ\".\"oauth_clients\".\"token_endpoint_auth_method\" IN ('none','client_secret_basic','client_secret_post')\n          AND \"occ\".\"oauth_clients\".\"app_id\" IS NULL\n          AND ((\"occ\".\"oauth_clients\".\"token_endpoint_auth_method\"='none')=(\"occ\".\"oauth_clients\".\"token_service_instance_id\" IS NULL))\n        WHEN \"occ\".\"oauth_clients\".\"kind\"='github-app' THEN\n          \"occ\".\"oauth_clients\".\"issuer\" IS NULL AND \"occ\".\"oauth_clients\".\"client_id\" IS NULL\n          AND \"occ\".\"oauth_clients\".\"token_endpoint_auth_method\" IS NULL\n          AND CASE WHEN \"occ\".\"oauth_clients\".\"app_id\" ~ '^[1-9][0-9]{0,15}$' THEN \"occ\".\"oauth_clients\".\"app_id\"::numeric <= 9007199254740991 ELSE false END\n          AND \"occ\".\"oauth_clients\".\"token_service_instance_id\" IS NOT NULL\n        ELSE false END IS TRUE"
         },
         "oauth_clients_display_name_check": {
           "name": "oauth_clients_display_name_check",
           "value": "length(\"occ\".\"oauth_clients\".\"display_name\") BETWEEN 1 AND 200 AND \"occ\".\"oauth_clients\".\"display_name\" = btrim(\"occ\".\"oauth_clients\".\"display_name\")"
-        },
-        "oauth_clients_token_url_check": {
-          "name": "oauth_clients_token_url_check",
-          "value": "\"occ\".\"oauth_clients\".\"token_url\" ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'"
-        },
-        "oauth_clients_revocation_url_check": {
-          "name": "oauth_clients_revocation_url_check",
-          "value": "\"occ\".\"oauth_clients\".\"revocation_url\" ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'"
         },
         "oauth_clients_id_format": {
           "name": "oauth_clients_id_format",
@@ -5560,6 +5524,12 @@
         },
         "observed_metadata": {
           "name": "observed_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "issuer_verification": {
+          "name": "issuer_verification",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -5653,6 +5623,10 @@
         "oauth_connection_template_versions_destinations_valid": {
           "name": "oauth_connection_template_versions_destinations_valid",
           "value": "occ.valid_connection_destinations(\"occ\".\"oauth_connection_template_versions\".\"destinations\")"
+        },
+        "oauth_connection_template_versions_issuer_verification_valid": {
+          "name": "oauth_connection_template_versions_issuer_verification_valid",
+          "value": "\"occ\".\"oauth_connection_template_versions\".\"issuer_verification\" IS NULL OR ((jsonb_typeof(\"occ\".\"oauth_connection_template_versions\".\"issuer_verification\")='object'\n        AND \"occ\".\"oauth_connection_template_versions\".\"issuer_verification\" ? 'tokenEndpointAuthMethods'\n        AND \"occ\".\"oauth_connection_template_versions\".\"issuer_verification\" - 'tokenEndpointAuthMethods'='{}'::jsonb\n        AND jsonb_typeof(\"occ\".\"oauth_connection_template_versions\".\"issuer_verification\"->'tokenEndpointAuthMethods')='array'\n        AND \"occ\".\"oauth_connection_template_versions\".\"issuer_verification\"->'tokenEndpointAuthMethods' <@ '[\"none\",\"client_secret_basic\",\"client_secret_post\"]'::jsonb) IS TRUE)"
         },
         "oauth_connection_template_versions_discovery": {
           "name": "oauth_connection_template_versions_discovery",
@@ -7818,6 +7792,6 @@
     "tables": {},
     "columns": {}
   },
-  "id": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a",
-  "prevId": "57be4ec3-81ed-4c74-8fb3-e41316a73ce7"
+  "id": "e54f0d7c-8d0c-4949-bd38-46ec0d60756c",
+  "prevId": "34b1b74d-57d1-4bf1-bdcc-dbbf2488bc5a"
 }

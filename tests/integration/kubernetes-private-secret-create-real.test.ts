@@ -34,7 +34,6 @@ const administrator = {
   password: "private-real-auth-" + randomUUID(),
 };
 const issuer = "https://accounts.example.test";
-const tokenUrl = `${issuer}/token`;
 const authOptions = (installationId: string) => ({
   mode: "development" as const,
   installationId,
@@ -477,7 +476,6 @@ test(
       return {
         kind: "oauth2",
         issuer,
-        tokenUrl,
         displayName: "Private real API client",
         clientId: randomUUID(),
         tokenEndpointAuthMethod: "client_secret_basic" as const,
