@@ -8,7 +8,7 @@ last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
 
 ## Overview
 
-Console selects Slack Credential Sources and model authentication, then submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent, grants credential access, and admits deployment. Its handle tracks activation or failure; later deployments use separate handles.
+Console selects Slack Credential Sources and model authentication, then submits Configuration, credential references, and retained Preset bindings. OCC queues setup without placeholders. The worker creates Configuration and Agent and submits deployment for admission. Its handle tracks activation or failure; later deployments use separate handles.
 See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
@@ -63,9 +63,9 @@ The Slack editor selects ready static Credential Sources created in Credentials.
 
 When the Installation offers the selected model preset through TokenService, Console enrolls the credential as a Source and saves an Agent draft bound to that Source. Codex PAT enrollment can also happen before hosted Apps discovery. Retries reuse a confirmed Source. If Console cannot confirm enrollment, it asks the caller to check Credential Sources before retrying. For a model that uses direct authentication on the Installation, preflight precedes the Namespace Secret write and subsequent provisioning.
 
-Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants the Agent access to each selected credential. After uncertain admission, Retry sends the same ID and inputs without enrolling credentials again.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without enrolling credentials again.
 
-For drafts, Console creates the Configuration and Agent, then grants Slack Source access. Credential-access retry keeps the Agent.
+For drafts, Console creates the Configuration and Agent. Deployment admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must already authorize the Agent. Credential-access retry keeps the Agent.
 
 ### 2. OCC admits one job
 

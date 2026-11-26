@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requiresPostgres } from "../helpers/postgres-platform-state.ts";
+import {
+  caseDatabasesAvailable,
+  prepareCaseDatabase,
+  requiresPostgres,
+} from "../helpers/postgres-platform-state.ts";
 import {
   persistNamespaceLifecycle,
   refuseUninitializedInstallation,
@@ -93,6 +97,25 @@ test(
   "API SIGTERM finishes an in-flight keep-alive request and exits within the Pod grace",
   requiresPostgres,
   drainApiOnSigterm,
+);
+test(
+  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
+  {
+    skip:
+      requiresPostgres.skip ||
+      (caseDatabasesAvailable
+        ? false
+        : "Set OPENCLAW_ENTERPRISE_CI_STATE to own an isolated PostgreSQL case database."),
+  },
+  async (context) => {
+    // Admitted revisions retain their Source, so this case must own its Installation and custody.
+    const databaseUrl = await prepareCaseDatabase(context, {
+      lane: "postgres-platform",
+      testFile: import.meta.url,
+    });
+    assert.ok(databaseUrl);
+    await persistGuardedDeployment(context, databaseUrl);
+  },
 );
 test(
   "PostgreSQL pins managed sources to a durable TokenService instance",
@@ -194,11 +217,4 @@ test(
       replacement,
     );
   },
-);
-
-// This case retains an admitted Source revision, so it must follow the owner-pinning replacement check.
-test(
-  "PostgreSQL guarded first deployment persists one private receipt and one reconcile work",
-  requiresPostgres,
-  persistGuardedDeployment,
 );

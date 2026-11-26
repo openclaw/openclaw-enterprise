@@ -3194,8 +3194,8 @@ for (const changed of ["generation", "identity"]) {
       .waitFor();
     assert.equal(pathRequests(requests, "PATCH", configPath).length, 0);
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
-    assert.equal(
-      await page.getByLabel("Slack app token", { exact: true }).inputValue(),
+    await waitForInputValue(
+      page.getByLabel("Slack app token", { exact: true }),
       replacementSource.id,
     );
     assert.equal(await deploy.isDisabled(), true);

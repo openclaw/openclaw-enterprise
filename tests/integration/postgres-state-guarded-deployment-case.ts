@@ -6,10 +6,9 @@ import type {
   AuthorizedAgentDeployment,
   FirstDeploymentIntent,
 } from "../../packages/occ/src/index.ts";
-import { databaseUrl } from "../helpers/postgres-platform-state.ts";
 import { ensureInstallation } from "../helpers/postgres-state-installation.ts";
 
-export async function persistGuardedDeployment(context: TestContext) {
+export async function persistGuardedDeployment(context: TestContext, databaseUrl: string) {
   const [
     { Pool },
     { AuditEventFactory },

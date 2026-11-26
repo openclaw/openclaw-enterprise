@@ -30,16 +30,14 @@ The Agent or Configuration stores only the selected IDs.
 ```mermaid
 graph TD
   %%{init: {"themeVariables":{"fontSize":"14px"},"flowchart":{"htmlLabels":true,"nodeSpacing":24,"rankSpacing":28}}}%%
-  UI["<b>Console cutover</b><br/>Pending sourceId caller"] -.-> A["<b>Directory API</b><br/>sourceId and edit target"]
+  UI["<b>Console</b><br/>Select bot Source"] --> A["<b>Directory API</b><br/>sourceId and edit target"]
   A --> B["<b>OCC authorization</b><br/>Exact target and Source operate"]
   B --> C["<b>Qualification</b><br/>Ready static Source<br/>OCC + Kubernetes"]
   C --> D["<b>TokenService</b><br/>Resolve current token"]
   D --> E["<b>OCC recheck</b><br/>Authority, owner, readiness"]
   E --> F["<b>ChannelDriver</b><br/>Slack via OCC listener"]
   F --> G["<b>Safe result</b><br/>Workspace, names, IDs"]
-  classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px,stroke-dasharray:4 4
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
-  class UI pending
   class B,C,D,E,F operation
 ```
 
@@ -98,7 +96,7 @@ results on focus loss cancels pending searches without moving the clicked contro
 name-status hints retain their layout space while results are open. It buffers the provider's complete returned batch and divides it into
 [display pages](../reference/drivers/slack-channel.md). Previous and Next reuse
 those pages before Next follows the provider cursor. An empty provider page with
-a continuation still offers Next. New input, dismissal, or a changed Secret
+a continuation still offers Next. New input, dismissal, or a changed Source
 cancels the queued search and its browser request; generation checks also discard
 obsolete responses. Browser cancellation does not guarantee cancellation of
 provider work already started by the API.
@@ -110,13 +108,13 @@ remain workspace-qualified. Arrow keys move the active option; Enter confirms it
 Escape closes the list and retains input focus and text. With the list closed,
 plain Down starts a fresh authorized search and activates its first current result.
 Clicking the focused input also starts a fresh search, without an active option.
-Neither action commits a selection. Dismissal, new input, or a changed Secret
+Neither action commits a selection. Dismissal, new input, or a changed Source
 cancels pending activation with the search.
 It resolves saved IDs again when the editor opens or the
-selected Secret changes. A view sends the first of these name lookups alone
+selected Source changes. A view sends the first of these name lookups alone
 (`slack-directory.mjs:nameLookupInTurn`, `request-turns.mjs`); the others wait
 until one succeeds, then go at once. A `403` answers the lookups waiting behind
-it for the same Secret, unsent, so each field shows that refusal and the API
+it for the same Source, unsent, so each field shows that refusal and the API
 audits one denial; once no lookup is pending, a later one asks again. A lookup
 still waiting when its page is left is not sent. A denied or failed lookup leaves manual exact-ID entry
 available; no directory result changes the saved Configuration until the
