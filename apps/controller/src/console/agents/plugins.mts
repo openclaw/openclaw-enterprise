@@ -474,8 +474,8 @@ export function renderAgentPlugins(
         ...options,
       }),
   });
+  const feedback = element("p", { className: "hint", role: "status" });
   // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
-  // Declared before the approver field, whose edits clear it.
   const saveError = statusBlock("danger", null, null);
   const defaultApprovers = createSlackApproverField({
     context,
@@ -485,6 +485,7 @@ export function renderAgentPlugins(
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
+      feedback.textContent = "";
       saveError.textContent = "";
       updateState();
     },
@@ -498,7 +499,6 @@ export function renderAgentPlugins(
     discovery.fields.section.querySelector(".plugin-json"),
   );
   const pendingApprovers = element("div", { hidden: true });
-  const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const save = button("Save plugin selections", () => void savePlugins(), {
     tone: "primary",

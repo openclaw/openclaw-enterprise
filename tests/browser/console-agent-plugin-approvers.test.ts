@@ -3065,6 +3065,11 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`),
   );
   assert.equal(Object.hasOwn(savedAgent, "pluginApprovers"), false);
+
+  const savedNotice = page.getByText("Plugin selections saved.", { exact: true });
+  await savedNotice.waitFor();
+  await page.getByLabel("Default plugin approvers mode").selectOption("none");
+  assert.equal(await savedNotice.isVisible(), false, "The new approver draft is unsaved");
 });
 
 test("Unsaved default plugin approvers block deployment after leaving Plugins", async (t) => {
@@ -3088,8 +3093,11 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await waitForEnabled(deploy);
 
+  const cleanNotice = page.getByText("No plugin changes to save.", { exact: true });
+  await cleanNotice.waitFor();
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await cleanNotice.isVisible(), false, "The approver draft has changes to save");
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
