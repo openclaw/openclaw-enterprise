@@ -376,7 +376,14 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
         "generation preflight refuses stale save without a PATCH",
       );
       await reload.click();
+      await page
+        .getByText("Your edits are applied over the reloaded Configuration.", { exact: false })
+        .waitFor();
       const carried = page.locator("#slack-binding-slack-signing-secret");
+      await carried
+        .locator("..")
+        .getByText("Listing confirms read access", { exact: false })
+        .waitFor();
       await carried.locator(`option[value="${signing.id}"]`).waitFor({ state: "attached" });
       assert.equal(
         await carried.inputValue(),
@@ -525,6 +532,8 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
   await t.test("known bot Source remains usable when discovery read is unavailable", async () => {
     // Discovery lists only readable Sources. A known channel binding remains usable with exact
     // operate authority even when the caller can no longer discover that Source.
+    const roleCount = fixture.policy.roles.length;
+    const bindingCount = fixture.policy.bindings.length;
     grantExactSourceOperate(fixture, namespace.id, [second.source.id]);
     const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
     const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
@@ -537,7 +546,10 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
       await sourceField.getByRole("button", { name: "Refresh Source list", exact: true }).click();
       const discovered = await list;
       assert.equal(discovered.status(), 200);
-      assert.deepEqual(await discovered.json(), []);
+      assert.deepEqual((await discovered.json()).data, []);
+      await sourceField
+        .getByText("No ready static Credential Sources are readable", { exact: false })
+        .waitFor();
       assert.equal(await page.locator("#approver-directory-source").inputValue(), second.source.id);
       const response = responseFor("known");
       await page
@@ -549,6 +561,8 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     } finally {
       restoreRead();
       restoreOperate();
+      fixture.policy.roles.splice(roleCount);
+      fixture.policy.bindings.splice(bindingCount);
     }
   });
   await t.test(
