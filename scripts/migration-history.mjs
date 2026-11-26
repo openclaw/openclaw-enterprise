@@ -172,6 +172,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preSharedGitSourceRepositoryGrants";
   }
   if (count === 98 && completedCount > 98) {
+    return "preGatewayStartupCredentials";
+  }
+  if (count === 99 && completedCount > 99) {
     return "preSandboxPolicyCapacity";
   }
   if (count === completedCount) {

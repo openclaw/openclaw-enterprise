@@ -94,6 +94,7 @@ type AgentDetailScenario = {
   observabilityDenied?: true;
   candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
   candidateActivates?: true;
+  candidateFailsOnPoll?: true;
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   bootstrapFailure?: true;
   cleanupStatus?: "queued";
@@ -2634,16 +2635,9 @@ export function createAgentDetailScenarios({
         name: "Deployment fails while watching",
         path: `${candidateVersion}&tab=deployment`,
         deployed: true,
-        candidateDeploymentStatus: "failed",
+        candidateDeploymentStatus: "running",
+        candidateFailsOnPoll: true,
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-        // Show the in-progress record on arrival, then let the next poll read the failed record.
-        rules: [
-          {
-            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
-            once: true,
-            data: { status: "running", progress: null, error: null, warnings: [] },
-          },
-        ],
         description:
           "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
         steps: [
@@ -2814,6 +2808,24 @@ export function createAgentDetailScenarios({
           "Open v7 Logs and confirm v7 remains selected as the Logs tab opens. No deployment is submitted.",
         ],
         gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
+      },
+      deploymentFailedGatewayCredentialDelivery: {
+        group: "Pages/Agent detail",
+        name: "New version failed, Gateway credential delivery refused",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+          message:
+            "The selected Compute Driver refused Gateway credential delivery. Ask a platform operator to check the worker diagnostic, then correct the credential bindings and deploy again.",
+        },
+        description: "v7 failed because Compute refused Gateway credential delivery.",
+        steps: [
+          "Read the failure code and the operator's next step.",
+          "Open v7 Logs and confirm v7 remains selected; no deployment is submitted.",
+        ],
+        gap: "This simulated failure proves Console presentation and navigation, not credential delivery.",
       },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",

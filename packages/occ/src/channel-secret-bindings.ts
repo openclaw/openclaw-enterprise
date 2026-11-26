@@ -67,7 +67,7 @@ export function enabledChannelEntries(
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
   providers: readonly string[],
-  bound: (name: string) => boolean,
+  bound: (name: string, credentialInput: boolean, provider: string) => boolean,
   createError: SettingError,
 ): void {
   const channels = asRecord(configuration.channels) ?? {};
@@ -77,7 +77,7 @@ export function requireChannelSecretBindings(
       keyedSettingPath("channels", provider),
       [],
       Object.hasOwn(CHANNEL_SECRET_INPUTS, provider) ? CHANNEL_SECRET_INPUTS[provider] : undefined,
-      bound,
+      (name, credentialInput) => bound(name, credentialInput, provider),
     );
     if (refusal !== undefined) {
       throw createError(refusal.path, refusal.requirement);
@@ -227,7 +227,8 @@ function channelReferenceRefusal(
   path: string,
   keys: readonly (string | number)[],
   fields: SecretInputFields | undefined,
-  bound: (name: string) => boolean,
+  bound: (name: string, credentialInput: boolean) => boolean,
+  enabled = true,
 ): { readonly path: string; readonly requirement: string } | undefined {
   if (typeof value === "string") {
     const secretInput = isSecretInput(keys, fields);
@@ -241,7 +242,7 @@ function channelReferenceRefusal(
     const name = [
       ...environmentReferenceNames(value, { fallbacks: secretInput }),
       ...(shorthand === undefined ? [] : [shorthand]),
-    ].find((reference) => !bound(reference));
+    ].find((reference) => !bound(reference, secretInput && enabled));
     return name === undefined ? undefined : { path, requirement: unboundRequirement(name) };
   }
   if (Array.isArray(value)) {
@@ -252,6 +253,7 @@ function channelReferenceRefusal(
         [...keys, index],
         fields,
         bound,
+        enabled,
       );
       if (refusal !== undefined) {
         return refusal;
@@ -267,7 +269,7 @@ function channelReferenceRefusal(
     record.source === "env" &&
     typeof record.id === "string" &&
     record.id.length > 0 &&
-    !bound(record.id)
+    !bound(record.id, isSecretInput(keys, fields) && enabled)
   ) {
     return { path, requirement: unboundRequirement(record.id) };
   }
@@ -278,6 +280,8 @@ function channelReferenceRefusal(
       [...keys, key],
       fields,
       bound,
+      enabled &&
+        !(keys.length === 1 && keys[0] === "accounts" && asRecord(item)?.enabled === false),
     );
     if (refusal !== undefined) {
       return refusal;

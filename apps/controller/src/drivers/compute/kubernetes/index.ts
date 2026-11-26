@@ -215,6 +215,7 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialDeploymentFailedError,
+  CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
@@ -670,6 +671,7 @@ interface ManagedKubernetesObject<Kind extends ReadableResourceKind = ManagedRes
 
 interface ReconcilePrecondition {
   readonly serviceSelector?: Readonly<Record<string, string>>;
+  readonly gatewayStartupCredentials?: ComputeRevisionContext["gatewayStartupCredentials"];
 }
 
 interface Ownership {
@@ -699,6 +701,11 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+interface GatewaySecretEnvironmentProjection {
+  readonly name: string;
+  readonly backendRef: Pick<SecretEnvironmentProjection["backendRef"], "name" | "key">;
+}
+
 interface DeploymentInput {
   readonly name: string;
   readonly ownership: Ownership;
@@ -713,7 +720,7 @@ interface DeploymentInput {
   readonly workloadServicePrincipalId?: string | undefined;
   readonly harnessAuth?: PreparedHarnessAuth | undefined;
   readonly enabledChannels?: PreparedChannelRouting | undefined;
-  readonly secretEnvironment?: readonly SecretEnvironmentProjection[] | undefined;
+  readonly secretEnvironment?: readonly GatewaySecretEnvironmentProjection[] | undefined;
   readonly pluginRuntime?: PluginRuntimeSnapshot | undefined;
   readonly pluginWarnings?: readonly PluginDeploymentWarning[] | undefined;
   readonly workspaceSetup?: WorkspaceSetup | undefined;
@@ -858,6 +865,17 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
       code: cause.code,
       stage: failure.stage,
       errorClass: "CredentialDeploymentFailedError",
+    };
+  }
+  if (cause instanceof CredentialSourceRevisionError) {
+    return {
+      code: cause.code,
+      stage: failure.stage,
+      errorClass: "CredentialSourceRevisionError",
+      ...(cause.code === "GATEWAY_CREDENTIAL_DELIVERY_REFUSED" &&
+      cause.message === GATEWAY_SECRET_LIMIT_MESSAGE
+        ? { message: GATEWAY_SECRET_LIMIT_MESSAGE }
+        : {}),
     };
   }
   if (cause instanceof OpenShellSandboxConfigurationFailure && cause.diagnosticCode !== undefined) {
@@ -1326,6 +1344,7 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
 ]);
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
+const GATEWAY_SOURCE_VERSION_ANNOTATION = "openclaw.dev/gateway-source-versions";
 const APPLY_CONTENT_TYPE = "application/apply-patch+yaml";
 const MERGE_PATCH_CONTENT_TYPE = "application/merge-patch+json";
 const GATEWAY_API_VERSION = "gateway.networking.k8s.io/v1";
@@ -1423,6 +1442,9 @@ const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
+const MAX_KUBERNETES_SECRET_DATA_BYTES = 1_048_576;
+const GATEWAY_SECRET_LIMIT_MESSAGE =
+  "The staged Gateway credentials exceed the Kubernetes Secret limit of 1 MiB.";
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
@@ -7506,6 +7528,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           namespace,
           gatewayNamespace,
           secretEnvironment,
+          context,
         ),
     );
     if (!embedded && pluginRuntime !== undefined) {
@@ -7583,6 +7606,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
             gatewayOwnership,
             gatewayNamespace,
+            { gatewayStartupCredentials: context?.gatewayStartupCredentials },
           ),
         );
       };
@@ -8632,6 +8656,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           namespace,
           gatewayNamespace,
           secretEnvironment,
+          context,
         );
         await this.reconcileHarnessRoute(revision, namespace);
         const launch = await this.lifecycle.beforeWorkloadStart(revision);
@@ -8667,6 +8692,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             }),
             gatewayOwnership,
             namespace,
+            { gatewayStartupCredentials: context?.gatewayStartupCredentials },
           );
         } catch (error) {
           throw await failureAfterCleanup(
@@ -8893,6 +8919,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       namespace,
       gatewayNamespace,
       secretEnvironment,
+      context,
     );
     await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace, context);
     await this.harnessForRevision(revision).workspace.ensure({ revision, namespace });
@@ -8929,6 +8956,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }),
       gatewayOwnership,
       gatewayNamespace,
+      { gatewayStartupCredentials: context?.gatewayStartupCredentials },
     );
     await this.reconcile(
       this.service(
@@ -9452,6 +9480,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
+      if (this.hasMixedGatewayExecutionSource(revision)) {
+        await this.shutdownRevisionRuntime(revision, namespace);
+      }
+      if (gatewayNamespace !== namespace) {
+        await this.deleteOwnedNamespacedResource(
+          "Secret",
+          this.gatewaySecretsName(revision.agentId, revision.id),
+          this.pluginRuntimeOwnership(revision),
+          gatewayNamespace,
+        );
+      }
       if (enabledChannelEntries(revision.configuration).length > 0) {
         await this.channelEgress?.retire(revision);
       }
@@ -9528,6 +9567,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (existingNamespace === undefined) {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
+      if (this.hasMixedGatewayExecutionSource(revision)) {
+        await this.shutdownRevisionRuntime(revision, namespace);
+      }
+      if (gatewayNamespace !== namespace) {
+        await this.deleteOwnedNamespacedResource(
+          "Secret",
+          this.gatewaySecretsName(revision.agentId, revision.id),
+          this.pluginRuntimeOwnership(revision),
+          gatewayNamespace,
+        );
+      }
       if (enabledChannelEntries(revision.configuration).length > 0) {
         await this.channelEgress?.retire(revision);
       }
@@ -9559,6 +9609,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
       await this.removeRepositoryMaterial(revision, namespace);
     }
+  }
+
+  private hasMixedGatewayExecutionSource(revision: AgentRevision): boolean {
+    const gatewaySources = new Set(
+      Object.values(revision.secretBindings ?? {}).flatMap(({ source }) =>
+        source.kind === "credential_source" ? [source.id] : [],
+      ),
+    );
+    return (
+      (revision.harnessAuth.method === "credential_source" &&
+        gatewaySources.has(revision.harnessAuth.sourceId)) ||
+      (revision.credentialSources ?? []).some(({ sourceId }) => gatewaySources.has(sourceId)) ||
+      (revision.credentialDeployment?.bindings ?? []).some(({ sourceRef }) =>
+        gatewaySources.has(sourceRef.id),
+      )
+    );
   }
 
   private async shutdownRevisionRuntime(
@@ -9871,6 +9937,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       return;
     }
+    await this.waitForRevisionPodsToTerminate(predecessor, namespace, "gateway");
     await this.deleteRetiredRevisionArtifacts(predecessor, namespace, true);
   }
 
@@ -9943,17 +10010,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.pluginRuntimeOwnership(revision),
       gatewayNamespace,
     );
-    for (const name of [
+    await this.deleteOwnedNamespacedResource(
+      "Secret",
       this.harnessSecretsName(revision.agentId, revision.id),
+      this.pluginRuntimeOwnership(revision),
+      namespace,
+    );
+    await this.deleteOwnedNamespacedResource(
+      "Secret",
       this.gatewaySecretsName(revision.agentId, revision.id),
-    ]) {
-      await this.deleteOwnedNamespacedResource(
-        "Secret",
-        name,
-        this.pluginRuntimeOwnership(revision),
-        namespace,
-      );
-    }
+      this.pluginRuntimeOwnership(revision),
+      gatewayNamespace,
+    );
   }
 
   // Agent-scoped policies have one name per Agent and every revision applies its
@@ -17181,47 +17249,44 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     } catch {
       throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
     }
-    const destinations = new Set(Object.keys(bindings));
-    const projected = context?.secretEnvironment ?? [];
-    if (destinations.size === 0) {
-      if (projected.length > 0) {
-        throw new ConfigurationFailure(
-          "Secret delivery context has no matching AgentRevision binding.",
-        );
-      }
-      return [];
-    }
+    const entries = Object.entries(bindings);
     if (
-      typeof revision.secretDriverId !== "string" ||
-      revision.secretDriverId.trim().length === 0
+      entries.some(([, binding]) => binding.source.namespaceId !== revision.namespaceId) ||
+      (entries.some(([, binding]) => binding.source.kind === "secret") &&
+        !isNonEmptyString(revision.secretDriverId))
     ) {
-      throw new ConfigurationFailure("AgentRevision Secret Driver selection is missing.");
+      throw new ConfigurationFailure("AgentRevision Secret binding ownership is invalid.");
     }
-    if (projected.length !== destinations.size) {
-      throw new ConfigurationFailure(
-        "Secret delivery context does not match AgentRevision bindings.",
-      );
-    }
+    const projected = context?.secretEnvironment ?? [];
     const seen = new Set<string>();
     for (const projection of projected) {
       const binding = bindings[projection.name];
       if (
-        binding === undefined ||
+        binding?.source.kind !== "secret" ||
         seen.has(projection.name) ||
         projection.secretId !== binding.source.id ||
         projection.namespaceId !== binding.source.namespaceId ||
         projection.namespaceId !== revision.namespaceId ||
         projection.agentId !== revision.agentId ||
         projection.backendRef.namespaceName !== namespace.name ||
-        projection.backendRef.name.trim().length === 0 ||
-        projection.backendRef.key.trim().length === 0 ||
-        projection.backendRef.uid.trim().length === 0
+        !isNonEmptyString(projection.backendRef.name) ||
+        !isNonEmptyString(projection.backendRef.key) ||
+        !isNonEmptyString(projection.backendRef.uid)
       ) {
         throw new ConfigurationFailure(
           "Secret delivery context does not match AgentRevision bindings.",
         );
       }
       seen.add(projection.name);
+    }
+    const hasExported = entries.some(([name]) => !seen.has(name));
+    if (hasExported !== (context?.gatewayStartupCredentials !== undefined)) {
+      throw new ConfigurationFailure(
+        "Gateway startup credential context does not match AgentRevision bindings.",
+      );
+    }
+    if (hasExported && revision.harness.mode !== "dedicated") {
+      throw new ConfigurationFailure("Exported Gateway credentials require a dedicated Harness.");
     }
     return Object.freeze([...projected]);
   }
@@ -17526,8 +17591,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     harnessNamespace: KubernetesNamespaceAddress,
     gatewayNamespace: KubernetesNamespaceAddress,
     projections: readonly SecretEnvironmentProjection[],
-  ): Promise<readonly SecretEnvironmentProjection[]> {
-    // Dedicated Gateways consume canonical sources directly, even in a shared namespace.
+    context?: ComputeRevisionContext,
+  ): Promise<readonly GatewaySecretEnvironmentProjection[]> {
+    // Dedicated Gateways consume canonical Namespace Secrets directly, including Slack.
     if (revision.harness.mode === "dedicated") {
       for (const projection of projections) {
         const ref = projection.backendRef;
@@ -17548,14 +17614,175 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           throw new DependencyUnavailableError("Gateway credential source is unavailable.");
         }
       }
-      return projections;
+      const delivery = context?.gatewayStartupCredentials;
+      if (delivery === undefined) {
+        return projections;
+      }
+      const canonical = new Set(projections.map(({ name }) => name));
+      const exported = Object.entries(normalizeSecretBindings(revision.secretBindings)).filter(
+        ([name]) => !canonical.has(name),
+      );
+      const staged = await this.stageGatewayStartupCredentials(
+        revision,
+        gatewayNamespace,
+        exported,
+        delivery,
+      );
+      return [...projections, ...staged];
     }
-    // Embedded execution retains its existing delivery semantics, outside the dedicated trust boundary.
+    if (context?.gatewayStartupCredentials !== undefined) {
+      throw new ConfigurationFailure("Exported Gateway credentials require a dedicated Harness.");
+    }
+    // Embedded execution retains its preexisting copy semantics.
     return this.projectRuntimeSecrets(
       revision,
       harnessNamespace,
       this.gatewaySecretsName(revision.agentId, revision.id),
       projections,
+    );
+  }
+
+  private async stageGatewayStartupCredentials(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    exported: readonly (readonly [string, SecretBindings[string]])[],
+    delivery: NonNullable<ComputeRevisionContext["gatewayStartupCredentials"]>,
+  ): Promise<readonly GatewaySecretEnvironmentProjection[]> {
+    const ownership = this.pluginRuntimeOwnership(revision);
+    const name = this.gatewaySecretsName(revision.agentId, revision.id);
+    const existing = await this.getOwned("Secret", name, namespace, ownership);
+    const gateway = await this.getOwned(
+      "Deployment",
+      `gateway-${sha256Hex(revision.agentId, 12)}`,
+      namespace,
+      { namespaceId: revision.namespaceId, agentId: revision.agentId },
+    );
+    // An uncertain apply may have reached Kubernetes. Observe the exact workload before
+    // deciding whether an unlaunched candidate can replace its staged values.
+    const launched =
+      gateway?.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] === revision.id ||
+      (await this.revisionPods(revision, namespace, "gateway")).length > 0;
+    if (launched) {
+      if (existing === undefined || !this.validStagedGatewayCredentials(existing, exported)) {
+        throw new DependencyUnavailableError(
+          "The launched Gateway's staged credentials are unavailable.",
+        );
+      }
+    } else {
+      const resolved = await delivery.resolve(this.operationSignal());
+      let aggregateBytes = 0;
+      if (
+        Object.keys(resolved).length !== exported.length ||
+        exported.some(([destination, binding]) => {
+          const item = resolved[destination];
+          const bytes = typeof item?.value === "string" ? Buffer.byteLength(item.value) : 0;
+          aggregateBytes += bytes;
+          return (
+            item === undefined ||
+            typeof item.value !== "string" ||
+            bytes === 0 ||
+            bytes > MAX_RUNTIME_CREDENTIAL_BYTES ||
+            (binding.source.kind === "credential_source"
+              ? !isNonEmptyString(item.sourceVersion)
+              : item.sourceVersion !== undefined)
+          );
+        })
+      ) {
+        throw new ConfigurationFailure(
+          "Resolved Gateway credentials do not match the admitted bindings.",
+        );
+      }
+      if (aggregateBytes > MAX_KUBERNETES_SECRET_DATA_BYTES) {
+        throw new CredentialSourceRevisionError(
+          "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+          GATEWAY_SECRET_LIMIT_MESSAGE,
+        );
+      }
+      const data = Object.fromEntries(
+        exported.map(([destination]) => [
+          destination,
+          Buffer.from(resolved[destination]!.value).toString("base64"),
+        ]),
+      );
+      const versions = Object.fromEntries(
+        exported.flatMap(([destination, binding]) =>
+          binding.source.kind === "credential_source"
+            ? [[destination, resolved[destination]!.sourceVersion!]]
+            : [],
+        ),
+      );
+      const serializedVersions = JSON.stringify(versions);
+      if (
+        existing === undefined ||
+        !isDeepStrictEqual(existing.data, data) ||
+        existing.metadata.annotations?.[GATEWAY_SOURCE_VERSION_ANNOTATION] !== serializedVersions
+      ) {
+        const manifest = this.manifest("v1", "Secret", name, ownership, namespace);
+        const body = {
+          ...manifest,
+          metadata: {
+            ...manifest.metadata,
+            annotations: {
+              ...manifest.metadata.annotations,
+              [GATEWAY_SOURCE_VERSION_ANNOTATION]: serializedVersions,
+            },
+            ...(existing === undefined
+              ? {}
+              : {
+                  uid: required(existing.metadata.uid, "Gateway Secret UID"),
+                  resourceVersion: required(
+                    existing.metadata.resourceVersion,
+                    "Gateway Secret version",
+                  ),
+                }),
+          },
+          type: "Opaque",
+          data,
+        };
+        const clients = await this.clients(namespace.plane);
+        try {
+          await this.request(
+            () =>
+              existing === undefined
+                ? clients.core.createNamespacedSecret({ namespace: namespace.name, body })
+                : clients.core.replaceNamespacedSecret({ namespace: namespace.name, name, body }),
+            { mutating: true },
+          );
+        } catch (error) {
+          this.operationSignal().throwIfAborted();
+          throw privateWriteFailure("Gateway credential delivery is unavailable.", error);
+        }
+      }
+    }
+    return exported.map(([destination]) => ({
+      name: destination,
+      backendRef: { name, key: destination },
+    }));
+  }
+
+  private validStagedGatewayCredentials(
+    secret: ManagedKubernetesObject<"Secret">,
+    exported: readonly (readonly [string, SecretBindings[string]])[],
+  ): boolean {
+    if (secret.metadata.deletionTimestamp !== undefined || secret.type !== "Opaque") {
+      return false;
+    }
+    let versions: unknown;
+    try {
+      versions = JSON.parse(secret.metadata.annotations?.[GATEWAY_SOURCE_VERSION_ANNOTATION] ?? "");
+    } catch {
+      return false;
+    }
+    const sourceDestinations = exported.filter(
+      ([, binding]) => binding.source.kind === "credential_source",
+    );
+    const versionMap = asRecord(versions);
+    return (
+      versionMap !== undefined &&
+      Object.keys(versionMap).length === sourceDestinations.length &&
+      sourceDestinations.every(([destination]) => isNonEmptyString(versionMap[destination])) &&
+      Object.keys(secret.data ?? {}).length === exported.length &&
+      exported.every(([destination]) => isNonEmptyString(secret.data?.[destination]))
     );
   }
 
@@ -18616,12 +18843,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   ): Promise<void> {
     const clients = await this.clients(namespace.plane);
     const existing = await this.getOwned(desired.kind, desired.metadata.name, namespace, ownership);
-    if (precondition !== undefined && desired.kind !== "Service") {
+    if (
+      (precondition?.serviceSelector !== undefined && desired.kind !== "Service") ||
+      (precondition?.gatewayStartupCredentials !== undefined && desired.kind !== "Deployment")
+    ) {
       throw new ConfigurationFailure(
         `Unsupported Kubernetes reconcile precondition for ${desired.kind}.`,
       );
     }
-    if (existing === undefined && precondition !== undefined) {
+    if (existing === undefined && precondition?.serviceSelector !== undefined) {
       return;
     }
     if (existing !== undefined) {
@@ -18713,6 +18943,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             );
             return;
           case "Deployment":
+            await precondition?.gatewayStartupCredentials?.authorize(this.operationSignal());
             await clients.apps.patchNamespacedDeployment(
               { ...request, namespace: required(namespace.name, "Deployment namespace") },
               this.patchOptions,

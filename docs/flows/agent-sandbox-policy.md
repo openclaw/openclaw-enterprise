@@ -53,7 +53,7 @@ and delegates pre-body authorization through `OpenClawController` to
 `packages/occ/src/sandbox-policy.ts`. Save requires Agent `manage_policy` and
 SandboxPolicy `update`; apply also requires policy `read`. Admission repeats checks.
 
-`SandboxNetworkGrantsSchema` and the [SQL validator](../../migrations/0099_sandbox_policy_capacity.sql)
+`SandboxNetworkGrantsSchema` and the [SQL validator](../../migrations/0100_sandbox_policy_capacity.sql)
 limit ceilings and additions to 16,384 grants. `createSandboxNetworkGrantChecker`
 indexes transport coverage; restricted requests retain full matching. Cached union
 intervals stay within the compiled ceiling count. See [limits](../reference/sandbox-policies.md).

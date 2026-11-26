@@ -88,6 +88,7 @@ import type {
   ResourceKind,
   SandboxDriver,
   SecretBindings,
+  TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import { isName, NAME_RULE, normalizeLoggingLevel } from "@openclaw-enterprise/contracts";
 import { immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -174,6 +175,11 @@ export interface ControllerOptions {
       ) => Promise<void>)
     | undefined;
   readonly preparedTokens?: TokenService | undefined;
+  /** Code-only qualification of the selected Gateway Source delivery composition. */
+  readonly gatewayStartupSourceDelivery?: (
+    compute: ComputeDriver,
+    owner: TokenServiceDriver,
+  ) => boolean;
   readonly modelCredentialSourcePresets?: InstallationCapabilities["modelCredentialSourcePresets"];
   readonly modelCredentialPreset?: (input: {
     readonly presetId: string;
@@ -336,7 +342,11 @@ function createComputeConfigurationPolicy(
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name) => Object.hasOwn(secretBindings, name),
+        (name, credentialInput, provider) =>
+          Object.hasOwn(secretBindings, name) &&
+          (provider !== "slack" ||
+            !credentialInput ||
+            secretBindings[name]?.source.kind === "secret"),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -740,6 +750,8 @@ export function createControllerComposition(
     validateComputeConfiguration,
     requireBundledChannelBindings,
     ownedSecretDriver: secretOperations.ownedSecretDriver,
+    ownedTokenServiceDriver: (instanceId) =>
+      managedCredentialSources.ownedTokenServiceDriver(instanceId),
     nextIdentifier: resourceValues.nextIdentifier,
     timestamp: resourceValues.timestamp,
   });
@@ -1133,6 +1145,7 @@ export function createControllerComposition(
     backendId: (requested) => resolveAgentBackendId(backendMap, requested),
     configurationDriver: configurationOperations.selectedDriver,
     configuration: configurationOperations,
+    gatewayStartupSourceDelivery: options.gatewayStartupSourceDelivery,
     modelPolicyAgent,
     modelCredentialPreset: options.modelCredentialPreset,
     supportsCredentialDeployment: options.supportsCredentialDeployment,

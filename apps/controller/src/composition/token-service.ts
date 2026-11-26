@@ -6,7 +6,9 @@ import {
   credentialSourceMatchesSnapshot,
   isNativeStagedRepositoryRevision,
   revisionCredentialSourceSnapshot,
+  type ComputeDriver,
   type PrivateSecretStore,
+  type TokenServiceDriver,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialDeliveryFailedError,
@@ -19,6 +21,7 @@ import type { FastifyInstance } from "fastify";
 import { OAuthAccountTokens } from "../backends/token-service/oauth-connection.ts";
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
 import { OCCTokenServiceDriver } from "../drivers/token-service/occ.ts";
+import { KubernetesComputeDriver } from "../drivers/compute/kubernetes/index.ts";
 import { refreshCodexOAuthGrant } from "../drivers/token-service/codex-device-authorization.ts";
 import type { GitHubAppIssuerOptions } from "../drivers/token-service/github-app-issuer.ts";
 import { OpenShellTokenServiceDriver } from "../drivers/token-service/openshell.ts";
@@ -26,6 +29,20 @@ import type { InstallationRuntimeDrivers } from "./installation-config.ts";
 import { emitOccLogEvent, type OccLogger } from "../logging.ts";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Current composition qualification; other owners and Compute transports require separate proof. */
+export function gatewayStartupSourceDelivery(
+  drivers: InstallationRuntimeDrivers | undefined,
+): (compute: ComputeDriver, owner: TokenServiceDriver) => boolean {
+  return (compute, owner) =>
+    drivers !== undefined &&
+    compute === drivers.computeDriver &&
+    compute instanceof KubernetesComputeDriver &&
+    owner instanceof OCCTokenServiceDriver &&
+    owner.id === drivers.installation.drivers.token_service?.id &&
+    drivers.installation.drivers.token_service?.implementation ===
+      OCCTokenServiceDriver.implementation;
+}
 
 /** The marker belongs to the selected Secret Driver's private store ownership. */
 async function credentialStoreIdentity(
