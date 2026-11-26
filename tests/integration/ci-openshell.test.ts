@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 import { asRecord } from "../../packages/utils/src/index.ts";
 import { createOccLogger, resemblesCredential } from "../../apps/controller/src/logging.ts";
@@ -931,10 +932,26 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   prependPath(t, directory);
   const { requestCodexTurnFromGatewayPod, readCodexThreadFromGatewayPod } =
     createOpenShellKubernetesFixture(localProbeOptions);
+  const commandOutput = "item/commandExecution/outputDelta";
+  const commandApproval = "item/commandExecution/requestApproval";
 
   for (const event of [
     "late result",
     "orphan output before turn ends",
+    "in-progress completion before turn ends",
+    "blank command type before turn ends",
+    "orphan output after turn ends",
+    "conflicting output IDs for pending command",
+    "conflicting output IDs for settled command",
+    "output contradicts pending command",
+    "output contradicts settled command",
+    "approval notification after turn ends",
+    "conflicting approval command after turn ends",
+    "conflicting approval IDs and command",
+    "blank command type after turn ends",
+    "untyped item without a command after turn ends",
+    "start without thread ID after turn ends",
+    "completion with blank turn ID after turn ends",
     "foreign completion before turn ends",
     "completion without turn ID",
     "start without thread ID",
@@ -951,12 +968,77 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     const turnId = "probe-turn";
     const nonce = "probe-command";
     const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
+    const contradictoryCompletion = event === "in-progress completion before turn ends";
+    const blankCommandType = event === "blank command type before turn ends";
+    const malformedEarlyCommand = contradictoryCompletion || blankCommandType;
+    type LateEvidence = {
+      method: typeof commandOutput | typeof commandApproval;
+      omitIdentities?: boolean;
+      params: {
+        itemId: string;
+        delta?: string;
+        command?: string;
+        item?: { id: string; command?: string };
+      };
+    };
+    const lateEvidenceByEvent: Partial<Record<typeof event, LateEvidence>> = {
+      "orphan output after turn ends": {
+        method: commandOutput,
+        params: { itemId: "orphan", delta: "partial output" },
+      },
+      "conflicting output IDs for pending command": {
+        method: commandOutput,
+        params: { itemId: "original", item: { id: "orphan" }, delta: "partial output" },
+      },
+      "conflicting output IDs for settled command": {
+        method: commandOutput,
+        params: { itemId: "extra", item: { id: "orphan" }, delta: "partial output" },
+      },
+      "output contradicts pending command": {
+        method: commandOutput,
+        omitIdentities: true,
+        params: {
+          itemId: "original",
+          command: nonce,
+          item: { id: "original", command: "setup" },
+          delta: "partial output",
+        },
+      },
+      "output contradicts settled command": {
+        method: commandOutput,
+        omitIdentities: true,
+        params: {
+          itemId: "extra",
+          command: "setup",
+          item: { id: "extra", command: nonce },
+          delta: "partial output",
+        },
+      },
+      "approval notification after turn ends": {
+        method: commandApproval,
+        params: { itemId: "orphan" },
+      },
+      "conflicting approval command after turn ends": {
+        method: commandApproval,
+        omitIdentities: true,
+        params: { itemId: "original", command: "setup", item: { id: "original", command: nonce } },
+      },
+      "conflicting approval IDs and command": {
+        method: commandApproval,
+        params: { itemId: "original", command: nonce, item: { id: "orphan", command: nonce } },
+      },
+    };
+    const evidence = lateEvidenceByEvent[event];
+    let peerTurns = 0;
     peer.once("connection", (socket, stream) => {
       socket.on("message", (data) => {
         const { method, id } = readPeerMessage(data);
         const send = (message: object) => socket.send(JSON.stringify(message));
-        // The approval response is checked below.
-        if (method === undefined || method === "initialized") {
+        if (method === undefined) {
+          assert.equal(event, "late result", "only the identified approval may receive a response");
+          return;
+        }
+        if (method === "initialized") {
           return;
         }
         if (method === "initialize") {
@@ -969,6 +1051,8 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           });
         }
         assert.equal(method, "turn/start");
+        peerTurns += 1;
+        assert.equal(peerTurns, 1, event);
         const turn = { id: turnId, status: "inProgress" };
         // Deliver the response and notifications in one write. The client can receive
         // them in one socket read, before its turn/start await continuation runs.
@@ -976,26 +1060,24 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         send({ id, result: { turn } });
         const item = {
           id: "original",
-          type: "commandExecution",
-          command: unexpected ? "setup" : nonce,
+          type: blankCommandType ? " " : "commandExecution",
+          command: unexpected && !malformedEarlyCommand ? "setup" : nonce,
           status: "inProgress",
         };
-        if (event === "orphan output before turn ends" || event === "late result") {
-          // Only the positive control names a provably different turn.
+        const orphanOutput = (outputTurnId: string) =>
           send({
-            method: "item/commandExecution/outputDelta",
-            params: {
-              threadId,
-              turnId: event === "late result" ? "other-turn" : turnId,
-              itemId: "orphan",
-              delta: "partial output",
-            },
+            method: commandOutput,
+            params: { threadId, turnId: outputTurnId, itemId: "orphan", delta: "partial output" },
           });
+        if (event === "orphan output before turn ends") {
+          orphanOutput(turnId);
+        } else if (event === "late result") {
+          orphanOutput("other-turn");
         }
         if (event !== "orphan output before turn ends") {
           send({ method: "item/started", params: { threadId, turnId, item } });
         }
-        const extra = { ...item, id: "extra" };
+        const extra = { ...item, id: "extra", command: "setup" };
         const unbound: Partial<
           Record<typeof event, { turnId?: string | undefined; threadId?: string | undefined }>
         > = {
@@ -1018,15 +1100,29 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
             },
           });
         }
-        if (event === "duplicate completion") {
+        const settleExtra = event === "late result" || evidence?.params.itemId === extra.id;
+        if (event === "duplicate completion" || settleExtra) {
           send({ method: "item/started", params: { threadId, turnId, item: extra } });
+        }
+        if (settleExtra) {
+          send({
+            method: "item/completed",
+            params: { threadId, turnId, item: { ...extra, status: "completed", exitCode: 0 } },
+          });
+        }
+        if (contradictoryCompletion) {
+          // The matching nonce and exit 1 previously made this look like a denial.
+          send({
+            method: "item/completed",
+            params: { threadId, turnId, item: { ...item, exitCode: 1 } },
+          });
         }
         send({
           method: "turn/completed",
           params: { threadId, turn: { ...turn, status: "completed", error: null } },
         });
         stream.uncork();
-        if (event === "orphan output before turn ends") {
+        if (event === "orphan output before turn ends" || malformedEarlyCommand) {
           return;
         }
         const setupSucceeded = unexpected && !unboundScope;
@@ -1043,19 +1139,78 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         ) => send({ method: "item/completed", params: completion });
         if (event === "late result") {
           // Neither an unrelated completion nor output from the command is its terminal.
-          completed({ ...params, turnId: "other-turn" });
-          completed({ ...params, threadId: "other-thread" });
+          completed({ ...params, turnId: "other-turn", item: { ...terminal, exitCode: 31 } });
+          completed({ ...params, threadId: "other-thread", item: { ...terminal, exitCode: 32 } });
           send({
-            method: "item/commandExecution/outputDelta",
+            method: "item/started",
+            params: { threadId: "other-thread", turnId, item: extra },
+          });
+          send({
+            method: "item/started",
+            params: { threadId, turnId: "other-turn", item: { ...extra, type: " " } },
+          });
+          send({
+            method: "item/completed",
+            params: { threadId, turnId, item: { id: "reasoning", type: "reasoning" } },
+          });
+          orphanOutput("other-turn");
+          send({
+            method: commandOutput,
             params: { threadId, turnId, itemId: item.id, delta: "output" },
           });
-          send({ id: "approval", method: "item/commandExecution/requestApproval", params });
+          send({
+            method: commandOutput,
+            params: {
+              threadId,
+              turnId,
+              itemId: item.id,
+              command: item.command,
+              item: { id: item.id, command: item.command },
+              delta: "output",
+            },
+          });
+          send({
+            method: commandApproval,
+            params: { threadId, turnId, itemId: item.id, command: item.command },
+          });
+          send({
+            method: commandApproval,
+            params: { threadId, turnId, itemId: extra.id, command: extra.command },
+          });
+          send({ id: "approval", method: commandApproval, params });
           socket.once("message", (data) => {
             const { id, result } = readPeerMessage(data);
             assert.equal(id, "approval");
             assert.deepEqual(result, { decision: "decline" });
             completed(params);
           });
+        } else if (evidence !== undefined) {
+          // The successful setup completion alone would allow another probe attempt.
+          send({ method: evidence.method, params: { threadId, turnId, ...evidence.params } });
+          completed(params);
+        } else if (
+          event === "blank command type after turn ends" ||
+          event === "untyped item without a command after turn ends"
+        ) {
+          const malformed =
+            event === "blank command type after turn ends"
+              ? { ...extra, type: " ", command: nonce }
+              : { id: extra.id, type: " " };
+          send({ method: "item/started", params: { threadId, turnId, item: malformed } });
+          completed(params);
+        } else if (event === "start without thread ID after turn ends") {
+          send({
+            method: "item/started",
+            params: { turnId, item: { ...extra, command: nonce } },
+          });
+          completed(params);
+        } else if (event === "completion with blank turn ID after turn ends") {
+          completed({
+            ...params,
+            turnId: " ",
+            item: { ...terminal, id: extra.id, command: nonce },
+          });
+          completed(params);
         } else if (event === "close") {
           socket.close();
         } else if (unboundScope) {
@@ -1090,17 +1245,58 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     });
 
     const attempts: number[] = [];
+    let identityOnly = false;
+    let retainedLateOutput = false;
     const probe = observeSandboxProbe({
       nonce,
       traceSecrets: [],
       async requestTurn(attempt) {
         attempts.push(attempt);
         assert.equal(attempt, 1, event);
-        return observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe));
+        const result = observedTurn(await requestCodexTurnFromGatewayPod(gatewayProbe));
+        if (event === "late result") {
+          const terminalIndex = result.items.findIndex(({ method }) => method === "turn/completed");
+          retainedLateOutput = result.items
+            .slice(terminalIndex + 1)
+            .some(({ method }) => method === commandOutput);
+        } else if (malformedEarlyCommand) {
+          const startIndex = result.items.findIndex(
+            ({ method, params }) => method === "item/started" && params?.item?.command === nonce,
+          );
+          const completionIndex = result.items.findIndex(
+            ({ method, params }) => method === "item/completed" && params?.item?.command === nonce,
+          );
+          const terminalIndex = result.items.findIndex(({ method }) => method === "turn/completed");
+          assert.ok(startIndex >= 0 && startIndex < terminalIndex, event);
+          const started = result.items[startIndex]?.params?.item;
+          assert.equal(started?.id, "original", event);
+          assert.equal(started?.type, blankCommandType ? " " : "commandExecution", event);
+          if (contradictoryCompletion) {
+            assert.ok(startIndex < completionIndex && completionIndex < terminalIndex, event);
+            assert.deepEqual(result.items[completionIndex]?.params?.item, {
+              ...started,
+              status: "inProgress",
+              exitCode: 1,
+            });
+          } else {
+            assert.equal(completionIndex, -1, event);
+          }
+        } else if (evidence !== undefined) {
+          const retained = result.items.filter(({ method }) => method === evidence.method);
+          const { itemId, item } = evidence.params;
+          const identities = evidence.omitIdentities
+            ? {}
+            : { itemId, ...(item && { item: { id: item.id } }) };
+          identityOnly = isDeepStrictEqual(retained, [
+            { method: evidence.method, params: { threadId, turnId, ...identities } },
+          ]);
+        }
+        return result;
       },
     });
     if (event === "late result") {
       assert.equal((await probe).run?.exitCode, 23, "retain the command's actual nonzero result");
+      assert.equal(retainedLateOutput, false, "omit matched and foreign late output");
     } else if (event === "orphan output before turn ends") {
       // The transport returned a completed turn. Its retained delta must stop the observer.
       await assert.rejects(
@@ -1108,10 +1304,33 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         /OpenShell probe outcome is unknown;.*item\/commandExecution\/outputDelta.*turn\/completed/,
         event,
       );
+    } else if (malformedEarlyCommand) {
+      await assert.rejects(
+        probe,
+        { message: /^OpenShell probe outcome is unknown; not sending another turn\. Attempt 1:/ },
+        event,
+      );
+    } else if (evidence !== undefined) {
+      const error = await probeFailure(probe);
+      const lateEvidence = new RegExp(
+        `^OpenShell probe outcome is unknown;.*turn/completed completed.*${evidence.method}.*item/completed commandExecution status=completed exitCode=0`,
+      );
+      assert.ok(
+        lateEvidence.test(error.message),
+        `${event}: expected late evidence before setup completion (attempts ${attempts.join(", ")})`,
+      );
+      assert.equal(identityOnly, true, `${event}: expected identity-only evidence`);
     } else {
-      await assert.rejects(probe, /Codex command outcome is unknown/, event);
+      const error = await kubectlFailure(probe);
+      assert.equal(error.code, 1, event);
+      assert.ok(
+        error.stderr.includes("Codex command outcome is unknown; not sending another turn"),
+        `${event}: expected the client to refuse the turn (attempts ${attempts.join(", ")})`,
+      );
+      assert.ok(!error.stderr.includes(nonce), `${event}: unexpected command in stderr`);
     }
     assert.deepEqual(attempts, [1], event);
+    assert.equal(peerTurns, 1, event);
   }
 
   await t.test("thread reads ignore unrelated notifications without starting work", async () => {
@@ -1400,7 +1619,11 @@ test("a turn the model answered at capacity runs again only for its own final er
     socket.on("message", (data) => {
       const { method, id } = readPeerMessage(data);
       const send = (message: object) => socket.send(JSON.stringify(message));
-      if (method === undefined || method === "initialized") {
+      if (method === undefined) {
+        assert.equal(id, "approval", "only the identified approval may receive a response");
+        return;
+      }
+      if (method === "initialized") {
         return;
       }
       if (scripts[0] === `stall ${method}`) {
@@ -1457,6 +1680,11 @@ test("a turn the model answered at capacity runs again only for its own final er
         method: "turn/completed",
         params: { threadId, turn: { ...turn, status: "completed" } },
       };
+      // As the app server sends them: an approval request and output name the item, not carry it.
+      const approval = {
+        method: "item/commandExecution/requestApproval",
+        params: { ...at, itemId: command.id, command: command.command },
+      };
       const eventsByScript: Record<string, readonly (object | "close")[]> = {
         capacity: [atCapacity(at)],
         // Our own turn's final error before any action, but not the at-capacity answer.
@@ -1485,15 +1713,8 @@ test("a turn the model answered at capacity runs again only for its own final er
         "capacity naming no turn": [atCapacity({})],
         "capacity without willRetry": [atCapacity(at, { willRetry: undefined })],
         "command completed": [started, completed("completed", 0), atCapacity(at)],
-        // As the app server sends them: an approval request and output name the item, not carry it.
-        approval: [
-          {
-            id: "approval",
-            method: "item/commandExecution/requestApproval",
-            params: { ...at, itemId: command.id, command: command.command },
-          },
-          atCapacity(at),
-        ],
+        approval: [{ id: "approval", ...approval }, atCapacity(at)],
+        "approval notification": [approval, atCapacity(at)],
         output: [
           {
             method: "item/commandExecution/outputDelta",
@@ -1589,13 +1810,20 @@ test("a turn the model answered at capacity runs again only for its own final er
     "command completed",
     "file change",
     "approval",
+    "approval notification",
     "output",
   ]) {
     const error = await kubectlFailure(turn([script, "reply"]));
     assert.equal(threadStarts, 1, script);
     assert.deepEqual(sleeps, [], script);
     assert.equal(error.message.split("\n")[0], notRetried, script);
-    assert.equal(summaryOf(error).retrySafe, false, script);
+    const summary = summaryOf(error);
+    assert.equal(summary.retrySafe, false, script);
+    if (script === "approval notification") {
+      assert.equal(error.code, 1, script);
+      assert.equal(summary.actionSeen, true, script);
+      assert.equal(summary.approvalRequests, 0, script);
+    }
   }
 
   // A command that ends within the grace after the final error: its result is kept, the turn

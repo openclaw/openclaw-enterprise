@@ -86,7 +86,13 @@ import {
 } from "../helpers/kubernetes-real.ts";
 import {
   assertGatewayPolicyRunSucceeded,
+  canRetrySkippedBackendTurn,
   hasCachedRefreshToken,
+  matchesShellCommand,
+  onlyMatchingCommand,
+  selectBackendCommand,
+  settledPolicyCommands,
+  summarizeOtherBackendCommands,
   openShellStaleRelay,
   openShellSettingsChange,
   observeSandboxProbe,
@@ -130,10 +136,11 @@ function turnMessages(turn) {
 }
 
 /** @param {unknown} turn */
-function completedTurnItems(turn) {
+function completedEchoCommands(turn) {
   return turnMessages(turn)
     .filter(({ method }) => method === "item/completed")
-    .map(({ params }) => record(params).item);
+    .map(({ params }) => record(record(params).item))
+    .filter(({ type }) => type === "commandExecution");
 }
 
 const executeFile = promisify(execFile);
@@ -3701,9 +3708,7 @@ async function assertRefreshCredentialSources(topology) {
       new RegExp(nonce),
       "the model source must keep working",
     );
-    const commands = completedTurnItems(result)
-      .map(record)
-      .filter(({ type }) => type === "commandExecution");
+    const commands = completedEchoCommands(result);
     // Keep unparseable output redacted and bounded (finding 1883). It cannot prove token loss.
     const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
@@ -4018,9 +4023,7 @@ async function assertNonModelCredentialSource(topology) {
       new RegExp(nonce),
       "the model source must keep working",
     );
-    const commands = completedTurnItems(result)
-      .map(record)
-      .filter(({ type }) => type === "commandExecution");
+    const commands = completedEchoCommands(result);
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
     // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
@@ -6338,20 +6341,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
   });
-  const completedCommands = completedTurnItems(result)
-    .map((item) => {
-      assert.ok(item != null, "expected the completed Codex item");
-      return record(item);
-    })
-    .filter(({ type }) => type === "commandExecution");
-  // The Harness records either the command itself or its shell invocation.
+  const completedCommands = settledPolicyCommands(result);
   const findCurl = (expected) =>
-    completedCommands.find(
-      ({ command }) =>
-        command === expected ||
-        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(String(command))?.[2] ===
-          expected,
-    );
+    onlyMatchingCommand(completedCommands, (command) => matchesShellCommand(command, expected));
   const approvedCommand = findCurl(approvedCurl);
   const deniedCommand = findCurl(deniedCurl);
   const workspaceCommand = completedCommands.find(({ command }) =>
@@ -6360,11 +6352,11 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const approvedPathCommand = completedCommands.find(({ command }) =>
     String(command).includes(approvedRead),
   );
-  const readonlyCommand = completedCommands.find(({ command }) =>
-    String(command).includes(`touch ${readonlyPath}`),
+  const readonlyCommand = onlyMatchingCommand(completedCommands, (command) =>
+    command.includes(`touch ${readonlyPath}`),
   );
-  const escapedCommand = completedCommands.find(({ command }) =>
-    String(command).includes(escapedPath),
+  const escapedCommand = onlyMatchingCommand(completedCommands, (command) =>
+    command.includes(escapedPath),
   );
   assert.ok(workspaceCommand, "the real Codex Harness must attempt an approved workspace write.");
   assert.ok(approvedPathCommand, "the real Codex Harness must read its projected config path.");
@@ -6400,88 +6392,40 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           `which is expected to fail: ${deniedConfigCommand}. ` +
           `Then reply with exactly ${backendNonce}.`,
       });
-    /** @param {unknown} turn */
-    const startedCommands = (turn) =>
-      turnMessages(turn).filter(
-        ({ method, params }) =>
-          method === "item/started" && record(record(params).item).type === "commandExecution",
-      ).length;
-    /** @param {unknown} result */
-    const hasCommandActivity = (result) => {
-      const items = turnMessages(result);
-      // Ignore a command delta only when it explicitly belongs to another thread or turn.
-      const terminal = items.find(({ method }) => method === "turn/completed");
-      assert.ok(terminal, "expected a completed Codex turn");
-      const { threadId, turn } = record(terminal.params);
-      const couldMatchId = (id, expected) => typeof id !== "string" || id === "" || id === expected;
-      return items.some(({ method, params }) => {
-        const data = record(params);
-        if (method === "item/commandExecution/outputDelta") {
-          return (
-            couldMatchId(data.threadId, threadId) && couldMatchId(data.turnId, record(turn).id)
-          );
-        }
-        return (
-          method === "item/commandExecution/requestApproval" ||
-          ((method === "item/started" || method === "item/completed") &&
-            record(data.item).type === "commandExecution")
-        );
-      });
-    };
-    let backendTurn = record(await requestBackendTurn());
+    let backendTurn = observedTurn(await requestBackendTurn());
     const skippedTurns = [];
     // Ask once more only when the turn showed no command activity at all. A rewritten,
     // declined, approval-gated or unsettled command is still judged below.
-    if (!hasCommandActivity(backendTurn)) {
+    if (canRetrySkippedBackendTurn(backendTurn.items)) {
       skippedTurns.push({
-        items: turnMessages(backendTurn).length,
+        items: backendTurn.items.length,
         replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
       });
-      backendTurn = record(await requestBackendTurn());
+      backendTurn = observedTurn(await requestBackendTurn());
     }
-    const backendCommands = completedTurnItems(backendTurn)
-      .map((item) => {
-        assert.ok(item != null, "expected the completed Codex item");
-        return record(item);
-      })
-      .filter(({ type }) => type === "commandExecution");
-    const deniedConfigRequest = backendCommands.find(({ command }) =>
-      String(command).includes(deniedBackend),
-    );
-    // How the turn went, by label only: a missing request then shows whether the model
-    // skipped it, rewrote it, or asked for approval instead.
-    const commandSummary = {
-      skippedTurns,
-      started: startedCommands(backendTurn),
-      completed: backendCommands.map((command) => ({
-        label:
-          command === deniedConfigRequest
-            ? "codex-backend"
-            : /chatgpt_base_url|features list|backend-api/.test(String(command.command))
-              ? "codex-rewritten"
-              : "other",
-        status: command.status,
-        exitCode: command.exitCode,
-        durationMs: command.durationMs ?? null,
-      })),
-      approvalRequests: turnMessages(backendTurn).filter(
-        ({ method }) => method === "item/commandExecution/requestApproval",
-      ).length,
-      replyHasNonce: new RegExp(backendNonce).test(String(backendTurn.assistant)),
-    };
-    assert.ok(
-      deniedConfigRequest,
-      `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(commandSummary)}.`,
-    );
+    const backendCommands = settledPolicyCommands(backendTurn);
+    const deniedConfigRequest = selectBackendCommand(backendCommands, deniedBackend);
+    if (!deniedConfigRequest) {
+      const { items, assistant } = backendTurn;
+      const summary = {
+        skippedTurns,
+        started: items.filter(
+          ({ method, params }) =>
+            method === "item/started" && params?.item?.type === "commandExecution",
+        ).length,
+        completed: summarizeOtherBackendCommands(backendCommands),
+        approvalRequests: items.filter(
+          ({ method }) => method === "item/commandExecution/requestApproval",
+        ).length,
+        replyHasNonce: new RegExp(backendNonce).test(String(assistant)),
+      };
+      assert.fail(
+        `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(summary)}.`,
+      );
+    }
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${turnMessages(
-        backendTurn,
-      ).some(
-        ({ method, params }) =>
-          method === "item/commandExecution/requestApproval" &&
-          record(params).itemId === deniedConfigRequest.id,
-      )}).`,
+      "the forbidden backend request must execute.",
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
     // The network supervisor runs outside the workload Pod. Match its boundary pair

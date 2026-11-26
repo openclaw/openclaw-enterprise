@@ -4,10 +4,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.ts";
 import {
+  canRetrySkippedBackendTurn,
   codexTurnTrace,
   hasCachedRefreshToken,
+  matchesShellCommand,
   observeSandboxProbe,
   observedTurn,
+  onlyMatchingCommand,
+  selectBackendCommand,
+  settledPolicyCommands,
+  summarizeOtherBackendCommands,
   podFailureDiagnostic,
   tokenEchoDigest,
   tokenEchoReply,
@@ -692,12 +698,147 @@ test("a long turn trace keeps its start and end", () => {
   assert.equal(codexTurnTrace(undefined), "");
 });
 
+test("OpenShell policy evidence requires a single matching command completion", () => {
+  const expected = "curl https://example.invalid";
+  const wrapped = { command: `/bin/bash -lc '${expected}'`, exitCode: 7 };
+  const prefix = { command: `${expected}/other`, exitCode: 0 };
+  const exact = (command: string) => matchesShellCommand(command, expected);
+  assert.equal(onlyMatchingCommand([prefix, wrapped], exact), wrapped);
+  assert.equal(onlyMatchingCommand([{ command: expected }], exact)?.command, expected);
+  const compound = { command: `sh -c '${expected}' && true` };
+  assert.equal(onlyMatchingCommand([compound], exact), undefined);
+  const laterSuccess = { command: expected, exitCode: 0 };
+  assert.throws(() => onlyMatchingCommand([wrapped, laterSuccess], exact), {
+    message: "multiple matching command completions",
+  });
+  assert.throws(() => onlyMatchingCommand([laterSuccess, laterSuccess], exact), {
+    message: "multiple matching command completions",
+  });
+});
+
+test("OpenShell backend evidence accepts one settled denial even when it follows turn completion", () => {
+  const backend = "https://example.invalid/backend/unique";
+  const command = `probe --backend=${backend}`;
+  const terminal = { method: "turn/completed" };
+  const item = { type: "commandExecution", command, id: "first" };
+  const start = { method: "item/started", params: { item } };
+  const completion = (id: string, exitCode: number, fields: Record<string, unknown> = {}) => ({
+    method: "item/completed",
+    params: { item: { ...item, id, exitCode, ...fields } },
+  });
+  const denied = completion("first", 7);
+  const success = completion("second", 0);
+  const select = (items: unknown[]) =>
+    selectBackendCommand(settledPolicyCommands({ items }), backend);
+  assert.equal(select([start, terminal, denied]), denied.params.item);
+  assert.equal(select([start, denied, terminal]), denied.params.item);
+  for (const status of ["completed", "failed"]) {
+    const finished = completion("first", 7, { status });
+    assert.equal(select([start, finished, terminal]), finished.params.item);
+  }
+  for (const pair of [
+    [denied, success],
+    [success, denied],
+    [denied, completion("second", 7)],
+  ]) {
+    assert.throws(() => select([...pair, terminal]), {
+      message: "multiple matching command completions",
+    });
+  }
+  const approval = {
+    method: "item/commandExecution/requestApproval",
+    params: { itemId: item.id, command: "different" },
+  };
+  for (const items of [
+    [start, terminal],
+    [approval, denied, terminal],
+    ...["inProgress", "declined", null, 0].map((status) => [
+      start,
+      completion("first", 7, { status }),
+      terminal,
+    ]),
+  ]) {
+    assert.throws(() => select(items), {
+      message: "OpenShell policy command evidence is unsettled",
+    });
+    assert.equal(canRetrySkippedBackendTurn(items), false);
+  }
+
+  // Missing-backend diagnostics describe other commands without forwarding their raw metadata.
+  const durations = [0, 1.5, -1, Infinity, NaN, "5", { text: syntheticSecret }];
+  const unrelated = durations.map((durationMs, index) =>
+    completion(String(index), 7, { command: syntheticSecret, durationMs, status: "failed" }),
+  );
+  assert.deepEqual(
+    summarizeOtherBackendCommands(settledPolicyCommands({ items: [...unrelated, terminal] })),
+    [0, 1.5, null, null, null, null, null].map((durationMs) => ({
+      label: "other",
+      status: "failed",
+      exitCode: 7,
+      durationMs,
+    })),
+  );
+});
+
+test("OpenShell retries a skipped backend turn only when absence of command activity is known", () => {
+  const terminal = {
+    method: "turn/completed",
+    params: { threadId: "thread", turn: { id: "turn" } },
+  };
+  const output = (threadId: string, turnId: string) => ({
+    method: "item/commandExecution/outputDelta",
+    params: { threadId, turnId },
+  });
+  assert.throws(() => canRetrySkippedBackendTurn([]), /expected a completed Codex turn/);
+  assert.ok(canRetrySkippedBackendTurn([terminal]));
+  assert.ok(
+    canRetrySkippedBackendTurn([
+      { method: "item/completed", params: { item: { type: "agentMessage", text: "done" } } },
+      terminal,
+    ]),
+  );
+  assert.ok(canRetrySkippedBackendTurn([output("thread", "elsewhere"), terminal]));
+  assert.ok(canRetrySkippedBackendTurn([output("elsewhere", "turn"), terminal]));
+  const unscopedTerminal = { method: "turn/completed", params: { turn: { status: "completed" } } };
+  assert.equal(canRetrySkippedBackendTurn([output("thread", "turn"), unscopedTerminal]), false);
+  for (const method of ["item/started", "item/completed"]) {
+    const command = { id: "cmd", command: "pwd", exitCode: 0 };
+    for (const item of [
+      {},
+      { type: "" },
+      { type: " ", ...command },
+      { type: 1 },
+      { type: "commandExecution ", ...command },
+      { type: " agentMessage" },
+      { type: "agentMessage", ...command },
+    ]) {
+      const items = [{ method, params: { item } }, terminal];
+      assert.equal(canRetrySkippedBackendTurn(items), false);
+      assert.throws(() => settledPolicyCommands({ items }), {
+        message: "OpenShell policy command evidence is unsettled",
+      });
+    }
+  }
+  for (const activity of [
+    output("thread", "turn"),
+    output("thread", " "),
+    { method: "item/completed" },
+    { method: "item/started", params: { command: "pwd", item: { type: "agentMessage" } } },
+    output(" ", "turn"),
+    { method: "item/commandExecution/requestApproval", params: { turnId: "elsewhere" } },
+    { method: "item/started", params: { item: { type: "commandExecution" } } },
+    { method: "item/completed", params: { item: { type: "commandExecution" } } },
+  ]) {
+    assert.equal(canRetrySkippedBackendTurn([activity, terminal]), false);
+  }
+});
+
 test("OpenShell settles observed commands before deciding whether to ask for another probe", async (t) => {
   const nonce = "fixture-probe";
   const probe = { command: `cd /work && bash ${nonce}.sh ${syntheticSecret}`, id: "probe" };
   const event = (
     phase: "started" | "completed",
-    item: { id: string; command?: string; exitCode?: number },
+    item: { id: string; command?: string; exitCode?: number; status?: string; type?: string },
   ) => ({
     method: `item/${phase}`,
     params: { item: { type: "commandExecution", ...item } },
@@ -726,6 +867,11 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
     ["orphan output", [[output]], "unknown"],
     ["approval without completion", [[approval]], "unknown"],
     ["approval and output settled by completion", [[approval, output, end]], "completed"],
+    [
+      "output names a different command",
+      [[{ ...output, params: { ...output.params, command: "pwd" } }, end]],
+      "unknown",
+    ],
     [
       "approval with only an item ID",
       [[{ ...approval, params: { ...scope, itemId: probe.id } }, end]],
@@ -784,6 +930,16 @@ test("OpenShell settles observed commands before deciding whether to ask for ano
     ["unsettled command after completed probe", [[start, end, otherStart]], "unknown"],
     ["duplicate start", [[start, start, end]], "unknown"],
     ["duplicate completion", [[start, end, end]], "unknown"],
+    [
+      "blank item type alongside a completed probe",
+      [[event("started", { ...probe, type: " " }), end]],
+      "unknown",
+    ],
+    [
+      "nonterminal status despite an exit code",
+      [[start, event("completed", { ...probe, exitCode: 52, status: "inProgress" })]],
+      "unknown",
+    ],
     ["conflicting command for the same id", [[splitStart, end]], "unknown"],
     [
       "completed unrelated start, then probe",

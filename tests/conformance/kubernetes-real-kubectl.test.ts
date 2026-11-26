@@ -155,6 +155,40 @@ function recordingOptions() {
   };
 }
 
+type KubectlAttempt = string | ReturnType<typeof kubectlFailure>;
+
+async function assertKubectlRetry(
+  retry: typeof retryKubectlWrite<string>,
+  attempts: readonly KubectlAttempt[],
+  expected: KubectlAttempt,
+  delays: readonly number[],
+  applied?: RegExp,
+) {
+  const { sleeps, logs, options } = recordingOptions();
+  let calls = 0;
+  const result = retry(
+    async () => {
+      calls += 1;
+      const attempt = attempts[calls - 1];
+      assert.ok(attempt !== undefined, "unexpected kubectl attempt");
+      if (typeof attempt !== "string") {
+        throw attempt;
+      }
+      return attempt;
+    },
+    applied ? { ...options, applied } : options,
+  );
+  if (typeof expected === "string") {
+    assert.equal(await result, expected);
+  } else {
+    await assert.rejects(result, (error) => error === expected);
+  }
+  assert.equal(calls, attempts.length, "kubectl attempt count");
+  assert.deepEqual(sleeps, delays);
+  assert.equal(logs.length, delays.length, "kubectl retry log count");
+  return logs;
+}
+
 for (const { name, chunks, exitCode } of [
   {
     name: "intact readiness after a banner",
@@ -270,18 +304,12 @@ ${exitCode === undefined ? "setInterval(() => {}, 1000);" : `process.exit(${exit
 }
 
 test("a kubectl read retries a dropped exec stream and returns the next attempt's output", async () => {
-  const { sleeps, logs, options } = recordingOptions();
-  let calls = 0;
-  const output = await retryKubectlRead(async () => {
-    calls += 1;
-    if (calls === 1) {
-      throw kubectlFailure(execStreamDropped);
-    }
-    return '{"gateway":{}}';
-  }, options);
-  assert.equal(output, '{"gateway":{}}');
-  assert.equal(calls, 2);
-  assert.deepEqual(sleeps, [500]);
+  const logs = await assertKubectlRetry(
+    retryKubectlRead,
+    [kubectlFailure(execStreamDropped), '{"gateway":{}}'],
+    '{"gateway":{}}',
+    [500],
+  );
   assert.deepEqual(logs, [
     "Transient kubectl failure (error: EOF); retrying in 500 ms (attempt 2/4)",
   ]);
@@ -333,37 +361,17 @@ test("kubectl results and local failures are not transient", () => {
 });
 
 test("a kubectl read fails at once on a non-transient error", async () => {
-  const { sleeps, options } = recordingOptions();
   const notFound = kubectlFailure('Error from server (NotFound): pods "gateway-0" not found\n');
-  let calls = 0;
-  await assert.rejects(
-    retryKubectlRead(async () => {
-      calls += 1;
-      throw notFound;
-    }, options),
-    (error) => error === notFound,
-  );
-  assert.equal(calls, 1);
-  assert.deepEqual(sleeps, []);
+  await assertKubectlRetry(retryKubectlRead, [notFound], notFound, []);
 });
 
 test(
   "a kubectl read gives up after four attempts with the last error",
   { timeout: 5_000 },
   async () => {
-    const { sleeps, logs, options } = recordingOptions();
-    const failures: Array<ReturnType<typeof kubectlFailure>> = [];
-    await assert.rejects(
-      retryKubectlRead(async () => {
-        const failure = kubectlFailure(execStreamDropped);
-        failures.push(failure);
-        throw failure;
-      }, options),
-      (error) => error === failures.at(-1),
-    );
-    assert.equal(failures.length, 4);
-    assert.deepEqual(sleeps, [500, 1000, 2000]);
-    assert.equal(logs.length, 3);
+    const last = kubectlFailure(execStreamDropped);
+    const failures = Array.from({ length: 3 }, () => kubectlFailure(execStreamDropped));
+    await assertKubectlRetry(retryKubectlRead, [...failures, last], last, [500, 1000, 2000]);
   },
 );
 
@@ -2222,95 +2230,63 @@ test("a nested failure diagnostic stops at the outer deadline", { timeout: 5_000
 });
 
 test("a dropped kubectl create counts AlreadyExists on its retry as done", async () => {
-  const { sleeps, logs, options } = recordingOptions();
-  let calls = 0;
-  const output = await retryKubectlWrite(async () => {
-    calls += 1;
-    // The dropped request was applied; the retry finds its Secret.
-    throw kubectlFailure(calls === 1 ? createRequestDropped : secretExists);
-  }, options);
-  assert.equal(output, "");
-  assert.equal(calls, 2);
-  assert.deepEqual(sleeps, [500]);
-  assert.equal(logs.length, 1);
+  // The dropped request was applied; the retry finds its Secret.
+  await assertKubectlRetry(
+    retryKubectlWrite,
+    [kubectlFailure(createRequestDropped), kubectlFailure(secretExists)],
+    "",
+    [500],
+  );
 });
 
 test("a dropped Namespace delete counts the terminating Conflict on its retry as done", async () => {
   const terminating =
     'Error from server (Conflict): Operation cannot be fulfilled on namespaces "oce-1": The system is ensuring all content is removed from this namespace.  Upon completion, this namespace will automatically be purged by the system.\n';
-  let calls = 0;
-  const output = await retryKubectlWrite(
-    async () => {
-      calls += 1;
-      throw kubectlFailure(calls === 1 ? "Unable to connect to the server: EOF\n" : terminating);
-    },
-    { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
+  const logs = await assertKubectlRetry(
+    retryKubectlWrite,
+    [kubectlFailure("Unable to connect to the server: EOF\n"), kubectlFailure(terminating)],
+    "",
+    [500],
+    namespaceAlreadyTerminating,
   );
-  assert.equal(output, "");
-  assert.equal(calls, 2);
+  assert.deepEqual(logs, [
+    "Transient kubectl failure (Unable to connect to the server: EOF); retrying in 500 ms (attempt 2/4)",
+  ]);
   // Without a dropped attempt, the Conflict is the delete's real answer.
   const failure = kubectlFailure(terminating);
-  await assert.rejects(
-    retryKubectlWrite(
-      async () => {
-        throw failure;
-      },
-      { ...recordingOptions().options, applied: namespaceAlreadyTerminating },
-    ),
-    (error) => error === failure,
-  );
+  await assertKubectlRetry(retryKubectlWrite, [failure], failure, [], namespaceAlreadyTerminating);
 });
 
 test("a dropped kubectl write still throws any other result of its retry", async () => {
-  const { sleeps, options } = recordingOptions();
   const forbidden = kubectlFailure("Error from server (Forbidden): secrets is forbidden\n");
-  let calls = 0;
-  await assert.rejects(
-    retryKubectlWrite(async () => {
-      calls += 1;
-      throw calls === 1 ? kubectlFailure(createRequestDropped) : forbidden;
-    }, options),
-    (error) => error === forbidden,
+  await assertKubectlRetry(
+    retryKubectlWrite,
+    [kubectlFailure(createRequestDropped), forbidden],
+    forbidden,
+    [500],
   );
-  assert.equal(calls, 2);
-  assert.deepEqual(sleeps, [500]);
 });
 
 test("a kubectl write retries a dropped connection and returns the next attempt's output", async () => {
-  const { sleeps, options } = recordingOptions();
-  let calls = 0;
-  const output = await retryKubectlWrite(async () => {
-    calls += 1;
-    if (calls === 1) {
-      throw kubectlFailure("Unable to connect to the server: EOF\n");
-    }
-    return 'namespace "oce-1" deleted\n';
-  }, options);
-  assert.equal(output, 'namespace "oce-1" deleted\n');
-  assert.equal(calls, 2);
-  assert.deepEqual(sleeps, [500]);
+  const deleted = 'namespace "oce-1" deleted\n';
+  await assertKubectlRetry(
+    retryKubectlWrite,
+    [kubectlFailure("Unable to connect to the server: EOF\n"), deleted],
+    deleted,
+    [500],
+  );
 });
 
-test("a kubectl write fails at once on AlreadyExists or another result", async () => {
+test("a kubectl write fails at once on AlreadyExists or another result", async (t) => {
   // With no dropped attempt before it, AlreadyExists is the create's real answer.
-  for (const stderr of [
+  for (const [index, stderr] of [
     secretExists,
     'Error from server (NotFound): namespaces "oce-1" not found\n',
     "Error from server (Forbidden): secrets is forbidden\n",
-  ]) {
-    const { sleeps, options } = recordingOptions();
+  ].entries()) {
     const failure = kubectlFailure(stderr);
-    let calls = 0;
-    await assert.rejects(
-      retryKubectlWrite(async () => {
-        calls += 1;
-        throw failure;
-      }, options),
-      (error) => error === failure,
-      stderr,
-    );
-    assert.equal(calls, 1, stderr);
-    assert.deepEqual(sleeps, [], stderr);
+    t.diagnostic(`immediate kubectl write failure case ${index + 1}`);
+    await assertKubectlRetry(retryKubectlWrite, [failure], failure, []);
   }
 });
 
@@ -2318,18 +2294,9 @@ test(
   "a kubectl write gives up after four dropped attempts with the last error",
   { timeout: 5_000 },
   async () => {
-    const { sleeps, options } = recordingOptions();
-    const failures: Array<ReturnType<typeof kubectlFailure>> = [];
-    await assert.rejects(
-      retryKubectlWrite(async () => {
-        const failure = kubectlFailure(createRequestDropped);
-        failures.push(failure);
-        throw failure;
-      }, options),
-      (error) => error === failures.at(-1),
-    );
-    assert.equal(failures.length, 4);
-    assert.deepEqual(sleeps, [500, 1000, 2000]);
+    const last = kubectlFailure(createRequestDropped);
+    const failures = Array.from({ length: 3 }, () => kubectlFailure(createRequestDropped));
+    await assertKubectlRetry(retryKubectlWrite, [...failures, last], last, [500, 1000, 2000]);
   },
 );
 
