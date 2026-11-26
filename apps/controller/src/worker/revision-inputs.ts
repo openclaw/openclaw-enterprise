@@ -280,7 +280,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
             currentTokenServiceInstanceId() !== revision.gatewayTokenServiceInstanceId ||
             withdrawal !== undefined
           ) {
-            return undefined;
+            return refuseRevisionInputs("CREDENTIAL_SOURCE_UNAVAILABLE");
           }
           continue;
         }
@@ -291,7 +291,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
           secret.driverId !== secretDriverId ||
           !projectableSecretBackend(secret.backendRef)
         ) {
-          return undefined;
+          return refuseRevisionInputs("SECRET_BINDING_UNAVAILABLE");
         }
         projections.push({
           name,
@@ -301,11 +301,11 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
           backendRef: secret.backendRef,
         });
       }
-      return projections;
+      return { projections };
     });
 
-    if (resolved === undefined) {
-      return refuseRevisionInputs("SECRET_BINDING_UNAVAILABLE");
+    if ("result" in resolved) {
+      return resolved;
     }
 
     let networkProxyCredential: ComputeRevisionContext["networkProxyCredential"];
@@ -406,7 +406,7 @@ export function createRevisionCredentialResolver(dependencies: RevisionCredentia
     return {
       context: {
         ...(revision.egressPlan === undefined ? {} : revisionEgressReceipts(state, revision)),
-        secretEnvironment: Object.freeze(resolved),
+        secretEnvironment: Object.freeze(resolved.projections),
         ...(networkProxyCredential === undefined ? {} : { networkProxyCredential }),
         harnessAuth: model.harnessAuth,
         ...(credentialSources.length === 0

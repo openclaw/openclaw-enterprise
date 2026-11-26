@@ -420,7 +420,7 @@ cases.revisionTest(
     assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
     assert.equal(
       (await fixture.workResult(work)).rows[0]?.reason_code,
-      "GATEWAY_CREDENTIALS_TOO_LARGE",
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
     );
     assert.deepEqual(stagedWrites, [], "oversized values must never be staged");
     assert.equal(
@@ -473,8 +473,41 @@ async function gatewaySourceCandidate(
     resolveApprovedHarness,
   );
   scenario.placeholder.id = revision.id;
-  return { custodyKey, custody, agent, revision };
+  return { source, custodyKey, custody, agent, revision };
 }
+
+cases.revisionTest(
+  "the Worker reports a withdrawn Gateway Source before resolving or staging credentials",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { source, revision } = await gatewaySourceCandidate(fixture, scenario);
+    // A concurrent withdrawal can be recorded for an admitted queued companion revision
+    // before its reconcile work is claimed. Use the production PostgreSQL repository.
+    await fixture.state.transact(async (unit) => {
+      await unit.credentialSources.requestCredentialWithdrawal({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        credentialSourceId: source.id,
+        state: "pending",
+        requestedBy: fixture.actor.id,
+        requestedAt: new Date().toISOString(),
+      });
+    });
+    await fixture.start(scenario.compute, { transformDrivers: () => scenario.runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
+    assert.equal(
+      (await fixture.workResult(work)).rows[0]?.reason_code,
+      "CREDENTIAL_SOURCE_UNAVAILABLE",
+    );
+    assert.deepEqual(scenario.stagedWrites, [], "a withdrawn Source must never be staged");
+    assert.equal(
+      scenario.transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+  },
+);
 
 test(
   "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",

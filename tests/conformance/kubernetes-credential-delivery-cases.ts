@@ -219,11 +219,12 @@ export async function checkGatewayCredentialAggregateLimit() {
       if (!(error instanceof CredentialSourceRevisionError)) {
         return false;
       }
-      assert.equal(error.code, "GATEWAY_CREDENTIALS_TOO_LARGE");
+      assert.equal(error.code, "GATEWAY_CREDENTIAL_DELIVERY_REFUSED");
       assert.deepEqual(driver.describePrepareRevisionFailure(error), {
-        code: "GATEWAY_CREDENTIALS_TOO_LARGE",
+        code: "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
         stage: "gateway_secret_environment",
         errorClass: "CredentialSourceRevisionError",
+        message: "The staged Gateway credentials exceed the Kubernetes Secret limit of 1 MiB.",
       });
       return true;
     },

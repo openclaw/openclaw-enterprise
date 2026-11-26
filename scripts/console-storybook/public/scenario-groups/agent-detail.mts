@@ -2815,6 +2815,24 @@ export function createAgentDetailScenarios({
         ],
         gap: "Policy, deployment and logs are simulated. This preview proves presentation and navigation, not native policy enforcement.",
       },
+      deploymentFailedGatewayCredentialDelivery: {
+        group: "Pages/Agent detail",
+        name: "New version failed, Gateway credential delivery refused",
+        path: candidateVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateFailure: {
+          code: "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+          message:
+            "The selected Compute Driver refused Gateway credential delivery. Ask a platform operator to check the worker diagnostic, then correct the credential bindings and deploy again.",
+        },
+        description: "v7 failed because Compute refused Gateway credential delivery.",
+        steps: [
+          "Read the failure code and the operator's next step.",
+          "Open v7 Logs and confirm v7 remains selected; no deployment is submitted.",
+        ],
+        gap: "This simulated failure proves Console presentation and navigation, not credential delivery.",
+      },
       deploymentFailedStoredInconsistent: {
         group: "Pages/Agent detail",
         name: "New version failed, stored records inconsistent",

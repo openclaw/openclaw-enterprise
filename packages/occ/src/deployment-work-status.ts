@@ -400,8 +400,8 @@ function deploymentErrorMessage(code: string, agentId: string): string {
       return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
-    case "GATEWAY_CREDENTIALS_TOO_LARGE":
-      return "The combined Gateway credential values exceed the 1 MiB Kubernetes Secret limit. Reduce the number or size of Gateway credential bindings, then deploy a new version.";
+    case "GATEWAY_CREDENTIAL_DELIVERY_REFUSED":
+      return "The selected Compute Driver refused Gateway credential delivery. Ask a platform operator to check the worker diagnostic, then correct the credential bindings and deploy again.";
     case "CREDENTIAL_WITHDRAWN":
       return "The Harness credential source was withdrawn from this revision, so the revision cannot start. Bind a replacement source or another authentication method, then deploy again.";
     case "CREDENTIAL_GATEWAY_MISMATCH":

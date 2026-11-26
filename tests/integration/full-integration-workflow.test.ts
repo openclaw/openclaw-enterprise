@@ -656,7 +656,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       { cell: "compose/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
       { cell: "compose/Codex", scenarios: ["http-chat", "console-secrets", "agent-audit"] },
       { cell: "kubernetes/OpenClaw", scenarios: ["http-chat", "model-ui", "console-secrets"] },
-      { cell: "kubernetes/Codex", scenarios: ["http-chat", "console-secrets"] },
+      {
+        cell: "kubernetes/Codex",
+        scenarios: ["http-chat", "console-secrets", "gateway-startup-credentials"],
+      },
     ],
   );
   assert.equal(qaSelection.exclusions.length, 2);

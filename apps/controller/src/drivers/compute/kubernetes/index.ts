@@ -872,6 +872,10 @@ function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFai
       code: cause.code,
       stage: failure.stage,
       errorClass: "CredentialSourceRevisionError",
+      ...(cause.code === "GATEWAY_CREDENTIAL_DELIVERY_REFUSED" &&
+      cause.message === GATEWAY_SECRET_LIMIT_MESSAGE
+        ? { message: GATEWAY_SECRET_LIMIT_MESSAGE }
+        : {}),
     };
   }
   if (cause instanceof OpenShellSandboxConfigurationFailure && cause.diagnosticCode !== undefined) {
@@ -1439,6 +1443,8 @@ const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const MAX_KUBERNETES_SECRET_DATA_BYTES = 1_048_576;
+const GATEWAY_SECRET_LIMIT_MESSAGE =
+  "The staged Gateway credentials exceed the Kubernetes Secret limit of 1 MiB.";
 const RUNTIME_STATUS_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$/u;
@@ -17688,8 +17694,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       if (aggregateBytes > MAX_KUBERNETES_SECRET_DATA_BYTES) {
         throw new CredentialSourceRevisionError(
-          "GATEWAY_CREDENTIALS_TOO_LARGE",
-          "The staged Gateway credentials exceed the Kubernetes Secret size limit.",
+          "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+          GATEWAY_SECRET_LIMIT_MESSAGE,
         );
       }
       const data = Object.fromEntries(

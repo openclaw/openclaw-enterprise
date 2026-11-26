@@ -1441,7 +1441,7 @@ export class SandboxGatewayUnauthorizedError extends Error {
  * deployment with `code`. The message stays in the controller; status shows fixed text.
  */
 export class CredentialSourceRevisionError extends Error {
-  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT" | "GATEWAY_CREDENTIALS_TOO_LARGE";
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT" | "GATEWAY_CREDENTIAL_DELIVERY_REFUSED";
 
   constructor(code: CredentialSourceRevisionError["code"], message: string) {
     super(message);
