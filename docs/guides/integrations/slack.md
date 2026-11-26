@@ -39,8 +39,11 @@ go to the Agent's gateway; model credentials are configured separately.
   `deploy`, plus Agent `read` and `operate` when generation is needed.
   Selecting a Source from the picker requires readable Source metadata. Saving token
   bindings requires Configuration `update` and caller `operate` on each exact Source.
-  During deployment, OCC grants the admitted Agent service principal exact Source
-  `operate` access. Creating a Source requires Source `create` in the Namespace.
+  During deployment, OCC-managed transactional Native IAM can create a missing exact
+  Source `operate` grant for the Agent service principal. Otherwise, the selected IAM
+  Driver must already authorize the Agent or admission fails. See the
+  [Source-grant requirements](../../reference/credential-sources.md#bind-a-source-to-an-agent).
+  Creating a Source requires Source `create` in the Namespace.
 
 <a id="configure-both-slack-proxies"></a>
 
