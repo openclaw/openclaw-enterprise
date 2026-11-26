@@ -20701,7 +20701,7 @@
                       "secretBindings": {
                         "additionalProperties": {
                           "additionalProperties": false,
-                          "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                          "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                           "properties": {
                             "delivery": {
                               "additionalProperties": false,
@@ -20711,21 +20711,42 @@
                               "type": "object"
                             },
                             "source": {
-                              "additionalProperties": false,
-                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                              "properties": {
-                                "id": {
-                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "secret", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
                                 },
-                                "kind": { "const": "secret", "type": "string" },
-                                "namespaceId": {
-                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "credential_source", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
                                 }
-                              },
-                              "required": ["kind", "namespaceId", "id"],
-                              "type": "object"
+                              ]
                             }
                           },
                           "required": ["source"],
@@ -22114,7 +22135,7 @@
                       "secretBindings": {
                         "additionalProperties": {
                           "additionalProperties": false,
-                          "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                          "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                           "properties": {
                             "delivery": {
                               "additionalProperties": false,
@@ -22124,21 +22145,42 @@
                               "type": "object"
                             },
                             "source": {
-                              "additionalProperties": false,
-                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                              "properties": {
-                                "id": {
-                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "secret", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
                                 },
-                                "kind": { "const": "secret", "type": "string" },
-                                "namespaceId": {
-                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                  "type": "string"
+                                {
+                                  "additionalProperties": false,
+                                  "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                  "properties": {
+                                    "id": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    },
+                                    "kind": { "const": "credential_source", "type": "string" },
+                                    "namespaceId": {
+                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["kind", "namespaceId", "id"],
+                                  "type": "object"
                                 }
-                              },
-                              "required": ["kind", "namespaceId", "id"],
-                              "type": "object"
+                              ]
                             }
                           },
                           "required": ["source"],
@@ -26756,7 +26798,7 @@
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
-                            "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                            "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                             "properties": {
                               "delivery": {
                                 "additionalProperties": false,
@@ -26766,21 +26808,42 @@
                                 "type": "object"
                               },
                               "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
+                                ]
                               }
                             },
                             "required": ["source"],
@@ -34239,7 +34302,7 @@
                             "secretBindings": {
                               "additionalProperties": {
                                 "additionalProperties": false,
-                                "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                                "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                                 "properties": {
                                   "delivery": {
                                     "additionalProperties": false,
@@ -34249,21 +34312,45 @@
                                     "type": "object"
                                   },
                                   "source": {
-                                    "additionalProperties": false,
-                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                    "properties": {
-                                      "id": {
-                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
+                                    "anyOf": [
+                                      {
+                                        "additionalProperties": false,
+                                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                        "properties": {
+                                          "id": {
+                                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "kind": { "const": "secret", "type": "string" },
+                                          "namespaceId": {
+                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["kind", "namespaceId", "id"],
+                                        "type": "object"
                                       },
-                                      "kind": { "const": "secret", "type": "string" },
-                                      "namespaceId": {
-                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
+                                      {
+                                        "additionalProperties": false,
+                                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                        "properties": {
+                                          "id": {
+                                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          },
+                                          "kind": {
+                                            "const": "credential_source",
+                                            "type": "string"
+                                          },
+                                          "namespaceId": {
+                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": ["kind", "namespaceId", "id"],
+                                        "type": "object"
                                       }
-                                    },
-                                    "required": ["kind", "namespaceId", "id"],
-                                    "type": "object"
+                                    ]
                                   }
                                 },
                                 "required": ["source"],
@@ -38974,7 +39061,7 @@
                   "secretBindings": {
                     "additionalProperties": {
                       "additionalProperties": false,
-                      "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                      "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                       "properties": {
                         "delivery": {
                           "additionalProperties": false,
@@ -38984,21 +39071,42 @@
                           "type": "object"
                         },
                         "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                            {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
                             }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
+                          ]
                         }
                       },
                       "required": ["source"],
@@ -39119,7 +39227,7 @@
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
-                            "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                            "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                             "properties": {
                               "delivery": {
                                 "additionalProperties": false,
@@ -39129,21 +39237,42 @@
                                 "type": "object"
                               },
                               "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
+                                ]
                               }
                             },
                             "required": ["source"],
@@ -39539,7 +39668,7 @@
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
-                            "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                            "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                             "properties": {
                               "delivery": {
                                 "additionalProperties": false,
@@ -39549,21 +39678,42 @@
                                 "type": "object"
                               },
                               "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
+                                ]
                               }
                             },
                             "required": ["source"],
@@ -39778,7 +39928,7 @@
                   "secretBindings": {
                     "additionalProperties": {
                       "additionalProperties": false,
-                      "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                      "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                       "properties": {
                         "delivery": {
                           "additionalProperties": false,
@@ -39788,21 +39938,42 @@
                           "type": "object"
                         },
                         "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
+                            {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
                             }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
+                          ]
                         }
                       },
                       "required": ["source"],
@@ -39923,7 +40094,7 @@
                         "secretBindings": {
                           "additionalProperties": {
                             "additionalProperties": false,
-                            "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
+                            "description": "Maps one destination environment variable to one exact Namespace Secret or static CredentialSource reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
                             "properties": {
                               "delivery": {
                                 "additionalProperties": false,
@@ -39933,21 +40104,42 @@
                                 "type": "object"
                               },
                               "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "secret", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
+                                  {
+                                    "additionalProperties": false,
+                                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                                    "properties": {
+                                      "id": {
+                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      },
+                                      "kind": { "const": "credential_source", "type": "string" },
+                                      "namespaceId": {
+                                        "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["kind", "namespaceId", "id"],
+                                    "type": "object"
                                   }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
+                                ]
                               }
                             },
                             "required": ["source"],

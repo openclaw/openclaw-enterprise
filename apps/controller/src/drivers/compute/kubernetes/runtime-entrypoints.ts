@@ -6164,6 +6164,11 @@ const nodeEnv = {
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
+if (pluginBins.length > 0) {
+  // Only verified installation directories can satisfy the Agent's tool lookup configuration.
+  const execution = JSON.parse(nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION ?? "{}");
+  nodeEnv.OPENCLAW_NODE_WORKER_EXECUTION = JSON.stringify({ ...execution, pathPrepend: pluginBins });
+}
 const gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || (
   process.env.OPENCLAW_NODE_CA_PATH
     ? readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")

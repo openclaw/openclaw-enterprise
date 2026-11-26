@@ -1574,7 +1574,8 @@ test(
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
-      [97, "preSandboxPolicyCapacity"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preSandboxPolicyCapacity"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -2014,7 +2015,8 @@ test(
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
-      [97, "preSandboxPolicyCapacity"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preSandboxPolicyCapacity"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3244,7 +3246,8 @@ test(
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
-      [97, "preSandboxPolicyCapacity"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preSandboxPolicyCapacity"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3384,7 +3387,8 @@ test(
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
-      [97, "preSandboxPolicyCapacity"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preSandboxPolicyCapacity"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3557,7 +3561,8 @@ test(
       [94, "preTokenServiceCredentialSources"],
       [95, "preNamespaceGitHubAppClients"],
       [96, "preOAuthEndpointAuthority"],
-      [97, "preSandboxPolicyCapacity"],
+      [97, "preSharedGitSourceRepositoryGrants"],
+      [98, "preSandboxPolicyCapacity"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3586,7 +3591,8 @@ test(
           prefix === 0
             ? "CREATE TRIGGER"
             : [
-                [97, "ALTER TABLE"],
+                [98, "ALTER TABLE"],
+                [97, "CREATE FUNCTION"],
                 [96, "ALTER TABLE"],
                 [95, "CREATE FUNCTION"],
                 [94, "ALTER TABLE"],
@@ -4453,7 +4459,7 @@ test(
   requiresHistoryPostgres,
   async (t) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 97 });
+    const db = await historyDatabase(t, fixture, "policycapacity", { prefix: 98 });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
       computeAdmission: true,

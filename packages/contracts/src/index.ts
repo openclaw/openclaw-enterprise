@@ -557,7 +557,7 @@ export interface SecretDetail extends SecretMetadata {
 }
 
 export interface SecretBinding {
-  readonly source: SecretReference;
+  readonly source: SecretReference | CredentialSourceReference;
   readonly delivery?: { readonly type: "env" };
 }
 
@@ -1396,6 +1396,8 @@ export interface AgentRevision extends Scope {
   readonly sandboxPolicy?: SandboxPolicySnapshot;
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
+  /** Private selected owner for this revision's Gateway Source bindings. */
+  readonly gatewayTokenServiceInstanceId?: string;
   readonly plugins?: PluginRevisionState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryCredentials?: RepositoryRevisionState | SourceBackedRepositoryRevisionState;
