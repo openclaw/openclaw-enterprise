@@ -12,19 +12,20 @@ When the deployed Repository grant permits pull request creation, the Agent's
 only admitted GitHub REST request is `POST /repos/OWNER/REPO/pulls`.
 `gh pr create` uses GraphQL, which this binding does not admit.
 
-Use only the binding's inert placeholder. Dedicated Codex supplies it as
-`GITHUB_TOKEN`. In a Dedicated OpenClaw worker, read `gitPlaceholder` from
-`OPENCLAW_WORKER_TOOL_DATA` and pass it to `gh` as `GH_TOKEN` for this command.
+Use only the binding's credential placeholder. Dedicated Codex supplies it in
+`GITHUB_TOKEN`. Dedicated OpenClaw supplies `gitPlaceholder` in
+`OPENCLAW_WORKER_TOOL_DATA`. Pass it to `gh` as `GH_TOKEN` for this command.
+Keep the value out of the request body and tool output.
 
 ```sh
 marker=${GITHUB_TOKEN:-}
 if [ -n "${OPENCLAW_WORKER_TOOL_DATA:-}" ]; then
   marker=$(node -p 'JSON.parse(process.env.OPENCLAW_WORKER_TOOL_DATA).gitPlaceholder ?? ""') || exit 1
 fi
-case "$marker" in
-  openshell:resolve:env:*) ;;
-  *) printf '%s\n' 'Managed GitHub credential placeholder is unavailable.' >&2; exit 1 ;;
-esac
+if [ -z "$marker" ]; then
+  printf '%s\n' 'Managed GitHub credential placeholder is unavailable.' >&2
+  exit 1
+fi
 GH_TOKEN="$marker" /usr/local/bin/gh api --hostname github.com --method POST \
   repos/OWNER/REPO/pulls --input "$payload" --jq .html_url
 ```
