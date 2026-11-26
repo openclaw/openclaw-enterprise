@@ -13,6 +13,7 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { admitOpenShellRepositoryCredentials } from "../../apps/controller/src/composition/openshell-credential-admission.ts";
 import { composeProduction } from "../helpers/password-hasher.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
@@ -96,7 +97,12 @@ test(
     const store = driver.privateSecrets;
     assert.ok(store);
 
-    const permissions = { metadata: "read", contents: "write", issues: "read" };
+    const permissions = {
+      metadata: "read",
+      contents: "write",
+      issues: "read",
+      pull_requests: "write",
+    };
     const repositories = [
       {
         repositoryRef: "first",
@@ -814,7 +820,60 @@ test(
           profile: "github-repository",
         })),
       });
+      const deployedPolicy = revision.credentialDeployment;
+      assert.ok(deployedPolicy);
+      const publicationRequest = (repository: string) => ({
+        binary: "/usr/local/bin/gh",
+        host: "api.github.com",
+        ports: [{ from: 443, to: 443 }],
+        requestPolicy: {
+          type: "http" as const,
+          method: "POST",
+          path: `/repos/${repository}/pulls`,
+        },
+      });
+      const publication =
+        access === "write" ? [publicationRequest(repositories[1]!.repository)] : [];
+      const repositoryInjection = deployedPolicy.injectionPolicies.find(
+        ({ bindingRef }) => bindingRef === "repository",
+      );
+      assert.ok(repositoryInjection);
+      assert.deepEqual(
+        deployedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
+        publication,
+      );
+      assert.deepEqual(
+        repositoryInjection.allowedRequests.filter(({ host }) => host === "api.github.com"),
+        publication,
+      );
       if (agents.length === 0) {
+        // A Source can read both repositories. The shared policy compiler must retain Git
+        // push but withhold PR creation if the Agent omits the possible private fork head.
+        const source = await state.read((view) =>
+          view.credentialSources.findCredentialSource(namespaceId, repositorySnapshot.sourceId),
+        );
+        assert.ok(
+          source?.ownerCapability === "token_service" && source.type === "github-app-installation",
+        );
+        const subset = admitOpenShellRepositoryCredentials(runtime.repositoryRegistry, {
+          namespaceId,
+          source,
+          bindings: authority.bindings.filter(
+            ({ repositoryRef }) => repositoryRef === repositories[1]!.repositoryRef,
+          ),
+          grants: grants.filter(({ access }) => access === "write"),
+        });
+        assert.ok(subset);
+        assert.ok(
+          subset.some(
+            ({ requestPolicy }) =>
+              requestPolicy?.path === `/${repositories[1]!.repository}.git/git-receive-pack`,
+          ),
+        );
+        assert.equal(
+          subset.some(({ host }) => host === "api.github.com"),
+          false,
+        );
         // The obsolete standalone snapshot has a valid finite deadline and the same grants;
         // removing the Source marker cannot turn it into an eligible native revision.
         const obsoleteAuthority = {
@@ -848,6 +907,24 @@ test(
               JSON.stringify(value),
             ],
           );
+        // A writer cannot grant publication on a Read target by adding the identical
+        // request to both policy lists. The immutable revision still enforces its Write grant.
+        const readTarget = publicationRequest(repositories[0]!.repository);
+        await assert.rejects(
+          () =>
+            insertAlteredRevision(["credential_deployment"], {
+              ...deployedPolicy,
+              networkAccessPolicy: {
+                allowed: [...deployedPolicy.networkAccessPolicy.allowed, readTarget],
+              },
+              injectionPolicies: deployedPolicy.injectionPolicies.map((injection) =>
+                injection.bindingRef === "repository"
+                  ? { ...injection, allowedRequests: [...injection.allowedRequests, readTarget] }
+                  : injection,
+              ),
+            }),
+          { code: "23514", constraint: "agent_revisions_execution_admission" },
+        );
         // Use the application role's real write path to check the authority/context invariant.
         await assert.rejects(
           () => insertAlteredRevision(["repository_credentials"], obsoleteAuthority),
@@ -885,9 +962,7 @@ test(
       if (agents.length === 0) {
         // Admission derives only the reviewed preset requests for the ceiling-covered stock executable.
         assert.deepEqual(
-          revision.credentialDeployment?.networkAccessPolicy.allowed.filter(
-            ({ host }) => host === "chatgpt.com",
-          ),
+          deployedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "chatgpt.com"),
           [
             { method: "POST", path: "/backend-api/codex/responses" },
             { method: "GET", path: "/backend-api/wham/accounts/check" },
@@ -900,16 +975,13 @@ test(
           })),
         );
       }
-      const repositoryBinding = revision.credentialDeployment?.bindings.find(
+      const repositoryBinding = deployedPolicy.bindings.find(
         ({ consumer }) => consumer.kind === "repository",
       );
       assert.equal(repositoryBinding?.sourceRef.id, gitSourceId);
-      const routes =
-        revision.credentialDeployment?.injectionPolicies.find(
-          ({ bindingRef }) => bindingRef === repositoryBinding?.bindingRef,
-        )?.allowedRequests ?? [];
+      assert.equal(repositoryBinding?.bindingRef, repositoryInjection.bindingRef);
       const pushes = new Set(
-        routes
+        repositoryInjection.allowedRequests
           .filter(
             ({ requestPolicy }) =>
               requestPolicy?.type === "http" &&

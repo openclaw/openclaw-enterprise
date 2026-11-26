@@ -16,6 +16,11 @@ import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-c
 
 import { openShellRepositoryCredentialRequests } from "../drivers/credential-proxy/openshell-repository-policy.ts";
 import {
+  repositoryGitRestOperations,
+  restrictRepositoryPullRequestCreation,
+} from "../drivers/repo/access/delivery.ts";
+import {
+  githubPullRequestCreationRequest,
   matchesConfiguredGitHubRepository,
   resolveSelectedRepositoryScope,
   type GitHubRepositoryRegistry,
@@ -61,6 +66,7 @@ type OpenShellRepositorySourceSelection = {
 function selectedSourceRepositories(
   registry: GitHubRepositoryRegistry,
   { namespaceId, source, bindings }: OpenShellRepositorySourceSelection,
+  selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings),
 ): RepositoryNetworkPolicyCeiling {
   if (
     source.namespaceId !== namespaceId ||
@@ -69,7 +75,6 @@ function selectedSourceRepositories(
   ) {
     return [];
   }
-  const selected = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
   const access = source.scope.permissions.contents;
   if (selected.nativeGit !== "v1" || (access !== "read" && access !== "write")) {
     return [];
@@ -177,9 +182,11 @@ export function admitOpenShellRepositoryCredentials(
     return undefined;
   }
   try {
-    const selected = selectedSourceRepositories(registry, input);
+    const { namespaceId, source, bindings, grants } = input;
+    const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+    const selected = selectedSourceRepositories(registry, input, scope);
     if (
-      !input.grants.every((grant) =>
+      !grants.every((grant) =>
         selected.some(
           ({ repository, access }) =>
             repository === grant.repository && (access === "write" || grant.access === "read"),
@@ -188,7 +195,28 @@ export function admitOpenShellRepositoryCredentials(
     ) {
       return undefined;
     }
-    return openShellRepositoryCredentialRequests(input.grants);
+    const gitRequests = openShellRepositoryCredentialRequests(grants);
+    if (source.scope.permissions.pull_requests !== "write") {
+      return gitRequests;
+    }
+    // Registry policy can use a short name. The request must use GitHub's verified full name.
+    const scopedRest = scope.scopedRest.flatMap((authority) => {
+      const verified = selected.find((entry) =>
+        matchesConfiguredGitHubRepository(authority, entry),
+      );
+      return verified ? [{ ...authority, repository: verified.repository }] : [];
+    });
+    // A PR body can name a private fork head covered by the shared installation token.
+    const authority = restrictRepositoryPullRequestCreation(
+      scopedRest,
+      source.scope.repositories,
+      grants,
+    );
+    const publication = repositoryGitRestOperations(grants, authority).flatMap(
+      ({ repository, pull_requests }) =>
+        pull_requests === "write" ? [githubPullRequestCreationRequest(repository)] : [],
+    );
+    return [...gitRequests, ...publication];
   } catch {
     return undefined;
   }

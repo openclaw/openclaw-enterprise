@@ -168,6 +168,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 96 && completedCount > 96) {
     return "preOAuthEndpointAuthority";
   }
+  if (count === 97 && completedCount > 97) {
+    return "preNativeGitHubPullRequestPublication";
+  }
   if (count === completedCount) {
     return "completed";
   }

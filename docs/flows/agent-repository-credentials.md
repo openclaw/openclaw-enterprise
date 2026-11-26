@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-24"
-last_updated_session: "authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796"
+updated: "2026-11-26"
+last_updated_session: "authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd"
 ---
 
 # Agent repository credential flow
@@ -32,9 +32,9 @@ config:
 flowchart TB
   Draft["<b>Agent draft</b><br/>Client and repo access"] --> Deploy["<b>Deploy</b><br/>Authorizes caller and scope"]
   Deploy --> Source["<b>TokenService Source</b><br/>Reuse or mint"]
-  Source --> Revision["<b>Agent revision</b><br/>Source and exact Git rules"]
+  Source --> Revision["<b>Agent revision</b><br/>Source and exact request rules"]
   Revision --> Proxy["<b>Credential Proxy</b><br/>Worker configures delivery"]
-  Proxy --> Git["<b>OpenShell</b><br/>Injects on admitted Git routes"]
+  Proxy --> Git["<b>OpenShell</b><br/>Injects on admitted Git or publication routes"]
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
@@ -148,10 +148,17 @@ can also register programmatically.
 identity and grants. Legacy sessions include the configured deadline.
 `validateRepositoryBrokerNetworkProxy` rejects Codex settings that block the broker.
 
-For TokenService Git, the deployment pins the Source and Git request policy.
+For TokenService Git, the deployment pins the Source and its request policy.
+`apps/controller/src/composition/openshell-credential-admission.ts:admitOpenShellRepositoryCredentials`
+adds the stock `gh` publication match for an eligible Write target when every
+repository covered by the token has an Agent grant. OCC saves network and
+injection matches on the same revision.
 `apps/controller/src/worker.ts:ControllerWorker.authorizedCredentialDeployment`
-checks Source access and current Repository scope. Token renewal leaves the
-revision policy in place. Withdrawal removes that revision's Git delivery.
+checks that the frozen publication rules still match current Source and
+Repository authority. `openshell-repository-policy.ts:narrowOpenShellRepositoryRoutes`
+checks the saved match before attaching it to the same Provider used by Git.
+Token renewal retains the revision policy. Withdrawal removes both kinds of
+repository request.
 
 After approval lookup, changed bound ownership returns 503 before invocation.
 Unbound deploys recheck their Driver. Denial or changes to binding or scope
@@ -382,6 +389,8 @@ exclude CNI.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 12:32: Trace GitHub pull request admission and delivery from the shared Source. (authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd - 4866499d13714a97fc5cade0f0d1cb915d1adbfc)
 
 - 2026-11-24 17:19: Trace the lifetime of Source-backed Git authorization. (authoring-run/5ab9f2fd-bf55-4e30-a445-a5a432c3b796 - 936baaa9652b5008437647a818ad3c09eed317f1)
 

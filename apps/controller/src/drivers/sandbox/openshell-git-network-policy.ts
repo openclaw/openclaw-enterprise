@@ -6,6 +6,7 @@ import {
   repositoryGitRestOperations,
   type RepositoryGitRestAuthority,
 } from "../repo/access/delivery.ts";
+import { githubPullRequestCreationRequest } from "../repo/github/access/registry.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellProviderProfileEndpoint,
@@ -181,7 +182,8 @@ function scopedApiEndpoints(
   )) {
     const rules = [];
     if (pulls === "write") {
-      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+      const { method, path } = githubPullRequestCreationRequest(repository).requestPolicy;
+      rules.push({ allow: { method, path } });
     }
     if (issues === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });

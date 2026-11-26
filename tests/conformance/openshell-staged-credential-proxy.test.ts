@@ -2778,7 +2778,13 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     { repository: "fixture/repository", access: "read" },
     { repository: "fixture/write", access: "write" },
   ] as const;
-  const requests = openShellRepositoryCredentialRequests(grants);
+  const publish: DeploymentRequestMatch = {
+    binary: "/usr/local/bin/gh",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: "/repos/fixture/write/pulls" },
+  };
+  const requests = [...openShellRepositoryCredentialRequests(grants), publish];
   const repository = {
     bindingRef: "repository",
     sourceRef: { kind: "credential_source", id: "cs_github", namespaceId: namespace.id },
@@ -2869,6 +2875,37 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     },
   };
   await assert.rejects(f.proxy.configureDeployment(overlapping, input), DependencyUnavailableError);
+  // Even a matching network and injection request cannot add publication to a Read repository.
+  const readPublish = {
+    ...publish,
+    requestPolicy: {
+      type: "http" as const,
+      method: "POST",
+      path: "/repos/fixture/repository/pulls",
+    },
+  };
+  const readRequests = [...requests.slice(0, -1), readPublish];
+  const readInjections = [
+    { ...repositoryInjection, allowedRequests: readRequests },
+    pluginInjection,
+  ];
+  await assert.rejects(
+    f.proxy.configureDeployment(
+      {
+        ...context,
+        revision: {
+          ...context.revision,
+          credentialDeployment: {
+            ...context.revision.credentialDeployment!,
+            networkAccessPolicy: { allowed: [...readRequests, pluginRequest] },
+            injectionPolicies: readInjections,
+          },
+        },
+      },
+      { ...input, injectionPolicies: readInjections },
+    ),
+    DependencyUnavailableError,
+  );
   assert.equal(resolutions, 0);
   const configured = await f.proxy.configureDeployment(context, input);
   assert.deepEqual(configured.credentialProjections, [
@@ -2889,7 +2926,7 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   const repoRules = Object.values(record(source.network_policies)).filter(
     (rule) => record(rule).name !== "baseline",
   );
-  assert.equal(repoRules.length, 25);
+  assert.equal(repoRules.length, 26);
   assert.deepEqual(
     [
       ...new Set(
@@ -2902,6 +2939,7 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
       "/usr/lib/git-core/git-remote-https",
       "/usr/libexec/git-core/git-remote-http",
       "/usr/libexec/git-core/git-remote-https",
+      "/usr/local/bin/gh",
     ],
   );
   const discovery = repoRules
@@ -2913,6 +2951,28 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     query: { service: { glob: "git-upload-pack" } },
   });
   assert.match(String(record(discovery.credential_binding).provider), /^oce-cs-/);
+  // The publication endpoint uses the same Provider as smart Git and grants one stock gh request.
+  assert.deepEqual(
+    repoRules.flatMap((rule) =>
+      (record(rule).endpoints as Wire[])
+        .filter(({ host }) => host === "api.github.com")
+        .map((endpoint) => ({ binaries: record(rule).binaries, endpoint })),
+    ),
+    [
+      {
+        binaries: [{ path: "/usr/local/bin/gh" }],
+        endpoint: {
+          host: "api.github.com",
+          ports: [443],
+          path: "/repos/fixture/write/pulls",
+          protocol: "rest",
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          rules: [{ allow: { method: "POST", path: "/repos/fixture/write/pulls" } }],
+          credential_binding: discovery.credential_binding,
+        },
+      },
+    ],
+  );
   assert.equal(
     repoRules.some((rule) =>
       JSON.stringify(rule).includes("/fixture/repository.git/git-receive-pack"),
@@ -3114,6 +3174,10 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   const peerPolicy = structuredClone(peer.spec.policy!);
   const peerEndpoints = Object.values(record(peerPolicy.network_policies)).flatMap(
     (rule) => record(rule).endpoints as Wire[],
+  );
+  assert.equal(
+    peerEndpoints.some(({ host }) => host === "api.github.com"),
+    false,
   );
   const peerDiscovery = peerEndpoints.find(
     (endpoint) => endpoint.path === "/fixture/write.git/info/refs",

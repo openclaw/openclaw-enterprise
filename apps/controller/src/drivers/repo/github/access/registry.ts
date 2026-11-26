@@ -14,6 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
+  DeploymentRequestMatch,
   githubInstallationProfile as installationProfile,
   RepositoryApiLevel,
   RepositoryApiLimits,
@@ -503,6 +504,16 @@ function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"
     ...(pulls !== "none" && { readPullRequests: true as const }),
     ...(pulls === "write" && { createPullRequests: true as const }),
   };
+}
+
+/** The exact request used by stock gh for publication in an authorized repository. */
+export function githubPullRequestCreationRequest(repository: string) {
+  return {
+    binary: "/usr/local/bin/gh",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: `/repos/${repository}/pulls` },
+  } satisfies DeploymentRequestMatch;
 }
 
 function registryGrantId(
