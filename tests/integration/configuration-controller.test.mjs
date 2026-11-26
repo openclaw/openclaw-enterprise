@@ -3050,6 +3050,16 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
   const invalidName = (name, path = "models.providers.gateway.headers") =>
     setting(path, `must use valid HTTP header names, not ${JSON.stringify(name)}`);
   // The models list rules are in the models setting test above.
+  const proxySettings = (url) => ({ request: { proxy: { mode: "explicit-proxy", url } } });
+  const providerEndpoint = (baseUrl) => [gateway({ baseUrl }), userinfo(field("baseUrl"))];
+  const modelEndpoint = (baseUrl) => [
+    gateway({ models: [{ id: "m", baseUrl }] }),
+    userinfo(field("models/0/baseUrl")),
+  ];
+  const providerProxy = (url) => [
+    gateway(proxySettings(url)),
+    userinfo(field("request/proxy/url")),
+  ];
   const refused = [
     [gateway({ headers: { "x-api-key ": sentinel } }), invalidName("x-api-key…")],
     // A name a Preset variable filled is refused here, so the person can find it.
@@ -3070,52 +3080,18 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     // no environment reference and the URL is checked as written.
     [gateway({ baseUrl: "ftp://$${HOST}/v1" }), absoluteUrl(field("baseUrl"))],
     // Finding 1244: a user name or password in a model endpoint is a credential, as in a proxy URL.
-    [
-      gateway({
-        models: [{ id: "m", baseUrl: `https://user:${sentinel}@models.example.test/v1` }],
-      }),
-      userinfo(field("models/0/baseUrl")),
-    ],
+    modelEndpoint(`https://user:${sentinel}@models.example.test/v1`),
     // Finding 1250: an environment reference the runtime fills in the host or port, where the URL
     // does not parse as written, leaves the user name and password a literal.
-    [
-      gateway({ baseUrl: `https://user:${sentinel}@models.example.test:\${MODEL_PORT}/v1` }),
-      userinfo(field("baseUrl")),
-    ],
-    [
-      gateway({
-        request: {
-          proxy: {
-            mode: "explicit-proxy",
-            url: `http://u:${sentinel}@\${PROXY_HOST}:\${PROXY_PORT}`,
-          },
-        },
-      }),
-      userinfo(field("request/proxy/url")),
-    ],
+    providerEndpoint(`https://user:${sentinel}@models.example.test:\${MODEL_PORT}/v1`),
+    providerProxy(`http://u:${sentinel}@\${PROXY_HOST}:\${PROXY_PORT}`),
     // The runtime renders a reference's fallback when the variable is unset.
-    [
-      gateway({ baseUrl: `https://\${MODEL_HOST:-user:${sentinel}@models.example.test}/v1` }),
-      userinfo(field("baseUrl")),
-    ],
-    [
-      gateway({
-        request: {
-          proxy: { mode: "explicit-proxy", url: `\${PROXY_URL:-http://u:${sentinel}@proxy:3128}` },
-        },
-      }),
-      userinfo(field("request/proxy/url")),
-    ],
+    providerEndpoint(`https://\${MODEL_HOST:-user:${sentinel}@models.example.test}/v1`),
+    providerProxy(`\${PROXY_URL:-http://u:${sentinel}@proxy:3128}`),
     // One reference set and another unset: https://setu:<password>@models.example.test.
-    [
-      gateway({ baseUrl: `https://\${A_HOST:-h/}\${B_USER:-u:${sentinel}@models.example.test}` }),
-      userinfo(field("baseUrl")),
-    ],
+    providerEndpoint(`https://\${A_HOST:-h/}\${B_USER:-u:${sentinel}@models.example.test}`),
     // The URL parser ends the user name at the last `@`, inside brackets too.
-    [
-      gateway({ baseUrl: `https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]` }),
-      userinfo(field("baseUrl")),
-    ],
+    providerEndpoint(`https://[\${MODEL_HOST}user:${sentinel}@models.example.test/]`),
     // Credential header names the widened rule matches take only references.
     ...[
       "Authentication",
@@ -3286,31 +3262,26 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       gateway({ headers: { "Authorization{{ vars.header }}": "Bearer synthetic" } }),
       literalModelKey(field("headers/Authorization{{ vars.header }}")),
     ],
-    [
-      gateway({ baseUrl: "https://user:{{ vars.url }}@models.example.test/v1" }),
-      userinfo(field("baseUrl")),
-    ],
+    providerEndpoint("https://user:{{ vars.url }}@models.example.test/v1"),
     // Finding 1250: so is literal userinfo, or a variable that is the whole of it, where a variable
     // fills the host or port and the URL does not parse until filled.
-    ...[
-      ["baseUrl", `https://user:${sentinel}@{{ vars.url }}/v1`],
-      ["baseUrl", "https://{{ vars.header }}@{{ vars.url }}/v1"],
-      ["baseUrl", `{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1`],
-      // A baseUrl needs literal slashes after its scheme (finding 1259); a proxy URL does not.
-      ["request/proxy/url", `https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1`],
-      ["baseUrl", `https://[{{ vars.url }}user:${sentinel}@models.test/]`],
-      ["models/0/baseUrl", `https://user:${sentinel}@models.test:{{ vars.port }}/v1`],
-      ["request/proxy/url", `http://u:${sentinel}@{{ vars.url }}`],
-      // A variable scheme may be socks5, where a backslash stays in the user name.
-      ["request/proxy/url", `{{ vars.api }}://u\\x:${sentinel}@{{ vars.url }}:{{ vars.port }}`],
-      ["models/0/request/proxy/url", `http://u:${sentinel}@proxy:{{ vars.port }}`],
-    ].map(([path, url]) => {
-      // A proxy URL sits beside its mode, and a model row has an id.
-      const proxy = { request: { proxy: { mode: "explicit-proxy", url } } };
-      const settings = path.endsWith("proxy/url") ? proxy : { baseUrl: url };
-      const row = path.startsWith("models/") ? { models: [{ id: "m", ...settings }] } : settings;
-      return [gateway(row), userinfo(field(path))];
-    }),
+    providerEndpoint(`https://user:${sentinel}@{{ vars.url }}/v1`),
+    providerEndpoint("https://{{ vars.header }}@{{ vars.url }}/v1"),
+    providerEndpoint(`{{ vars.url }}://user:${sentinel}@{{ vars.api }}/v1`),
+    // A baseUrl needs literal slashes after its scheme (finding 1259); a proxy URL does not.
+    providerProxy(`https:{{ vars.url }}//user:${sentinel}@{{ vars.api }}/v1`),
+    providerEndpoint(`https://[{{ vars.url }}user:${sentinel}@models.test/]`),
+    modelEndpoint(`https://user:${sentinel}@models.test:{{ vars.port }}/v1`),
+    providerProxy(`http://u:${sentinel}@{{ vars.url }}`),
+    // A variable scheme may be socks5, where a backslash stays in the user name.
+    providerProxy(`{{ vars.api }}://u\\x:${sentinel}@{{ vars.url }}:{{ vars.port }}`),
+    // A proxy URL sits beside its mode, and a model row has an id.
+    [
+      gateway({
+        models: [{ id: "m", ...proxySettings(`http://u:${sentinel}@proxy:{{ vars.port }}`) }],
+      }),
+      userinfo(field("models/0/request/proxy/url")),
+    ],
     // A model row's credential header is matched as the text around its variables too.
     [
       gateway({
@@ -3426,6 +3397,8 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
     });
     assertRefused(response, userinfo(field), { label: field, sentinel });
   }
+  await assertOnlyStoredConfiguration(context, original);
+  assert.equal((await readFile(path, "utf8")).includes(sentinel), false);
 
   // A proxy without userinfo, a whole reference, a fallback without userinfo, NO_PROXY and an
   // `@` in a path still save.
@@ -3473,7 +3446,7 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   assert.equal(staleRead.status, 200, JSON.stringify(staleRead.body));
   assert.deepEqual(staleRead.body.data.values, stale);
   const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
-  assertRefused(resaved, userinfo("/proxy/proxyUrl"));
+  assertRefused(resaved, userinfo("/proxy/proxyUrl"), { sentinel });
 });
 
 test("Configuration and Preset saves refuse a user name or password in a URL in any environment map, whatever the variable's name", async (t) => {
