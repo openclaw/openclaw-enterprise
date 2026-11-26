@@ -1,6 +1,6 @@
 ---
 name: github-repository-rest
-description: Open pull requests in approved GitHub repositories with stock gh api.
+description: Use gh api for the GitHub pull request and issue operations your repository grant allows.
 ---
 
 ## Open a pull request with a managed GitHub App Source
@@ -37,5 +37,11 @@ and keep credentials, debug traces and raw errors out of the conversation.
 
 ## Legacy protected repository sessions
 
-Use the configured session's designated client and follow its
-[admitted routes and limits](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+Use this section for a protected session with a legacy Repository grant. Use
+the session's designated `gh` client with the method and path your grant allows.
+OCE supplies authentication. For an authorized issue read, use
+`gh api repos/OWNER/REPO/issues/123`. For an authorized pull request, use
+`gh api --method POST repos/OWNER/REPO/pulls --input "$payload" --jq .html_url`
+with the JSON file described above. Check the grant's
+[draft, head, and base limits](https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository)
+before submitting.

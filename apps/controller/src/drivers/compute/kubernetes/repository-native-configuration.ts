@@ -109,6 +109,26 @@ function replaceGitHubSkillSelection(
   };
 }
 
+export function includeRepositoryRestSkill(
+  configuration: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const skills = object(configuration.skills, "skills");
+  const load = object(skills.load, "skills.load");
+  const extraDirs = load.extraDirs ?? [];
+  if (!Array.isArray(extraDirs) || extraDirs.some((dir) => typeof dir !== "string")) {
+    throw new Error(
+      "Repository credentials require skills.load.extraDirs to be an array of strings.",
+    );
+  }
+  return {
+    ...configuration,
+    skills: {
+      ...skills,
+      load: { ...load, extraDirs: [...new Set([...extraDirs, REPOSITORY_REST_SKILL_DIRECTORY])] },
+    },
+  };
+}
+
 /** Replace the generic GitHub instructions, which recommend commands outside the Repository policy. */
 export function repositoryRestSkillConfiguration(
   configuration: OpenClawConfigurationDocument,
@@ -133,19 +153,11 @@ export function repositoryRestSkillConfiguration(
       },
     };
   }
-  const load = object(skills.load, "skills.load");
-  const extraDirs = load.extraDirs ?? [];
-  if (!Array.isArray(extraDirs) || extraDirs.some((dir) => typeof dir !== "string")) {
-    throw new Error(
-      "Repository credentials require skills.load.extraDirs to be an array of strings.",
-    );
-  }
   const agents = object(configuration.agents, "agents");
-  return {
+  return includeRepositoryRestSkill({
     ...configuration,
     skills: {
       ...skills,
-      load: { ...load, extraDirs: [...new Set([...extraDirs, REPOSITORY_REST_SKILL_DIRECTORY])] },
       entries: { ...entries, github },
     },
     agents: {
@@ -164,5 +176,5 @@ export function repositoryRestSkillConfiguration(
             ),
           }),
     },
-  };
+  });
 }

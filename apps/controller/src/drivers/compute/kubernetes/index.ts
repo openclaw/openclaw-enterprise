@@ -381,6 +381,7 @@ import {
   withoutNetworkProfile,
 } from "./resources/network.ts";
 import {
+  includeRepositoryRestSkill,
   REPOSITORY_CLIENT_BIN,
   repositoryNativeConfiguration,
   repositoryRestSkillConfiguration,
@@ -14326,6 +14327,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         nativeConfiguration,
         publicationAllowed,
       );
+    } else if (
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.repositoryCredentials !== undefined &&
+      revision.repositoryCredentials.authorization === undefined
+    ) {
+      nativeConfiguration = includeRepositoryRestSkill(nativeConfiguration);
     }
     const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,

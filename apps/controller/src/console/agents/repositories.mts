@@ -702,7 +702,7 @@ export function createRepositoryFields(
         !state.options.some(githubLimit));
     mode.disabled = state.disabled;
     scopeHint.textContent = scoped()
-      ? "Read-only Git allows cloning and fetching. Read/write Git also allows pushing. Opening pull requests requires Read/write Git, pull request write permission from the GitHub App and Credential Source, and repository policy approval. The Agent must be able to read every repository in the Source. Other GitHub REST operations are unavailable."
+      ? "Read-only Git allows cloning and fetching. Read/write Git also allows pushing. Opening pull requests requires Read/write Git, pull request write permission from the GitHub App and Credential Source, and repository policy approval. The Agent must be able to read every repository in the Source. Repository policy can allow public metadata reads for selected repositories without credentials. Pull request creation is the only authenticated GitHub REST operation this policy can grant."
       : "After deploying with access profiles, you need a new Agent to switch to Per-repository access.";
     const help = section.querySelector<HTMLElement>(".repository-access-details");
     if (help) {

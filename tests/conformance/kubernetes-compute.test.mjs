@@ -3320,7 +3320,7 @@ test("activation waits for the first repository Git credential install and the n
       return value;
     },
   };
-  const { state, driver, revision, namespace, gatewayName, prepare, markReady } =
+  const { state, driver, revision, namespace, gatewayName, prepare, markReady, read } =
     dedicatedFirstDeployFixture({
       clock,
       sandboxDriver,
@@ -3342,6 +3342,15 @@ test("activation waits for the first repository Git credential install and the n
       },
     });
   assert.equal((await prepare()).ready, false);
+  // The protected revision still offers the publication skill through its Gateway.
+  const gatewayPod = read("Deployment", gatewayName).spec.template.spec;
+  const configVolume = gatewayPod.volumes.find(({ name }) => name === "openclaw-configuration");
+  const gatewayConfig = JSON.parse(
+    read("ConfigMap", configVolume.configMap.name).data["openclaw.json"],
+  );
+  assert.deepEqual(gatewayConfig.skills.load.extraDirs, [
+    "/usr/local/lib/oce/skills/github-repository-rest",
+  ]);
   markReady(gatewayName);
   assert.equal((await prepare()).ready, false);
   assert.equal(provisions.length, 1);

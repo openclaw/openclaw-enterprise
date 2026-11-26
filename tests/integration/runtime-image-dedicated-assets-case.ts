@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
-import { repositoryRestSkillConfiguration } from "../../apps/controller/src/drivers/compute/kubernetes/repository-native-configuration.ts";
+import {
+  includeRepositoryRestSkill,
+  repositoryRestSkillConfiguration,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-native-configuration.ts";
 import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
 import { list, parseJson, record } from "../fixtures/runtime-image-startup/wire.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
@@ -140,6 +143,12 @@ export async function verifyDedicatedGatewayAssets(
       gitOnly.some((skill) => skill.name === "github-repository-rest" && skill.modelVisible),
       false,
     );
+    // An existing protected Codex grant uses the same packaged skill through the Gateway.
+    const protectedSkills = await listRepositorySkills(t, includeRepositoryRestSkill({}));
+    const visiblePublication = protectedSkills.filter(
+      (skill) => skill.name === "github-repository-rest" && skill.modelVisible,
+    );
+    assert.equal(visiblePublication.length, 1);
   }
   const { stdout } = await runDocker([
     "exec",
