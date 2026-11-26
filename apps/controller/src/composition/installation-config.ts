@@ -104,6 +104,7 @@ import {
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import type { StrandsBoxOptions } from "../drivers/sandbox/strands-box.ts";
 import { ManagedOpenShellSandbox } from "../drivers/sandbox/openshell/managed.ts";
 import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import {
@@ -894,6 +895,8 @@ export async function readPublicCaBundle(path: string): Promise<string> {
   return certificates.map((certificate) => new X509Certificate(certificate).toString()).join("\n");
 }
 
+const STRANDS_STOCK_MODEL_ID = "strands-box-sandbox-stock-model-credential-preview-v1";
+
 export async function loadInstallationConfiguration(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -1065,6 +1068,15 @@ async function composeInstallationConfiguration(
   let repositoryTransportConfiguration = repositoryConfiguration?.transport;
   const sandboxSelection =
     drivers.sandbox === undefined ? undefined : object(drivers.sandbox, "drivers.sandbox");
+  if (sandboxSelection?.id === STRANDS_STOCK_MODEL_ID) {
+    throw new InstallationFieldError([
+      {
+        path: "/drivers/sandbox/id",
+        code: "INVALID_VALUE",
+        message: "Select strands-box-sandbox to configure the bundled Strands Box Sandbox Driver.",
+      },
+    ]);
+  }
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
@@ -1233,7 +1245,7 @@ async function composeInstallationConfiguration(
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
-  const sandbox =
+  let sandbox =
     sandboxSelection === undefined
       ? undefined
       : selected(
@@ -1242,6 +1254,14 @@ async function composeInstallationConfiguration(
           sandboxPackage?.implementation ?? (boxPackage ? "strands-box" : "openshell"),
           sandboxPackage?.module ?? boxPackage ?? bundledSandboxPackage!,
         );
+  if (
+    boxPackage &&
+    sandbox &&
+    (sandbox.configuration as unknown as StrandsBoxOptions).kubernetes.stockLauncher
+  ) {
+    // Pin the saved revision to this credential boundary before a worker can prepare it.
+    sandbox = Object.freeze({ ...sandbox, id: STRANDS_STOCK_MODEL_ID });
+  }
   let tokenServiceSelection: SelectedDriverConfiguration | undefined;
   if (drivers.token_service !== undefined) {
     const selection = object(drivers.token_service, "drivers.token_service");
@@ -1607,7 +1627,7 @@ async function composeInstallationConfiguration(
       }
       return {
         sandboxDriver: new boxPackage.StrandsBoxSandboxDriver(
-          sandbox.configuration as unknown as import("../drivers/sandbox/strands-box.ts").StrandsBoxOptions,
+          sandbox.configuration as unknown as StrandsBoxOptions,
           {
             id: sandbox.id,
             authentication: kubernetes.authentication,

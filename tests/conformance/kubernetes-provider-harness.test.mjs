@@ -16,7 +16,10 @@ import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
-import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  KubernetesComputeDriver,
+  kubernetesNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
 import {
@@ -40,7 +43,16 @@ import {
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
-import { tenant, authContext, digest } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { loadInstallationFile } from "../helpers/installation-file.ts";
+import {
+  tenant,
+  authContext,
+  digest,
+  gatewayRouting,
+  routedGatewayConfiguration,
+  routedRevision,
+} from "../helpers/kubernetes-routed-scenarios.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
@@ -68,6 +80,54 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   });
   return fixture;
 }
+
+test("Box keeps existing receiver revisions and refuses the other credential boundary", async (t) => {
+  const installation = createInstallationDriverConfiguration();
+  const compute = installation.drivers.compute.configuration;
+  compute.gatewayRouting = gatewayRouting;
+  delete compute.network.gatewayClients;
+  compute.network.gatewayTrustedProxyCidrs = routedGatewayConfiguration().trustedProxies;
+  compute.network.providerHarness = { mode: "namespace", port: 18790 };
+  const load = (stock, id = "strands-box-sandbox") => {
+    const configuration = {
+      kubernetes: {
+        seccompProfile: "oce-strands-box-v0.3.1.json",
+        nodeSelector: { "kubernetes.io/arch": "arm64" },
+        controlPlanePeer: { namespace: "control-plane", podLabels: { app: "worker" } },
+        ...(stock && { stockLauncher: { namespace: kubernetesNamespaceName(tenant.id) } }),
+      },
+      policy: { network: { endpoints: [{ host: "api.openai.com", ports: [443] }] } },
+    };
+    return loadInstallationFile(t, {
+      ...installation,
+      drivers: { ...installation.drivers, sandbox: { id, configuration } },
+    });
+  };
+  const receiver = await load(false);
+  const stock = await load(true);
+  // Existing revisions must still resolve to the same Deployment without opting in.
+  const saved = routedRevision(receiver.computeDriver, { sandboxDriverId: "strands-box-sandbox" });
+  const namespace = { ...tenant, name: kubernetesNamespaceName(tenant.id) };
+  assert.equal(
+    receiver.sandboxDriver.harnessResource({ revision: saved, namespace }).resourceName,
+    "strands-d467e45c411fb6002cc7027f5595ca6d",
+  );
+  await assert.rejects(load(false, stock.sandboxDriver.id), (error) =>
+    error.details?.some(
+      ({ path, code }) => path === "/drivers/sandbox/id" && code === "INVALID_VALUE",
+    ),
+  );
+  for (const [api, worker] of [
+    [receiver, stock],
+    [stock, receiver],
+  ]) {
+    assert.equal(api.installation.drivers.sandbox.id, api.sandboxDriver.id);
+    const revision = routedRevision(api.computeDriver, { sandboxDriverId: api.sandboxDriver.id });
+    await assert.rejects(worker.computeDriver.prepareRevision(revision), {
+      message: "AgentRevision is pinned to another SandboxDriver.",
+    });
+  }
+});
 
 test("the Box provisioner receives the launcher for a mounted private hook directory", async () => {
   const fixture = providerEndpointFixture();

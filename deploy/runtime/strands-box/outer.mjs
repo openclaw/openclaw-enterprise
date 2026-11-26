@@ -37,20 +37,32 @@ const tls = {
 };
 // A restarted supervisor cannot inherit the admitted execution's TLS identity.
 unlinkSync(directory + "/key.pem");
-const box = startupFailure
-  ? undefined
-  : spawn("/opt/strands-box/strands-box", ["run", "--config", "/etc/strands-box/box.toml"], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: { HOME: "/home/node", PATH: process.env.PATH, EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
-    });
+if (manifest.stockTransport === true && manifest.gateway !== undefined) {
+  throw new Error("Unexpected stock Strands Box Gateway route");
+}
+const stockControl =
+  !startupFailure && manifest.stockTransport === true
+    ? await (await import("./stock-launch-transport.mjs")).acceptStockControl(tls.cert)
+    : undefined;
+const box =
+  startupFailure || stockControl
+    ? undefined
+    : spawn("/opt/strands-box/strands-box", ["run", "--config", "/etc/strands-box/box.toml"], {
+        stdio: ["pipe", "pipe", "inherit"],
+        env: { HOME: "/home/node", PATH: process.env.PATH, EXPERIMENTAL_LINUX_SUPPORT: "TRUE" },
+      });
 let shutdownRequested = false;
 const { stop } = serveHarness(manifest, {
   tls,
   probePath,
-  reader: box?.stdout,
-  writer: box?.stdin,
+  reader: stockControl ?? box?.stdout,
+  writer: stockControl ?? box?.stdin,
   status: () => nativeStatus(probePath, startupFailure),
   terminate() {
+    if (stockControl) {
+      stockControl.destroy();
+      process.exitCode = shutdownRequested ? 0 : 1;
+    }
     box?.kill("SIGTERM");
     if (box) setTimeout(() => box.kill("SIGKILL"), 8000).unref();
   },

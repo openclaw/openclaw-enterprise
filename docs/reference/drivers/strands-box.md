@@ -15,8 +15,47 @@ Use a Gateway runtime that supports the Codex plugin setting `appServer.tlsPeerC
 
 A replacement Pod or restarted supervisor cannot reuse the recorded execution identity. Admit a new revision to resume after execution loss. Use API key authentication for the model and workspace workflow.
 
-Managed Codex plugins require a ChatGPT workspace credential. The contained
+## Default container receiver
+
+The receiver requires a Box build with the container-agent feature. The
+contained Agent can read its model credential. Managed Codex plugins require a
+ChatGPT workspace credential. The contained
 launcher can install a selected plugin on first boot. A model turn also requires
 the workspace to permit the Harness permission profile, `:danger-full-access`.
 End-to-end qualification with managed plugins is pending.
 Box records denied destinations in its network policy audit.
+
+## Stock launcher preview
+
+Use a separate, operator-controlled installation for this preview. In the
+`strands-box-sandbox` Driver configuration, keep the node selector and
+control-plane peer. Set these fields, replacing `team-test` with the exact
+Kubernetes tenant name.
+
+```yaml
+kubernetes:
+  stockLauncher:
+    namespace: team-test
+  seccompProfile: oce-strands-box-v0.3.1.json
+policy:
+  network:
+    endpoints:
+      - host: api.openai.com
+        ports: [443]
+```
+
+This installation refuses other tenants. Select a dedicated Codex Agent using
+an OpenAI API key and the Responses endpoint. Box 0.3.1 substitutes the key
+for a placeholder on HTTPS `POST api.openai.com/v1/responses`. Every process
+in the Agent may use this route. The caller controls the model, body and
+hosted tools. Use a dedicated provider project with spending limits.
+
+The saved revision uses a distinct Sandbox identity and ordinary
+`unprotected` admission. Git, staged Sources, additional endpoints, standalone
+search and managed plugins are unavailable. Stop the old Agent and confirm
+retirement with the original Worker before switching launchers. Revoke a
+previously exposed key. Rotation requires a fresh revision. For immediate
+withdrawal, revoke at the provider.
+
+Read the [deployment and isolation requirements](../../flows/strands-box-companion.md#stock-launcher)
+before enabling the preview. Omit `stockLauncher` to keep the receiver.
