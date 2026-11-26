@@ -6,6 +6,22 @@ Strands control-plane peer to select that release's worker Pods. The chart grant
 the worker TCP 18791 to Strands Agent Pods in its routed namespaces and read access to individual ReplicaSets for Pod ownership checks. The provider
 creates tenant resources and uses the installation's DNS peer and Gateway route.
 
+For a dedicated Codex Agent, add the supervisor route below to
+`drivers.compute.configuration.network`. Without it, the worker refuses
+to prepare the revision.
+
+```yaml
+providerHarness:
+  mode: namespace
+  port: 18790
+```
+
+Before deployment, check `/opt/oce/runtime/provenance.json` in the Gateway
+image. Verify that `source` is `https://github.com/openclaw/openclaw` and
+`commit` matches the controller checkout’s `deploy/runtime/openclaw-source.json`.
+Check the image directly. Gateway readiness alone does not verify its provenance.
+Pin the image by digest and use it as the base for the companion image.
+
 The first Gateway issues workspace-node setup. The trusted file node reports
 migration or baseline failures through a private socket. The supervisor exposes
 that failure on the authenticated diagnostic Service and starts Box only after
@@ -20,3 +36,53 @@ launcher can install a selected plugin on first boot. A model turn also requires
 the workspace to permit the Harness permission profile, `:danger-full-access`.
 End-to-end qualification with managed plugins is pending.
 Box records denied destinations in its network policy audit.
+
+## Experimental OpenAI API key isolation
+
+By default, Codex receives the model API key. To keep that key in the trusted
+supervisor container, build the controller and [companion image](../../flows/strands-box-companion.md)
+from the same revision. Set the following fields in the Sandbox Driver configuration.
+
+```yaml
+policy:
+  network:
+    experimentalOpenAiModelCredential: true
+    endpoints:
+      - host: api.openai.com
+        ports: [443]
+```
+
+Use a dedicated Codex Harness with a workspace node and ordinary API-key
+authentication. Set [`drivers.compute.configuration.runtime.modelProvider`](kubernetes-compute/model-provider.md)
+to protocol `openai-responses` and base URL `https://api.openai.com/v1` before
+deploying the revision. Disable managed plugins and standalone web search.
+Other endpoints, authentication modes and custom launch inputs are unsupported.
+
+Start with a **new Agent** on an installation whose API and Workers all run
+this build with the preview enabled. Deployments admitted by this API record
+the credential mode in the Sandbox Driver ID. A Worker with a different ID
+refuses the revision before projecting the key.
+
+Switching modes on an existing Agent is unsupported. Cleanup revisits earlier
+revisions even after Stop. Keep the original Worker and configuration available
+to retire those executions. Earlier preview builds also used the ordinary ID,
+so an ordinary Worker can give Codex the key for those revisions. For an
+upgrade, use a separate preview installation, a fresh Agent and a new key.
+Revoke any key previously exposed to the workload.
+
+**Every process in the Sandbox can use everything the key permits on the Responses
+endpoint.** Box checks the temporary bearer and substitutes the key only on
+HTTPS POST to the canonical path `/v1/responses`. The caller controls the
+query, body and other headers, including applicable organization and project
+headers. It can select models, spend quota and ask the provider to use tools
+or send data to remote MCP servers. Trust the provider and its responses.
+
+Use an application-specific key in a dedicated project. Verify the effective
+project and organization, restrict endpoint, model and data access, and set
+enforced limits where available. Configure alerts and name an operator who
+can revoke the key. Alerts alone do not cap spending.
+
+To rotate the key, stop the execution, verify it can no longer serve requests,
+revoke and replace the key, then deploy a new Agent revision. The preview
+provides no live withdrawal, protected Credential Source grants or GitHub
+access. Installed qualification is pending.

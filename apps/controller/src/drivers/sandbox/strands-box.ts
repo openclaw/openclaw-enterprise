@@ -62,6 +62,7 @@ export interface StrandsBoxOptions {
   readonly policy: {
     readonly network: {
       readonly endpoints: readonly { readonly host: string; readonly ports: readonly number[] }[];
+      readonly experimentalOpenAiModelCredential?: boolean;
     };
   };
 }
@@ -107,6 +108,7 @@ export const configurationSchema = Object.freeze({
           required: ["endpoints"],
           additionalProperties: false,
           properties: {
+            experimentalOpenAiModelCredential: { type: "boolean" },
             endpoints: {
               type: "array",
               maxItems: 32,

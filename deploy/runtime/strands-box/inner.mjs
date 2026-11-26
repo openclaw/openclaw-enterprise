@@ -15,6 +15,18 @@ import {
 } from "./transport.mjs";
 
 const manifest = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (manifest.proxyOpenAiModelCredential !== undefined) {
+  // Box checks the exact per-execution bearer on each request. Refuse an
+  // unmediated launch or manifest override before opening any workload files.
+  if (
+    manifest.proxyOpenAiModelCredential !== true ||
+    !/^strands_box_[0-9a-f]{64}$/u.test(process.env.OPENAI_API_KEY ?? "") ||
+    Object.hasOwn(manifest.environment, "OPENAI_API_KEY") ||
+    Object.keys(manifest.secretEnvironment ?? {}).length
+  ) {
+    throw new Error("Strands Box model placeholder is missing or overridden.");
+  }
+}
 const boxProxy = new URL(process.env.HTTPS_PROXY);
 if (boxProxy.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(boxProxy.hostname)) {
   throw new Error("Missing Box-owned proxy");
