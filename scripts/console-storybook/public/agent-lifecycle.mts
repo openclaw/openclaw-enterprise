@@ -731,6 +731,7 @@ export function createAgentLifecycle(
         }
       }
       if (deployment.reads !== undefined && ++deployment.reads > 1) {
+        delete deployment.reads;
         deployment.progress = null;
         if (scenario.candidateFailsOnPoll && deployment.deploymentId === candidateRevisionId) {
           deployment.status = "failed";
