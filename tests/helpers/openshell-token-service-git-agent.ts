@@ -73,10 +73,12 @@ type RepositoryOption = {
 export async function verifyNativeGitAgent(
   t: TestContext,
   harness: "openclaw" | "codex",
-  proof: "git" | "pull-request" = "git",
+  proof: "git" | "pull-request" | { publicMetadata?: boolean } = "git",
 ) {
   const openClaw = harness === "openclaw";
   const publication = proof === "pull-request";
+  const publicMetadata = typeof proof === "object" && proof.publicMetadata === true;
+  const verifyWriteAccess = !openClaw && !publication && !publicMetadata;
   const origin = loopback("OCC_URL", "http:");
   const endpoint = loopback(`${management}_GATEWAY_ENDPOINT`, "https:");
   const key = await serviceKey();
@@ -91,7 +93,9 @@ export async function verifyNativeGitAgent(
   const sharedSourceId =
     openClaw || publication ? required(`${selection}_SHARED_GIT_SOURCE_ID`) : undefined;
   const writableRepository =
-    openClaw && !publication ? undefined : required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`);
+    verifyWriteAccess || publication
+      ? required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`)
+      : undefined;
   const deniedRef = required(`${selection}_DENIED_REPOSITORY_REF`);
   assert.ok(/^ns_[a-f0-9-]{36}$/.test(namespaceId) && /^cs_[a-f0-9-]{36}$/.test(modelSourceId));
   assert.ok(/^ccr_[a-f0-9-]{36}$/.test(clientId));
@@ -192,14 +196,13 @@ export async function verifyNativeGitAgent(
       repositoryName.test(denied.repository),
     "Both repository references must be in the finite Namespace registry.",
   );
-  const tcpControl =
-    openClaw || publication
-      ? undefined
-      : {
-          host: required(`${selection}_TCP_CONTROL_HOST`),
-          address: required(`${selection}_TCP_CONTROL_ADDRESS`),
-          port: Number(required(`${selection}_TCP_CONTROL_PORT`)),
-        };
+  const tcpControl = verifyWriteAccess
+    ? {
+        host: required(`${selection}_TCP_CONTROL_HOST`),
+        address: required(`${selection}_TCP_CONTROL_ADDRESS`),
+        port: Number(required(`${selection}_TCP_CONTROL_PORT`)),
+      }
+    : undefined;
   const tcpProbe = tcpControl && (await startNativeTcpProbe(t, tcpControl));
   const previous = new Set(
     (await data<CredentialSourceWire[]>("GET", `${base}/credential-sources`, 200)).map(
@@ -472,17 +475,21 @@ export async function verifyNativeGitAgent(
       gitSource.clientId === clientId &&
       (openClaw
         ? gitSource.id === sharedSourceId
-        : gitSource.scope.permissions.contents === "write"),
+        : gitSource.scope.permissions.contents === "write" ||
+          (publicMetadata && gitSource.scope.permissions.contents === "read")),
     "Deployment must derive the finite Git Source from the selected Client.",
   );
-  const allowedName = gitSource.scope.repositories.find(
+  const selectedRepository = gitSource.scope.repositories.find(
     ({ repository }) =>
       repository === allowed.repository || repository.split("/")[1] === allowed.repository,
-  )?.repository;
+  );
   assert.ok(
-    allowedName && repositoryName.test(allowedName) && allowedName.includes("/"),
+    selectedRepository &&
+      repositoryName.test(selectedRepository.repository) &&
+      selectedRepository.repository.includes("/"),
     "The issued repository must match the saved reference.",
   );
+  const allowedName = selectedRepository.repository;
   const owner = allowedName.split("/")[0]!;
   const deniedName = denied.repository.includes("/")
     ? denied.repository
@@ -581,8 +588,8 @@ export async function verifyNativeGitAgent(
     return result.choices[0].message.content?.trim() ?? "";
   }
 
-  // Run Git with the Harness's startup environment and native shell. Management
-  // exec stages the script and checks its exit marker without supplying a token.
+  // The Harness runs the probes in its native shell. Management exec stages
+  // the script and checks its exit marker without supplying a token.
   async function runInHarness(runtime: typeof reader, script: string) {
     const file = `${runtime.workspacePath}/.occ-git-${randomUUID()}`;
     const nonce = randomUUID();
@@ -671,6 +678,71 @@ export async function verifyNativeGitAgent(
       { timeoutMs: 30_000, intervalMs: 500 },
     );
   }
+
+  if (publicMetadata) {
+    const apiHost = "api.github.com";
+    const selectedPath = `/repos/${allowedName}`;
+    const metadata = Object.values(policies).flatMap((entry) => {
+      const rule = asRecord(entry);
+      const endpoints = rule?.endpoints;
+      return Array.isArray(endpoints)
+        ? endpoints.flatMap((endpoint) => {
+            const route = asRecord(endpoint);
+            return route?.host === apiHost ? [{ binaries: rule?.binaries, route }] : [];
+          })
+        : [];
+    });
+    assert.equal(metadata.length, 1, "The loaded policy must have one GitHub metadata endpoint.");
+    const { binaries, route } = metadata[0]!;
+    assert.deepEqual(binaries, [{ path: "/usr/bin/curl" }]);
+    assert.deepEqual(route.ports, [443]);
+    assert.equal(route.path, selectedPath);
+    assert.equal(route.protocol, "rest");
+    assert.deepEqual(route.rules, [{ allow: { method: "GET", path: selectedPath } }]);
+    assert.deepEqual(route.deny_rules, [{ method: "HEAD", path: selectedPath }]);
+    assert.equal(route.credential_binding, undefined, "Metadata must have no Provider binding.");
+
+    // The Harness sends no credentials and returns only a completion marker.
+    // Distinct Supervisor decisions prove both failed requests were blocked inside this Sandbox.
+    const { repositoryId } = selectedRepository;
+    assert.match(repositoryId, /^\d+$/);
+    const curl = "/usr/bin/curl -q --silent --show-error --fail --max-time 20";
+    const forbidden = [
+      { method: "GET", path: `/repos/${deniedName}` },
+      { method: "HEAD", path: selectedPath },
+    ];
+    await expectNativeDecisions(
+      reader,
+      [
+        (line) =>
+          line.message.startsWith("HTTP:GET [INFO] ALLOWED ") &&
+          line.message.includes(`GET https://${apiHost}${selectedPath} `),
+        ...forbidden.map(
+          ({ method, path }) =>
+            (line: OpenShellSandboxLogLine) =>
+              line.message.startsWith(`HTTP:${method} [MED] DENIED `) &&
+              line.message.includes(`L7_REQUEST deny ${method} ${apiHost}:443${path} reason=`),
+        ),
+      ],
+      () =>
+        runInHarness(
+          reader,
+          [
+            `${curl} 'https://${apiHost}${selectedPath}' | node -e '` +
+              'const repo = JSON.parse(require("node:fs").readFileSync(0, "utf8")); ' +
+              "process.exit(repo.full_name.toLowerCase() === process.argv[1] && String(repo.id) === process.argv[2] " +
+              `&& repo.private === false ? 0 : 1)' '${allowedName}' '${repositoryId}'`,
+            ...forbidden.map(
+              ({ method, path }) =>
+                `code=0; ${curl}${method === "HEAD" ? " --head" : ""} -o /dev/null ` +
+                `'https://${apiHost}${path}' 2>/dev/null || code=$?; test "$code" -eq 22`,
+            ),
+          ].join("\n"),
+        ),
+    );
+    return;
+  }
+
   // OpenShell can redact the service query in the denial event. The stock push
   // and fetch choose different services on the same discovery path.
   function discoveryDenied(

@@ -4390,6 +4390,10 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
     // There is deliberately no second chat.send: only native startup recovery can
     // admit the continuation whose final answer this observer waits for.
     const description = `automatic interrupted-turn completion after ${replacement}`;
+    const countMessages = (history, role, text) =>
+      history.messages.filter(
+        (message) => message.role === role && messageText(message).trim() === text,
+      ).length;
     let lastObservation = () => "history=unavailable";
     const recovered = await waitFor(
       () => `${description} (${lastObservation()})`,
@@ -4402,10 +4406,7 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
         const { session } = await gatewayCall(topology, "sessions.describe", {
           key: interrupted.sessionKey,
         });
-        const hasAnswer = (nonce) =>
-          history.messages.some(
-            (message) => message.role === "assistant" && messageText(message).trim() === nonce,
-          );
+        const hasAnswer = (nonce) => countMessages(history, "assistant", nonce) > 0;
         lastObservation = () => {
           const answered = hasAnswer(interrupted.nonce);
           const restarted = history.messages.some(
@@ -4414,57 +4415,80 @@ async function assertInterruptedGatewayTurnResumes(context, topology) {
           const queued = queuedNonce === undefined ? "none" : hasAnswer(queuedNonce);
           const active =
             typeof session.hasActiveRun === "boolean" ? session.hasActiveRun : "unknown";
-          return `active=${active} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
+          const sameSession = history.sessionId === interrupted.sessionId;
+          return `active=${active} sameSession=${sameSession} restart=${restarted} answer=${answered} queuedAnswer=${queued}`;
         };
         return !session.hasActiveRun && hasAnswer(interrupted.nonce) ? history : undefined;
       },
     );
-    assert.equal(
-      recovered.sessionId,
-      interrupted.sessionId,
-      "recovery must retain session identity",
-    );
-    assert.equal(
-      recovered.messages.filter(
-        (message) => message.role === "user" && messageText(message).trim() === interrupted.prompt,
-      ).length,
-      1,
-      "recovery must not resubmit the original user input",
-    );
-    assert.equal(
-      recovered.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
-        .length,
-      1,
-      "native startup must admit one restart continuation",
-    );
-    assert.equal(
-      recovered.messages.filter(
-        (message) =>
-          message.role === "assistant" && messageText(message).trim() === interrupted.nonce,
-      ).length,
-      1,
-      "the interrupted task must deliver one final result",
-    );
-    assert.equal(
-      await readFileInPod(
+    async function assertRecoveredTurn(history) {
+      assert.ok(
+        history.sessionId === interrupted.sessionId,
+        "recovery must retain session identity",
+      );
+      assert.equal(
+        countMessages(history, "user", interrupted.prompt),
+        1,
+        "recovery must not resubmit the original user input",
+      );
+      assert.equal(
+        history.messages.filter((message) => message.__openclaw?.continuation?.source === "restart")
+          .length,
+        1,
+        "native startup must admit one restart continuation",
+      );
+      assert.equal(
+        countMessages(history, "assistant", interrupted.nonce),
+        1,
+        "the interrupted task must deliver one final result",
+      );
+      const ledgerContents = await readFileInPod(
         topology.placement,
         topology.harnessPod.metadata.name,
         interrupted.ledger,
-      ),
-      "started\n",
-      "continuation must inspect the retained effect without repeating it",
-    );
+      );
+      assert.ok(
+        ledgerContents === "started\n",
+        "continuation must inspect the retained effect without repeating it",
+      );
+    }
+    await assertRecoveredTurn(recovered);
     if (queuedNonce !== undefined) {
       // Stop shuts down the workload; deployment admits eligible native continuation.
       // The follow-up was accepted before Stop and must not require another user send.
-      await assertConversation(topology, interrupted.sessionKey, queuedNonce);
-      finished.push([
+      await waitForGatewayHistory(
+        topology,
         interrupted.sessionKey,
-        await gatewayCall(topology, "chat.history", {
-          sessionKey: interrupted.sessionKey,
-          limit: 100,
-        }),
-      ]);
+        "the queued reply to finish after explicit stop",
+        async (history) => {
+          if (countMessages(history, "assistant", queuedNonce) === 0) {
+            return undefined;
+          }
+          const { session } = await gatewayCall(topology, "sessions.describe", {
+            key: interrupted.sessionKey,
+          });
+          return session.hasActiveRun === false ? history : undefined;
+        },
+      );
+      const finalHistory = await gatewayCall(topology, "chat.history", {
+        sessionKey: interrupted.sessionKey,
+        limit: 100,
+      });
+      // A replay during follow-up processing can invalidate the earlier recovery check.
+      await assertRecoveredTurn(finalHistory);
+      assert.equal(
+        finalHistory.messages.filter(
+          (message) => message.role === "user" && messageText(message).includes(queuedNonce),
+        ).length,
+        1,
+        "the recovered session must contain one queued user input",
+      );
+      assert.equal(
+        countMessages(finalHistory, "assistant", queuedNonce),
+        1,
+        "the queued turn must deliver one exact result",
+      );
+      finished.push([interrupted.sessionKey, finalHistory]);
     } else {
       finished.push([interrupted.sessionKey, recovered]);
     }

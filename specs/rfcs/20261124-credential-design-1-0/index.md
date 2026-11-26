@@ -130,9 +130,10 @@ Repository grants permit Read or Read/write Git. GitHub enforces repository and 
 ## 1.0 scope and tradeoffs
 
 - OCC TokenService can use OpenShell's embedded Proxy or a compatible standalone Proxy such as iron-proxy, with routing enforced by the Sandbox. OpenShell TokenService uses native OpenShell delivery. Each composition requires qualification.
-- Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console and OpenClaw Gateway consumers require separate Source authorization.
+- Sandbox delivery uses push or native providers. Request-time credential pulls and embedded Harness adoption are deferred. Trusted Console consumers require separate Source authorization.
+- The proposed [Gateway startup credentials RFC](../20261125-gateway-startup-credentials.md) would let an operator explicitly bind a static Source to the dedicated OpenClaw Gateway. That binding authorizes a usable copy outside Credential Proxy request restrictions. This path is not implemented; Slack Channel startup still uses Namespace Secrets.
 - Credential-free metadata uses separately admitted Sandbox network access. For example, an Agent can send `GET https://api.github.com/repos/acme/widgets` and receive the upstream response. No Source, credential injection, OCC callback, or response filtering is required. This retires the [earlier protected metadata offer](tokenservice-cutover-contract.md#proposed-change-to-protected-github-metadata).
-- Remove `LegacyEgressProxyDriver` after retiring its protected exchanges. Its implementation remains in current code pending removal. Credential Gateway and Credential Refresh Driver selection is already unsupported; the OpenClaw Gateway continues to serve the Agent.
+- Remove `LegacyEgressProxyDriver` after retiring its protected exchanges. Its implementation remains in current code pending removal. Credential Gateway and Credential Refresh Driver selection is already unsupported; the separate OpenClaw Gateway continues to serve the Agent.
 
 ## Detailed decisions
 

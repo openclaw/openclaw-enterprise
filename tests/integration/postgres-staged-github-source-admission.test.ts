@@ -25,6 +25,7 @@ import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandb
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import { compileOpenShellCredentialPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-credential-policy.ts";
 import type { OpenShellSandboxProviderStatus } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -195,11 +196,24 @@ test(
       host: "chatgpt.com",
       ports: [{ from: 443, to: 443 }],
     };
+    const metadataGrant = {
+      id: "repository-metadata",
+      binary: "/usr/bin/curl",
+      host: "api.github.com",
+      ports: [{ from: 443, to: 443 }],
+    };
+    const metadataRequest = (repository: string) => ({
+      binary: metadataGrant.binary,
+      host: metadataGrant.host,
+      ports: metadataGrant.ports,
+      requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+    });
     const installation = {
       ...buildSandboxInstallation(),
       iam: defaultUsersIAM(),
       sandboxNetworkPolicyCeiling: [
         modelGrant,
+        metadataGrant,
         {
           ...modelGrant,
           id: "openclaw-model",
@@ -1017,7 +1031,7 @@ test(
       assert.ok(repositoryInjection);
       assert.deepEqual(
         deployedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
-        publication,
+        [...grants.map(({ repository }) => metadataRequest(repository)), ...publication],
       );
       assert.deepEqual(
         repositoryInjection.allowedRequests.filter(({ host }) => host === "api.github.com"),
@@ -1098,6 +1112,44 @@ test(
             host: "chatgpt.com",
             ports: [{ from: 443, to: 443 }],
             requestPolicy: { type: "http", method, path },
+          })),
+        );
+      }
+      // The designated curl GET routes must remain network-only even when gh POST uses the same host.
+      assert.ok(
+        deployedPolicy.injectionPolicies.every(({ allowedRequests }) =>
+          allowedRequests.every(
+            ({ binary, host, requestPolicy }) =>
+              binary !== metadataGrant.binary ||
+              host !== metadataGrant.host ||
+              requestPolicy?.type !== "http" ||
+              requestPolicy.method !== "GET",
+          ),
+        ),
+      );
+      // The public policy must already be present on the held Sandbox if it receives a Source withdrawal.
+      assert.ok(revision.sandboxPolicy);
+      const { idle, admitted: active } = stagedCredentialPolicies(
+        { network_policies: revision.sandboxPolicy.defaults },
+        revision,
+        revision.sandboxPolicy,
+      );
+      for (const policy of [idle, active]) {
+        const metadataEndpoints = Object.values(asRecord(policy.network_policies) ?? {})
+          .flatMap(
+            (rule) => (asRecord(rule)?.endpoints as Record<string, unknown>[] | undefined) ?? [],
+          )
+          .filter((endpoint) => endpoint.host === metadataGrant.host);
+        assert.deepEqual(
+          metadataEndpoints,
+          grants.map(({ repository }) => ({
+            host: metadataGrant.host,
+            ports: [443],
+            path: `/repos/${repository}`,
+            protocol: "rest",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [{ allow: { method: "GET", path: `/repos/${repository}` } }],
+            deny_rules: [{ method: "HEAD", path: `/repos/${repository}` }],
           })),
         );
       }
@@ -2025,7 +2077,7 @@ test(
     const scopedPublication = [publicationRequest(secondRepository.repository)];
     assert.deepEqual(
       scopedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
-      scopedPublication,
+      [...repositories.map(({ repository }) => metadataRequest(repository)), ...scopedPublication],
     );
     assert.deepEqual(
       scopedPolicy.injectionPolicies
@@ -2116,7 +2168,10 @@ test(
       gitRoutes.allowedRequests,
       policy.networkAccessPolicy.allowed.filter(({ host }) => host === "github.com"),
     );
-    assert.ok(policy.networkAccessPolicy.allowed.every(({ host }) => host !== "api.github.com"));
+    assert.deepEqual(
+      policy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
+      [metadataRequest(secondRepository.repository)],
+    );
     assert.deepEqual(
       new Set(
         gitRoutes.allowedRequests.map(
@@ -2207,8 +2262,9 @@ test(
       ),
     );
     assert.ok(limitedRequests.every(({ host }) => host !== "api.github.com"));
-    assert.ok(
-      limitedPolicy.networkAccessPolicy.allowed.every(({ host }) => host !== "api.github.com"),
+    assert.deepEqual(
+      limitedPolicy.networkAccessPolicy.allowed.filter(({ host }) => host === "api.github.com"),
+      fullRepositoryPolicy.grants.map(({ repository }) => metadataRequest(repository)),
     );
 
     const retiringClient = await registerScopedClient("Retiring GitHub App", namespaceId);

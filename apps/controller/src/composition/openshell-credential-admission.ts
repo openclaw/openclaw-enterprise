@@ -1,6 +1,5 @@
 import type {
   AdmittedRepositoryBinding,
-  DeploymentRequestMatch,
   GitHubAppInstallationCredentialSource,
   RepositoryNetworkGrant,
   RepositoryNetworkPolicyCeiling,
@@ -11,9 +10,6 @@ import {
 } from "@openclaw-enterprise/occ";
 
 import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/openshell.ts";
-import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
-import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
-
 import { openShellRepositoryCredentialRequests } from "../drivers/credential-proxy/openshell-repository-policy.ts";
 import {
   repositoryGitRestOperations,
@@ -25,6 +21,9 @@ import {
   resolveSelectedRepositoryScope,
   type GitHubRepositoryRegistry,
 } from "../drivers/repo/github/access/registry.ts";
+import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
+import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
+import { openShellRepositoryMetadataRequest } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import { isGitHubAppSourceScopeCurrent } from "../drivers/token-service/github-app-source.ts";
 
 /** Qualify the installed native pair against the complete admitted deployment policy. */
@@ -174,7 +173,7 @@ export function admitOpenShellRepositoryCredentials(
   input: OpenShellRepositorySourceSelection & {
     readonly grants: readonly RepositoryNetworkGrant[];
   },
-): readonly DeploymentRequestMatch[] | undefined {
+): ReturnType<NonNullable<ControllerOptions["repositoryCredentialAdmission"]>> {
   if (!registry || !input.grants.length) {
     return undefined;
   }
@@ -193,8 +192,11 @@ export function admitOpenShellRepositoryCredentials(
       return undefined;
     }
     const gitRequests = openShellRepositoryCredentialRequests(grants);
+    const publicNetworkRequests = grants.map(({ repository }) =>
+      openShellRepositoryMetadataRequest(repository),
+    );
     if (source.scope.permissions.pull_requests !== "write") {
-      return gitRequests;
+      return { credentialRequests: gitRequests, publicNetworkRequests };
     }
     // Registry policy can use a short name. The request must use GitHub's verified full name.
     const scopedRest = scope.scopedRest.flatMap((authority) => {
@@ -213,7 +215,7 @@ export function admitOpenShellRepositoryCredentials(
       ({ repository, pull_requests }) =>
         pull_requests === "write" ? [githubPullRequestCreationRequest(repository)] : [],
     );
-    return [...gitRequests, ...publication];
+    return { credentialRequests: [...gitRequests, ...publication], publicNetworkRequests };
   } catch {
     return undefined;
   }
