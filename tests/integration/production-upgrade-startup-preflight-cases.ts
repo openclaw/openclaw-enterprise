@@ -2372,6 +2372,51 @@ exec "$0.fixture" "$@"
     await assertStoppedBeforeWriters(f);
   });
 
+  // The Pod is scheduled but its volume never mounts, so it reports no status
+  // condition; only the kubelet's event names the missing ConfigMap.
+  const unmountablePod = {
+    status: {
+      phase: "Pending",
+      containerStatuses: [{ name: "api", state: { waiting: { reason: "ContainerCreating" } } }],
+    },
+    events: [
+      {
+        reason: "FailedMount",
+        message:
+          'MountVolume.SetUp failed for volume "repository-registry" : configmap "gone" not found',
+        lastTimestamp: "2026-11-25T14:23:20Z",
+      },
+    ],
+  };
+
+  test("a preflight Pod that cannot mount a volume names the mount failure", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightResults: { api: unmountablePod },
+    });
+    await assert.rejects(f.run("--preflight-only", "--timeout-seconds", "3"), (error) => {
+      assert.match(
+        commandStderr(error),
+        /the api startup preflight did not finish before the timeout \(FailedMount: MountVolume\.SetUp failed .*configmap "gone" not found\)/,
+      );
+      return true;
+    });
+    await assertStoppedBeforeWriters(f);
+  });
+
+  // Once the Job deadline removes the Pod, the helper can no longer ask Kubernetes why.
+  test("a preflight Pod removed after a mount failure keeps its last event in the refusal", async (t) => {
+    const f = await fixture(t, {
+      controllerOnly: true,
+      preflightFault: { target: "api", mode: "replace-after-observation" },
+      preflightResults: { api: unmountablePod },
+    });
+    const failure = await runForFailure(f.run, "--preflight-only");
+    assert.match(failure.stderr, /cannot establish the api startup preflight child Pod identity/);
+    assert.match(failure.stderr, /original Pod: FailedMount: .*configmap "gone" not found/);
+    await assertStoppedBeforeWriters(f);
+  });
+
   test("an Installation the selected controller image loads passes the preflight and upgrades", async (t) => {
     if (skipWithoutHelm(t, realHelm)) {
       return;
