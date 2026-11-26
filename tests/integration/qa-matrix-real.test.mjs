@@ -32,26 +32,58 @@ async function verifyGatewayStartupCredentials(f, agent, stopQaAgent) {
     },
   });
 
-  // Source access belongs to the exact Agent principal. An administrator's own
-  // Source permission must not make an ungranted Agent eligible to deploy it.
-  const before = agent.revision.id;
-  await assert.rejects(
-    f.api("POST", `${base}/agents/${agent.id}/deploy`),
-    /HTTP 403 \(FORBIDDEN\)/,
-  );
-  assert.equal((await f.api("GET", `${base}/agents/${agent.id}`)).activeRevisionId, before);
+  // An actor may deploy this Agent and operate its Harness Secret, but may not
+  // operate the Gateway Source. The denied deploy must not change the revision.
+  const principal = await f.api("POST", `${base}/iam/service-principals`, {});
   const role = await f.api("POST", `${base}/iam/roles`, {
-    name: `${agent.name}-gateway`,
-    permissions: [{ action: "operate", resourceKind: "credential_source" }],
+    name: `${agent.name}-deployer`,
+    permissions: [
+      { action: "read", resourceKind: "agent" },
+      { action: "operate", resourceKind: "agent" },
+      { action: "deploy", resourceKind: "agent" },
+      { action: "operate", resourceKind: "secret" },
+      { action: "read", resourceKind: "credential_source" },
+    ],
   });
-  await f.api("POST", `${base}/iam/access-bindings`, {
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
-    roleId: role.id,
-    resourceKind: "credential_source",
-    resourceId: source.id,
+  for (const [resourceKind, resourceId] of [
+    ["agent", agent.id],
+    ["secret", agent.harnessAuth.source.id],
+    ["credential_source", source.id],
+  ]) {
+    await f.api("POST", `${base}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: role.id,
+      resourceKind,
+      resourceId,
+    });
+  }
+  const key = await f.api("POST", "/api/auth/service-keys", {
+    namespaceId: agent.namespaceId,
+    servicePrincipalId: principal.id,
+    name: `${agent.name}-deployer`,
   });
+  registerQaSecret(key.key);
+  const before = agent.revision.id;
+  const denied = await fetch(`${f.apiUrl}${base}/agents/${agent.id}/deploy`, {
+    method: "POST",
+    headers: { "x-api-key": key.key },
+    signal: AbortSignal.timeout(30_000),
+  });
+  assert.equal(denied.status, 403);
+  const denial = (await denied.json()).error;
+  assert.equal(denial?.code, "FORBIDDEN");
+  assert.match(denial?.message, /CredentialSource operate/);
+  assert.equal((await f.api("GET", `${base}/agents/${agent.id}`)).activeRevisionId, before);
   await f.deployAndWait(agent);
+  // OCC IAM delegates the authorized deployer's exact Source-use grant to the
+  // Agent in the deployment transaction (RFC-0026).
+  const bindings = await f.api("GET", `${base}/iam/access-bindings`);
+  const granted = bindings.find(({ id }) => id === `binding_${agent.id}_${source.id}_operate`);
+  assert.deepEqual(
+    [granted?.subjectId, granted?.resourceKind, granted?.resourceId],
+    [agent.servicePrincipalId, "credential_source", source.id],
+  );
 
   const gateway = await f.pod(agent, "gateway");
   const container = gateway.spec.containers.find(({ name }) => name === "gateway");
