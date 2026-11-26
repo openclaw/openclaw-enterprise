@@ -68,7 +68,7 @@ export const PluginsRequirePatSource = story("createPluginsRequirePatSource");
 export const PatSourceEnrollmentDenied = story("createPatSourceEnrollmentDenied");
 export const PluginsTools = story("createPluginsTools");
 export const PluginsPolicies = story("createPluginsPolicies");
-export const PluginApproversMissingSecret = story("createPluginApproversMissingSecret");
+export const PluginApproversMissingSource = story("createPluginApproversMissingSource");
 export const PluginApproversLookup = story("createPluginApproversLookup");
 export const PluginsSetupReminder = story("createPluginsSetupReminder");
 export const PluginsSecondPage = story("createPluginsSecondPage");
@@ -77,13 +77,17 @@ export const PluginsLoading = story("createPluginsLoading");
 export const PluginsRejected = story("createPluginsRejected");
 export const PluginsError = story("createPluginsError");
 export const PluginsDetailsError = story("createPluginsDetailsError");
-export const CreateSlackSecretMenu = {
-  ...story("createSlackSecretMenu"),
-  name: "Slack Secret menu before Agent exists",
+export const CreateSlackSourceMenu = {
+  ...story("createSlackSourceMenu"),
+  name: "Create a Slack credential before the Agent exists",
 };
-export const CreateSlackCreateSecretModal = {
-  ...story("createSlackCreateSecretModal"),
-  name: "Create Slack Secret before Agent exists",
+export const CreateSlackSourceRefused = {
+  ...story("createSlackSourceRefused"),
+  name: "Slack credential creation refused",
+};
+export const CreateSlackSourceUnconfirmed = {
+  ...story("createSlackSourceUnconfirmed"),
+  name: "Slack credential creation unconfirmed",
 };
 export const CreateSecretRequiredFields = {
   ...story("createSecretRequiredFields"),
@@ -94,10 +98,8 @@ export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
 export const CreateAgentNameRefused = story("createAgentNameRefused");
 export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
-export const CreateSlackSecretStaged = {
-  ...story("createSlackSecretStaged"),
-  name: "Slack Secret bindings staged",
-};
+export const CreateSlackNativeSigningSource = story("createSlackNativeSigningSource");
+export const CreateSlackSourceStaged = story("createSlackSourceStaged");
 export const CreateSlackChannelAccessRequired = {
   ...story("createSlackChannelAccessRequired"),
   name: "Slack channel sender required",
@@ -106,9 +108,9 @@ export const CreateSlackAllowEveryone = {
   ...story("createSlackAllowEveryone"),
   name: "Slack allow everyone",
 };
-export const CreateProvisioningSecrets = {
-  ...story("createProvisioningSecrets"),
-  name: "Provisioning with saved Secrets",
+export const CreateProvisioningSources = {
+  ...story("createProvisioningSources"),
+  name: "Provisioning with saved Sources",
 };
 export const CreateDeploymentPending = story("createDeploymentPending");
 export const CreatePending = story("createPending");

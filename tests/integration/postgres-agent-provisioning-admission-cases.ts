@@ -130,7 +130,7 @@ export function registerAdmissionCases() {
       assert.deepEqual(resources.rows[0], {
         agents: 0,
         configurations: 0,
-        secrets: 4,
+        secrets: 2,
       });
 
       const replay = await fixture.requestChecked(
@@ -649,8 +649,8 @@ export function registerHandoffAdmissionCases() {
       assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
       assert.deepEqual(
         secretDriver.calls.map(({ operation }) => operation),
-        ["create", "create", "create", "create", "withValue"],
-        "admission validates the existing Slack Secret without creating provisioning resources",
+        ["create", "create"],
+        "queued admission must not create or read additional Secret values",
       );
       const resources = await fixture.pool.query<{
         agents: number;
@@ -669,7 +669,7 @@ export function registerHandoffAdmissionCases() {
         agents: 0,
         configurations: 0,
         revisions: 0,
-        secrets: 4,
+        secrets: 2,
       });
       const status = await fixture.requestChecked(
         AgentProvisioningStatusResponse,

@@ -30,6 +30,7 @@ test("controller topology keeps API-only fixture inputs separate from the worker
       nativeAdminDomain: "agents.example.invalid",
       nativeAdminEnabled: true,
       platformNamespace: "controller-topology",
+      installationSecretNamespace: "topology-private",
       workerOptions: {
         pollIntervalMs: 20,
         leaseDurationMs: 5000,
@@ -69,6 +70,13 @@ test("controller topology keeps API-only fixture inputs separate from the worker
   assert.ok(apiContainer.env.some(({ name }) => name === "OCC_AUTH_BASE_URL"));
   for (const container of [apiContainer, worker]) {
     assert.deepEqual(
+      container.env.find(({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE"),
+      {
+        name: "OCC_INSTALLATION_SECRET_NAMESPACE",
+        value: "topology-private",
+      },
+    );
+    assert.deepEqual(
       container.env.find(({ name }) => name === "OCC_CONTROL_PLANE_AUDIT_ENABLED"),
       {
         name: "OCC_CONTROL_PLANE_AUDIT_ENABLED",
@@ -80,6 +88,7 @@ test("controller topology keeps API-only fixture inputs separate from the worker
     worker.env.map(({ name }) => name),
     [
       "NODE_ENV",
+      "OCC_INSTALLATION_SECRET_NAMESPACE",
       "OCC_CONTROL_PLANE_AUDIT_ENABLED",
       "OCC_CONFIG_PATH",
       "OCC_DATABASE_URL",

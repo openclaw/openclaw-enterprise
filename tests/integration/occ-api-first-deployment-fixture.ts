@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
   ConfigurationResponse,
-  SecretResponse,
   type FirstDeploymentIntent,
 } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   bindHarnessKey,
   bootstrapInstallation,
@@ -16,6 +17,8 @@ import {
   createAgent,
   createInjectedControllerFixture,
   createNamespace,
+  enrollStaticSource,
+  grantAgentSourceOperate,
   injectedRequest,
   type FixtureRequest,
 } from "./occ-api-injected-fixture.ts";
@@ -25,11 +28,13 @@ type FixtureRequestOptions = NonNullable<Parameters<FixtureRequest>[2]>;
 export interface FirstDeploymentFixtureOptions {
   readonly ready?: boolean | undefined;
   readonly slackFetch?: ConstructorParameters<typeof SlackChannelDriver>[0] | undefined;
+  readonly dedicated?: boolean | undefined;
 }
 
 export async function prepareFixture({
   ready = true,
   slackFetch,
+  dedicated = false,
 }: FirstDeploymentFixtureOptions = {}) {
   let providerCalls = 0;
   const channelDriver = new SlackChannelDriver(async (...args) => {
@@ -41,7 +46,13 @@ export async function prepareFixture({
   });
   const secretDriver = createTestSecretDriver();
   const fixture = await createInjectedControllerFixture(
-    { recordOperations: true, channelDriver, secretDriver },
+    {
+      recordOperations: true,
+      channelDriver,
+      secretDriver,
+      gatewayStartupSourceDelivery: (compute, owner) =>
+        compute.id === "compute-integration" && owner instanceof OCCTokenServiceDriver,
+    },
     {
       wrapPlatformState: (state) => state,
       invokeApplication(factory, { backendSummaries, ...options }) {
@@ -57,7 +68,10 @@ export async function prepareFixture({
   if (ready) {
     await fixture.markNamespaceReady(namespace.id);
   }
-  const agent = await createAgent(controller, namespace.id, "first-deployment");
+  const values = dedicated ? createHarnessConfiguration("codex", "gpt-4.1") : {};
+  const agent = await createAgent(controller, namespace.id, "first-deployment", values, {
+    ...(dedicated ? { executionMode: "dedicated" } : {}),
+  });
   if (ready) {
     await bindHarnessKey(fixture, namespace.id, agent);
   }
@@ -118,6 +132,7 @@ export async function slackFirstDeploymentFixture(
   beforeResponse: () => Promise<void> = async () => {},
 ) {
   const fixture = await firstDeploymentFixture({
+    dedicated: true,
     slackFetch: async (url, options) => {
       assert.equal(new URL(String(url)).href, "https://slack.com/api/auth.test");
       assert.equal(options?.method, "POST");
@@ -127,22 +142,19 @@ export async function slackFirstDeploymentFixture(
     },
   });
   const { controller, namespace, agent } = fixture;
-  const bot = checkedInjectedBody(
-    await controller.request("POST", `/namespaces/${namespace.id}/secrets`, {
-      body: { name: "slack-bot", value: "xoxb-synthetic-bot" },
-    }),
-    201,
-    SecretResponse,
-  ).data;
-  const harnessGrant = controller.fixture.state.bindings.find(
-    (binding) => binding.id === `harness-key-${agent.id}`,
+  const { owner, source: bot } = await enrollStaticSource(
+    controller,
+    namespace.id,
+    "slack-bot",
+    "xoxb-synthetic-bot",
   );
-  assert(harnessGrant, "the Agent must have its harness Secret grant");
-  controller.fixture.state.bindings.push({
-    ...harnessGrant,
-    id: `slack-bot-${agent.id}`,
-    resourceId: bot.id,
-  });
+  grantAgentSourceOperate(controller.fixture, namespace.id, agent, bot.id);
+  let sourceReads = 0;
+  const resolve = owner.resolveCredential.bind(owner);
+  owner.resolveCredential = (...args) => {
+    sourceReads++;
+    return resolve(...args);
+  };
   const updated = checkedInjectedBody(
     await controller.request(
       "PATCH",
@@ -150,6 +162,7 @@ export async function slackFirstDeploymentFixture(
       {
         body: {
           values: {
+            ...createHarnessConfiguration("codex", "gpt-4.1"),
             channels: { slack: { enabled, mode: "http", botToken: "${SLACK_BOT_TOKEN}" } },
           },
           secretBindings: { SLACK_BOT_TOKEN: { source: bot.ref } },
@@ -163,6 +176,8 @@ export async function slackFirstDeploymentFixture(
   return {
     ...fixture,
     bot,
+    sourceOwner: owner,
+    sourceReads: () => sourceReads,
     intent: { ...fixture.intent, expectedGeneration: updated.generation },
   };
 }

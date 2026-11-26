@@ -5,12 +5,12 @@ A Secret stores a credential for one OpenClaw Namespace. OpenClaw Control Plane
 for model authentication, or its Configuration can map a Secret to a gateway
 environment variable. Use the path that matches the consumer:
 
-| Credential                        | Where to bind it                                                                                                                                                                                                 |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model API key                     | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                                                                                                       |
-| Gateway credential                | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); select a Namespace Secret or a supported static Source for the dedicated Gateway. Slack requires a Namespace Secret. |
-| Backend-issued model access token | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                                                                                                              |
-| Managed model credential          | [Credential Source](../../reference/credential-sources.md); TokenService owns custody and Credential Proxy delivers it.                                                                                          |
+| Credential                        | Where to bind it                                                                                                                                                                                            |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model API key                     | [Agent `harnessAuth`](../../reference/agents.md#harness-authentication); the selected Harness receives it.                                                                                                  |
+| Gateway credential                | [Configuration `secretBindings`](../../reference/configuration/secrets.md#secret-bindings); select a supported static Credential Source for Slack. Other Gateway consumers can still use Namespace Secrets. |
+| Backend-issued model access token | [Service accounts](../../reference/service-accounts.md); this follows its own credential lifecycle.                                                                                                         |
+| Managed model credential          | [Credential Source](../../reference/credential-sources.md); TokenService owns custody and Credential Proxy delivers it.                                                                                     |
 
 ## Create and bind a Secret
 

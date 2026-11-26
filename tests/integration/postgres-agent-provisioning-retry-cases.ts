@@ -564,7 +564,7 @@ export function registerNameAndSecretCases() {
       // Queued: no Configuration or Agent names these Secrets yet, only the accepted plan. Its
       // actor, who holds the grants a status read checks, sees the request as a consumer.
       const { workId } = admitted.data.provisioning;
-      for (const secret of [secrets.slackBotToken, secrets.modelKey]) {
+      for (const secret of [secrets.externalServiceToken, secrets.modelKey]) {
         const refused = await fixture.request("DELETE", secretPath(secret));
         assert.equal(refused.status, 409, JSON.stringify(refused.body));
         assert.equal(
@@ -600,13 +600,13 @@ export function registerNameAndSecretCases() {
       assert.equal(failed.phase, "admitted");
 
       // A failed plan has no owner that would ever remove it, so it does not block deletion.
-      const deleted = await fixture.request("DELETE", secretPath(secrets.slackBotToken));
+      const deleted = await fixture.request("DELETE", secretPath(secrets.externalServiceToken));
       assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
 
       // The plan can never run again: reading or retrying it names the deleted Secret
       // instead of answering 404 for a job that exists.
       configurationOutage = false;
-      const gone = `Secret ${secrets.slackBotToken.id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`;
+      const gone = `Secret ${secrets.externalServiceToken.id}, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.`;
       for (const [method, path] of [
         ["GET", admitted.data.provisioning.url],
         ["POST", `${admitted.data.provisioning.url}/retry`],
@@ -926,7 +926,7 @@ export function registerConfigurationAndAccountCases() {
           },
         }),
       );
-      const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.slackBotToken.id}`;
+      const secretPath = `/namespaces/${namespace.id}/secrets/${secrets.externalServiceToken.id}`;
       const consumers = async () => {
         const read = await fixture.requestChecked(SecretDetailResponse, "GET", secretPath);
         assert.equal(read.status, 200, JSON.stringify(read.body));
