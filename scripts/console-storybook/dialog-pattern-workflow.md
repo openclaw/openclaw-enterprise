@@ -51,6 +51,12 @@ simulated data.
    At short desktop and phone heights, open **Pages / Credentials / Secrets / Create** and
    **Replace value** and use Tab and Shift+Tab to check that the focused control
    and its outline are fully visible.
+   In **Pages / Credentials / Dismiss while loading**, follow the steps for
+   Close and Cancel at desktop and phone widths. Keep the pointer over the
+   focused button and check that it stays under the pointer as the dialog loads.
+   In **Pages / Credentials / Secrets / Consumers and restricted references**,
+   shorten the window. Scroll to the consumer links and the explanation for
+   unavailable actions. Check that Close stays in reach.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.

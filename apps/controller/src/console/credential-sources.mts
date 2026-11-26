@@ -312,7 +312,7 @@ export function renderCredentialSources(context: Context) {
       return;
     }
     const current = element("dialog", {
-      className: "dialog dialog--framed secret-dialog",
+      className: "dialog dialog--framed secret-dialog dialog--anchored-footer source-create-dialog",
       "aria-labelledby": "source-dialog-title",
     });
     dialog = current;
@@ -324,16 +324,13 @@ export function renderCredentialSources(context: Context) {
     const body = element("div", { className: "dialog-body" });
     const cancel = button("Cancel", closeDialog);
     const actions = element("div", { className: "dialog-actions" }, cancel);
-    current.append(
-      element(
-        "header",
-        { className: "dialog-header" },
-        element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
-        heading,
-      ),
-      body,
-      actions,
+    const header = element(
+      "header",
+      { className: "dialog-header" },
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
+      heading,
     );
+    current.append(element("div", { className: "dialog-content" }, header, body), actions);
     current.addEventListener("cancel", (event) => {
       event.preventDefault();
       closeDialog();
@@ -512,6 +509,7 @@ export function renderCredentialSources(context: Context) {
       value.disabled = true;
       reveal.disabled = true;
       result.replaceChildren(element("p", {}, "Creating Source…"));
+      result.scrollIntoView({ block: "nearest" });
       let created = false;
       let outcomeUnknown = false;
       let denied = false;
@@ -592,6 +590,7 @@ export function renderCredentialSources(context: Context) {
           result.replaceChildren(
             statusBlock("danger", "Source not confirmed", createFailure(cause)),
           );
+          result.scrollIntoView({ block: "nearest" });
           outcomeUnknown = ![400, 403, 404, 429, 501].includes(requestFailure(cause).status ?? 0);
           if (requestFailure(cause).status === 409) {
             const capture = () => sourceName;

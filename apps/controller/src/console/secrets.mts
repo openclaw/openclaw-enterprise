@@ -354,10 +354,10 @@ export function renderSecrets(
     current.dialog.remove();
   }
 
-  function openModal(title: string) {
+  function openModal(title: string, { detail = false } = {}) {
     closeModal();
     const dialog = element("dialog", {
-      className: "dialog dialog--framed secret-dialog",
+      className: `dialog dialog--framed secret-dialog${detail ? " dialog--anchored-footer secret-detail-dialog" : ""}`,
       "aria-labelledby": "secret-dialog-title",
     });
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
@@ -381,7 +381,12 @@ export function renderSecrets(
       element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Credentials`),
       heading,
     );
-    dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
+    const content = element("div", { className: "dialog-body" }, body, notice);
+    if (detail) {
+      dialog.append(element("div", { className: "dialog-content" }, header, content), actions);
+    } else {
+      dialog.append(header, content, actions);
+    }
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       dismiss();
@@ -440,7 +445,7 @@ export function renderSecrets(
   }
 
   async function openDetail(item: SecretSummary) {
-    const current = openModal(item.name);
+    const current = openModal(item.name, { detail: true });
     const version = ++readVersion;
     current.body.append(statusBlock("info", null, "Reading Secret metadata and consumers…"));
     try {
@@ -609,7 +614,9 @@ export function renderSecrets(
       remove.setAttribute("aria-describedby", deleteReasons.map((note) => note.id).join(" "));
     }
     setUnavailable(remove, referenced || deleteDenied, deleteReasons[0]);
-    current.actions.append(replace, remove);
+    current.actions.append(
+      element("div", { className: "dialog-secondary-actions" }, replace, remove),
+    );
   }
 
   function editValue(secret: SecretSummary | null = null) {

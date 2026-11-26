@@ -3716,6 +3716,45 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 .secret-dialog h4 {
   margin-bottom: var(--space-1);
 }
+/* Keep dismissal stationary when the content and footer fit. The dialog itself can
+   scroll when its viewport cap leaves too little room for both. */
+.dialog--anchored-footer[open] {
+  display: flex;
+  flex-direction: column;
+}
+.dialog--anchored-footer > .dialog-content {
+  min-height: 6rem;
+  overflow: auto;
+  scroll-padding-block: var(--space-2);
+}
+.dialog--anchored-footer > .dialog-actions {
+  flex: none;
+  align-items: end;
+  justify-content: space-between;
+}
+.secret-detail-dialog .dialog-secondary-actions {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.dialog--anchored-footer.source-create-dialog {
+  height: 52rem;
+}
+.source-create-dialog > .dialog-content {
+  flex: 1;
+}
+@media (width > 760px) {
+  .secret-detail-dialog {
+    --dialog-bottom: max(var(--space-4), calc(50% - 15rem));
+    top: var(--space-4);
+    bottom: var(--dialog-bottom);
+    max-height: calc(100% - var(--dialog-bottom) - var(--space-4));
+    margin: auto auto 0;
+  }
+}
 @keyframes dialog-open {
   from {
     opacity: 0;
