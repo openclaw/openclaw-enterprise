@@ -61,7 +61,7 @@ async function verifyGatewayStartupCredentials(f, agent, stopQaAgent) {
   const key = await f.api("POST", "/api/auth/service-keys", {
     namespaceId: agent.namespaceId,
     servicePrincipalId: principal.id,
-    name: `${agent.name}-deployer`,
+    name: `gw-${randomUUID().slice(0, 8)}`,
   });
   registerQaSecret(key.key);
   const before = agent.revision.id;
