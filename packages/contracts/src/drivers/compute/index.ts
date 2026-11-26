@@ -93,11 +93,11 @@ export interface ComputeRevisionContext {
   /** Non-model sources resolved again at dispatch, in admission order. */
   readonly credentialSources?: readonly Readonly<StoredCredentialSource>[];
   readonly secretEnvironment: readonly SecretEnvironmentProjection[];
-  /** Exact authorized Secret identity for the Gateway channel proxy; never projected to Gateway. */
-  readonly networkProxyCredential?: Pick<
-    SecretEnvironmentProjection,
-    "secretId" | "namespaceId" | "agentId" | "backendRef"
-  >;
+  /** Worker-owned Source access for the upstream proxy slot; never project it to Gateway. */
+  readonly networkProxyCredential?: {
+    authorize(signal: AbortSignal): Promise<void>;
+    resolve(signal: AbortSignal): Promise<{ readonly value: string; readonly version: string }>;
+  };
   readonly repositoryCredentials?: readonly RepositoryCredentialRuntimeBinding[];
 }
 

@@ -553,12 +553,14 @@ export class KubernetesSecretDriver implements SecretDriver {
     if (secret.backendRef.namespaceName !== namespace) {
       throw new SecretOwnershipError("Secret backend namespace no longer matches placement.");
     }
-    let existing: V1Secret;
-    try {
-      existing = await this.request(
+    const read = () =>
+      this.request(
         () => client.readNamespacedSecret({ namespace, name: secret.backendRef.name }),
         "read",
       );
+    let existing: V1Secret;
+    try {
+      existing = await read();
     } catch (error) {
       if (error instanceof SecretBackendMissingError) {
         return;
@@ -585,6 +587,17 @@ export class KubernetesSecretDriver implements SecretDriver {
       "delete",
       { mutating: true },
     );
+    // A finalizer can retain the Secret after Kubernetes accepts DELETE. Keep OCC's
+    // backend reference until the exact address is absent so the operator can retry.
+    try {
+      this.checkedBackendRef(await read(), secret, namespace, secret.backendRef);
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw error;
+    }
+    throw new SecretBackendUnavailableError("The Kubernetes Secret deletion is still pending.");
   }
 
   async resolve(secret: Secret): Promise<SecretBackendRef> {

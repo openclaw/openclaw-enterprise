@@ -248,10 +248,8 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   );
 });
 
-test("the Agent Network proxy editor never sends URL credentials to OCC", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Network proxy editor", { ready: true });
+test("the Agent Network proxy editor sends a Source reference and refuses URL credentials", async (t) => {
+  const { fixture, namespace } = await createSlackSourceConsoleFixture(t, "Network proxy editor");
   const agent = await fixture.createAgent(
     namespace.id,
     "Proxy editor Agent",
@@ -268,7 +266,7 @@ test("the Agent Network proxy editor never sends URL credentials to OCC", async 
   assert.ok(viewport);
   await page.setViewportSize({ width: 360, height: 844 });
   const example = await page
-    .getByText(/^For Basic authentication, select a Secret/)
+    .getByText(/^For Basic authentication, select a Credential Source/)
     .evaluate((hint) => {
       const fontSize = hint.style.fontSize;
       hint.style.fontSize = "24px";
@@ -315,6 +313,29 @@ test("the Agent Network proxy editor never sends URL credentials to OCC", async 
     ),
     false,
   );
+
+  await input.fill("https://proxy.example:8443");
+  const picker = page.getByLabel("Proxy credential", { exact: true });
+  await picker.selectOption("new");
+  await page.getByLabel("Proxy credential Source name").fill("Proxy Basic authentication");
+  const credential = `Basic ${Buffer.from(`proxy-user:${password}`).toString("base64")}`;
+  await page.getByLabel("Proxy credential value").fill(credential);
+  await page.getByRole("button", { name: "Create credential", exact: true }).click();
+  await page.getByText(/^Credential Source created:/).waitFor();
+  const sourceId = await picker.inputValue();
+  assert.match(sourceId, /^cs_/);
+  assert.equal(await page.getByLabel("Proxy credential value").inputValue(), "");
+
+  // Inspect the request the Console sends. The enforcing Kubernetes lane covers proxy admission.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const saving = page.waitForRequest(
+    (request) => request.method() === "PATCH" && request.url().endsWith(agentPath),
+  );
+  await page.getByRole("button", { name: "Save Network proxy for next deployment" }).click();
+  assert.deepEqual((await saving).postDataJSON(), {
+    networkProxy: { url: "https://proxy.example:8443", credentialSourceId: sourceId },
+  });
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Agent credentials bind a Secret typed by its exact name without picking the suggestion", async (t) => {

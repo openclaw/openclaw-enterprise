@@ -67,6 +67,7 @@ export function createCredentialSourcePicker<Criteria>(
 ) {
   const addNewValue = "new";
   let selected = options.initial ?? null;
+  let currentId = options.currentId;
   let selectionBeforeCreate: CredentialSourceReference | null = null;
   let confirmedCreated: CredentialSourceSummary | null = null;
   let creating = Boolean(options.addNew?.initial && !selected);
@@ -95,7 +96,7 @@ export function createCredentialSourcePicker<Criteria>(
   );
   const eligibleSource = (source: CredentialSourceSummary) => options.eligible(source, criteria);
   const knownSelection = () =>
-    selected && (selected.id === options.currentId || selected.id === confirmedCreated?.id);
+    selected && (selected.id === currentId || selected.id === confirmedCreated?.id);
   const availableSources = () => {
     const eligible = sources.filter(eligibleSource);
     const created = confirmedCreated;
@@ -129,7 +130,7 @@ export function createCredentialSourcePicker<Criteria>(
     ];
     if (
       selected &&
-      selected.id === options.currentId &&
+      selected.id === currentId &&
       !eligible.some((source) => source.id === selected!.id)
     ) {
       choices.push(
@@ -265,6 +266,14 @@ export function createCredentialSourcePicker<Criteria>(
       required = value;
       renderOptions();
     },
+    setCurrent(source: CredentialSourceReference | null) {
+      currentId = source?.id;
+      selected = source;
+      selectionBeforeCreate = null;
+      creating = false;
+      renderOptions();
+      options.onChange(selected);
+    },
     reset() {
       selected = null;
       creating = false;
@@ -312,7 +321,7 @@ export function createCredentialSourcePicker<Criteria>(
 /** Select or enroll a ready static Source without coupling enrollment to its consumer. */
 export function createInlineStaticCredentialSourcePicker(
   context: PickerContext & { drafts?: ReturnType<ReturnType<typeof createDraftStore>["scope"]> },
-  body: HTMLFormElement,
+  body: HTMLElement,
   options: {
     id: string;
     label: string;

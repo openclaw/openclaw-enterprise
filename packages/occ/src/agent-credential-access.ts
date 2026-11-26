@@ -116,8 +116,8 @@ function agentOperateSources(
   } else if (agent.harnessAuth?.method === "credential_source") {
     add("credential_source", agent.harnessAuth.sourceId);
   }
-  if (agent.networkProxy?.credentialSecretId !== undefined) {
-    add("secret", agent.networkProxy.credentialSecretId);
+  if (agent.networkProxy?.credentialSourceId !== undefined) {
+    add("credential_source", agent.networkProxy.credentialSourceId);
   }
   for (const { sourceId } of agent.credentialSources ?? []) {
     add("credential_source", sourceId);

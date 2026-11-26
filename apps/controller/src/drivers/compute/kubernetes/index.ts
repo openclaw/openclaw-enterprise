@@ -16657,7 +16657,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.channelEgress) {
       throw new ConfigurationFailure("Managed channel egress is unavailable.");
     }
-    await this.channelEgress.prepare(revision, namespace.name, routing, context);
+    await this.channelEgress.prepare(
+      revision,
+      namespace.name,
+      routing,
+      context,
+      this.operationSignal(),
+    );
   }
 
   /** Only preparation passes `preparation`, while a Gateway of another revision

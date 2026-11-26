@@ -1313,27 +1313,32 @@ function upgradedCanonicalData(data) {
         ...value,
         predecessor_replacement: value.predecessor_replacement ?? null,
         network_proxy_url: value.network_proxy_url ?? null,
-        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
+        network_proxy_credential_source_id: value.network_proxy_credential_source_id ?? null,
       };
       delete current.restart_generation;
       delete current.restart_domain;
+      delete current.network_proxy_secret_id;
       return { value: current };
     }),
-    agent_revisions: data.agent_revisions.map(({ value }) => ({
-      value: {
-        ...value,
-        network_proxy_url: value.network_proxy_url ?? null,
-        network_proxy_secret_id: value.network_proxy_secret_id ?? null,
-        network_proxy_admission: value.network_proxy_admission ?? null,
-        first_deployment_digest: null,
-        admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
-          ? value.admitted_spec
-          : {
-              ...value.admitted_spec,
-              execution_admission: legacyExecutionAdmission,
-            },
-      },
-    })),
+    agent_revisions: data.agent_revisions.map(
+      ({ value: { network_proxy_secret_id: _old, ...value } }) => ({
+        value: {
+          ...value,
+          network_proxy_url: value.network_proxy_url ?? null,
+          network_proxy_credential_source_id: value.network_proxy_credential_source_id ?? null,
+          network_proxy_admission: value.network_proxy_admission ?? null,
+          network_proxy_token_service_instance_id:
+            value.network_proxy_token_service_instance_id ?? null,
+          first_deployment_digest: null,
+          admitted_spec: Object.hasOwn(value.admitted_spec, "execution_admission")
+            ? value.admitted_spec
+            : {
+                ...value.admitted_spec,
+                execution_admission: legacyExecutionAdmission,
+              },
+        },
+      }),
+    ),
   };
 }
 
@@ -1577,6 +1582,8 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
+      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
@@ -1759,6 +1766,139 @@ registerPostgresMigrationTransactionCommandCases({
   historySnapshot,
   assertCompletedHistory,
 });
+
+test(
+  "Upstream proxy Source migration refuses a legacy authenticated selection without changing it",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "upstream_proxy_source", { prefix: 100 });
+    const namespaceId = `ns_${randomUUID()}`;
+    const { agent } = await seedCanonicalAgent(db, namespaceId, {
+      executionAdmission: true,
+      harnessSettings: true,
+    });
+    // Use the old application role's writable draft fields, exactly as the saved selection used them.
+    const proxyUrl = "https://proxy.example:8443";
+    const secretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets
+        (id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES ($1,$2,'Upstream proxy token','secrets','fixture','proxy-token','value',$3,now())`,
+      [secretId, namespaceId, randomUUID()],
+    );
+    await db.app.query(
+      "UPDATE occ.agents SET network_proxy_url=$2, network_proxy_secret_id=$3 WHERE id=$1",
+      [agent, proxyUrl, secretId],
+    );
+    const before = await canonicalData(db);
+    const receipts = await historyReceipts(db.migrator);
+    assert.deepEqual(
+      await runHistoryMigration(db, "production", undefined, undefined, (error) => {
+        const cause = error?.cause ?? error;
+        assert.match(
+          cause?.message ?? "",
+          /Legacy authenticated Network proxy selections require retirement/,
+        );
+      }),
+      { ok: false, code: "MIGRATION_FAILED" },
+    );
+    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(await historyReceipts(db.migrator), receipts);
+
+    // A deliberately saved unauthenticated selection still carries its configured upstream URL.
+    await db.app.query("UPDATE occ.agents SET network_proxy_secret_id=NULL WHERE id=$1", [agent]);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preUpstreamProxyCredentialSources",
+    });
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT network_proxy_url, network_proxy_credential_source_id FROM occ.agents WHERE id=$1",
+          [agent],
+        )
+      ).rows,
+      [{ network_proxy_url: proxyUrl, network_proxy_credential_source_id: null }],
+    );
+  },
+);
+
+test(
+  "Device authorization ID migration drops old polling handles and keeps the enrolled Source",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "device_session_ids", { prefix: 101 });
+    const installationId = `ins_${randomUUID()}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const actorId = `usr_${randomUUID()}`;
+    const sourceId = `cs_${randomUUID()}`;
+    const instanceId = randomUUID();
+    await db.app.query("INSERT INTO occ.installation VALUES ($1,'Upgrade',now())", [
+      installationId,
+    ]);
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,'Upgrade','ready',now())",
+      [namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','migration-fixture',$1)",
+      [actorId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.token_service_instances(installation_id,id,driver_id,store_identity) VALUES($1,$2,'occ-token-service','device-login-fixture')",
+      [installationId, instanceId],
+    );
+    await db.app.query(
+      `INSERT INTO occ.credential_sources
+        (id,namespace_id,name,type,config,owner_capability,state,created_at,
+         token_service_instance_id,oauth_provenance,oauth_account,oauth_owner_principal_id,
+         oauth_requested_scopes,oauth_granted_scopes)
+       VALUES($1,$2,'Enrolled device account','oauth2-refresh-token','{}','token_service','ready',now(),
+         $3,'builtin_codex',$4,$5,ARRAY['openid'],ARRAY['openid'])`,
+      [
+        sourceId,
+        namespaceId,
+        instanceId,
+        { accountId: randomUUID(), planType: "plus", isFedramp: false },
+        actorId,
+      ],
+    );
+    const writeReceipt = (sessionId) =>
+      db.app.query(
+        `INSERT INTO occ.authentication_states
+        (id,kind,namespace_id,actor_id,expires_at,credential_source_id,binding,phase,next_poll_at,encrypted_challenge,version)
+       VALUES($1,'device_authorization',$2,$3,now()+interval '24 hours',$4,$5,'ready',now(),'sealed-challenge',2)`,
+        [
+          sessionId,
+          namespaceId,
+          actorId,
+          sourceId,
+          { harnessId: "codex", tokenServiceInstanceId: instanceId, intervalSeconds: 5 },
+        ],
+      );
+    // The previous schema retained the completed attempt alongside the enrolled account.
+    const oldId = `sec_${randomUUID()}`;
+    await writeReceipt(oldId);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preDeviceAuthorizationSessionIds",
+    });
+    assert.equal(
+      (await db.app.query("SELECT id FROM occ.authentication_states WHERE id=$1", [oldId]))
+        .rowCount,
+      0,
+    );
+    assert.deepEqual(
+      (await db.app.query("SELECT id,state FROM occ.credential_sources WHERE id=$1", [sourceId]))
+        .rows,
+      [{ id: sourceId, state: "ready" }],
+    );
+    await assert.rejects(writeReceipt(oldId), { constraint: "authentication_states_device_shape" });
+    assert.equal((await writeReceipt(`das_${randomUUID()}`)).rowCount, 1);
+  },
+);
 
 test(
   "Canonical repository policy migration preserves stock TokenService metadata and revision egress",
@@ -2019,6 +2159,8 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
+      [101, "preDeviceAuthorizationSessionIds"],
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3251,6 +3393,8 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
+      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3393,6 +3537,8 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
+      [101, "preDeviceAuthorizationSessionIds"],
     ]) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
@@ -3568,6 +3714,8 @@ test(
       [97, "preSharedGitSourceRepositoryGrants"],
       [98, "preGatewayStartupCredentials"],
       [99, "preNativeGitHubPullRequestPublication"],
+      [100, "preUpstreamProxyCredentialSources"],
+      [101, "preDeviceAuthorizationSessionIds"],
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

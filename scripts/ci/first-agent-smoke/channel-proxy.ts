@@ -457,33 +457,29 @@ async function configureApiTrust(stack: SmokeStack, ca: string, smokeStep: Smoke
   );
 }
 
-async function grantCredential(
+async function grantSource(
   stack: SmokeStack,
   admission: CodexAdmission,
-  kind: "secret" | "credential_source",
   value: string,
   label: string,
 ) {
   const base = `/namespaces/${stack.namespaceId}`;
   const name = `smoke-${label}-${randomUUID()}`;
-  const credential =
-    kind === "secret"
-      ? await stack.api("POST", `${base}/secrets`, { name, value })
-      : await stack.api("POST", `${base}/credential-sources`, {
-          name,
-          type: "static",
-          secret: value,
-        });
+  const credential = await stack.api("POST", `${base}/credential-sources`, {
+    name,
+    type: "static",
+    secret: value,
+  });
   const agent = await stack.api("GET", `${base}/agents/${admission.agent.id}`);
   const role = await stack.api("POST", `${base}/iam/roles`, {
     name: `Smoke ${label} ${randomUUID()}`,
-    permissions: [{ action: "operate", resourceKind: kind }],
+    permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
   await stack.api("POST", `${base}/iam/access-bindings`, {
     subjectKind: "identity",
     subjectId: wireField(agent, "servicePrincipalId"),
     roleId: wireField(role, "id"),
-    resourceKind: kind,
+    resourceKind: "credential_source",
     resourceId: wireField(credential, "id"),
   });
   return { id: wireField(credential, "id") as string, ref: wireField(credential, "ref") };
@@ -514,13 +510,7 @@ async function enableSlack(
     ["SLACK_APP_TOKEN", `xapp-1-smoke-${suffix}`],
     ["SLACK_BOT_TOKEN", `xoxb-smoke-${suffix}`],
   ] as const) {
-    const source = await grantCredential(
-      stack,
-      admission,
-      "credential_source",
-      value,
-      `${suffix}-${name.toLowerCase()}`,
-    );
+    const source = await grantSource(stack, admission, value, `${suffix}-${name.toLowerCase()}`);
     if (name === "SLACK_BOT_TOKEN") {
       botSourceId = source.id;
     }
@@ -549,15 +539,9 @@ async function enableSlack(
     values,
     secretBindings: bindings,
   });
-  const credential = await grantCredential(
-    stack,
-    admission,
-    "secret",
-    proxy.authorization,
-    `${suffix}-proxy`,
-  );
+  const credential = await grantSource(stack, admission, proxy.authorization, `${suffix}-proxy`);
   await stack.api("PATCH", `${base}/agents/${admission.agent.id}`, {
-    networkProxy: { url: proxy.url, credentialSecretId: credential.id },
+    networkProxy: { url: proxy.url, credentialSourceId: credential.id },
   });
   return { credential, botSourceId, harnessPolicy };
 }
@@ -963,10 +947,10 @@ export async function proveControlledChannelProxy(
     await waitSocket("B", bSockets);
 
     const base = `/namespaces/${stack.namespaceId}/agents/${a.agent.id}`;
-    const moved = await grantCredential(stack, a, "secret", https.authorization, "a-moved-proxy");
+    const moved = await grantSource(stack, a, https.authorization, "a-moved-proxy");
     const runningRevision = await stack.api("GET", `${base}/revisions/${aRevision}`);
     await stack.api("PATCH", base, {
-      networkProxy: { url: https.url, credentialSecretId: moved.id },
+      networkProxy: { url: https.url, credentialSourceId: moved.id },
     });
     const edited = await stack.api("GET", base);
     assert.equal(wireField(edited, "activeRevisionId"), aRevision);
@@ -1016,15 +1000,9 @@ export async function proveControlledChannelProxy(
       "cleared selection contacted an upstream proxy during the direct CONNECT check",
     );
 
-    const badCredential = await grantCredential(
-      stack,
-      a,
-      "secret",
-      bad.authorization,
-      "a-bad-cert",
-    );
+    const badCredential = await grantSource(stack, a, bad.authorization, "a-bad-cert");
     await stack.api("PATCH", base, {
-      networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
+      networkProxy: { url: bad.url, credentialSourceId: badCredential.id },
     });
     const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
       deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-tls-control-deploy-a" }),

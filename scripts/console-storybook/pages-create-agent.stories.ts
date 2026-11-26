@@ -252,6 +252,10 @@ export const CreateBoundCredentialPreset = {
   ...story("createBoundCredentialPreset"),
   name: "Preset with saved model credential",
 };
+export const CreateWithPresetCredentialSource = {
+  ...story("createWithPresetCredentialSource"),
+  name: "Preset with a model Credential Source",
+};
 export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",

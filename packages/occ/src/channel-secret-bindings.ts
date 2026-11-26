@@ -67,13 +67,19 @@ export function enabledChannelEntries(
 export function requireChannelSecretBindings(
   configuration: Readonly<OpenClawConfigurationDocument>,
   providers: readonly string[],
-  bound: (name: string, requiresSource: boolean) => boolean,
+  bound: ((name: string, requiresSource: boolean) => boolean) | undefined,
   createError: SettingError,
 ): void {
   const channels = asRecord(configuration.channels) ?? {};
-  const policy = slackPolicyReferenceRefusal(channels.slack, "channels.slack");
-  if (policy !== undefined) {
-    throw createError(policy.path, policy.requirement);
+  if (providers.includes("slack")) {
+    const policy = slackPolicyReferenceRefusal(channels.slack, "channels.slack");
+    if (policy !== undefined) {
+      throw createError(policy.path, policy.requirement);
+    }
+  }
+  // Partial templates can omit bindings. The active policy still needs literal IDs.
+  if (bound === undefined) {
+    return;
   }
   for (const provider of providers) {
     const refusal = channelReferenceRefusal(
@@ -128,6 +134,9 @@ function slackPolicyReferenceRefusal(value: unknown, path: string) {
   }
 
   for (const { settings, path } of accounts) {
+    if (settings?.enabled === false) {
+      continue;
+    }
     const directMessage = userListRefusal(settings?.allowFrom, `${path}.allowFrom`);
     if (directMessage !== undefined) {
       return directMessage;

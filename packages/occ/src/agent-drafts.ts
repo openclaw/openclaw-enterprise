@@ -33,7 +33,6 @@ import {
   type RepositoryAccess,
   type ResourceRef,
   type SecretBindings,
-  type SecretDriver,
   type ComputeDriver,
 } from "@openclaw-enterprise/contracts";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -66,14 +65,11 @@ import {
   ResourceStateConflictError,
   ScopeViolationError,
   ConfigurationHarnessError,
-  NetworkProxySecretDriverError,
-  type SecretDriverOwnershipError,
 } from "./errors.ts";
 import {
   admitNetworkProxy,
-  authorizeNetworkProxySecret,
   requestNetworkProxy,
-  validateNetworkProxyCredential,
+  type createNetworkProxySourceAuthorization,
 } from "./agent-network-proxy.ts";
 import {
   harnessAuthBinding,
@@ -165,10 +161,7 @@ interface AgentDraftDependencies {
   ) => Promise<Readonly<Configuration>>;
   readonly installationId: string;
   readonly selectedCompute: () => ComputeDriver | undefined;
-  readonly ownedSecretDriver: (
-    id: string,
-    failure: () => SecretDriverOwnershipError,
-  ) => SecretDriver;
+  readonly authorizeNetworkProxySource: ReturnType<typeof createNetworkProxySourceAuthorization>;
   readonly refuseRepositoryNetworkOverlap: (
     principalId: string,
     policy: Awaited<ReturnType<PlatformReadView["sandboxPolicies"]["find"]>>,
@@ -483,13 +476,11 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       const configurationBindings = storedSecretBindings(existingConfiguration.secretBindings);
       requireDedicatedGatewaySources(configurationBindings, executionMode);
       await dependencies.authorizeBindings(state, principalId, namespace.id, configurationBindings);
-      await authorizeNetworkProxySecret(
-        state,
-        dependencies.authority,
-        dependencies.ownedSecretDriver,
+      await dependencies.authorizeNetworkProxySource(
         principalId,
         namespace.id,
         networkProxy,
+        (id) => state.credentialSources.lockCredentialSource(namespace.id, id),
       );
       const configuration =
         configurationPreparation === undefined
@@ -642,27 +633,12 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       }
       const values = freezeConfigurationValues(input.configuration.values);
       await admitNetworkProxy(dependencies.selectedCompute(), networkProxy, executionMode, values);
-      if (networkProxy?.credentialSecretId !== undefined) {
-        await dependencies.authority.authorize(principalId, "operate", {
-          kind: "secret",
-          namespaceId: namespace.id,
-          id: networkProxy.credentialSecretId,
-        });
-        const secret = await state.secrets.findSecret(
-          namespace.id,
-          networkProxy.credentialSecretId,
-        );
-        if (!secret) {
-          throw new ScopeViolationError(
-            "The Network proxy Secret does not belong to the exact Namespace.",
-          );
-        }
-        const driver = dependencies.ownedSecretDriver(
-          secret.driverId,
-          () => new NetworkProxySecretDriverError(),
-        );
-        await validateNetworkProxyCredential(driver, secret);
-      }
+      await dependencies.authorizeNetworkProxySource(
+        principalId,
+        namespace.id,
+        networkProxy,
+        (id) => state.credentialSources.findCredentialSource(namespace.id, id),
+      );
       const secretBindings =
         input.configuration.secretBindings === undefined
           ? undefined
@@ -801,21 +777,19 @@ export function createAgentDraftOperations(dependencies: AgentDraftDependencies)
       await dependencies.guardAgentProvisioning(state, namespace.id, agent.id);
       await dependencies.guardProvisioningConfiguration(state, namespace.id, configurationId);
       const previousAuth = harnessAuthBinding(agent.harnessAuth);
-      if (agent.networkProxy?.credentialSecretId !== undefined) {
+      if (agent.networkProxy?.credentialSourceId !== undefined) {
         await dependencies.authority.authorize(principalId, "operate", {
-          kind: "secret",
+          kind: "credential_source",
           namespaceId: namespace.id,
-          id: agent.networkProxy.credentialSecretId,
+          id: agent.networkProxy.credentialSourceId,
         });
       }
       if (requestedProxy != null) {
-        await authorizeNetworkProxySecret(
-          state,
-          dependencies.authority,
-          dependencies.ownedSecretDriver,
+        await dependencies.authorizeNetworkProxySource(
           principalId,
           namespace.id,
           requestedProxy,
+          (id) => state.credentialSources.lockCredentialSource(namespace.id, id),
         );
       }
       // Every update needs the caller's grant on each source the Agent binds now, but not a

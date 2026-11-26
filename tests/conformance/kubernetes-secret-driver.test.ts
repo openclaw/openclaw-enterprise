@@ -178,6 +178,23 @@ for (const layout of ["shared", "adopted", "split"] as const) {
   });
 }
 
+test("kubernetes-secret-driver refuses a replacement at the address of an accepted delete", async () => {
+  const { client, namespace, driver, backendRef, secret } = await storedSecret();
+  const address = `${namespace}/${backendRef.name}`;
+  const replacement = structuredClone(requireStoredSecret(client, address));
+  replacement.metadata.uid = randomUUID();
+  const deleteOriginal = client.deleteNamespacedSecret.bind(client);
+  // Model an independent Kubernetes writer creating a new object before the Driver's readback.
+  client.deleteNamespacedSecret = async (request) => {
+    const deleted = await deleteOriginal(request);
+    client.secrets.set(address, replacement);
+    return deleted;
+  };
+  await assert.rejects(driver.delete(secret), SecretOwnershipError);
+  assert.equal(requireStoredSecret(client, address).metadata.uid, replacement.metadata.uid);
+  assert.equal(client.deletes.length, 1);
+});
+
 test("kubernetes-secret-driver fails closed on missing placement, invalid values, and foreign backends", async () => {
   const scenarios: {
     name: string;

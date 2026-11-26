@@ -1360,6 +1360,8 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
 export interface AgentRevision extends Scope {
   /** Gateway channel proxy selection saved for this deployment. */
   readonly networkProxy?: AgentNetworkProxy;
+  /** Private selected owner for this revision's upstream proxy Source. */
+  readonly networkProxyTokenServiceInstanceId?: string;
   readonly executionAdmission: ExecutionAdmission;
   readonly egressPlan?: ProxyPlan;
   /** Immutable staged credential and network authority for this revision's selected Proxy. */
@@ -1882,7 +1884,7 @@ export type {
   PresetLaunchSettings,
   PresetVariable,
 } from "./presets.ts";
-export { normalizePresetTemplate } from "./presets.ts";
+export { normalizePresetTemplate, validateInstallationPresetTemplate } from "./presets.ts";
 export {
   PRESET_JSON_MAX_BYTES,
   PresetValidationError,

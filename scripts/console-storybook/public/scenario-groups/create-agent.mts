@@ -31,6 +31,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { createFixtureFetch } from "../preview-rules.mts";
 import type { servePluginDiscovery } from "../plugin-discovery-fixture.mts";
+import { previewChannelProxyCredential, previewModelSources } from "./credential-sources.mts";
 
 type RepositoryOption = RepositoryOptionListResponse["data"][number];
 
@@ -357,15 +358,23 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Gateway channel proxy",
     path: create,
-    actions: form,
+    modelCredentialSourcePresets: ["openai"],
+    initialCredentialSources: [previewChannelProxyCredential, previewModelSources[0]],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Proxy channel example" },
+      click("Enter model ID manually"),
+      { selector: "#agent-model-manual", value: "gpt-5.1" },
+      { selector: "#agent-model-credential", value: previewModelSources[0].id },
+    ],
     description:
-      "The Agent form offers an optional Network proxy URL and existing Secret selector for Gateway channel traffic only.",
+      "Set a proxy endpoint for Gateway channel traffic and choose an optional Credential Source for authentication.",
     steps: [
       "At 360 px with enlarged text, check that the Basic authentication example fits inside the form.",
-      "Enter an HTTP or HTTPS endpoint without URL credentials.",
-      "Select a proxy credential Secret when authentication is required, then create the Agent.",
+      "Enter an HTTP or HTTPS endpoint without URL credentials. Select Channel proxy credential (simulated) or use Add new credential… to create a static Source.",
+      "Select Create Agent. Check that the draft saves the endpoint and the selected Source ID.",
     ],
-    gap: "Simulated UI proof; provisioning, Secret authorization, and proxy routing are not exercised.",
+    gap: "The preview simulates draft saves and Source enrollment. It does not exercise authorization or proxy routing.",
   },
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",

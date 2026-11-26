@@ -131,16 +131,25 @@ test(
     await restoreFleet();
     const password = randomBytes(18).toString("hex");
     const authorization = proxy.authorization;
-    const created = await topology.adminRequest("POST", `/namespaces/${namespaceId}/secrets`, {
-      name: "Gateway channel proxy credential",
-      value: authorization,
-    });
+    const created = await topology.adminRequest(
+      "POST",
+      `/namespaces/${namespaceId}/credential-sources`,
+      {
+        name: "Gateway channel proxy credential",
+        type: "static",
+        secret: authorization,
+      },
+    );
     assert.equal(created.status, 201);
-    const secretId = created.data.id;
+    const sourceId = created.data.id;
+    const oldResourceId = await topology.adminRequest("PATCH", agentPath, {
+      networkProxy: { url, credentialSourceId: `sec_${sourceId.slice(3)}` },
+    });
+    assert.equal(oldResourceId.status, 400);
 
-    // Agent update is not authority to select an otherwise inaccessible Secret.
+    // Agent update is not authority to select an otherwise inaccessible Credential Source.
     const denied = await topology.request("PATCH", agentPath, {
-      networkProxy: { url, credentialSecretId: secretId },
+      networkProxy: { url, credentialSourceId: sourceId },
     });
     assert.equal(denied.status, 403);
     assert.equal(JSON.stringify(denied).includes(authorization), false);
@@ -160,29 +169,26 @@ test(
       false,
       "URL validation must not echo credentials.",
     );
-
     const role = await topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/roles`, {
       name: "Proxy credential operator",
-      permissions: [{ action: "operate", resourceKind: "secret" }],
+      permissions: [{ action: "operate", resourceKind: "credential_source" }],
     });
     assert.equal(role.status, 201);
-    const grant = await topology.adminRequest(
-      "POST",
-      `/namespaces/${namespaceId}/iam/access-bindings`,
-      {
+    const grantCredential = () =>
+      topology.adminRequest("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
         subjectKind: "identity",
         subjectId: topology.secretApi.assignmentPrincipalId,
         roleId: role.data.id,
-        resourceKind: "secret",
-        resourceId: secretId,
-      },
-    );
+        resourceKind: "credential_source",
+        resourceId: sourceId,
+      });
+    const grant = await grantCredential();
     assert.equal(grant.status, 201);
     const saved = await topology.request("PATCH", agentPath, {
-      networkProxy: { url, credentialSecretId: secretId },
+      networkProxy: { url, credentialSourceId: sourceId },
     });
     assert.equal(saved.status, 200);
-    assert.deepEqual(saved.data.networkProxy, { url, credentialSecretId: secretId });
+    assert.deepEqual(saved.data.networkProxy, { url, credentialSourceId: sourceId });
     assert.equal(JSON.stringify(saved).includes(authorization), false);
 
     // Unsupported proxy protocols and PAC documents must not replace an admitted selection.
@@ -203,7 +209,7 @@ test(
       );
       const unchanged = await topology.request("GET", agentPath);
       assert.equal(unchanged.status, 200);
-      assert.deepEqual(unchanged.data.networkProxy, { url, credentialSecretId: secretId });
+      assert.deepEqual(unchanged.data.networkProxy, { url, credentialSourceId: sourceId });
     }
 
     const previous = await topology.request("GET", `${agentPath}/revisions/${previousRevisionId}`);
@@ -214,6 +220,23 @@ test(
       "Editing the draft cannot change a serving revision.",
     );
 
+    // The saved draft cannot replace the caller's exact Source grant at deployment.
+    const timeline = await topology.request("GET", `${agentPath}/revisions`);
+    assert.equal(timeline.status, 200);
+    assert.equal(
+      (
+        await topology.adminRequest(
+          "DELETE",
+          `/namespaces/${namespaceId}/iam/access-bindings/${grant.data.id}`,
+        )
+      ).status,
+      204,
+    );
+    const deniedDeploy = await topology.request("POST", `${agentPath}/deploy`);
+    assert.equal(deniedDeploy.status, 403);
+    assert.deepEqual((await topology.request("GET", `${agentPath}/revisions`)).data, timeline.data);
+    assert.equal((await grantCredential()).status, 201);
+
     const deploy = await topology.request("POST", `${agentPath}/deploy`);
     assert.equal(deploy.status, 202);
     await waitFor("Agent proxy selection deployment", async () => {
@@ -221,7 +244,7 @@ test(
       return current.data?.activeRevisionId === deploy.data.id;
     });
     const revision = await topology.request("GET", `${agentPath}/revisions/${deploy.data.id}`);
-    assert.deepEqual(revision.data.networkProxy, { url, credentialSecretId: secretId });
+    assert.deepEqual(revision.data.networkProxy, { url, credentialSourceId: sourceId });
     assert.equal(JSON.stringify(revision).includes(authorization), false);
     // Model-turn diagnostics must inspect the active revision, not the retired predecessor.
     topology.gatewayPod = await waitFor("active revision Gateway readiness", async () => {
@@ -280,6 +303,6 @@ test(
     assert.equal(cleared.status, 200);
     assert.equal(cleared.data.networkProxy, undefined);
     const retained = await topology.request("GET", `${agentPath}/revisions/${deploy.data.id}`);
-    assert.deepEqual(retained.data.networkProxy, { url, credentialSecretId: secretId });
+    assert.deepEqual(retained.data.networkProxy, { url, credentialSourceId: sourceId });
   },
 );

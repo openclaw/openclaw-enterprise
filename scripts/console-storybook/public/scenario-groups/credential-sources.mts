@@ -24,6 +24,10 @@ export const previewModelSources = [
   source(sourceId, "Research model"),
   source(replacementId, "Replacement model"),
 ] as const;
+export const previewChannelProxyCredential: StaticSource = {
+  ...source("cs_00000000-0000-4000-8000-000000000029", "Channel proxy credential (simulated)"),
+  config: {},
+};
 const templateSourceId = "cs_00000000-0000-4000-8000-000000000022";
 const previewTemplateSource: StaticSource = {
   ...source(templateSourceId, "Reporting credential"),
@@ -380,6 +384,21 @@ export const credentialSourceScenarios = {
       "Select an existing ready model Source. Create Agent saves its exact ID on the draft without enrolling another Source.",
     steps: [
       "Select Refresh Source list and confirm Research model stays selected before creating the Agent.",
+    ],
+  },
+  createWithPresetCredentialSource: {
+    group: "Pages/Create Agent",
+    name: "Preset with a model Credential Source",
+    path: create,
+    modelCredentialSourcePresets: ["openai"],
+    initialCredentialSources: [previewModelSources[0]],
+    presetAgent: { harnessAuth: { method: "credential_source", sourceId } },
+    description:
+      "Use a Preset that already names a ready static Source for a dedicated Codex Agent.",
+    steps: [
+      "Choose Research assistant, enter an Agent name, and select Use Preset.",
+      "Check that Preset authentication displays the Credential Source ID without asking for a value.",
+      "Select Create Agent. The simulated draft retains that Source ID without enrolling a new Source.",
     ],
   },
   createExistingSourceUnsupportedDestination: {

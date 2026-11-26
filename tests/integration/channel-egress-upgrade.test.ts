@@ -560,15 +560,23 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
     async (t) => {
       const f = await lifecycleFixture(t);
       const [first, second] = f.targets;
-      // The upgrade retires active Slack credential bindings. An ordinary policy
-      // setting and a dormant account may retain their existing Secret bindings.
+      // Retired selections in a dormant account do not affect the upgrade.
+      // Active Slack sender and channel selections use literal IDs.
       first.configuration.values.channels = {
         slack: {
           enabled: true,
           appToken: "${SLACK_APP}",
           botToken: { source: "env", id: "SLACK_BOT" },
           replyToMode: "${SLACK_REPLY_MODE}",
-          accounts: { paused: { enabled: false, signingSecret: "${PAUSED_SLACK_SIGNING}" } },
+          allowFrom: ["U0123ABCDEF"],
+          channels: { C0123ABCDEF: { users: ["U0123ABCDEF"] } },
+          accounts: {
+            paused: {
+              enabled: false,
+              signingSecret: "${PAUSED_SLACK_SIGNING}",
+              allowFrom: ["${PAUSED_SLACK_SENDERS}"],
+            },
+          },
         },
       };
       Object.assign(first.configuration.secretBindings, {
@@ -586,6 +594,10 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
         },
         PAUSED_SLACK_SIGNING: {
           source: { kind: "secret", namespaceId, id: id("sec", 9) },
+          delivery: { type: "env" },
+        },
+        PAUSED_SLACK_SENDERS: {
+          source: { kind: "secret", namespaceId, id: id("sec", 1) },
           delivery: { type: "env" },
         },
       });
@@ -631,6 +643,45 @@ test("one-off checks original Harness overrides before stopping any Agent", asyn
       false,
     );
     assert.ok(f.requests.includes(later.configurationRead));
+    const journal = JSON.parse(await readFile(f.journal, "utf8"));
+    assert.ok(journal.targets.every((target: { stop: string }) => target.stop === "unsent"));
+  });
+
+  await t.test("a later Slack policy reference refuses before any Agent Stop", async (t) => {
+    const f = await lifecycleFixture(t);
+    const [, later] = f.targets;
+    // Tokens have already moved to Sources. The old controller still accepts a
+    // public Secret binding for a policy selection that the destination will refuse.
+    later.configuration.values = {
+      channels: {
+        slack: {
+          enabled: true,
+          appToken: "${SLACK_APP}",
+          botToken: { source: "env", id: "SLACK_BOT" },
+          accounts: { support: { enabled: true, allowFrom: ["${SUPPORT_SENDERS}"] } },
+        },
+      },
+    };
+    Object.assign(later.configuration.secretBindings, {
+      SLACK_APP: {
+        source: { kind: "credential_source", namespaceId, id: id("cs", 5) },
+        delivery: { type: "env" },
+      },
+      SLACK_BOT: {
+        source: { kind: "credential_source", namespaceId, id: id("cs", 6) },
+        delivery: { type: "env" },
+      },
+      SUPPORT_SENDERS: {
+        source: { kind: "secret", namespaceId, id: id("sec", 8) },
+        delivery: { type: "env" },
+      },
+    });
+    await assert.rejects(
+      f.run("stop"),
+      /channels\.slack\.accounts\.support\.allowFrom\[0\].*literal Slack user IDs/,
+    );
+    assert.ok(f.requests.includes(later.configurationRead));
+    assert.ok(f.requests.every((wire) => wire.startsWith("GET ") && !wire.includes("/secrets")));
     const journal = JSON.parse(await readFile(f.journal, "utf8"));
     assert.ok(journal.targets.every((target: { stop: string }) => target.stop === "unsent"));
   });

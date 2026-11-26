@@ -253,15 +253,6 @@ export class PersistedStateInvalidError extends DependencyUnavailableError {}
  */
 export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
 
-export class NetworkProxySecretDriverError extends SecretDriverOwnershipError {
-  constructor() {
-    super(
-      "The selected Secret Driver does not own the Network proxy credential Secret. Select a Secret stored through the current driver.",
-    );
-    this.name = "NetworkProxySecretDriverError";
-  }
-}
-
 /**
  * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
  * write can replace the binding, so the fixed message says so.
@@ -486,13 +477,11 @@ export class ConfigurationHarnessError extends ScopeViolationError {
   }
 }
 
-/** Proxy validation discloses only fixed rules, never submitted values or Secret state. */
+/** Proxy validation discloses only fixed rules, never submitted values or Source state. */
 export class NetworkProxyValidationError extends ScopeViolationError {
-  constructor(reason: "selection" | "credential") {
+  constructor() {
     super(
-      reason === "selection"
-        ? "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Secret reference."
-        : "The Network proxy credential Secret must contain a valid Basic authorization value.",
+      "Invalid Network proxy selection. Use an HTTP or HTTPS endpoint without credentials and an exact Credential Source reference.",
     );
     this.name = "NetworkProxyValidationError";
   }

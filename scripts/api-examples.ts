@@ -156,7 +156,7 @@ const provisioning = {
 };
 const device = {
   status: "pending",
-  session: { namespaceId, id: "sec_123e4567-e89b-42d3-a456-426614174001" },
+  session: { namespaceId, id: "das_123e4567-e89b-42d3-a456-426614174001" },
   userCode: "ABCD-EFGH",
   verificationUrl: "https://auth.example.com/device",
   expiresAt: "2026-10-01T12:15:00.000Z",

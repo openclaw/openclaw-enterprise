@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   isName,
   NAME_RULE,
-  validatePresetTemplate,
+  validateInstallationPresetTemplate,
   type PresetDraftDefinition,
 } from "@openclaw-enterprise/contracts";
 import type { BundledPresetVersion } from "@openclaw-enterprise/occ";
@@ -32,7 +32,7 @@ function presetDefinition(value: unknown, path: string): PresetDraftDefinition {
   }
   return Object.freeze({
     name,
-    template: validatePresetTemplate(preset.template),
+    template: validateInstallationPresetTemplate(preset.template),
   });
 }
 

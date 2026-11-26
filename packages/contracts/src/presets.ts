@@ -2,7 +2,7 @@ import type { OpenClawConfigurationDocument } from "./index.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { deepFreeze } from "@openclaw-enterprise/utils";
-import { CredentialSourceId, SecretId, ServiceAccountId } from "./api/common.ts";
+import { CredentialSourceId, NamespaceId, SecretId, ServiceAccountId } from "./api/common.ts";
 import { isAllowedSecretBindingDestination } from "./secret-bindings.ts";
 import {
   PresetValidationError,
@@ -81,7 +81,7 @@ function hasFields(value: unknown, fields: string[]): value is Record<string, un
 /** Only authentication defaults and credential bindings are admitted here; draft launch fields may be unfinished. */
 function validateCredentials(
   template: PresetDraftTemplate,
-  namespaceId: string,
+  namespaceId?: string,
 ): asserts template is PresetTemplate {
   const resolved = presetTemplateDefaults(template);
   const definitions = template.variables ?? {};
@@ -91,16 +91,30 @@ function validateCredentials(
       ? missing.every((type: string) => type === "string")
       : Check(schema, value);
   };
+  const referenceIds = {
+    secret: SecretId,
+    credential_source: CredentialSourceId,
+    service_account: ServiceAccountId,
+  };
+  const namespace = namespaceId === undefined ? NamespaceId : Type.Literal(namespaceId);
   const reference = (
     original: unknown,
     value: unknown,
-    kind: "secret" | "credential_source" = "secret",
-  ): boolean =>
-    hasFields(original, ["kind", "namespaceId", "id"]) &&
-    isRecord(value) &&
-    scalar(original.kind, value.kind, Type.Literal(kind)) &&
-    scalar(original.namespaceId, value.namespaceId, Type.Literal(namespaceId)) &&
-    scalar(original.id, value.id, kind === "secret" ? SecretId : CredentialSourceId);
+    kind: keyof typeof referenceIds,
+  ): boolean => {
+    if (!isRecord(original) || !isRecord(value)) {
+      return false;
+    }
+    const hasNamespace = Object.hasOwn(original, "namespaceId");
+    return (
+      hasFields(original, hasNamespace ? ["kind", "namespaceId", "id"] : ["kind", "id"]) &&
+      (hasNamespace
+        ? scalar(original.namespaceId, value.namespaceId, namespace)
+        : namespaceId === undefined) &&
+      scalar(original.kind, value.kind, Type.Literal(kind)) &&
+      scalar(original.id, value.id, referenceIds[kind])
+    );
+  };
   const bindings = template.configuration?.secretBindings;
   if (bindings !== undefined) {
     if (!isRecord(bindings) || Object.keys(bindings).length > 64) {
@@ -123,7 +137,7 @@ function validateCredentials(
           binding,
           Object.hasOwn(binding, "delivery") ? ["source", "delivery"] : ["source"],
         ) ||
-        (!reference(binding.source, value.source) &&
+        (!reference(binding.source, value.source, "secret") &&
           !reference(binding.source, value.source, "credential_source")) ||
         (Object.hasOwn(binding, "delivery") &&
           (!hasFields(binding.delivery, ["type"]) ||
@@ -162,20 +176,26 @@ function validateCredentials(
           value.method,
           Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
         ) &&
-        reference(auth.source, value.source)) ||
+        reference(auth.source, value.source, "secret")) ||
       (hasFields(auth, ["method", "source"]) &&
         scalar(auth.method, value.method, Type.Literal("codex_pat")) &&
-        hasFields(auth.source, ["kind", "namespaceId", "id"]) &&
-        isRecord(value.source) &&
-        scalar(auth.source.kind, value.source.kind, Type.Literal("service_account")) &&
-        scalar(auth.source.namespaceId, value.source.namespaceId, Type.Literal(namespaceId)) &&
-        scalar(auth.source.id, value.source.id, ServiceAccountId)))
+        reference(auth.source, value.source, "service_account")) ||
+      (hasFields(auth, ["method", "sourceId"]) &&
+        scalar(auth.method, value.method, Type.Literal("credential_source")) &&
+        scalar(auth.sourceId, value.sourceId, CredentialSourceId)))
   ) {
     return;
   }
   throw new PresetValidationError(
-    "Preset Harness authentication requires a supported binding with same-Namespace Secret references.",
+    "Preset Harness authentication requires a supported binding. Check the Credential Source ID or same-Namespace reference.",
   );
+}
+
+/** Validate an Installation file before it has a destination Namespace. */
+export function validateInstallationPresetTemplate(input: unknown): PresetDraftTemplate {
+  const template = validatePresetTemplate(input);
+  validateCredentials(template);
+  return template;
 }
 
 /** Store a safe template; ordinary create/deploy admission owns concrete launch settings. */

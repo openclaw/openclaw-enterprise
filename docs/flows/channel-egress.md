@@ -158,8 +158,10 @@ evidence, denied reads, an unsupported CLI, or a receipt with different Namespac
 Agent or revision IDs refuses the pass before another Stop. The receipt contains
 those IDs and `canRetainHarnessOverrides: true`, without override values.
 Before Stop, the helper also reads each Agent and its current Configuration through
-the OCC CLI. It refuses the pass if enabled Slack settings reference a binding
-whose source is a public Namespace Secret. It reads no credential values.
+the OCC CLI. For enabled Slack and its active accounts, it refuses a policy
+reference where the destination requires a literal user or channel ID. It also
+refuses a Slack credential bound to a public Namespace Secret. The helper reads
+the settings and binding references without reading credential values.
 
 Each Stop still compares the original active revision. Completion requires the
 Agent to be stopped with no active revision. `stopped_inventory` checks the
@@ -237,6 +239,10 @@ fleet egress grant before Gateway startup.
 
 Only the Gateway receives the assigned proxy URL and binding label. Harness
 transport remains direct and its model credential placement is unchanged.
+For an authenticated route, Worker rechecks the exact Source, the admitting
+caller, and the Agent service principal. Compute resolves the Source through
+Worker and writes the header to the reserved Envoy Secret slot. A retry checks
+authorization and the staged credential version before reusing the slot.
 
 ### 4. Revoke before reuse
 
@@ -299,6 +305,8 @@ and remaining acceptance evidence.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-26 17:37: Refuse legacy Slack policy references before stopping Agents for the one-off channel transition (authoring-run/a45d74f8-81b7-44d8-af7a-db566e79ea5f - 972a2335)
 
 - 2026-11-23 16:55: Check the original revision again before recording each one-off Deploy as sending.
 

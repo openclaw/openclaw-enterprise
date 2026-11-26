@@ -218,7 +218,11 @@ test("Channel directory lookup checks the exact edit target and Source before an
   const obsoleteBody = await controller.request("POST", path, {
     body: { secretId: source.id, kind: "users", query: "mem" },
   });
-  assert.equal(obsoleteBody.status, 400, "the cutover contract accepts sourceId, not secretId");
+  assert.equal(obsoleteBody.status, 400);
+  const secretId = await controller.request("POST", path, {
+    body: { ...body, sourceId: "sec_00000000-0000-4000-8000-000000000000" },
+  });
+  assert.equal(secretId.status, 400, "sourceId accepts only Credential Source IDs");
   const unavailable = await controller.request("POST", path, { body });
   assert.equal(checkedInjectedBody(unavailable, 501, ErrorResponse).error.code, "NOT_IMPLEMENTED");
 

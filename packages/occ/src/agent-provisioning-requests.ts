@@ -25,7 +25,7 @@ import {
 import {
   admitNetworkProxy,
   requestNetworkProxy,
-  validateNetworkProxyCredential,
+  type createNetworkProxySourceAuthorization,
 } from "./agent-network-proxy.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
@@ -58,6 +58,7 @@ import {
   type ProvisionAgentResult,
 } from "./agent-provisioning.ts";
 import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
+import type { createAgentDeploymentAdmission } from "./agent-deployment-admission.ts";
 import { resolveConfiguredHarnessId, type ModelPolicyAgent } from "./configured-harness.ts";
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
@@ -118,12 +119,16 @@ interface ProvisioningRequestDependencies {
   >;
   readonly sandboxPolicy: Pick<ReturnType<typeof createSandboxPolicyOperations>, "sandboxDriver">;
   readonly secrets: Pick<SecretOperations, "ownedSecretDriver">;
+  readonly authorizeNetworkProxySource: ReturnType<typeof createNetworkProxySourceAuthorization>;
   readonly selectedIAM: () => IAMDriver;
   readonly channels: Pick<
     ReturnType<typeof createDeploymentChannelChecks>,
     "validateChannelCredentials"
   >;
   readonly modelPolicyAgent: (mode: HarnessExecutionMode) => ModelPolicyAgent;
+  readonly validateProvisioningModel: ReturnType<
+    typeof createAgentDeploymentAdmission
+  >["validateProvisioningModel"];
   readonly harness: Pick<
     ReturnType<typeof createHarnessAuthOperations>,
     | "admitHarnessAuth"
@@ -312,34 +317,41 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
       // credential reference form these rules name (an unbound name, `$NAME`, a fallback, other
       // text) with its generic binding refusal (finding 2506). Admission repeats them below.
       await validateContent(configurationInput);
+      const harness = {
+        id: resolveConfiguredHarnessId(
+          configurationInput.values,
+          dependencies.modelPolicyAgent(executionMode),
+        ),
+        version: "provisioning",
+        mode: executionMode,
+      };
       if (harnessAuth.method === "credential_source") {
         await transactions.transact(async (state) => {
           const namespace = await lockNamespace(state, input.namespaceId);
           if (namespace.status !== "ready") {
             throw new NamespaceNotReadyError();
           }
-          // This authorization accepts only a ready managed TokenService Source.
           await harnessOperations.authorizeHarnessAuthSource(
             state,
             principalId,
             input.namespaceId,
             harnessAuth,
           );
-          throw new ResourceStateConflictError(
-            "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+          await dependencies.validateProvisioningModel(
+            state,
+            input.namespaceId,
+            harnessAuth,
+            compute,
+            harness,
+            configurationInput.values,
+            configurationInput.secretBindings,
           );
         });
       }
       // Refuse a known unsupported Harness topology before Channel preflight can resolve
       // credentials or contact a provider. Stored work repeats this check on every admission.
       requireDedicatedNativeSupport(
-        {
-          id: resolveConfiguredHarnessId(
-            configurationInput.values,
-            dependencies.modelPolicyAgent(executionMode),
-          ),
-          mode: executionMode,
-        },
+        harness,
         sandboxPolicy.sandboxDriver(),
         dependencies.nativeWorkers,
         { configuration: configurationInput.values },
@@ -996,8 +1008,8 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
     if (isSecretHarnessAuth(auth)) {
       ids.push(auth.source.id);
     }
-    if (plan.networkProxy?.credentialSecretId !== undefined) {
-      ids.push(plan.networkProxy.credentialSecretId);
+    if (plan.networkProxy?.credentialSourceId !== undefined) {
+      sourceIds.push(plan.networkProxy.credentialSourceId);
     }
     for (const id of ids) {
       if ((await state.secrets.findSecret(namespaceId, id)) === undefined) {
@@ -1047,14 +1059,9 @@ export function createProvisioningRequests(dependencies: ProvisioningRequestDepe
         await authorizeProvisioningSecretSource(state, principalId, namespaceId, binding.source);
       }
     }
-    if (networkProxy?.credentialSecretId !== undefined) {
-      const selected = await authorizeProvisioningSecretSource(state, principalId, namespaceId, {
-        kind: "secret",
-        namespaceId,
-        id: networkProxy.credentialSecretId,
-      });
-      await validateNetworkProxyCredential(selected.driver, selected.secret);
-    }
+    await dependencies.authorizeNetworkProxySource(principalId, namespaceId, networkProxy, (id) =>
+      state.credentialSources.lockCredentialSource(namespaceId, id),
+    );
     if (isSecretHarnessAuth(harnessAuth)) {
       await authorizeProvisioningSecretSource(state, principalId, namespaceId, harnessAuth.source);
     } else if (harnessAuth?.method === "credential_source") {

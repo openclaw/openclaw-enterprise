@@ -618,9 +618,30 @@ export function registerStartupPresetCases({
         variables: { name: { type: "string" } },
         agent: {
           name: "{{ vars.name }}",
+          harnessAuth: {
+            method: "credential_source",
+            sourceId: "cs_00000000-0000-4000-8000-000000000001",
+          },
           initialWorkspaceFiles: {
             "AGENTS.md": "# Agent\nName: {{ vars.name }}\n",
             "USER.md": "",
+          },
+        },
+        configuration: {
+          secretBindings: {
+            TEAM_TOKEN: {
+              source: {
+                kind: "credential_source",
+                namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+                id: "cs_00000000-0000-4000-8000-000000000002",
+              },
+            },
+            SHARED_TOKEN: {
+              source: {
+                kind: "credential_source",
+                id: "cs_00000000-0000-4000-8000-000000000003",
+              },
+            },
           },
         },
       },
@@ -644,14 +665,8 @@ export function registerStartupPresetCases({
       environment: { OCC_CONFIG_PATH: relativePath },
     });
     assert.ok(relativeRuntime?.defaultPresets);
-    assert.deepEqual(
-      relativeRuntime.defaultPresets.map((preset) => preset.name),
-      ["from-file"],
-    );
-    assert.equal(
-      relativeRuntime.defaultPresets[0]?.template.agent?.initialWorkspaceFiles?.["AGENTS.md"],
-      "# Agent\nName: {{ vars.name }}\n",
-    );
+    // The Installation cannot choose or replace a binding's Namespace before seeding.
+    assert.deepEqual(relativeRuntime.defaultPresets, [validPreset]);
 
     const absoluteConfiguration: ValidationConfiguration = installation();
     const absolutePreset = join(relativeDirectory, "absolute.json");
@@ -703,6 +718,16 @@ export function registerStartupPresetCases({
         "invalid-template.json",
         JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
         /Preset agent: contains unsupported fields/,
+      ],
+      [
+        "invalid-harness-source.json",
+        JSON.stringify({
+          name: "invalid-source",
+          template: {
+            agent: { harnessAuth: { method: "credential_source", sourceId: "not-a-source-id" } },
+          },
+        }),
+        /Preset Harness authentication requires a supported binding/,
       ],
       [
         "invalid-name.json",

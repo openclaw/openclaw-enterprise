@@ -99,7 +99,7 @@ interface ConfigurationOperationsDependencies {
   ) => void;
   readonly requireBundledChannelBindings: (
     values: Readonly<OpenClawConfigurationDocument>,
-    secretBindings: SecretBindings,
+    secretBindings?: SecretBindings,
   ) => void;
   readonly ownedSecretDriver: SecretOperations["ownedSecretDriver"];
   readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
@@ -655,9 +655,7 @@ export function createConfigurationOperations(deps: ConfigurationOperationsDepen
     validateConfigurationSettings(values, options);
     requireDeployableRoster(values, options, agent);
     deps.validateComputeConfiguration(values, options);
-    if (secretBindings !== undefined) {
-      deps.requireBundledChannelBindings(values, secretBindings);
-    }
+    deps.requireBundledChannelBindings(values, secretBindings);
   }
 
   async function validateConfigurationWrite(

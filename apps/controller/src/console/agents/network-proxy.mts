@@ -1,16 +1,12 @@
-import type {
-  AgentNetworkProxy,
-  SecretMetadata,
-  SecretReference,
-} from "@openclaw-enterprise/contracts";
+import type { AgentNetworkProxy, CredentialSourceReference } from "@openclaw-enterprise/contracts";
 import { button, element, field } from "../dom.mjs";
-import { createSecretReferenceField } from "./secret-picker.mjs";
+import { createInlineStaticCredentialSourcePicker } from "../credential-source-picker.mjs";
 
-type PickerContext = Parameters<typeof createSecretReferenceField>[0]["context"];
+type PickerContext = Parameters<typeof createInlineStaticCredentialSourcePicker>[0];
 
 export interface NetworkProxyDraft {
   readonly url: string;
-  readonly credentialSecretId?: string;
+  readonly credentialSourceId?: string;
 }
 
 function endpoint(value: string): string {
@@ -45,22 +41,21 @@ function endpoint(value: string): string {
 
 export function createNetworkProxyFields({
   context,
-  namespaceId,
   id,
   initial,
-  agentName,
   onChange,
 }: {
   context: PickerContext;
-  namespaceId: string;
   id: string;
   initial?: NetworkProxyDraft;
-  agentName(): string;
   onChange(): void;
 }) {
-  let source: SecretReference | null = initial?.credentialSecretId
-    ? { kind: "secret", namespaceId, id: initial.credentialSecretId }
-    : null;
+  const reference = (sourceId: string | undefined): CredentialSourceReference | null =>
+    sourceId === undefined
+      ? null
+      : { kind: "credential_source", namespaceId: context.namespaceId, id: sourceId };
+  let source = reference(initial?.credentialSourceId);
+  let enrolling = false;
   const input = element("input", {
     id: `${id}-url`,
     type: "url",
@@ -70,31 +65,28 @@ export function createNetworkProxyFields({
     placeholder: "https://proxy.example:8443",
   });
   const validation = element("p", { className: "hint", role: "status" });
-  const picker = createSecretReferenceField({
-    context,
+  const node = element("div", { className: "network-proxy-fields" });
+  const picker = createInlineStaticCredentialSourcePicker(context, node, {
     id: `${id}-credential`,
-    label: "Proxy credential Secret (optional)",
-    getCurrentSource: () => source,
-    onSecretSelected(secret: SecretMetadata) {
-      source = secret.ref;
+    label: "Proxy credential",
+    initial: source,
+    inputClassName: "form-field",
+    deliveryHint: "The credential takes effect after you save the draft and deploy a new version.",
+    onChange(selected) {
+      source = selected;
       changed();
     },
-    createSecretName: () => `${agentName() || "Agent"} proxy credential`,
-    createDialogTitle: "Create proxy credential Secret",
-    metadataLabel: "View proxy credential Secret metadata",
-    noSecretLabel: "No proxy credential",
-    loadOnFocus: true,
-    stagedHint:
-      "Proxy credential staged. Save the Agent setting to apply it on the next deployment.",
+    onPending(pending) {
+      enrolling = pending;
+      changed();
+    },
   });
   const remove = button("Remove proxy credential", () => {
     source = null;
-    picker.refresh();
+    picker.reset();
     changed();
   });
-  const node = element(
-    "div",
-    { className: "network-proxy-fields" },
+  node.append(
     field({
       label: "Network proxy URL",
       control: input,
@@ -104,18 +96,20 @@ export function createNetworkProxyFields({
     element(
       "p",
       { className: "hint" },
-      "For Basic authentication, select a Secret containing Basic <base64(username:",
+      "For Basic authentication, select a Credential Source containing Basic <base64(username:",
       element("wbr"),
       "password)>. Proxy credentials are separate from channel credentials.",
     ),
     remove,
     validation,
   );
+  picker.setRequired(false);
+  picker.setActive(true);
   function changed() {
     validation.textContent = "";
     input.setCustomValidity("");
     input.removeAttribute("aria-invalid");
-    remove.hidden = source === null;
+    remove.hidden = source === null || picker.creating;
     onChange();
   }
   input.addEventListener("input", changed);
@@ -124,17 +118,26 @@ export function createNetworkProxyFields({
   return {
     node,
     input,
+    get selectingCredential() {
+      return picker.creating || enrolling;
+    },
+    get enrollmentPending() {
+      return enrolling;
+    },
     read(): AgentNetworkProxy | undefined {
+      if (picker.creating || enrolling) {
+        throw new Error("Finish or cancel creating the proxy credential first.");
+      }
       const raw = input.value.trim();
       if (!raw) {
         if (source) {
-          throw new Error("Enter a Network proxy URL or remove the proxy credential Secret.");
+          throw new Error("Enter a Network proxy URL or remove the proxy credential.");
         }
         return undefined;
       }
       return {
         url: endpoint(raw),
-        ...(source === null ? {} : { credentialSecretId: source.id }),
+        ...(source === null ? {} : { credentialSourceId: source.id }),
       };
     },
     showValidation(message: string) {
@@ -147,20 +150,17 @@ export function createNetworkProxyFields({
       const raw = input.value;
       // Never retain user information from a credential-bearing URL in Console draft state.
       const url = raw.includes("@") ? "" : raw;
-      return { url, ...(source === null ? {} : { credentialSecretId: source.id }) };
+      return { url, ...(source === null ? {} : { credentialSourceId: source.id }) };
     },
     reset(value: AgentNetworkProxy | undefined) {
       input.value = value?.url ?? "";
-      source = value?.credentialSecretId
-        ? { kind: "secret", namespaceId, id: value.credentialSecretId }
-        : null;
-      picker.refresh();
-      changed();
+      picker.setCurrent(reference(value?.credentialSourceId));
     },
     setDisabled(disabled: boolean) {
       input.disabled = disabled;
       picker.setDisabled(disabled);
       remove.disabled = disabled;
+      node.toggleAttribute("inert", disabled);
     },
   };
 }

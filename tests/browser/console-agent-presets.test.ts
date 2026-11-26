@@ -164,6 +164,9 @@ const standardCodexPreset: {
         | { method: "api_key" | "codex_pat"; secret?: string };
       initialWorkspaceFiles?: Record<string, string>;
     };
+    configuration: {
+      values: { agents: { defaults: Record<string, unknown> } } & Record<string, unknown>;
+    };
   };
 } = JSON.parse(
   await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
@@ -3211,6 +3214,64 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
         binding.resourceKind === "secret" &&
         binding.resourceId === modelSecret.id,
     ),
+  );
+});
+
+test("Preset launch reuses a model Credential Source in the Agent draft", async (t) => {
+  const fixture = await createTokenServiceConsoleFixture(t);
+  const namespace = await fixture.createNamespace("Source Preset", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const source: FixtureResponse<{ id: string }> = await fixture.request(
+    "POST",
+    `${root}/credential-sources`,
+    {
+      body: {
+        name: "Preset model credential",
+        type: "static",
+        secret: "at-preset-source-fixture",
+        config: { provider_preset: "codex-pat" },
+      },
+    },
+  );
+  assert.equal(source.status, 201);
+  const harnessAuth = { method: "credential_source", sourceId: source.data.id } as const;
+  const standard = structuredClone(standardCodexPreset);
+  delete standard.template.variables.modelSecret;
+  const { values } = standard.template.configuration;
+  // An explicit roster can choose its model on the main Agent without a default model.
+  const preset = await createPreset(fixture, namespace.id, {
+    name: "source-backed-model",
+    template: {
+      ...standard.template,
+      agent: { ...standard.template.agent, harnessAuth },
+      configuration: {
+        values: {
+          ...values,
+          agents: { ownership: "explicit", entries: { main: values.agents.defaults } },
+        },
+      },
+    },
+  });
+
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.id);
+  await page.getByLabel("Name", { exact: true }).fill("Source Preset Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-6-astra");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  await page.getByText(`Preset authentication: Credential Source · ${source.data.id}`).waitFor();
+  const created = await createAgentThroughForm(page, fixture, namespace.id);
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+
+  assert.deepEqual(created.harnessAuth, harnessAuth);
+  assert.deepEqual(created.credentialSources, [{ sourceId: source.data.id }]);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+  assert.equal(
+    requests.filter(
+      ({ method, path }) => method === "POST" && path === `${root}/credential-sources`,
+    ).length,
+    0,
   );
 });
 

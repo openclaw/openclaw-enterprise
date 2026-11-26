@@ -402,15 +402,33 @@ export async function assertRevisionAuthAvailable(
       harnessAuthBindingFromSnapshot(revision.harnessAuth),
     );
   }
-  if (snapshots.length === 0) {
+  const networkProxySourceId = revision.networkProxy?.credentialSourceId;
+  const sourceIds = new Set(snapshots.map(({ sourceId }) => sourceId));
+  if (
+    (networkProxySourceId === undefined) !==
+    (revision.networkProxyTokenServiceInstanceId === undefined)
+  ) {
+    throw new ScopeViolationError("The AgentRevision Network proxy Source owner is invalid.");
+  }
+  if (networkProxySourceId !== undefined) {
+    sourceIds.add(networkProxySourceId);
+  }
+  if (sourceIds.size === 0) {
     return;
   }
-  const sources = new Map(
-    (await loadSources([...new Set(snapshots.map(({ sourceId }) => sourceId))])).map((source) => [
-      source.id,
-      source,
-    ]),
-  );
+  const sources = new Map((await loadSources([...sourceIds])).map((source) => [source.id, source]));
+  if (networkProxySourceId !== undefined) {
+    const source = sources.get(networkProxySourceId);
+    if (
+      source?.namespaceId !== revision.namespaceId ||
+      source.state !== "ready" ||
+      source.type !== "static" ||
+      source.ownerCapability !== "token_service" ||
+      source.tokenServiceInstanceId !== revision.networkProxyTokenServiceInstanceId
+    ) {
+      throw new ScopeViolationError("The AgentRevision Network proxy Source is unavailable.");
+    }
+  }
   // Deduplicate locks, not assertions: the Harness and list can disagree on the same ID.
   for (const snapshot of snapshots) {
     const source = sources.get(snapshot.sourceId);
@@ -2525,8 +2543,6 @@ function repositories(
         if (
           agent.namespaceId === namespaceId &&
           (harnessSecretReference(agent.harnessAuth, namespaceId, secretId) ||
-            agent.networkProxy?.credentialSecretId === secretId ||
-            activeRevision?.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(activeRevision?.harnessAuth, namespaceId, secretId) ||
             secretBindingsReference(activeRevision?.secretBindings, namespaceId, secretId))
         ) {
@@ -2546,7 +2562,6 @@ function repositories(
         if (
           revision !== undefined &&
           (secretBindingsReference(revision.secretBindings, namespaceId, secretId) ||
-            revision.networkProxy?.credentialSecretId === secretId ||
             harnessSecretReference(revision.harnessAuth, namespaceId, secretId))
         ) {
           add("agent", revision.agentId);
@@ -3137,6 +3152,7 @@ function repositories(
                 candidate.namespaceId === namespaceId && candidate.id === operation.resourceId,
             );
           return (
+            revision?.networkProxy?.credentialSourceId === credentialSourceId ||
             harnessCredentialSourceReference(revision?.harnessAuth, credentialSourceId) ||
             agentCredentialSourceReference(revision?.credentialSources, credentialSourceId) ||
             secretBindingsReference(
@@ -3163,12 +3179,13 @@ function repositories(
         for (const candidate of predecessors) {
           if (
             candidate.id !== active.id &&
-            secretBindingsReference(
-              candidate.secretBindings,
-              namespaceId,
-              credentialSourceId,
-              "credential_source",
-            )
+            (candidate.networkProxy?.credentialSourceId === credentialSourceId ||
+              secretBindingsReference(
+                candidate.secretBindings,
+                namespaceId,
+                credentialSourceId,
+                "credential_source",
+              ))
           ) {
             predecessorReferenced = true;
             break;
@@ -3208,7 +3225,9 @@ function repositories(
           ).find((revision) => revision.id === agent.activeRevisionId);
           return (
             agent.namespaceId === namespaceId &&
-            (harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
+            (agent.networkProxy?.credentialSourceId === credentialSourceId ||
+              activeRevision?.networkProxy?.credentialSourceId === credentialSourceId ||
+              harnessCredentialSourceReference(agent.harnessAuth, credentialSourceId) ||
               harnessCredentialSourceReference(activeRevision?.harnessAuth, credentialSourceId) ||
               agentCredentialSourceReference(agent.credentialSources, credentialSourceId) ||
               agentCredentialSourceReference(

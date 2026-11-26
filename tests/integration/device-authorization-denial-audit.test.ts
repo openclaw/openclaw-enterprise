@@ -294,7 +294,7 @@ test("device login binding denials retain generic 404 and attributable fail-clos
         label: "absent handle",
         target: item.target,
         actorId: owner,
-        login: { id: `sec_${randomUUID()}`, userCode: "unused" },
+        login: { id: `das_${randomUUID()}`, userCode: "unused" },
       });
       assert.equal(absent.status, 404);
       assert.deepEqual(object(absent.body).error, genericNotFound);

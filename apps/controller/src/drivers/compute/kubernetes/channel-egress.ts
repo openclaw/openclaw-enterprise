@@ -102,8 +102,7 @@ export interface ChannelEgressBinding {
 }
 
 interface ChannelProxyBinding extends ChannelProxyAdmission {
-  readonly credentialSecretId?: string;
-  readonly sourceUid?: string;
+  readonly credentialSourceId?: string;
   readonly sourceVersion?: string;
   readonly slotUid?: string;
 }
@@ -111,7 +110,10 @@ interface ChannelProxyBinding extends ChannelProxyAdmission {
 interface PreparedProxy {
   readonly binding: ChannelProxyBinding;
   /** Transient Kubernetes Secret data; never put this in a policy or ownership record. */
-  readonly encodedCredential?: string;
+  readonly credential?: {
+    readonly encoded: string;
+    readonly authorize: (signal: AbortSignal) => Promise<void>;
+  };
 }
 
 export interface PreparedChannelRouting extends ChannelRoutingRequirements {
@@ -293,7 +295,7 @@ export class KubernetesChannelEgress {
       clusterName: `channel-egress-proxy-${binding.id}`,
       addresses: proxy.addresses,
       port: proxy.port,
-      ...(proxy.credentialSecretId === undefined
+      ...(proxy.credentialSourceId === undefined
         ? {}
         : {
             credential: {
@@ -353,8 +355,8 @@ export class KubernetesChannelEgress {
 
   private async prepareProxy(
     revision: AgentRevision,
-    namespace: string,
     context: ComputeRevisionContext | undefined,
+    signal: AbortSignal,
   ): Promise<PreparedProxy | undefined> {
     if (!revision.networkProxy) {
       if (revision.compute.networkProxyAdmission || context?.networkProxyCredential) {
@@ -370,53 +372,29 @@ export class KubernetesChannelEgress {
       throw new Error("Gateway channel proxy admission changed; deploy a new Agent revision.");
     }
     const admission = JSON.parse(current) as ChannelProxyAdmission;
-    const id = revision.networkProxy.credentialSecretId;
+    const id = revision.networkProxy.credentialSourceId;
     if (!id) {
       if (context?.networkProxyCredential) {
         throw new Error("Unexpected Gateway channel proxy credential.");
       }
       return { binding: admission };
     }
-    const projection = context?.networkProxyCredential;
-    if (
-      !projection ||
-      projection.secretId !== id ||
-      projection.namespaceId !== revision.namespaceId ||
-      projection.agentId !== revision.agentId ||
-      projection.backendRef.namespaceName !== namespace
-    ) {
-      throw new Error("Gateway channel proxy credential identity is unavailable.");
+    const credential = context?.networkProxyCredential;
+    if (!credential) {
+      throw new Error("Gateway channel proxy credential authorization is unavailable.");
     }
-    let source: Resource | undefined;
-    try {
-      source = await this.read(this.header("Secret", projection.backendRef.name, namespace, "v1"));
-    } catch {
-      throw new Error("Gateway channel proxy credential source is unavailable.");
-    }
-    const encoded = source?.data?.[projection.backendRef.key];
-    if (
-      !source ||
-      source.metadata.uid !== projection.backendRef.uid ||
-      !source.metadata.resourceVersion ||
-      source.metadata.deletionTimestamp ||
-      !encoded
-    ) {
-      throw new Error("Gateway channel proxy credential source is unavailable.");
-    }
-    const header = Buffer.from(encoded, "base64").toString("utf8");
-    if (!validNetworkProxyAuthorization(header)) {
-      throw new Error(
-        "Gateway channel proxy credential Secret must contain a valid Basic authorization value.",
+    const { value, version } = await credential.resolve(signal);
+    if (!validNetworkProxyAuthorization(value)) {
+      throw new ConfigurationHarnessError(
+        "Gateway channel proxy Credential Source must contain a valid Basic authorization value.",
       );
     }
     return {
-      binding: {
-        ...admission,
-        credentialSecretId: id,
-        sourceUid: source.metadata.uid,
-        sourceVersion: source.metadata.resourceVersion,
+      binding: { ...admission, credentialSourceId: id, sourceVersion: version },
+      credential: {
+        encoded: Buffer.from(value, "utf8").toString("base64"),
+        authorize: (signal) => credential.authorize(signal),
       },
-      encodedCredential: encoded,
     };
   }
 
@@ -753,7 +731,7 @@ export class KubernetesChannelEgress {
   }
 
   private async clearCredentialSlot(binding: ChannelEgressBinding): Promise<void> {
-    if (!binding.proxy?.credentialSecretId) {
+    if (!binding.proxy?.credentialSourceId) {
       return;
     }
     let slot = await this.credentialSlot(binding);
@@ -828,7 +806,7 @@ export class KubernetesChannelEgress {
     if (value.proxy !== undefined) {
       const proxy = asRecord(value.proxy);
       const trust = proxy?.trust == null ? null : asRecord(proxy.trust);
-      const credential = proxy?.credentialSecretId !== undefined;
+      const credential = proxy?.credentialSourceId !== undefined;
       if (
         !proxy ||
         proxy.version !== 1 ||
@@ -844,14 +822,10 @@ export class KubernetesChannelEgress {
         (proxy.trust !== null &&
           (!trust || typeof trust.caSecretName !== "string" || typeof trust.caKey !== "string")) ||
         (credential &&
-          (typeof proxy.credentialSecretId !== "string" ||
-            typeof proxy.sourceUid !== "string" ||
+          (typeof proxy.credentialSourceId !== "string" ||
             typeof proxy.sourceVersion !== "string" ||
             (value.state === "active" && typeof proxy.slotUid !== "string"))) ||
-        (!credential &&
-          (proxy.sourceUid !== undefined ||
-            proxy.sourceVersion !== undefined ||
-            proxy.slotUid !== undefined))
+        (!credential && (proxy.sourceVersion !== undefined || proxy.slotUid !== undefined))
       ) {
         throw new Error("Channel egress listener has an invalid proxy ownership record.");
       }
@@ -1822,18 +1796,21 @@ export class KubernetesChannelEgress {
     revision: AgentRevision,
     namespace: string,
     routing: PreparedChannelRouting,
-    context?: ComputeRevisionContext,
+    context: ComputeRevisionContext | undefined,
+    signal: AbortSignal,
   ): Promise<void> {
     const { uid } = await this.fleet();
-    const proxy = await this.prepareProxy(revision, namespace, context);
+    const proxy = await this.prepareProxy(revision, context, signal);
     if (proxy && proxy.binding.gatewayUid !== uid) {
       throw new Error("The admitted channel proxy Gateway was replaced.");
     }
     let binding = await this.reserve(revision, namespace, routing, uid, proxy?.binding);
     await this.verifyPolicySet(binding);
-    if (proxy?.encodedCredential) {
-      binding = await this.fillCredentialSlot(binding, proxy.encodedCredential);
+    if (proxy?.credential) {
+      await proxy.credential.authorize(signal);
+      binding = await this.fillCredentialSlot(binding, proxy.credential.encoded);
       await this.waitCredentialRoute(binding, true);
+      await proxy.credential.authorize(signal);
     }
     binding = await this.transition(binding, "active", routing.destinations, uid);
     await this.waitInstalled(binding, uid, routing.destinations);

@@ -16,6 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 # Keep these reference forms aligned with packages/occ/src/channel-secret-bindings.ts.
 ENV_REFERENCE = re.compile(r"\$(\$)?\{([A-Z_][A-Z0-9_]*)(?::-[^${}]*)?\}")
+ENV_SHORTHAND = re.compile(r"\$([A-Z][A-Z0-9_]{0,127})")
 SLACK_CREDENTIAL_FIELDS = (("appToken",), ("botToken",), ("signingSecret",),
                            ("userToken",), ("relay", "authToken"))
 
@@ -25,14 +26,22 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def slack_credential_references(slack):
-    """Find Source-only credential bindings on an enabled Slack channel and its active accounts."""
-    targets = [slack]
+def setting_path(parent, key):
+    return f"{parent}.{key}" if re.fullmatch(r"[A-Za-z0-9_-]+", key) else f"{parent}[{json.dumps(key)}]"
+
+
+def active_slack_settings(slack):
+    yield "channels.slack", slack
     accounts = slack.get("accounts")
     if isinstance(accounts, dict):
-        targets.extend(account for account in accounts.values()
-                       if isinstance(account, dict) and account.get("enabled") is not False)
-    for target in targets:
+        for account_id, account in accounts.items():
+            if isinstance(account, dict) and account.get("enabled") is not False:
+                yield setting_path("channels.slack.accounts", account_id), account
+
+
+def slack_credential_references(slack):
+    """Find Source-only credential bindings on an enabled Slack channel and its active accounts."""
+    for _, target in active_slack_settings(slack):
         for field in SLACK_CREDENTIAL_FIELDS:
             value = target
             for key in field:
@@ -44,9 +53,43 @@ def slack_credential_references(slack):
                     escaped, name = match.groups()
                     if escaped is None:
                         yield name
-                shorthand = re.fullmatch(r"\$([A-Z][A-Z0-9_]{0,127})", value.strip())
+                shorthand = ENV_SHORTHAND.fullmatch(value.strip())
                 if shorthand:
                     yield shorthand.group(1)
+
+
+def slack_policy_reference(settings, path):
+    """Identify a policy position the destination requires to hold literal Slack IDs."""
+    def is_reference(value):
+        if isinstance(value, str):
+            return "${" in value or ENV_SHORTHAND.fullmatch(value.strip()) is not None
+        return isinstance(value, dict) and isinstance(value.get("source"), str) and isinstance(value.get("id"), str)
+
+    def user_reference(value, field):
+        if is_reference(value):
+            return field, "user"
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if is_reference(item):
+                    return f"{field}[{index}]", "user"
+        return None
+
+    refusal = user_reference(settings.get("allowFrom"), f"{path}.allowFrom")
+    if refusal is not None:
+        return refusal
+    channels = settings.get("channels")
+    channel_path = f"{path}.channels"
+    if is_reference(channels):
+        return channel_path, "channel"
+    if isinstance(channels, dict):
+        for channel_id, channel in channels.items():
+            if is_reference(channel_id):
+                return channel_path, "channel"
+            if isinstance(channel, dict):
+                refusal = user_reference(channel.get("users"), f"{setting_path(channel_path, channel_id)}.users")
+                if refusal is not None:
+                    return refusal
+    return None
 
 
 def require_private_regular_file(info):
@@ -350,6 +393,14 @@ def lifecycle(action, args):
         bindings = configuration.get("secretBindings", {})
         require(isinstance(bindings, dict),
                 f"Slack bindings were not readable for Agent {agent_id}; no additional Agent was stopped")
+        for path, settings in active_slack_settings(slack):
+            refusal = slack_policy_reference(settings, path)
+            if refusal is not None:
+                field, id_kind = refusal
+                raise ValueError(
+                    f"Agent {agent_id} Configuration {configuration_id} setting {field} must use literal Slack {id_kind} IDs. "
+                    "No additional Agent was stopped. Replace the policy reference in that Configuration and remove its binding if unused before retrying."
+                )
         for name in slack_credential_references(slack):
             binding = bindings.get(name)
             source = binding.get("source") if isinstance(binding, dict) else None

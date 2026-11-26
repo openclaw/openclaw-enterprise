@@ -98,6 +98,7 @@ import { createAgentDeploymentOperations } from "./agent-deployment-requests.ts"
 import type { ModelCredentialPreset } from "./agent-deployment-admission.ts";
 import type { DeployAgentInput } from "./deployment-authorization.ts";
 import { createAgentDraftOperations } from "./agent-drafts.ts";
+import { createNetworkProxySourceAuthorization } from "./agent-network-proxy.ts";
 import { createAgentPluginValidation } from "./agent-plugin-validation.ts";
 import { DriverRegistry } from "./driver-registry.ts";
 import { readDeploymentInventory } from "./deployment-inventory.ts";
@@ -335,15 +336,17 @@ function createComputeConfigurationPolicy(
   // Configuration writes and Kubernetes admission apply the same channel binding rule.
   function requireBundledChannelBindings(
     values: OpenClawConfigurationDocument,
-    secretBindings: SecretBindings,
+    secretBindings?: SecretBindings,
   ): void {
     if (bundledKubernetesCompute()) {
       requireChannelSecretBindings(
         values,
         enabledChannelEntries(values),
-        (name, requiresSource) =>
-          Object.hasOwn(secretBindings, name) &&
-          (!requiresSource || secretBindings[name]?.source.kind === "credential_source"),
+        secretBindings === undefined
+          ? undefined
+          : (name, requiresSource) =>
+              Object.hasOwn(secretBindings, name) &&
+              (!requiresSource || secretBindings[name]?.source.kind === "credential_source"),
         (setting, requirement) =>
           new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
       );
@@ -1047,6 +1050,12 @@ export function createControllerComposition(
     agentRuntimeConfiguration: (values, harness, compute, sandbox) =>
       renderAgentRuntimeConfiguration(values, harness, compute, sandbox),
   });
+  const authorizeNetworkProxySource = createNetworkProxySourceAuthorization({
+    authority,
+    selectedCompute,
+    ownedTokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
+    qualifiesDelivery: options.gatewayStartupSourceDelivery,
+  });
   const agentDrafts = createAgentDraftOperations({
     authority,
     transactions,
@@ -1070,7 +1079,7 @@ export function createControllerComposition(
       publicController.updateConfiguration(actorId, input),
     installationId: admittedInstallation.id,
     selectedCompute: () => drivers.selection("compute")?.driver as ComputeDriver | undefined,
-    ownedSecretDriver: secretOperations.ownedSecretDriver,
+    authorizeNetworkProxySource,
     refuseRepositoryNetworkOverlap: (actorId, policy) =>
       sandboxPolicyOperations.refuseRepositoryNetworkOverlap(actorId, policy),
     bindCreator: iamPolicy.bindCreator,
@@ -1099,9 +1108,11 @@ export function createControllerComposition(
     settings: configurationOperations,
     sandboxPolicy: sandboxPolicyOperations,
     secrets: secretOperations,
+    authorizeNetworkProxySource,
     selectedIAM: () => publicController.selectedDriver("iam"),
     channels: deploymentChannels,
     modelPolicyAgent,
+    validateProvisioningModel: (...args) => deploymentRequests.validateProvisioningModel(...args),
     harness: harnessAuthOperations,
     plugins: agentPlugins,
     repository: repositoryPolicy,
@@ -1154,7 +1165,7 @@ export function createControllerComposition(
     selectedCredentialDeliveryOwner: () => drivers.selectedCredentialDeliveryOwner(),
     credentialAccess: agentCredentialAccess,
     secretDriver: secretOperations.secretDriver,
-    ownedSecretDriver: secretOperations.ownedSecretDriver,
+    authorizeNetworkProxySource,
     validateComputeConfiguration,
     timestamp: resourceValues.timestamp,
     nextIdentifier: resourceValues.nextIdentifier,

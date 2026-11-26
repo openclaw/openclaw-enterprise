@@ -60,7 +60,7 @@ const identifierPatterns = {
   revision: "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   secret: "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   deviceAuthorizationSession:
-    "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    "^das_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   credentialSource: "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
   audit: "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
 } as const;
@@ -320,7 +320,7 @@ export const agents = occSchema.table(
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     networkProxyUrl: text("network_proxy_url"),
-    networkProxySecretId: text("network_proxy_secret_id"),
+    networkProxyCredentialSourceId: text("network_proxy_credential_source_id"),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
@@ -350,7 +350,7 @@ export const agents = occSchema.table(
   (table): PgTableExtraConfigValue[] => [
     check(
       "agents_network_proxy_shape",
-      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxySecretId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxySecretId} IS NULL OR ${table.networkProxySecretId} <> ''))`,
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`,
     ),
     unique("agents_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("agents_namespace_id_name_unique").on(table.namespaceId, table.name),
@@ -809,16 +809,21 @@ export const agentRevisions = occSchema.table(
     backendId: text("backend_id"),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     networkProxyUrl: text("network_proxy_url"),
-    networkProxySecretId: text("network_proxy_secret_id"),
+    networkProxyCredentialSourceId: text("network_proxy_credential_source_id"),
     firstDeploymentDigest: text("first_deployment_digest"),
     networkProxyAdmission: text("network_proxy_admission"),
+    networkProxyTokenServiceInstanceId: uuid("network_proxy_token_service_instance_id"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
     check(
       "agent_revisions_network_proxy_shape",
-      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxySecretId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxySecretId} IS NULL OR ${table.networkProxySecretId} <> ''))`,
+      sql`(${table.networkProxyUrl} IS NULL AND ${table.networkProxyCredentialSourceId} IS NULL) OR (${table.networkProxyUrl} IS NOT NULL AND length(${table.networkProxyUrl}) <= 2048 AND ${table.networkProxyUrl} ~ '^https?://[^/@[:space:]]+$' AND (${table.networkProxyCredentialSourceId} IS NULL OR ${table.networkProxyCredentialSourceId} ~ ${identifierPatterns.credentialSource}))`,
+    ),
+    check(
+      "agent_revisions_network_proxy_source_owner_shape",
+      sql`(${table.networkProxyCredentialSourceId} IS NULL) = (${table.networkProxyTokenServiceInstanceId} IS NULL)`,
     ),
     check(
       "agent_revisions_network_proxy_admission_shape",

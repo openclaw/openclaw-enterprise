@@ -381,16 +381,16 @@ type QaIamTransport = {
   ): Promise<unknown>;
 };
 
-export async function grantQaSecret(
+export async function grantQaCredential(
   f: QaIamTransport,
   agent: Pick<Agent, "namespaceId" | "servicePrincipalId">,
-  secretId: string,
+  credential: { kind: "secret" | "credential_source"; id: string },
   name: string,
 ): Promise<void> {
   const base: `/namespaces/${string}` = `/namespaces/${agent.namespaceId}`;
   const roleBody: CreateIAMRoleBody = {
     name,
-    permissions: [{ action: "operate", resourceKind: "secret" }],
+    permissions: [{ action: "operate", resourceKind: credential.kind }],
   };
   const role = await f.api("POST", `${base}/iam/roles`, roleBody);
   const roleId = typeof role === "object" && role !== null && "id" in role ? role.id : undefined;
@@ -402,8 +402,8 @@ export async function grantQaSecret(
     subjectKind: "identity",
     subjectId: agent.servicePrincipalId,
     roleId,
-    resourceKind: "secret",
-    resourceId: secretId,
+    resourceKind: credential.kind,
+    resourceId: credential.id,
   };
   await f.api("POST", `${base}/iam/access-bindings`, bindingBody);
 }

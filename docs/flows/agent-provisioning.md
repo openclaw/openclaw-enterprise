@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-26
-last_updated_session: authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2
+last_updated_session: authoring-run/df278eec-7f07-446e-a801-052ffa4e5fda
 ---
 
 # Agent provisioning flow
@@ -23,7 +23,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 graph TD
   Console["<b>Console</b><br/>Select or create credentials"] --> API["<b>Provision API</b><br/>Inline config and references"]
   API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
-  API -->|Managed model Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
+  API -->|Unsupported model Source| ModelRefused["<b>Refuse provisioning</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
   Claim --> Config["<b>Configuration Driver</b><br/>Write or recover Configuration"]
   Config -->|Repository selections still valid| Agent["<b>Create Agent</b><br/>Grant exact credential access"]
@@ -45,7 +45,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI,Settings operation
-  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,Gap condition
+  class Failed,Recovery,Terminal,Superseded,RepoRefused,Unknown,ModelRefused condition
 ```
 
 ## Execution Trace
@@ -54,10 +54,8 @@ graph TD
 
 `apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
-Console keeps the configured Harness separate from execution mode: dedicated
-OpenClaw uses the same provisioning, retry, and deployment navigation as
-dedicated Codex. Preset restoration and Credentials read native model runtime
-policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
+Dedicated OpenClaw and Codex share provisioning and retry navigation. Preset
+restoration and Credentials resolve the Harness through `harness-auth.mts:configuredHarnessId`.
 
 The Slack editor selects a ready static Source or calls `POST /namespaces/:namespaceId/credential-sources` with Namespace Source `create`. Pending enrollment holds navigation. Unconfirmed results, including `409`, block another create; check inventory and owner before reloading. Apply stages the reference in `Configuration.secretBindings`; saving requires exact Source `operate`.
 
@@ -73,11 +71,14 @@ Draft creation saves the Configuration and Agent. At deployment, admission check
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-Source-backed models deploy through the Agent draft path. [Credential Source lifecycle](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision) describes its admission and delivery.
-
 OCC requires Agent `create`, Configuration `create`, and Installation `administer` for the Namespace; status and retry require the same grants or return `403`. It validates Configuration, references, workspace inputs, execution mode, and authority. A taken Agent name returns `409`; reserved Secret destinations, cross-Namespace references, or missing/`runtime` Harness authentication return `400 INVALID_REQUEST` naming the rule. An absent Secret returns `404`. Before Compute planning, Secret bindings receive Agent save’s Harness authentication check and named `400`.
 
-For supported model presets with selected TokenService and native delivery, OCC requires Source-backed authentication at Agent save and deployment. Guided provisioning refuses a direct model Secret for those presets before creating a job.
+For supported dedicated models, the API requires a Source and Console saves a
+draft. `agent-deployment-admission.ts:validateProvisioningModel` checks the
+Source metadata, approved route, and selected Drivers before Channel provider
+calls. At handoff, [ordinary deployment admission](credential-source-lifecycle.md#3-bind-and-admit-an-agent-revision)
+rechecks model policy and saves the binding. Worker resolves the credential
+when configuring Proxy delivery.
 
 After a Secret Driver change, authorized request, status, and retry return `503` for Secrets owned by the previous Driver and ask for replacement Secrets and a new request. The worker fails with `PROVISIONING_REJECTED`; an unavailable Driver still retries.
 
@@ -229,6 +230,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-26 17:31: Trace guided dedicated model Source admission and the Worker handoff. (authoring-run/df278eec-7f07-446e-a801-052ffa4e5fda - 972a23356848ff30bc40eaa375536eb1424eddca)
 - 2026-11-26 23:36: Trace Slack enrollment failures. (authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2 - 0978257f991a04b699ce411820326119c09be20a)
 - 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)

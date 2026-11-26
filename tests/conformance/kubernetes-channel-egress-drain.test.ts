@@ -145,7 +145,8 @@ test(
       destinations: [],
     });
     const first = routing();
-    await egress.prepare(revision, namespace, first);
+    const { signal } = new AbortController();
+    await egress.prepare(revision, namespace, first, undefined, signal);
     assert.equal(first.binding?.port, options.listenerPortStart);
 
     draining = true;
@@ -157,7 +158,7 @@ test(
       const writesBeforeCandidate = records.length;
       const candidate = { ...revision, id: "candidate-revision", agentId: "candidate-agent" };
       await assert.rejects(
-        egress.prepare(candidate, namespace, routing()),
+        egress.prepare(candidate, namespace, routing(), undefined, signal),
         /listener capacity is exhausted/,
       );
       assert.equal(JSON.parse(slot()!.metadata.annotations![bindingAnnotation]!).state, "revoking");
@@ -171,7 +172,7 @@ test(
       await retirement;
       assert.equal(slot()!.metadata.annotations![bindingAnnotation], "idle");
       const replacement = routing();
-      await egress.prepare(candidate, namespace, replacement);
+      await egress.prepare(candidate, namespace, replacement, undefined, signal);
       assert.equal(replacement.binding?.port, first.binding?.port);
       assert.notEqual(replacement.binding?.id, first.binding?.id);
     } finally {

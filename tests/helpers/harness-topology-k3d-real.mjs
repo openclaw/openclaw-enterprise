@@ -1550,7 +1550,7 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
           ...(managedChannelEgress === undefined ? {} : { channelEgress: managedChannelEgress }),
         },
   );
-  if (slack !== undefined) {
+  if (slack !== undefined || managedChannelEgress !== undefined) {
     workerConfiguration.drivers.token_service = { id: "occ", configuration: {} };
   }
   // Cases share an Installation, so keep its policy after the Default user case

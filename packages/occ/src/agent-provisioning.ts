@@ -18,7 +18,11 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
+import {
+  ResourceStateConflictError,
+  ScopeViolationError,
+  SecretBindingValidationError,
+} from "./errors.ts";
 import type { AgentProvisioningRecord } from "./ports/agent-provisioning.ts";
 import { controllerWorkLeaseActive, type ControllerWork } from "./controller-work.ts";
 
@@ -328,13 +332,21 @@ export function parseProvisioningPlan(record: Readonly<AgentProvisioningRecord>)
   if (!validExecutionMode(executionMode)) {
     throw new ScopeViolationError("The provisioning execution mode is invalid.");
   }
+  let networkProxy: Readonly<AgentNetworkProxy> | undefined;
+  if (plan?.networkProxy !== undefined) {
+    try {
+      networkProxy = normalizeAgentNetworkProxy(plan.networkProxy);
+    } catch {
+      throw new ResourceStateConflictError(
+        "The accepted provisioning plan's Network proxy is no longer valid. Submit a new Agent provisioning request.",
+      );
+    }
+  }
   return {
     configuration,
     harnessAuth: normalizeProvisioningHarnessAuth(plan?.harnessAuth ?? null),
     executionMode,
     gatewayManagedMode: normalizeGatewayManagedMode(plan?.gatewayManagedMode, true),
-    ...(plan?.networkProxy === undefined
-      ? {}
-      : { networkProxy: normalizeAgentNetworkProxy(plan.networkProxy) }),
+    ...(networkProxy === undefined ? {} : { networkProxy }),
   };
 }
