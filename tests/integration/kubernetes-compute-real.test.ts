@@ -838,7 +838,22 @@ test(
       pod: Pod,
       variable: string,
     ): Promise<string> {
-      const script = `const fs=require("node:fs"),crypto=require("node:crypto");const prefix=process.argv[1]+"=";const entry=fs.readFileSync("/proc/1/environ","utf8").split("\\0").find(v=>v.startsWith(prefix));process.stdout.write(entry?crypto.createHash("sha256").update(entry.slice(prefix.length)).digest("hex"):"missing")`;
+      const script = String.raw`
+        const fs = require("node:fs");
+        const crypto = require("node:crypto");
+        const pids = process.argv[2] === "native" ? fs.readdirSync("/proc").filter((pid) => {
+          if (!/^\d+$/.test(pid)) { return false; }
+          try {
+            return fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").startsWith("openclaw-gateway");
+          } catch {
+            return false;
+          }
+        }) : ["1"];
+        if (pids.length !== 1) { throw new Error("Expected one running Gateway process"); }
+        const prefix = process.argv[1] + "=";
+        const entry = fs.readFileSync("/proc/" + pids[0] + "/environ", "utf8").split("\0").find((item) => item.startsWith(prefix));
+        process.stdout.write(entry ? crypto.createHash("sha256").update(entry.slice(prefix.length)).digest("hex") : "missing");
+      `;
       return kubectlRead(
         "exec",
         pod.metadata.name,
@@ -849,6 +864,7 @@ test(
         "-e",
         script,
         variable,
+        runtimeImage === undefined ? "fixture" : "native",
       );
     }
     function digest(value: string): string {
