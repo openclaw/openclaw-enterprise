@@ -1237,6 +1237,19 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         extraSetting: { retained: true },
       });
       assertRevisionSelection(cleared);
+
+      const historicalRecord = await readData(
+        await request(`${agentPath}/deployments/${firstRevision}`),
+        200,
+      );
+      assert.partialDeepStrictEqual(historicalRecord, {
+        deploymentId: firstRevision,
+        status: "succeeded",
+      });
+      const afterHistoricalRead = await readData(await request(agentPath), 200);
+      assert.partialDeepStrictEqual(afterHistoricalRead, { desiredRuntimeState: "stopped" });
+      assertRevisionSelection(afterHistoricalRead);
+
       assert.equal((await request(agentPath, "DELETE")).status, 202);
       assert.equal((await request(agentPath)).status, 404);
     },
