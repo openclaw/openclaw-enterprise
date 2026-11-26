@@ -567,7 +567,7 @@ function createCredentialServices({
   const deviceAuthorization = createDeviceAuthorizationFlow({
     installationId,
     cipher: deviceCipher,
-    nextSessionId: () => resourceValues.nextIdentifier("secret"),
+    nextSessionId: resourceValues.nextDeviceAuthorizationSessionId,
     timestamp: resourceValues.timestamp,
     transactions,
     authority,

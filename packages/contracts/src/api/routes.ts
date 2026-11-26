@@ -61,7 +61,7 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
-  SecretId,
+  DeviceAuthorizationSessionId,
   AgentProvisioningParams,
   PresetParams,
   CreatePresetBody,
@@ -279,7 +279,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, sessionId: SecretId },
+        { namespaceId: NamespaceId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -299,7 +299,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, sessionId: SecretId },
+        { namespaceId: NamespaceId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -341,7 +341,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -361,7 +361,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, sessionId: SecretId },
+        { namespaceId: NamespaceId, agentId: AgentId, sessionId: DeviceAuthorizationSessionId },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },

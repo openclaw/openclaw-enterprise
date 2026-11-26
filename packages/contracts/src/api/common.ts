@@ -35,6 +35,7 @@ export const ModelProviderId = Type.String({
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
+export const DeviceAuthorizationSessionId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const CredentialClientId = Type.String({ pattern: `^ccr_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
