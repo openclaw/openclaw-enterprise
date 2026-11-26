@@ -92,6 +92,20 @@ git rev-parse HEAD
 Record the commit SHA from successful native tool output. If the push outcome
 is uncertain, inspect the remote ref before taking another action.
 
+For a review branch with changes, you can also create a pull request from the
+Agent. The GitHub App and Namespace registration need `pull_requests: write`.
+The Agent needs Write on the target and at least Read on every repository
+covered by the Source. Save the title, head, and base in `pull.json`, then use
+the admitted target and confirm the returned pull request number.
+
+```sh
+/usr/local/bin/gh api --hostname github.com --method POST "repos/$repo/pulls" --input pull.json
+```
+
+The managed Codex environment supplies the binding placeholder. Review the
+[publication requirements](../../reference/repository-credentials/access-levels.md#pull-request-creation)
+before you grant this access.
+
 ## 4. Verify the remote ref
 
 In the operator shell, use the same repository and branch and set `expected_sha`

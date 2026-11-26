@@ -41,10 +41,10 @@ profile revocation still stop dispatch.
 [OpenClaw #196972](https://github.com/openclaw/openclaw/pull/196972) adds an opt-in wait for admitted work and final writes.
 The build also applies `openclaw-codex-full-access-profile.patch`, which selects
 the native full-access Codex profile. Remove it once upstream matches.
-`openclaw-terminated-gateway-namespace.patch` lets a supervisor that verified a
-private Linux PID namespace stopped recover its Gateway records, or, inside it,
-any record whose PID is dead. OC compares its lock fingerprint first.
-Unattributed owners need operator confirmation.
+OCE sets `OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF=1` for managed state owners,
+including Gateway, Doctor, and workspace setup. OpenClaw checks the lock
+fingerprint before releasing records that the supervisor can attribute to a
+stopped process or namespace. Unattributed owners need operator confirmation.
 [Restart recovery](../../docs/flows/harness-restart-recovery.md) in the selected source waits for workspace reconnection and surviving Codex work before continuing.
 The pin includes [upstream #185180](https://github.com/openclaw/openclaw/pull/185180):
 final delivery retains its progress window after a long Codex turn.
@@ -187,7 +187,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/9a838501b1e4471401fef588a1b73c61a2965056/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/67f29364a94a82f93ca37e28f7e2d980ae05205a/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing

@@ -13,6 +13,7 @@ import {
 import type {
   CredentialDeploymentContext,
   CredentialProxyDriver,
+  DeploymentRequestMatch,
   LegacyEgressProxyDriver,
 } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
@@ -6655,18 +6656,23 @@ export class ControllerWorker {
           grants,
         },
       )?.credentialRequests;
-      const injection = policy.injectionPolicies.find(
+      const injections = policy.injectionPolicies.filter(
         ({ bindingRef }) => bindingRef === repositoryBinding.bindingRef,
       );
-      const network = policy.networkAccessPolicy.allowed.filter(
-        ({ host, ports }) =>
-          host.toLowerCase() === "github.com" &&
-          ports.some(({ from, to }) => from <= 443 && 443 <= to),
-      );
+      const frozen = injections[0]?.allowedRequests ?? [];
+      const isGit = ({ host, ports }: DeploymentRequestMatch) =>
+        host.toLowerCase() === "github.com" &&
+        ports.some(({ from, to }) => from <= 443 && 443 <= to);
+      // Newly eligible publication must not change the policy of an existing revision.
+      const isRepositoryRequest = (request: DeploymentRequestMatch) =>
+        isGit(request) || frozen.some((saved) => isDeepStrictEqual(saved, request));
+      const approved = matches?.filter(isRepositoryRequest);
+      const network = policy.networkAccessPolicy.allowed.filter(isRepositoryRequest);
       if (
-        !matches?.length ||
-        !isDeepStrictEqual(injection?.allowedRequests, matches) ||
-        !isDeepStrictEqual(network, matches)
+        injections.length !== 1 ||
+        !matches?.some(isGit) ||
+        !isDeepStrictEqual(frozen, approved) ||
+        !isDeepStrictEqual(network, frozen)
       ) {
         throw new DependencyUnavailableError("The staged Repository policy is no longer approved.");
       }

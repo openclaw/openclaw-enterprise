@@ -21,6 +21,7 @@ import type {
 } from "../../packages/contracts/src/api/resources.ts";
 import { startNativeTcpProbe } from "./openshell-token-service-raw-tcp.ts";
 import { verifyNativeGitPush } from "./openshell-token-service-git-push.ts";
+import { verifyNativePullRequest } from "./openshell-token-service-pull-request.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { waitUntil } from "./wait-for.ts";
 
@@ -72,10 +73,12 @@ type RepositoryOption = {
 export async function verifyNativeGitAgent(
   t: TestContext,
   harness: "openclaw" | "codex",
-  { publicMetadata = false }: { publicMetadata?: boolean } = {},
+  proof: "git" | "pull-request" | { publicMetadata?: boolean } = "git",
 ) {
   const openClaw = harness === "openclaw";
-  const verifyWriteAccess = !openClaw && !publicMetadata;
+  const publication = proof === "pull-request";
+  const publicMetadata = typeof proof === "object" && proof.publicMetadata === true;
+  const verifyWriteAccess = !openClaw && !publication && !publicMetadata;
   const origin = loopback("OCC_URL", "http:");
   const endpoint = loopback(`${management}_GATEWAY_ENDPOINT`, "https:");
   const key = await serviceKey();
@@ -87,17 +90,20 @@ export async function verifyNativeGitAgent(
   const runtimeImage = required(`${selection}_RUNTIME_IMAGE`);
   const clientId = required(`${selection}_GITHUB_APP_CLIENT_ID`);
   const allowedRef = required(`${selection}_ALLOWED_REPOSITORY_REF`);
-  const sharedSourceId = openClaw ? required(`${selection}_SHARED_GIT_SOURCE_ID`) : undefined;
-  const writableRepository = verifyWriteAccess
-    ? required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`)
-    : undefined;
+  const sharedSourceId =
+    openClaw || publication ? required(`${selection}_SHARED_GIT_SOURCE_ID`) : undefined;
+  const writableRepository =
+    verifyWriteAccess || publication
+      ? required(`${selection}_DISPOSABLE_WRITE_REPOSITORY`)
+      : undefined;
   const deniedRef = required(`${selection}_DENIED_REPOSITORY_REF`);
   assert.ok(/^ns_[a-f0-9-]{36}$/.test(namespaceId) && /^cs_[a-f0-9-]{36}$/.test(modelSourceId));
   assert.ok(/^ccr_[a-f0-9-]{36}$/.test(clientId));
   assert.ok(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(model));
-  if (openClaw) {
+  if (sharedSourceId) {
     assert.match(sharedSourceId ?? "", /^cs_[a-f0-9-]{36}$/);
-  } else {
+  }
+  if (!openClaw) {
     assert.ok(OPEN_SHELL_CODEX_BINARIES.some((approved) => approved === binary));
     assert.ok(host === "chatgpt.com");
   }
@@ -209,7 +215,9 @@ export async function verifyNativeGitAgent(
     values: {
       ...createHarnessConfiguration(harness, model),
       // This test asks the OpenClaw worker to invoke exec directly.
-      ...(openClaw ? { tools: { allow: ["exec"], codeMode: false, toolSearch: false } } : {}),
+      ...(openClaw && !publication
+        ? { tools: { allow: ["exec"], codeMode: false, toolSearch: false } }
+        : {}),
     },
   });
   const newGitSources = new Set<string>();
@@ -245,7 +253,10 @@ export async function verifyNativeGitAgent(
       repositoryAccess: {
         githubAppClientId: clientId,
         defaultProfile: "github-repository",
-        repositories: [{ repositoryRef: allowedRef, access }],
+        repositories: [
+          { repositoryRef: allowedRef, access },
+          ...(publication ? [{ repositoryRef: deniedRef, access: "read" }] : []),
+        ],
       },
     });
     const agentId = agent.id;
@@ -319,6 +330,130 @@ export async function verifyNativeGitAgent(
       "The inspected Sandbox must declare its approved Harness workspace mount.",
     );
     return { agentId, agentPath, revision, sandbox, sandboxName, workspacePath, gitSourceId };
+  }
+  if (publication) {
+    assert.ok(
+      writableRepository &&
+        /^[a-z0-9][a-z0-9-]{0,38}\/[a-z0-9][a-z0-9._-]{0,99}$/.test(writableRepository),
+      "Select an explicitly approved disposable owner/repository.",
+    );
+    const contributor = await deploy("write");
+    assert.equal(
+      contributor.gitSourceId,
+      sharedSourceId,
+      "The Agent must reuse the selected shared Source.",
+    );
+    const source = await data<CredentialSourceWire>(
+      "GET",
+      `${base}/credential-sources/${sharedSourceId}`,
+      200,
+    );
+    assert.ok(
+      source.type === "github-app-installation" &&
+        source.state === "ready" &&
+        source.clientId === clientId &&
+        source.scope.permissions.contents === "write" &&
+        source.scope.permissions.pull_requests === "write",
+    );
+    const owner = writableRepository.split("/")[0]!;
+    const qualified = (repository: string) =>
+      repository.includes("/") ? repository : `${owner}/${repository}`;
+    assert.equal(qualified(allowed.repository), writableRepository);
+    const sibling = qualified(denied.repository);
+    assert.deepEqual(
+      source.scope.repositories.map(({ repository }) => repository).sort(),
+      [writableRepository, sibling].sort(),
+    );
+    const target = source.scope.repositories.find(
+      ({ repository }) => repository === writableRepository,
+    );
+    assert.ok(target, "GitHub must have verified the configured disposable repository.");
+    const provider = openShellProjectedCredentialProviderName(source.id, "GITHUB_TOKEN");
+    assert.ok(
+      Array.isArray(contributor.sandbox.spec?.providers) &&
+        contributor.sandbox.spec.providers.includes(provider),
+      "The active Sandbox must attach the selected Source's Provider.",
+    );
+    const delivered = await gateway.getProvider(workspace, provider, rpc());
+    assert.ok(
+      delivered?.labels[SOURCE_ID_LABEL] === source.id &&
+        delivered.labels["openclaw.dev/credential-proxy-delivery"] === "static" &&
+        delivered.config.oce_source_version,
+      "The GitHub Provider must be the Proxy's versioned copy of the selected Source.",
+    );
+    const policy = await gateway.getPolicyStatus(
+      { workspace, sandbox: contributor.sandboxName },
+      rpc(),
+    );
+    assert.equal(policy.state, "POLICY_STATUS_LOADED");
+    assert.equal(policy.activeVersion, policy.version);
+    const publicationPath = `/repos/${writableRepository}/pulls`;
+    const publicationRules = Object.values(asRecord(policy.policy.network_policies) ?? {}).flatMap(
+      (item) => {
+        const rule = asRecord(item);
+        return (Array.isArray(rule?.endpoints) ? rule.endpoints : []).flatMap((value) => {
+          const endpoint = asRecord(value);
+          return endpoint?.host === "api.github.com" &&
+            asRecord(endpoint.credential_binding)?.provider === provider
+            ? [
+                {
+                  binaries: rule?.binaries,
+                  path: endpoint.path,
+                  ports: endpoint.ports,
+                  rules: endpoint.rules,
+                },
+              ]
+            : [];
+        });
+      },
+    );
+    assert.deepEqual(publicationRules, [
+      {
+        binaries: [{ path: "/usr/local/bin/gh" }],
+        path: publicationPath,
+        ports: [443],
+        rules: [{ allow: { method: "POST", path: publicationPath } }],
+      },
+    ]);
+    await verifyNativePullRequest({
+      repository: writableRepository,
+      repositoryId: target.repositoryId,
+      inputDirectory: required(`${selection}_PR_OBSERVER_APP_INPUT_DIR`),
+      chat: (prompt) => chat(contributor.agentId, prompt),
+      observePublication: (turn) =>
+        expectNativeDecisions(
+          contributor,
+          [
+            (line) =>
+              line.message.startsWith("HTTP:POST [INFO] ALLOWED ") &&
+              line.message.includes(`POST https://api.github.com${publicationPath} `),
+          ],
+          turn,
+        ),
+      stop: async () => {
+        await (await request("POST", `${contributor.agentPath}/stop`, 202)).body?.cancel();
+        await waitUntil(
+          "publication Agent stops before remote cleanup",
+          async () => {
+            const agent = await data<Agent>("GET", contributor.agentPath, 200);
+            const sandbox = await gateway.getSandbox(
+              { workspace, name: contributor.sandboxName },
+              rpc(),
+            );
+            return (
+              agent.activeRevisionId === undefined &&
+              sandbox !== undefined &&
+              sandbox.id === contributor.sandbox.id &&
+              (sandbox.phase === "SANDBOX_PHASE_STOPPED" || sandbox.phase === 7) &&
+              Array.isArray(sandbox.spec?.providers) &&
+              !sandbox.spec.providers.includes(provider)
+            );
+          },
+          poll,
+        );
+      },
+    });
+    return;
   }
   const reader = await deploy("read");
   const { agentPath, revision, sandbox, sandboxName, gitSourceId } = reader;
@@ -517,17 +652,18 @@ export async function verifyNativeGitAgent(
     }
   }
   async function expectNativeDecisions(
+    runtime: Pick<Awaited<ReturnType<typeof deploy>>, "sandbox" | "sandboxName">,
     matches: readonly ((line: OpenShellSandboxLogLine) => boolean)[],
     run: () => Promise<void>,
   ) {
     const latest = async () => {
       const logs = await gateway.getSandboxLogs(
-        { workspace, sandbox: sandboxName, lines: 2000 },
+        { workspace, sandbox: runtime.sandboxName, lines: 2000 },
         rpc(),
       );
       const decisions = logs.lines.filter(
         (line) =>
-          line.sandboxId === sandbox.id &&
+          line.sandboxId === runtime.sandbox.id &&
           line.source === "sandbox" &&
           line.target === "ocsf" &&
           line.level.toUpperCase() === "OCSF",
@@ -576,6 +712,7 @@ export async function verifyNativeGitAgent(
       { method: "HEAD", path: selectedPath },
     ];
     await expectNativeDecisions(
+      reader,
       [
         (line) =>
           line.message.startsWith("HTTP:GET [INFO] ALLOWED ") &&
@@ -643,6 +780,7 @@ export async function verifyNativeGitAgent(
     // Only the Agent's exec runs Git. Its script and completion marker are checked in
     // the revision Sandbox, and the Supervisor must deny this specific omitted path.
     await expectNativeDecisions(
+      reader,
       [
         (line) =>
           line.message.startsWith("HTTP:POST [INFO] ALLOWED ") &&
@@ -711,7 +849,7 @@ export async function verifyNativeGitAgent(
   await verifyNativeGitPush({
     repository: allowedName,
     runReader: (script) =>
-      expectNativeDecisions([(line) => discoveryDenied(line, "git-receive-pack")], () =>
+      expectNativeDecisions(reader, [(line) => discoveryDenied(line, "git-receive-pack")], () =>
         runInHarness(reader, script),
       ),
     runContributor: (script) => runInHarness(contributor, script),
@@ -764,6 +902,7 @@ export async function verifyNativeGitAgent(
     );
   }
   await expectNativeDecisions(
+    reader,
     [
       (line) =>
         /^NET:OPEN \[MED\] DENIED \/usr\/(?:lib|libexec)\/git-core\/git-remote-https?\(\d+\) -> github\.com:443 \[reason:transparent_tcp_policy_denied\]$/.test(

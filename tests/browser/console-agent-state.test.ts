@@ -347,10 +347,36 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
       "Revision cleanup started. This version's resources have not been confirmed removed; the controller will retry.",
     )
     .waitFor();
+  // A reader focused on the warning can still open that deployment after cleanup completes.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await notice.waitFor();
+  const shortcut = page
+    .locator(".agent-deployment-attention")
+    .getByRole("link", { name: "View deployment", exact: true });
+  const summaryLink = page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByRole("link", { name: "v1", exact: true });
+  await shortcut.focus();
+  assert.equal(await hasFocus(shortcut), true);
+  const destination = await shortcut.getAttribute("href");
+  assert.ok(destination);
+  assert.equal(await summaryLink.getAttribute("href"), destination);
+
   cleanup = { status: "succeeded", nextAttemptAt: null };
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await shortcut.waitFor({ state: "hidden" });
+  assert.equal(
+    await hasFocus(summaryLink),
+    true,
+    "Focus follows the same deployment when the cleanup shortcut disappears",
+  );
+
+  await page.keyboard.press("Enter");
+  await page.getByRole("tabpanel", { name: "Deployment", exact: true }).waitFor();
+  await page.waitForURL(new URL(destination, page.url()).href);
+  assert.equal(new URL(page.url()).searchParams.get("revision"), revision.id);
   await status.getByText("Revision cleanup completed for this version.").waitFor();
-  await expectDeploymentOutcome(page, "Failed", { folded: false });
+  await expectDeploymentOutcome(page, "Failed", { folded: false, reveal: false });
 });
 
 // A pending deployment is reread every few seconds and its summary usually stays the same.

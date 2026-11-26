@@ -175,6 +175,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preGatewayStartupCredentials";
   }
   if (count === 99 && completedCount > 99) {
+    return "preNativeGitHubPullRequestPublication";
+  }
+  if (count === 100 && completedCount > 100) {
     return "preSandboxPolicyCapacity";
   }
   if (count === completedCount) {
