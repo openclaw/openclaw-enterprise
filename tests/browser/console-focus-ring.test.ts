@@ -122,7 +122,9 @@ const focusedRing = (page: Page, selector: string | null = null) =>
         box.bottom + reach - clientHeight,
         box.right + reach - clientWidth,
       );
-      if (viewportCut >= 1) clipped.push(`viewport hides ${viewportCut.toFixed(1)}px`);
+      if (viewportCut >= 1) {
+        clipped.push(`viewport hides ${viewportCut.toFixed(1)}px`);
+      }
       for (
         let scroller = owner.parentElement;
         scroller && scroller !== document.documentElement;
