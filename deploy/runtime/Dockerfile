@@ -215,7 +215,7 @@ COPY --from=openclaw-source /source/ ./
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo 'cc284f483113e89535df6efd438abfd86f2999732db0a944a49733eef9abe9cb  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder to native worker children.
@@ -225,7 +225,7 @@ RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '4870983c6912170f9e1164a0ffd46e810184c4309d121d0e07b874522dad0bbb  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
@@ -235,7 +235,7 @@ RUN echo '600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe  /tmp
 
 # Link a single chat-completions input to its server-assigned completion ID.
 COPY deploy/runtime/openclaw-http-chat-input.patch /tmp/openclaw-http-chat-input.patch
-RUN echo 'bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8  /tmp/openclaw-http-chat-input.patch' | sha256sum --check --strict \
+RUN echo '635754f301b8badcbcff98e307630b9196fed7036dcd5c576d755483ec34e556  /tmp/openclaw-http-chat-input.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-http-chat-input.patch
 
 # Broad source verification is an explicit target, separate from image assembly.

@@ -1,16 +1,16 @@
 diff --git a/src/cli/gateway-cli/register-recover-lock.ts b/src/cli/gateway-cli/register-recover-lock.ts
-index 41b19d8..78f7f31 100644
+index 406a25e..d44122d 100644
 --- a/src/cli/gateway-cli/register-recover-lock.ts
 +++ b/src/cli/gateway-cli/register-recover-lock.ts
-@@ -3,18 +3,33 @@ import { defaultRuntime } from "../../runtime.js";
- import { formatCliCommand } from "../command-format.js";
+@@ -2,18 +2,33 @@ import type { Command } from "commander";
+ import { defaultRuntime } from "../../runtime.js";
  import { gatewayAction } from "./gateway-action.js";
  
 +type RecoveryOptions = { confirm?: string; terminatedNamespace?: string; json?: boolean };
 +
  export function addGatewayLockRecoveryCommand(gateway: Command): void {
    gateway
-     .command("recover-lock")
+     .command("recover-lock", { hidden: true })
      .description("Inspect or explicitly recover an unchanged Gateway state lock")
      .option("--confirm <fingerprint>", "Recover only the lock record shown by a prior inspection")
 +    .option(
@@ -42,10 +42,10 @@ index 41b19d8..78f7f31 100644
              defaultRuntime.writeJson(result);
            } else {
 diff --git a/src/infra/gateway-lock-payload.ts b/src/infra/gateway-lock-payload.ts
-index b6533d8..9f6a470 100644
+index 2c70e2f..090bf8d 100644
 --- a/src/infra/gateway-lock-payload.ts
 +++ b/src/infra/gateway-lock-payload.ts
-@@ -197,6 +197,8 @@ export const LockPayloadSchema = z.object({
+@@ -247,6 +247,8 @@ export const LockPayloadSchema = z.object({
      .optional(),
    stateDir: z.string().optional(),
    startTime: z.number().optional(),
@@ -55,7 +55,7 @@ index b6533d8..9f6a470 100644
    parentStartTime: z.number().optional(),
    // Null and absent identities cannot establish the owner's process namespace.
 diff --git a/src/infra/gateway-lock-recovery.test.ts b/src/infra/gateway-lock-recovery.test.ts
-index 37a61ee..f6b685a 100644
+index 6100046..9fcc205 100644
 --- a/src/infra/gateway-lock-recovery.test.ts
 +++ b/src/infra/gateway-lock-recovery.test.ts
 @@ -7,7 +7,11 @@ import {
@@ -240,17 +240,27 @@ index 37a61ee..f6b685a 100644
      fs.mkdirSync(path.dirname(databasePath), { recursive: true });
      const db = openNodeSqliteDatabase(databasePath);
      db.exec(
-@@ -186,25 +325,45 @@ describe("explicit Gateway lock recovery", () => {
+@@ -186,25 +325,55 @@ describe("explicit Gateway lock recovery", () => {
            pid: payload.pid,
            host: "stopped-foreign-container",
            startedAt: payload.startTime ?? null,
--          processNamespace: payload.processNamespace,
-+          processNamespace:
-+            caller === "unrelated SQLite owner"
-+              ? { ...payload.processNamespace, host: "other-container" }
-+              : payload.processNamespace,
+-          // Pre-namespace releases persisted the owner without processNamespace.
++          // Preserve the native operator recovery case for leases written before namespace tracking.
++          ...(caller === "operator"
++            ? {}
++            : {
++                processNamespace:
++                  caller === "unrelated SQLite owner"
++                    ? { ...payload.processNamespace, host: "other-container" }
++                    : payload.processNamespace,
++              }),
          },
-+        pidNsInitStartTicks: caller === "different incarnation" ? 102 : payload.pidNsInitStartTicks,
++        ...(caller === "operator"
++          ? {}
++          : {
++              pidNsInitStartTicks:
++                caller === "different incarnation" ? 102 : payload.pidNsInitStartTicks,
++            }),
          port: 18789,
          mode: "foreground",
          supervisor: null,
@@ -293,7 +303,7 @@ index 37a61ee..f6b685a 100644
    });
  });
 diff --git a/src/infra/gateway-lock-recovery.ts b/src/infra/gateway-lock-recovery.ts
-index 8ec9c1f..9c9bfbf 100644
+index 63498f7..61fcc63 100644
 --- a/src/infra/gateway-lock-recovery.ts
 +++ b/src/infra/gateway-lock-recovery.ts
 @@ -1,12 +1,17 @@
@@ -408,7 +418,7 @@ index 8ec9c1f..9c9bfbf 100644
  export async function recoverGatewayLock(options: { confirmation: string }) {
    const inspection = await inspectGatewayLockRecovery();
 diff --git a/src/infra/gateway-lock.ts b/src/infra/gateway-lock.ts
-index ef30989..d180165 100644
+index 2e6a4dc..a45cd34 100644
 --- a/src/infra/gateway-lock.ts
 +++ b/src/infra/gateway-lock.ts
 @@ -11,7 +11,7 @@ import {
@@ -420,7 +430,7 @@ index ef30989..d180165 100644
  import {
    createOpenClawDatabaseMaintenanceScope,
    getOpenClawDatabaseMaintenanceScope,
-@@ -477,6 +477,7 @@ export async function acquireGatewayLock(
+@@ -459,6 +459,7 @@ export async function acquireGatewayLock(
      role,
      processNamespace: readGatewayLockProcessNamespace(),
      machineIdentity: process.platform === "darwin" ? readProcessMachineIdentity() : undefined,
@@ -429,7 +439,7 @@ index ef30989..d180165 100644
      ...(typeof opts.port === "number" &&
      Number.isInteger(opts.port) &&
 diff --git a/src/infra/gateway-owner-lease.ts b/src/infra/gateway-owner-lease.ts
-index 4a5b32d..5cca9f4 100644
+index 6b71db5..030db88 100644
 --- a/src/infra/gateway-owner-lease.ts
 +++ b/src/infra/gateway-owner-lease.ts
 @@ -3,7 +3,7 @@ import { hostname } from "node:os";
@@ -441,7 +451,7 @@ index 4a5b32d..5cca9f4 100644
  import { isLiveStateRead } from "../state/artifact-preserving-state-reads.js";
  import { readAgentDatabaseLeaseProvenance } from "../state/openclaw-agent-db-lease-provenance.js";
  import type { OpenClawStateSchemaReadAdmission } from "../state/openclaw-state-db-contract.js";
-@@ -314,6 +314,7 @@ export function acquireGatewayOwnerLease(params: {
+@@ -321,6 +321,7 @@ export function acquireGatewayOwnerLease(params: {
    };
    const payload = {
      owner: processOwner,
@@ -450,10 +460,10 @@ index 4a5b32d..5cca9f4 100644
      mode: params.mode,
      supervisor: params.supervisor,
 diff --git a/src/infra/state-lease-process-owner.ts b/src/infra/state-lease-process-owner.ts
-index 48b119b..0b6ef52 100644
+index 9d59a8c..d81cc69 100644
 --- a/src/infra/state-lease-process-owner.ts
 +++ b/src/infra/state-lease-process-owner.ts
-@@ -154,8 +154,9 @@ export function readStateLeaseProcessOwnerStatus(
+@@ -195,8 +195,9 @@ export function readStateLeaseProcessOwnerStatus(
    return readSameNamespaceProcessOwnerStatus(owner);
  }
  

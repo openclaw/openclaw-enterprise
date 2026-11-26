@@ -9650,7 +9650,7 @@ index fc3ffba6c75..99e3e7ea7ab 100644
    notifyRegisteredNodeHostCommandDisconnect: mocks.disconnectPlugins,
    isRegisteredNodeHostCommandDuplex: vi.fn((command: string) => command === "test.duplex"),
 diff --git a/src/node-host/runtime.ts b/src/node-host/runtime.ts
-index 2ac047fed57..9c3df074056 100644
+index 505a0334693..c67009586db 100644
 --- a/src/node-host/runtime.ts
 +++ b/src/node-host/runtime.ts
 @@ -1,6 +1,6 @@
@@ -9717,6 +9717,7 @@ index 2ac047fed57..9c3df074056 100644
 +  const closePluginPreparation = await ensureNodeHostPluginRegistry({
 +    config,
      env,
+-    filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 -    ephemeral: params?.ephemeral,
 -    managedIdentityTransport,
 -    platformTrust,
@@ -9804,6 +9805,7 @@ index 2ac047fed57..9c3df074056 100644
 +      : undefined;
 +    const workspaceOptions = {
 +      env,
++      filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 +      ephemeral: params?.ephemeral,
 +      managedIdentityTransport,
 +      platformTrust,
@@ -9833,9 +9835,7 @@ index 2ac047fed57..9c3df074056 100644
 -        capacity: config.nodeHost?.workerRuns?.capacity,
 -        workspace: preparedWorkerWorkspace,
 -        containerEngine,
--        ...(config.nodeHost?.workerRuns?.containerImage
--          ? { containerImage: config.nodeHost.workerRuns.containerImage }
--          : {}),
+-        containerImage: config.nodeHost?.workerRuns?.containerImage || undefined,
 -        onCapacityChanged: (capacity) => {
 -          preparedContainerCapacity = capacity;
 -          publishContainerCapacity?.(capacity);
@@ -9940,6 +9940,7 @@ index 2ac047fed57..9c3df074056 100644
 -              capacity: config.nodeHost?.workerRuns?.capacity,
 -              nativeInferenceSnapshot,
 -              executionContext,
+-              filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 -              managedIdentityTransport,
 -              platformTrust,
 -              onCapacityChanged: onRunnerCapacityChanged,
@@ -9964,9 +9965,7 @@ index 2ac047fed57..9c3df074056 100644
 +          capacity: config.nodeHost?.workerRuns?.capacity,
 +          workspace: preparedWorkerWorkspace,
 +          containerEngine,
-+          ...(config.nodeHost?.workerRuns?.containerImage
-+            ? { containerImage: config.nodeHost.workerRuns.containerImage }
-+            : {}),
++          containerImage: config.nodeHost?.workerRuns?.containerImage || undefined,
 +          onCapacityChanged: (capacity) => {
 +            preparedContainerCapacity = capacity;
 +            publishContainerCapacity?.(capacity);
@@ -10121,6 +10120,7 @@ index 2ac047fed57..9c3df074056 100644
 +                capacity: config.nodeHost?.workerRuns?.capacity,
 +                nativeInferenceSnapshot,
 +                executionContext,
++                filesystemIsolation: config.nodeHost?.workerRuns?.isolation === "filesystem",
 +                managedIdentityTransport,
 +                platformTrust,
 +                onCapacityChanged: onRunnerCapacityChanged,

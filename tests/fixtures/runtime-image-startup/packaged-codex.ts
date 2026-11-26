@@ -93,13 +93,13 @@ export async function probePackagedCodex(
           "stock-codex-0.164.0-dependency-pin.patch":
             "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
           "openclaw-terminated-gateway-namespace.patch":
-            "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
+            "cc284f483113e89535df6efd438abfd86f2999732db0a944a49733eef9abe9cb",
           "openclaw-planned-completion.patch":
             "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
           "openclaw-http-chat-input.patch":
-            "bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8",
+            "635754f301b8badcbcff98e307630b9196fed7036dcd5c576d755483ec34e556",
           "openclaw-node-setup-renewal.patch":
-            "0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea",
+            "4870983c6912170f9e1164a0ffd46e810184c4309d121d0e07b874522dad0bbb",
         }),
   });
   assert.equal(read(provenance.codex).version, stagingCodexVersion);
