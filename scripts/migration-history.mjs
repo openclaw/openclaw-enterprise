@@ -171,6 +171,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 97 && completedCount > 97) {
     return "preSharedGitSourceRepositoryGrants";
   }
+  if (count === 98 && completedCount > 98) {
+    return "preGatewayStartupCredentials";
+  }
   if (count === completedCount) {
     return "completed";
   }
