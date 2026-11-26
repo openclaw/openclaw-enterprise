@@ -43,6 +43,7 @@ import {
   createInjectedControllerFixture,
   createNamespace,
   createProvisioningCapableComputeDriver,
+  grantAgentSourceOperate,
   identifier,
   injectedRequest,
   readyNamespaceFixture as bootstrapReadyNamespace,
@@ -83,7 +84,6 @@ import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
-import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   AGENT_DELETING,
   DEDICATED_STORAGE_ROUTING_REQUIRED,
@@ -462,7 +462,7 @@ test("first-deployment CLI recovers a lost committed response with the original 
   }
 });
 
-test("guarded first deployment enforces exact Secret operate before backend, provider, and admission", async (t) => {
+test("guarded first deployment enforces exact Source operate before custody, provider, and admission", async (t) => {
   for (const stage of [
     "before",
     "before-backend",
@@ -471,14 +471,24 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
     "cross-namespace",
   ]) {
     const beforeResponse = t.mock.fn();
-    const { controller, namespace, agent, bot, path, intent, work, secretDriver, providerCalls } =
-      await slackFirstDeploymentFixture(true, beforeResponse);
+    const {
+      controller,
+      namespace,
+      agent,
+      bot,
+      path,
+      intent,
+      work,
+      sourceOwner,
+      sourceReads,
+      providerCalls,
+    } = await slackFirstDeploymentFixture(true, beforeResponse);
     const fixture = controller.fixture;
     const deny = () =>
       fixture.state.restrictions.push({
-        id: `deny-secret-${stage}`,
+        id: `deny-source-${stage}`,
         namespaceId: namespace.id,
-        resourceKind: "secret",
+        resourceKind: "credential_source",
         resourceId: bot.id,
         action: "operate",
         effect: "deny",
@@ -497,15 +507,15 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
       };
     }
     if (stage === "after-backend") {
-      const withValue = secretDriver.withValue.bind(secretDriver);
-      secretDriver.withValue = (secret, use) =>
-        withValue(secret, (value) => {
-          deny();
-          return use(value);
-        });
+      const resolve = sourceOwner.resolveCredential.bind(sourceOwner);
+      sourceOwner.resolveCredential = async (...args) => {
+        const result = await resolve(...args);
+        deny();
+        return result;
+      };
     }
     if (stage === "before-admission") {
-      // Revoke Secret authority after the provider request and before locked admission.
+      // Revoke Source authority after the provider request and before locked admission.
       beforeResponse.mock.mockImplementationOnce(deny);
     }
     if (stage === "cross-namespace") {
@@ -555,10 +565,10 @@ test("guarded first deployment enforces exact Secret operate before backend, pro
       [],
     );
     assert.equal(providerCalls(), stage === "before-admission" ? 1 : 0);
-    const reads = secretDriver.calls.filter((call) => call.operation === "withValue").length;
+    const reads = sourceReads();
     assert.equal(reads, ["after-backend", "before-admission"].includes(stage) ? 1 : 0);
     t.diagnostic(
-      JSON.stringify({ stage, sender: providerCalls(), withValue: reads, work: work().length }),
+      JSON.stringify({ stage, sender: providerCalls(), sourceReads: reads, work: work().length }),
     );
   }
 });
@@ -1185,18 +1195,13 @@ registerSshAdmissionCases();
 
 async function bindSlackDeploymentCredentials(fixture, namespaceId, agent, { app, bot }) {
   await bindHarnessKey(fixture, namespaceId, agent);
-  for (const secret of [app, bot]) {
-    fixture.state.bindings.push({
-      id: `slack-${secret.id}`,
-      namespaceId,
-      subjectKind: "identity",
-      subjectId: agent.servicePrincipalId,
-      roleId: `harness-key-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+  for (const source of [app, bot]) {
+    grantAgentSourceOperate(fixture, namespaceId, agent, source.id);
   }
 }
+
+const qualifiedSlackDelivery = (compute, owner) =>
+  compute.id === "compute-provisioning-api" && owner.implementation === "occ/token-service";
 
 test("Agent provisioning and deploy name a refused channel token reference form before Slack validation", async () => {
   // Finding 2506: provisioning ran the Slack Channel Driver's check before the Configuration rules
@@ -1214,6 +1219,7 @@ test("Agent provisioning and deploy name a refused channel token reference form 
       implementation: "occ/kubernetes",
     },
     configurationDriver,
+    gatewayStartupSourceDelivery: qualifiedSlackDelivery,
   });
   await runChannelReferenceRefusals(controller, configurationDriver, assertNoAgentsInNamespace);
 });
@@ -1222,6 +1228,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   const controller = await configuredController({
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
+    gatewayStartupSourceDelivery: qualifiedSlackDelivery,
   });
   const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
     await createSlackValidationFixture(controller, "slack-admission");
@@ -1243,7 +1250,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
     appSource: bot.ref,
     botSource: app.ref,
   });
-  // A foreign channel Secret is an invalid request, not a scope miss from channel validation.
+  // A foreign channel Source is an invalid request, not a scope miss from channel validation.
   const foreignBot = { ...bot.ref, namespaceId: `ns_${randomUUID()}` };
   const foreign = await provision({
     ...configuration,
@@ -1269,7 +1276,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   fixture.state.restrictions.push({
     id: "deny-bot",
     namespaceId: namespace.id,
-    resourceKind: "secret",
+    resourceKind: "credential_source",
     resourceId: bot.id,
     action: "operate",
     effect: "deny",
@@ -1314,7 +1321,7 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   assert.equal((await provision(configuration)).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
   response = enterprise;
   // Named accounts do not hide the top-level tokens: OpenClaw starts them as the
-  // implicit default account, so they need Secret-backed refs too.
+  // implicit default account, so they need Source bindings too.
   const namedAccounts = structuredClone(configuration);
   namedAccounts.values.channels.slack.appToken = "xapp-plaintext-default";
   namedAccounts.values.channels.slack.botToken = "xoxb-plaintext-default";
@@ -1357,6 +1364,7 @@ test("Slack validation reads a whole ${NAME} token as the env SecretRef it binds
   const controller = await configuredController({
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
+    gatewayStartupSourceDelivery: qualifiedSlackDelivery,
   });
   const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
     await createSlackValidationFixture(controller, "slack-whole-reference");
@@ -1403,6 +1411,7 @@ test("Slack activation without managed egress fails before provider transport", 
   const controller = await configuredController({
     computeDriver: createProvisioningCapableComputeDriver(),
     configurationDriver: createProvisioningCapableConfigurationDriver(),
+    gatewayStartupSourceDelivery: qualifiedSlackDelivery,
   });
   const { fixture, namespace, base, app, bot, saveConfiguration, createAgent, provision } =
     await createSlackValidationFixture(controller, "slack-no-route");
@@ -1575,27 +1584,4 @@ test("saved-Agent discovery offers managed packages only where Agent save admits
 
 test("ordinary deployment admits only the Configuration and Drivers whose channels were validated", async (t) => {
   await firstDeploymentCases.runOrdinaryChannelAdmission(t);
-});
-
-test("deployment credential use retains the selected Secret storage object after its read", async () => {
-  const { controller, namespace, bot, path, intent, secretDriver, providerCalls, work } =
-    await slackFirstDeploymentFixture();
-  const replacement = createTestSecretDriver({ id: "replacement-secret-storage" });
-  controller.fixture.controller.registerDriver(replacement);
-  const withValue = secretDriver.withValue.bind(secretDriver);
-  secretDriver.withValue = (secret, use) =>
-    withValue(secret, (value) => {
-      controller.fixture.controller.selectDriver("secret", replacement.id);
-      return use(value);
-    });
-  const result = await controller.request("POST", `${path}/deploy-first`, { body: intent });
-  assert.equal(result.status, 503, JSON.stringify(result.body));
-  assert.equal(providerCalls(), 0, "a replaced storage selection must prevent provider dispatch");
-  assert.equal(work().length, 0);
-  assert.equal(
-    secretDriver.calls.filter((call) => call.operation === "withValue" && call.secret.id === bot.id)
-      .length,
-    1,
-  );
-  assert.equal(namespace.id, bot.ref.namespaceId);
 });

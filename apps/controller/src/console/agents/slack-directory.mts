@@ -25,7 +25,7 @@ export interface SlackDirectoryContext {
 interface DirectoryOptions {
   context: SlackDirectoryContext;
   kind: DirectoryKind;
-  getSecretId(): string | null | undefined;
+  getSourceId(): string | null | undefined;
   agentId?: string | undefined;
   configurationId?: string | undefined;
 }
@@ -48,7 +48,7 @@ const nameLookupCache = new WeakMap<
 // Both search and name resolution are reads, including when the view tracks POST as a mutation.
 function lookup(
   context: SlackDirectoryContext,
-  body: { secretId: string; kind: DirectoryKind; agentId?: string; configurationId?: string } & (
+  body: { sourceId: string; kind: DirectoryKind; agentId?: string; configurationId?: string } & (
     { ids: string[] } | { query?: string; cursor?: string }
   ),
   signal?: AbortSignal,
@@ -61,13 +61,10 @@ function lookup(
   }) as Promise<ChannelDirectoryResult>;
 }
 
-// A view's name lookups. The lookup authorizes Secret operate on the bot token Secret, which an
-// Installation administrator may hold only through that administration; revoked before she
-// opened Edit Slack, its fields sent their lookups at once and each refusal was audited (finding
-// 2939). The first lookup goes alone, and once one succeeds the rest go at once. A refusal answers
-// the lookups waiting behind it for the same Secret unsent, so each field shows that refusal's
-// reason; once none are pending, a later lookup asks again. A lookup whose view is no longer
-// current is not sent.
+// A lookup checks exact Source operate. Send the first name lookup alone so a refusal does not
+// produce an audited denial for every field. Once it succeeds, the other lookups can run together;
+// a refusal answers waiting lookups for that Source without sending them. A later lookup retries
+// once none are pending, and a lookup from a stale view is never sent.
 interface NameLookupTurns {
   inTurn: RequestInTurn;
   refusals: Map<string, unknown>;
@@ -159,7 +156,7 @@ export function matchesSlackDirectoryCandidate(
 function lookupError(error: ReturnType<typeof requestFailure>, cause: unknown) {
   const reasons: Record<string, string> = {
     CHANNEL_DIRECTORY_CREDENTIALS_REJECTED:
-      "The selected Secret is not a usable Slack bot token. Check the selected Secret.",
+      "The selected Credential Source is not a usable Slack bot token. Check the selected Credential Source.",
     CHANNEL_DIRECTORY_MISSING_SCOPE:
       "The Slack bot token needs users:read for people and channel read scopes for channels.",
     CHANNEL_DIRECTORY_RATE_LIMITED: "Slack rate limited the directory. Try again shortly.",
@@ -168,29 +165,32 @@ function lookupError(error: ReturnType<typeof requestFailure>, cause: unknown) {
   };
   const reason = error.code ? reasons[error.code] : undefined;
   if (error.status === 403) {
-    // The lookup checks Secret operate on the bot Secret, and Agent update (or Agent create on a
-    // new Agent), so the API's named grant wins; without one, the Secret's grant is named.
+    // The API checks Source operate and the target Agent or Configuration grant, so show its
+    // exact named denial when available.
     return (
       namedRefusal("Slack lookup", cause) ??
       notIncluded(
-        "looking up Slack people and channels with the selected Slack bot Secret",
-        "Secret operate on it",
+        "looking up Slack people and channels with the selected Slack bot Credential Source",
+        "Credential Source operate on it",
       )
     );
   }
   if (error.status === 501) {
     return "Slack directory lookup is unavailable. Ask your operator to configure the API channel directory proxy, or enter exact IDs.";
   }
+  if ((error.status === 404 || error.status === 409) && error.serverMessage) {
+    return error.serverMessage;
+  }
   return (
     reason ?? (cause instanceof Error ? cause.message : "Slack directory could not be loaded.")
   );
 }
 
-// Names are a transient view of exact IDs; the selected Secret remains the authority for lookup.
+// Names are a transient view of exact IDs; the selected Credential Source remains the authority for lookup.
 export function createSlackNameResolver({
   context,
   kind,
-  getSecretId,
+  getSourceId,
   agentId,
   configurationId,
   onUpdate,
@@ -202,12 +202,12 @@ export function createSlackNameResolver({
   };
   const refresh = async (ids: readonly string[]) => {
     const active = ++generation;
-    const secretId = getSecretId();
+    const sourceId = getSourceId();
     const uniqueIds = [...new Set(ids.filter((id) => isSlackId(id, kind)))];
     const requestedIds = uniqueIds.slice(0, 20);
     const truncated = uniqueIds.length > requestedIds.length;
-    onUpdate({ names: new Map(), truncated, loading: Boolean(secretId && requestedIds.length) });
-    if (!secretId || requestedIds.length === 0) {
+    onUpdate({ names: new Map(), truncated, loading: Boolean(sourceId && requestedIds.length) });
+    if (!sourceId || requestedIds.length === 0) {
       return;
     }
     try {
@@ -217,7 +217,7 @@ export function createSlackNameResolver({
         nameLookupCache.set(context, cache);
       }
       const key = JSON.stringify([
-        secretId,
+        sourceId,
         kind,
         agentId ?? null,
         configurationId ?? null,
@@ -230,10 +230,10 @@ export function createSlackNameResolver({
         }
         request = nameLookupInTurn(
           context,
-          JSON.stringify([secretId, agentId ?? null, configurationId ?? null]),
+          JSON.stringify([sourceId, agentId ?? null, configurationId ?? null]),
           () =>
             lookup(context, {
-              secretId,
+              sourceId,
               kind,
               ids: requestedIds,
               ...(agentId ? { agentId } : {}),
@@ -241,7 +241,7 @@ export function createSlackNameResolver({
             }),
         );
         cache.set(key, request);
-        // Share simultaneous fields, then reread the Secret for later views of the same ID.
+        // Share simultaneous fields, then reread the Source for later views of the same ID.
         const clear = () => {
           if (cache.get(key) === request) {
             cache.delete(key);
@@ -250,7 +250,7 @@ export function createSlackNameResolver({
         request.then(clear, clear);
       }
       const page = await request;
-      if (!context.isCurrent() || active !== generation || getSecretId() !== secretId) {
+      if (!context.isCurrent() || active !== generation || getSourceId() !== sourceId) {
         return;
       }
       const names = new Map(
@@ -284,7 +284,7 @@ export function createSlackNameResolver({
 export function createSlackDirectoryField({
   context,
   kind,
-  getSecretId,
+  getSourceId,
   agentId,
   configurationId,
   control,
@@ -366,7 +366,7 @@ export function createSlackDirectoryField({
   );
   let nameState: NameState = { names: new Map() };
   let namesActive = !lazyNames;
-  let boundSecretId = getSecretId();
+  let boundSourceId = getSourceId();
   let workspaceIdentity: string | null = null;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -394,8 +394,8 @@ export function createSlackDirectoryField({
     qualifyUsers
       ? /^(?:[UW][A-Z0-9]{1,31}|team:T[A-Z0-9]{1,31}:user:[UW][A-Z0-9]{1,31})$/.test(id)
       : isSlackConfigTarget(id, kind);
-  const current = (active: number, secretId: string) =>
-    !panel.hidden && context.isCurrent() && active === generation && getSecretId() === secretId;
+  const current = (active: number, sourceId: string) =>
+    !panel.hidden && context.isCurrent() && active === generation && getSourceId() === sourceId;
 
   function updateWorkspace(page: Workspace) {
     workspaceIdentity = page.workspaceId;
@@ -481,8 +481,8 @@ export function createSlackDirectoryField({
         ? "Resolving saved names…"
         : mismatched
           ? "Some saved selections belong to another workspace."
-          : !getSecretId()
-            ? "Select a Slack bot token Secret to search by name. You can still paste exact IDs."
+          : !getSourceId()
+            ? "Select a Slack bot token Credential Source to search by name. You can still paste exact IDs."
             : "";
     if (nameState.truncated) {
       nameStatus.textContent += " Name lookup includes the first 20 selections.";
@@ -491,7 +491,7 @@ export function createSlackDirectoryField({
   const resolver = createSlackNameResolver({
     context,
     kind,
-    getSecretId,
+    getSourceId,
     agentId,
     configurationId,
     onUpdate: (state) => {
@@ -519,8 +519,8 @@ export function createSlackDirectoryField({
     },
   });
   function refresh() {
-    if (boundSecretId !== getSecretId()) {
-      boundSecretId = getSecretId();
+    if (boundSourceId !== getSourceId()) {
+      boundSourceId = getSourceId();
       nameState = { names: new Map() };
       workspaceIdentity = null;
       workspace.textContent = "";
@@ -553,7 +553,7 @@ export function createSlackDirectoryField({
     }
     if (
       qualifyUsers &&
-      boundSecretId === getSecretId() &&
+      boundSourceId === getSourceId() &&
       workspaceIdentity &&
       ids.some((id) => {
         const teamId = directoryTarget(id, kind)?.teamId;
@@ -601,9 +601,9 @@ export function createSlackDirectoryField({
     addExact.hidden = !ids.length || !ids.every(validManual);
     addExact.textContent =
       ids.length > 1 ? `Add ${ids.length} exact IDs` : `Add ${ids[0] || "exact ID"}`;
-    status.textContent = getSecretId()
+    status.textContent = getSourceId()
       ? "Searching Slack directory…"
-      : "Select a Slack bot token Secret to search by name. You can still paste exact IDs.";
+      : "Select a Slack bot token Credential Source to search by name. You can still paste exact IDs.";
     query = search.value.trim();
     pages = [];
     pageIndex = 0;
@@ -623,8 +623,8 @@ export function createSlackDirectoryField({
     active.scrollIntoView({ block: "nearest" });
   }
   async function load(index: number, activateFirst = false): Promise<void> {
-    const secretId = getSecretId();
-    if (!secretId || (index >= pages.length && pages.length > 0 && !nextCursor)) {
+    const sourceId = getSourceId();
+    if (!sourceId || (index >= pages.length && pages.length > 0 && !nextCursor)) {
       return;
     }
     cancelSearch();
@@ -648,7 +648,7 @@ export function createSlackDirectoryField({
           lookup(
             context,
             {
-              secretId,
+              sourceId,
               kind,
               ...selection,
               ...(agentId ? { agentId } : {}),
@@ -667,19 +667,19 @@ export function createSlackDirectoryField({
           query.length >= 8 &&
           isSlackId(query, kind) &&
           page.candidates.length === 0 &&
-          current(active, secretId)
+          current(active, sourceId)
         ) {
           const exactWorkspaceId = page.workspaceId;
           page = await requestPage({ query });
           if (page.workspaceId !== exactWorkspaceId) {
-            if (current(active, secretId)) {
+            if (current(active, sourceId)) {
               status.textContent = "The Slack bot workspace changed. Search again.";
             }
             return;
           }
           searchedAsName = true;
         }
-        if (!current(active, secretId)) {
+        if (!current(active, sourceId)) {
           return;
         }
         if (
@@ -759,7 +759,7 @@ export function createSlackDirectoryField({
       previous.disabled = index === 0;
       next.disabled = !hasNext;
     } catch (cause) {
-      if (!current(active, secretId)) {
+      if (!current(active, sourceId)) {
         return;
       }
       const error = requestFailure(cause);

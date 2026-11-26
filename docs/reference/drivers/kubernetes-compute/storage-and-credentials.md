@@ -252,8 +252,7 @@ configuration reads and writable native-admin copies.
 
 Canonical Configuration, OCC Secret and managed account credential sources live
 in the shared tenant namespace in a single cluster, or the control-cluster
-storage target with the two-cluster profile. Dedicated Gateways reference
-admitted Namespace Secrets there directly; Compute verifies their scope and UID. These canonical Secrets are not mirrored for a dedicated Gateway.
+storage target with the two-cluster profile. For admitted Namespace Secret bindings, dedicated Gateways reference the canonical Secret directly; Compute verifies its scope and UID. Slack instead requires static Credential Source bindings, which Compute stages separately for each revision.
 
 See [Gateway startup credentials](gateway-credentials.md) for static Source delivery and cleanup.
 

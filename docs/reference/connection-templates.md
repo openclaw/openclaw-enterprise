@@ -58,6 +58,8 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
+In the Console, open **Credentials → Create Credential Source**, select an approved OAuth Connection Template, choose a compatible Credential Client, and complete sign-in in the new tab. OCC lists Clients whose issuer and availability match the Template and selected TokenService. The Source exists only after the verified callback succeeds; OCC generates its name.
+
 OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Live delivery has been verified for Slack OAuth MCP; see the [current support limits](credential-sources.md#implementation-status).
 
 1. Use a signed-in browser session. List available templates at

@@ -747,7 +747,7 @@ test(
         );
       }
       if (boundSecret !== undefined) {
-        // Configuration save refuses channel credentials without Secret bindings, naming the
+        // Configuration save refuses channel credentials without Source bindings, naming the
         // setting and the binding, before any deployment (finding 2319).
         const missingConfiguration = await request(
           "PATCH",
@@ -757,13 +757,13 @@ test(
         assert.equal(
           missingConfiguration.status,
           400,
-          `${label} before channel Secret bindings: ${JSON.stringify(missingConfiguration.error)}`,
+          `${label} before channel Source bindings: ${JSON.stringify(missingConfiguration.error)}`,
         );
         assert.ok(missingConfiguration.error);
         assert.equal(missingConfiguration.error.code, "INVALID_REQUEST");
         assert.match(
           missingConfiguration.error.message,
-          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Configuration Secret binding: /,
+          /^Configuration setting channels\.slack\.appToken references SLACK_APP_TOKEN without a Credential Source binding: /,
         );
         // This k3d fixture has no runtime.channelEgress proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret

@@ -36,11 +36,15 @@ Preset save run this one set (`validateConfigurationContent` in
 [OCC](../../../packages/occ/src/configuration-operations.ts)); a Preset value that waits on a
 variable is checked as far as its written text goes, and in full once filled.
 Preset save skips the catalog and runtime checks; its launch's Configuration runs them.
-Create, update and provisioning first ask the Driver's optional
-[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
-to refuse a document too large to store, so no content rule walks it. Its
-`ConfigurationSizeError` returns `400 INVALID_REQUEST` naming the limit, not the
-generic invalid-configuration text.
+
+Bundled Kubernetes [channel validation](../../../packages/occ/src/channel-secret-bindings.ts)
+refuses Slack policy references on Configuration writes and before deployment
+can resolve a Slack credential. Enter the policy IDs directly.
+
+Create, update and provisioning first call the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation).
+An oversized document returns `400 INVALID_REQUEST` with the size limit before
+content validation.
 A stored row that predates a rule still reads and an edit can replace it: a
 bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and

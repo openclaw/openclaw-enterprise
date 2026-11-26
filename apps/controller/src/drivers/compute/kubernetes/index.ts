@@ -16628,7 +16628,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         this.channelDrivers.map(({ provider }) => provider),
         callerSettingError,
       ),
-      (name) => {
+      (name, requiresSource) => {
         if (bindings === undefined) {
           try {
             bindings = normalizeSecretBindings(secretBindings);
@@ -16636,7 +16636,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
           }
         }
-        return Object.hasOwn(bindings, name);
+        return (
+          Object.hasOwn(bindings, name) &&
+          (!requiresSource || bindings[name]?.source.kind === "credential_source")
+        );
       },
       callerSettingError,
     );

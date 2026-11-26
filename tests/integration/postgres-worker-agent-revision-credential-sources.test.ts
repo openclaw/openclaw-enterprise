@@ -33,6 +33,7 @@ import {
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -59,6 +60,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
 import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
@@ -72,9 +74,14 @@ import {
 const cases = createCredentialSourceRevisionCases(import.meta.url);
 after(cases.cleanup);
 
-async function gatewaySourceWorkerFixture(fixture: RevisionFixture, context: TestContext) {
+async function gatewaySourceWorkerFixture(
+  fixture: RevisionFixture,
+  context: TestContext,
+  options: { channelRuntime?: boolean } = {},
+) {
   const compute = createTestKubernetesComputeDriver(fixture.compute.id, {
     gatewayRuntime: true,
+    ...(options.channelRuntime === undefined ? {} : { channelRuntime: options.channelRuntime }),
     privateStatus: true,
   });
   const installation = createInstallationDriverConfiguration();
@@ -211,6 +218,596 @@ async function gatewaySourceWorkerFixture(fixture: RevisionFixture, context: Tes
     beforeEnrollment,
   };
 }
+
+async function slackChannelSourceFixture(fixture: RevisionFixture, context: TestContext) {
+  const { controller, compute, core, enroll, namespaceId, beforeEnrollment } =
+    await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const configurationDriver = createTestConfigurationDriver({
+    id: `slack-configuration-${randomUUID()}`,
+    exact: true,
+  });
+  controller.registerDriver(configurationDriver);
+  controller.selectDriver("configuration", configurationDriver.id);
+  const effects = { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 };
+  const channel = new SlackChannelDriver((async (url, init) => {
+    assert.equal(String(url), "https://slack.com/api/auth.test");
+    assert.match((init?.headers as Record<string, string>).authorization!, /^Bearer xoxb-/);
+    effects.providerCalls += 1;
+    return Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" });
+  }) satisfies typeof fetch);
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+
+  const bot = await enroll(`xoxb-${randomUUID()}`);
+  const app = await enroll(`xapp-${randomUUID()}`);
+  const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+  assert.equal(custodyKeys.length, 2);
+  const model = await controller.createSecret(fixture.actor.id, {
+    namespaceId,
+    name: `Harness PAT ${randomUUID()}`,
+    value: randomUUID(),
+  });
+  const configuration = {
+    kind: "agent" as const,
+    values: {
+      ...createHarnessConfiguration("codex", "gpt-5"),
+      channels: {
+        slack: {
+          enabled: true,
+          appToken: "${SLACK_APP_TOKEN}",
+          botToken: "${SLACK_BOT_TOKEN}",
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref },
+      SLACK_BOT_TOKEN: { source: bot.ref },
+    },
+  };
+  const harnessAuth = { method: "codex_pat" as const, source: model.ref };
+  const callerId = `slack-source-caller-${randomUUID()}`;
+  await fixture.copyActorGrants(callerId, { withoutActions: ["operate", "create"] });
+  const targetGrants = {} as Record<"agent" | "configuration", { id: string; roleId: string }>;
+  for (const resourceKind of ["agent", "configuration"] as const) {
+    // Collection create grants are Installation policy, not Namespace AccessBindings.
+    const roleId = `role-slack-target-${randomUUID()}`;
+    const bindingId = `binding-slack-target-${randomUUID()}`;
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+      [
+        roleId,
+        `Slack target ${randomUUID()}`,
+        JSON.stringify([{ action: "create", resourceKind }]),
+      ],
+    );
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+      [bindingId, callerId, roleId],
+    );
+    targetGrants[resourceKind] = { id: bindingId, roleId };
+  }
+  const credentialRole = await controller.createIAMRole(fixture.actor.id, {
+    namespaceId,
+    permissions: [
+      { action: "operate", resourceKind: "secret" },
+      { action: "operate", resourceKind: "credential_source" },
+    ],
+  });
+  const grant = (resourceKind: "secret" | "credential_source", resourceId: string) =>
+    controller.createIAMAccessBinding(fixture.actor.id, {
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: callerId,
+      roleId: credentialRole.id,
+      resourceKind,
+      resourceId,
+    });
+  await grant("secret", model.id);
+  await grant("credential_source", app.id);
+  const botGrant = await grant("credential_source", bot.id);
+  const request = () => ({
+    namespaceId,
+    requestId: `req_${randomUUID()}`,
+    name: `Slack Gateway Source ${randomUUID()}`,
+    configuration,
+    executionMode: "dedicated" as const,
+    harnessAuth,
+  });
+
+  let paused:
+    { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
+  const pauseBot = () => {
+    paused = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    return paused;
+  };
+  const read = core.readNamespacedSecret.bind(core);
+  context.mock.method(
+    core,
+    "readNamespacedSecret",
+    async (input: { namespace: string; name: string }) => {
+      const value = await read(input);
+      const key = `${input.namespace}/${input.name}`;
+      if (key === custodyKeys[1]) {
+        effects.appCustodyReads += 1;
+      }
+      if (key === custodyKeys[0]) {
+        effects.botCustodyReads += 1;
+        if (paused !== undefined) {
+          const gate = paused;
+          paused = undefined;
+          gate.entered.resolve();
+          await gate.release.promise;
+        }
+      }
+      return value;
+    },
+  );
+  return {
+    controller,
+    compute,
+    namespaceId,
+    bot,
+    model,
+    configuration,
+    harnessAuth,
+    callerId,
+    botGrant,
+    targetGrants,
+    configurationDriver,
+    request,
+    effects,
+    pauseBot,
+  };
+}
+
+cases.revisionTest(
+  "Slack Sources validate app and bot and bind Gateway-only fields during provisioning and deployment",
+  async (fixture, context) => {
+    const { controller, namespaceId, bot, configuration, harnessAuth, callerId, request, effects } =
+      await slackChannelSourceFixture(fixture, context);
+    // Gateway-only Slack fields use the same binding contract as app/bot. Explicit Source reuse
+    // is allowed by IAM; this fixture proves admission and delivery metadata, not Slack semantics.
+    const allFields = {
+      ...configuration,
+      values: {
+        ...configuration.values,
+        channels: {
+          slack: {
+            ...configuration.values.channels.slack,
+            signingSecret: "${SLACK_SIGNING_SECRET}",
+            userToken: "${SLACK_USER_TOKEN}",
+            relay: { authToken: "${SLACK_RELAY_AUTH_TOKEN}" },
+          },
+        },
+      },
+      secretBindings: {
+        ...configuration.secretBindings,
+        SLACK_SIGNING_SECRET: { source: bot.ref },
+        SLACK_USER_TOKEN: { source: bot.ref },
+        SLACK_RELAY_AUTH_TOKEN: { source: bot.ref },
+      },
+    };
+    // Preflight and Configuration save check structure and exact bindings without provider IO.
+    await controller.validateAgentCreate(
+      fixture.actor.id,
+      { namespaceId, configuration: allFields, executionMode: "dedicated", harnessAuth },
+      resolveApprovedHarness,
+    );
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...allFields,
+    });
+    assert.equal(effects.providerCalls, 0);
+    const provisioningRequest = {
+      ...request(),
+      configuration: allFields,
+    };
+    const accepted = await controller.provisionAgent(callerId, provisioningRequest);
+    assert.ok(accepted.provisioning.workId);
+    assert.equal(effects.providerCalls, 1);
+    assert.ok(effects.appCustodyReads > 0, "the xapp Source is resolved and validated locally");
+    // An accepted replay reuses the original work rather than authenticating with Slack again.
+    const replay = await controller.provisionAgent(callerId, provisioningRequest);
+    assert.equal(replay.provisioning.workId, accepted.provisioning.workId);
+    assert.equal(effects.providerCalls, 1, "accepted replay does not repeat Slack provider I/O");
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Slack Source deploy ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    assert.equal(revision.secretBindings?.SLACK_BOT_TOKEN?.source.id, bot.id);
+    for (const key of ["SLACK_SIGNING_SECRET", "SLACK_USER_TOKEN", "SLACK_RELAY_AUTH_TOKEN"]) {
+      assert.equal(revision.secretBindings?.[key]?.source.id, bot.id);
+    }
+    assert.equal(effects.providerCalls, 2, "ordinary deployment runs Slack bot authentication");
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning refuses unsupported Harness topology and delivery before custody",
+  async (fixture, context) => {
+    const {
+      controller,
+      compute,
+      namespaceId,
+      bot,
+      model,
+      configuration,
+      callerId,
+      request,
+      effects,
+    } = await slackChannelSourceFixture(fixture, context);
+    // The authenticated HTTP caller receives the existing 409 before either Slack Source is read.
+    const {
+      app: api,
+      principalId: apiCallerId,
+      headers,
+    } = await authenticatedSourceOperator(fixture, controller);
+    try {
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
+                resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [apiCallerId, fixture.actor.id],
+      );
+      // Old public Secret bindings must fail at provisioning admission before custody or Slack.
+      const legacyBinding = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Legacy Slack binding ${randomUUID()}`,
+          executionMode: "dedicated",
+          harnessAuth: { method: "codex_pat", source: model.ref },
+          configuration: {
+            ...configuration,
+            secretBindings: {
+              ...configuration.secretBindings,
+              SLACK_BOT_TOKEN: { source: model.ref },
+            },
+          },
+        },
+      });
+      assert.equal(legacyBinding.statusCode, 400, legacyBinding.body);
+      assert.equal(
+        legacyBinding.json().error.message,
+        "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Credential Source binding: bind SLACK_BOT_TOKEN to a Credential Source in secretBindings, or remove the reference.",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      const refused = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Unsupported managed Harness ${randomUUID()}`,
+          configuration,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: bot.id },
+        },
+      });
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.json().error.message,
+        "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      // Dedicated OpenClaw without a provisioning Sandbox is already known to be impossible.
+      // Refuse it before resolving either Slack Source or contacting Slack.
+      const unsupportedNative = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Unsupported native Harness ${randomUUID()}`,
+          configuration: {
+            ...configuration,
+            values: {
+              ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+              channels: configuration.values.channels,
+            },
+          },
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: model.ref },
+        },
+      });
+      assert.equal(unsupportedNative.statusCode, 409, unsupportedNative.body);
+      assert.equal(unsupportedNative.json().error.code, "RESOURCE_CONFLICT");
+      assert.match(
+        unsupportedNative.json().error.message,
+        /^Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment\./,
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+    } finally {
+      await api.close();
+    }
+    const otherCompute = createTestKubernetesComputeDriver(`other-${randomUUID()}`, {
+      gatewayRuntime: true,
+      channelRuntime: true,
+      privateStatus: true,
+    });
+    controller.registerDriver(otherCompute);
+    controller.selectDriver("compute", otherCompute.id);
+    try {
+      await assert.rejects(controller.provisionAgent(callerId, request()), {
+        message: "The selected Compute and TokenService do not support Gateway Source delivery.",
+      });
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+    } finally {
+      controller.selectDriver("compute", compute.id);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning rechecks exact grants after custody",
+  async (fixture, context) => {
+    const { controller, namespaceId, botGrant, callerId, request, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    const gate = pauseBot();
+    const denied = controller.provisionAgent(callerId, request());
+    try {
+      await Promise.race([
+        gate.entered.promise,
+        denied.then(
+          () => assert.fail("provisioning completed before custody read"),
+          (error: unknown) => Promise.reject(error),
+        ),
+      ]);
+      // Revocation commits while TokenService awaits the actual Kubernetes custody read.
+      await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, botGrant.id);
+      gate.release.resolve();
+      await assert.rejects(denied, (error: Error) => error.name === "AuthorizationDeniedError");
+      assert.equal(effects.providerCalls, 0);
+      await assert.rejects(
+        controller.provisionAgent(callerId, request()),
+        (error: Error) => error.name === "AuthorizationDeniedError",
+      );
+      assert.equal(
+        effects.botCustodyReads,
+        1,
+        "a denied Source must not reach TokenService custody",
+      );
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      gate.release.resolve();
+      await denied.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning rechecks target authority before custody and provider use",
+  async (fixture, context) => {
+    const {
+      controller,
+      namespaceId,
+      callerId,
+      targetGrants,
+      configurationDriver,
+      request,
+      effects,
+      pauseBot,
+    } = await slackChannelSourceFixture(fixture, context);
+    const configurationEntered = Promise.withResolvers<void>();
+    const configurationRelease = Promise.withResolvers<void>();
+    const validate = configurationDriver.validate.bind(configurationDriver);
+    let holdConfiguration = true;
+    context.mock.method(
+      configurationDriver,
+      "validate",
+      async (configuration: Parameters<typeof configurationDriver.validate>[0]) => {
+        await validate(configuration);
+        if (holdConfiguration) {
+          holdConfiguration = false;
+          configurationEntered.resolve();
+          await configurationRelease.promise;
+        }
+      },
+    );
+
+    // The Agent create grant can disappear while Configuration validation is outside the transaction.
+    const beforeCustody = controller.provisionAgent(callerId, request());
+    try {
+      await Promise.race([configurationEntered.promise, beforeCustody]);
+      const revokedAgent = await fixture.observerPool.query(
+        "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+        [targetGrants.agent.id],
+      );
+      assert.equal(revokedAgent.rowCount, 1);
+      configurationRelease.resolve();
+      await assert.rejects(
+        beforeCustody,
+        (error: Error) => error.name === "AuthorizationDeniedError",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      await fixture.observerPool.query(
+        "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+        [targetGrants.agent.id, callerId, targetGrants.agent.roleId],
+      );
+
+      // A Configuration create grant revoked during the actual custody read must fence Slack dispatch.
+      const gate = pauseBot();
+      const beforeProvider = controller.provisionAgent(callerId, request());
+      try {
+        await Promise.race([gate.entered.promise, beforeProvider]);
+        const revokedConfiguration = await fixture.observerPool.query(
+          "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+          [targetGrants.configuration.id],
+        );
+        assert.equal(revokedConfiguration.rowCount, 1);
+        gate.release.resolve();
+        await assert.rejects(
+          beforeProvider,
+          (error: Error) => error.name === "AuthorizationDeniedError",
+        );
+        assert.equal(effects.providerCalls, 0);
+      } finally {
+        gate.release.resolve();
+        await beforeProvider.catch(() => undefined);
+      }
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      configurationRelease.resolve();
+      await beforeCustody.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning refuses a Source deleted during custody before provider use",
+  async (fixture, context) => {
+    const { controller, namespaceId, bot, request, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    const gate = pauseBot();
+    // The administrator keeps broad Source authority after deletion, so this checks Source
+    // currentness itself rather than the removal of the caller's exact Source grant.
+    const pending = controller.provisionAgent(fixture.actor.id, request());
+    try {
+      await Promise.race([gate.entered.promise, pending]);
+      await controller.deleteCredentialSource(
+        fixture.actor.id,
+        namespaceId,
+        bot.id,
+        (_removed, phase) => ({
+          ...auditEvent(
+            fixture.installation.id,
+            namespaceId,
+            fixture.actor.id,
+            "openclaw.credential_sources.delete",
+            bot.ref,
+          ),
+          ...(phase === undefined ? {} : { details: { phase } }),
+        }),
+      );
+      gate.release.resolve();
+      await assert.rejects(pending, {
+        message: "Channel credentials require a ready static TokenService Credential Source.",
+      });
+      assert.equal(effects.providerCalls, 0);
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      gate.release.resolve();
+      await pending.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source deployment fences embedded topology and changed Configuration",
+  async (fixture, context) => {
+    const { controller, namespaceId, model, configuration, harnessAuth, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    // This Agent exists before its Configuration gains Slack Source bindings; deployment must
+    // refuse the unsupported embedded topology before Source custody or Slack HTTP.
+    const embeddedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+    const embeddedConfiguration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: embeddedValues,
+    });
+    const embeddedAgent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Embedded OpenClaw ${randomUUID()}`,
+        configurationId: embeddedConfiguration.id,
+        executionMode: "embedded",
+        harnessAuth: { method: "api_key", source: model.ref },
+      },
+      resolveApprovedHarness,
+    );
+    await controller.updateConfiguration(fixture.actor.id, {
+      namespaceId,
+      configurationId: embeddedConfiguration.id,
+      values: { ...embeddedValues, channels: configuration.values.channels },
+      secretBindings: configuration.secretBindings,
+    });
+    await assert.rejects(
+      controller.deployAgent(
+        fixture.actor.id,
+        { namespaceId, agentId: embeddedAgent.id },
+        resolveApprovedHarness,
+      ),
+      { message: "Gateway Credential Source bindings require dedicated execution." },
+    );
+    assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...configuration,
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Slack Source deploy ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+      },
+      resolveApprovedHarness,
+    );
+    const gate = pauseBot();
+    const changedDeploy = controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    try {
+      await Promise.race([
+        gate.entered.promise,
+        changedDeploy.then(
+          () => assert.fail("deployment completed before custody read"),
+          (error: unknown) => Promise.reject(error),
+        ),
+      ]);
+      // Configuration update commits while owner I/O waits. The stale prepared binding must not reach Slack.
+      await controller.updateConfiguration(fixture.actor.id, {
+        namespaceId,
+        configurationId: saved.id,
+        values: createHarnessConfiguration("codex", "gpt-5"),
+        secretBindings: {},
+      });
+      gate.release.resolve();
+      await assert.rejects(changedDeploy, {
+        message: "The Agent or Configuration changed after Channel validation was prepared.",
+      });
+      assert.equal(effects.providerCalls, 0);
+    } finally {
+      gate.release.resolve();
+      await changedDeploy.catch(() => undefined);
+    }
+  },
+);
 
 cases.revisionTest(
   "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",

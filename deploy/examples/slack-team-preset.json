@@ -8,7 +8,7 @@
       },
       "namespaceId": {
         "type": "string",
-        "description": "The Namespace containing this Preset and all three Secrets"
+        "description": "The Namespace containing this Preset, the model Secret, and the Slack Credential Sources"
       },
       "model": {
         "type": "string",
@@ -18,13 +18,13 @@
         "type": "string",
         "description": "Existing model API-key Secret ID, never the key itself"
       },
-      "slackAppSecretId": {
+      "slackAppSourceId": {
         "type": "string",
-        "description": "Existing Slack Socket Mode app-token Secret ID"
+        "description": "Existing static Slack Socket Mode app-token Credential Source ID"
       },
-      "slackBotSecretId": {
+      "slackBotSourceId": {
         "type": "string",
-        "description": "Existing Slack bot-token Secret ID"
+        "description": "Existing static Slack bot-token Credential Source ID"
       },
       "slackOwnerId": {
         "type": "string",
@@ -173,17 +173,19 @@
       "secretBindings": {
         "SLACK_APP_TOKEN": {
           "source": {
-            "kind": "secret",
+            "kind": "credential_source",
             "namespaceId": "{{ vars.namespaceId }}",
-            "id": "{{ vars.slackAppSecretId }}"
-          }
+            "id": "{{ vars.slackAppSourceId }}"
+          },
+          "delivery": { "type": "env" }
         },
         "SLACK_BOT_TOKEN": {
           "source": {
-            "kind": "secret",
+            "kind": "credential_source",
             "namespaceId": "{{ vars.namespaceId }}",
-            "id": "{{ vars.slackBotSecretId }}"
-          }
+            "id": "{{ vars.slackBotSourceId }}"
+          },
+          "delivery": { "type": "env" }
         }
       }
     }

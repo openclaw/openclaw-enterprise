@@ -8,7 +8,7 @@ import type { ConsolePageContext, LeaveGuard, TabNavigation } from "./page-conte
 import { renderCredentialClients } from "./credential-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderNetworkPolicyCeiling } from "./network-policy-ceiling.mjs";
-import { finishPluginConsentTab } from "./agents/plugin-connection.mjs";
+import { finishConsentTab } from "./credential-consent.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
@@ -3333,7 +3333,7 @@ async function loadPage({
                 panel(
                   denied.view,
                   status === 403 ? "Access denied" : "Namespace unavailable",
-                  `The Source was created, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
+                  `Your change succeeded, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
                 );
                 if (requestId) {
                   denied.view.querySelector(".state-panel")?.append(requestIdDisclosure(requestId));
@@ -4569,6 +4569,6 @@ window.addEventListener("pageshow", (event) => {
     void loadPage();
   }
 });
-if (!finishPluginConsentTab()) {
+if (!finishConsentTab()) {
   void loadPage();
 }

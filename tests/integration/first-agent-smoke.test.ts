@@ -22,7 +22,10 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.ts";
-import { waitForChannelProxyReadiness } from "../../scripts/ci/first-agent-smoke/process.ts";
+import {
+  channelProxyDeploymentStep,
+  waitForChannelProxyReadiness,
+} from "../../scripts/ci/first-agent-smoke/process.ts";
 import { withEnvironment } from "../helpers/environment.ts";
 import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.ts";
@@ -305,6 +308,61 @@ test("smoke timing isolates channel proxy deployments from subsequent checks", a
       ],
     },
   );
+});
+
+test("initial deployment timing distinguishes concurrent callers and omits a pending peer", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-timing-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let clock = 1000;
+  const { smokeStep, writeTimingReport } = createStepRecorder(() => clock);
+  const measureA = channelProxyDeploymentStep({
+    smokeStep,
+    context: "channel-proxy-initial-deploy-a",
+  });
+  const measureB = channelProxyDeploymentStep({
+    smokeStep,
+    context: "channel-proxy-initial-deploy-b",
+  });
+  const failingSubmit = Promise.withResolvers<never>();
+  const peerWait = Promise.withResolvers<void>();
+  const failure = new Error("private deployment diagnostic");
+  const parent = "channel-proxy-initial-deploy";
+  let peer: Promise<void> | undefined;
+  const deployment = smokeStep(parent, () =>
+    Promise.all([
+      measureA("submit", () => failingSubmit.promise),
+      measureB("submit", () => Promise.resolve("private peer revision")).then(() => {
+        peer = measureB("wait", () => peerWait.promise);
+        return peer;
+      }),
+    ]),
+  );
+  try {
+    // Let B enter its wait before A's rejection closes the parent timing row.
+    clock += 7;
+    await drainTurn();
+    assert.ok(peer);
+    clock += 12;
+    failingSubmit.reject(failure);
+    await assert.rejects(deployment, (rejection) => rejection === failure);
+    await writeTimingReport(directory);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(directory, "first-agent-smoke-timing-v2.json"), "utf8")),
+      {
+        version: 2,
+        rows: [
+          { phase: `${parent}-b-submit`, parent, endMs: 7, status: "ok" },
+          { phase: `${parent}-a-submit`, parent, endMs: 19, status: "failed" },
+          { phase: parent, parent: "controlled-channel-proxy", endMs: 19, status: "failed" },
+        ].map((row) => ({ ...row, startMs: 0 })),
+      },
+    );
+  } finally {
+    failingSubmit.reject(failure);
+    peerWait.resolve();
+    await deployment.catch(() => {});
+    await peer;
+  }
 });
 
 test("smoke timing preserves a rejected proxy wait and omits unreached waits", async (t) => {

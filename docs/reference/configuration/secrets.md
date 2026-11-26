@@ -4,7 +4,7 @@ Configure Gateway credential references and native channels for [Namespace Confi
 
 ## Secret bindings
 
-Use `Configuration.secretBindings` to map a Namespace Secret or supported static CredentialSource to a Gateway environment variable. Each reference must belong to the same Namespace as the Configuration and Agent. The native
+Use `Configuration.secretBindings` to map a stored credential to a Gateway environment variable. For a dedicated Kubernetes Gateway with OCC TokenService, select a ready static Credential Source in the same Namespace as the Configuration and Agent. The native
 OpenClaw document in `values` then consumes that environment variable with its
 normal `env` SecretRef:
 
@@ -13,9 +13,9 @@ normal `env` SecretRef:
   "secretBindings": {
     "SLACK_BOT_TOKEN": {
       "source": {
-        "kind": "secret",
+        "kind": "credential_source",
         "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-        "id": "sec_123e4567-e89b-42d3-a456-426614174000"
+        "id": "cs_123e4567-e89b-42d3-a456-426614174000"
       }
     }
   }
@@ -34,23 +34,9 @@ use reserved process-control prefixes such as `OPENCLAW_`, `CODEX_`, `OCC_`,
 `KUBERNETES_`, `OPENAI_`, `PATH`, `HOME`, or proxy variables. Model
 authentication destinations are reserved for `harnessAuth`.
 
-For a dedicated Gateway on Kubernetes with OCC TokenService, select a ready static Source:
+The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment checks exact Source `operate` for both the deployer and the Agent service principal. OCC-managed transactional Native IAM can create a missing Agent grant. With other IAM policies, the Agent must already have access. See [Credential Source grants](../credential-sources.md#bind-a-source-to-an-agent).
 
-```json
-{
-  "secretBindings": {
-    "GW_HOOK_TOKEN": {
-      "source": {
-        "kind": "credential_source",
-        "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
-        "id": "cs_123e4567-e89b-42d3-a456-426614174001"
-      }
-    }
-  }
-}
-```
-
-The caller needs `operate` on the exact Source when saving or assigning the Configuration. Deployment requires that grant for both the deployer and Agent service principal. Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy: the Gateway receives a usable copy outside the Proxy's request restrictions. Only the dedicated Gateway receives this binding. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. Slack credential inputs still require Namespace Secrets.
+Explicit selection can reuse a Source already used by a model preset, Connection Template, or Credential Proxy. The dedicated Gateway receives a usable copy outside the Proxy's request restrictions. Other TokenService owners, embedded execution, and other Compute Drivers cannot deploy Source bindings until qualified. Active Slack credential fields require Source bindings, including the `appToken`, `botToken`, `signingSecret`, `userToken`, and `relay.authToken` fields of named accounts. The Slack Channel Driver validates app and bot tokens. The Gateway consumes the other fields directly.
 
 Kubernetes Compute stages Source values in a Secret for each Agent revision. A replacement Pod for that running revision reuses the staged value; a managed redeploy reads the current Source. Revocation prevents a later managed start but does not erase the running Gateway's environment. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md) for cleanup and access.
 
@@ -135,7 +121,7 @@ gateway. Dedicated OpenClaw or Codex can use a supported
 [managed model Source](../credential-sources.md#implementation-status) in
 `harnessAuth`. TokenService holds the credential and Credential Proxy delivers
 it for authorized model requests. Configuration `secretBindings`, including
-Channel Secrets, use their own delivery path. A general Secret Broker, Secret
+Channel credentials, use their own delivery path. A general Secret Broker, Secret
 value history, and automatic Namespace Secret rotation remain unimplemented.
 
 ### Native channel configuration
@@ -154,11 +140,15 @@ gateway-only credential values:
 | `slack`   | `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` for the default account; account-specific keys for named accounts |
 | `msteams` | `MSTEAMS_APP_PASSWORD`                                                                                    |
 
-On the bundled Kubernetes Compute, every `${NAME}` reference and environment
-SecretRef in an enabled native channel needs a matching `secretBindings` entry,
-including a reference inside other text (`xoxb-${NAME}`). Outside credential
-fields a reference with a fallback (`${NAME:-text}`) needs none: the fallback
-fills the unset name. `$${NAME}` is literal text, not a reference.
+On bundled Kubernetes Compute, every `${NAME}` reference and environment
+SecretRef in an enabled native channel needs a matching `secretBindings` entry.
+Active Slack credential inputs require a Credential Source. For the default and
+named accounts, save Slack user IDs directly in `allowFrom` and channel `users`
+lists. Use literal channel IDs as `channels` map keys. OCC refuses placeholders
+and SecretRefs for these selections. The supported `*` wildcard remains valid.
+This rule includes references inside other text (`xoxb-${NAME}`). In fields that
+accept references and do not hold credentials, a fallback (`${NAME:-text}`) can supply the value without a
+binding. `$${NAME}` is literal text.
 
 A channel secret-input field (Slack `appToken`, `botToken`, `signingSecret`,
 `userToken` and `relay.authToken`, on the channel or a named account; Teams
@@ -305,17 +295,11 @@ application password is an environment SecretRef:
 }
 ```
 
-For Slack setup, set the Agent's `executionMode` to `dedicated`; embedded mode
-is rejected because its combined gateway/Agent cannot isolate channel
-credentials. Preserve existing Codex/model settings and enable the native Slack
-plugin. Explicitly redeploy the Agent to snapshot the updated document. Store
-each channel value as a Namespace Secret and bind its exact reference to the
-native environment destination with `secretBindings`. Grant the consuming
-Agent's returned `servicePrincipalId` access through the
-[Namespace IAM APIs](../authorization.md#manage-namespace-policy). Only its
-dedicated gateway receives these admitted bindings; generated runtime
-credentials contain no channel tokens. See
-[Kubernetes credential ownership](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
+For Slack setup, use a dedicated Agent with Kubernetes Compute and OCC TokenService:
+
+1. In **Credentials**, [create a ready static Source](../credential-sources/managed-static.md#console) for each Slack credential, or reuse an existing Source in the Agent's Namespace. Creation requires `credential_source:create` on that Namespace.
+2. Enable the native Slack plugin and select the Sources in the Agent's Channel or Configuration editor. Saving requires `configuration:create` or `configuration:update` and `credential_source:operate` on each selected Source. Preserve the Agent's model settings.
+3. Deploy the updated Agent with `agent:deploy` and exact Source `operate` permission. The Agent service principal also needs exact Source `operate`. Managed transactional Native IAM can grant it during admission. Kubernetes Compute projects revision-scoped copies only into the dedicated Gateway. See [Gateway startup credentials](../drivers/kubernetes-compute/gateway-credentials.md).
 
 Teams message ingress requires a separately deployed and reviewed public Bot
 Framework `/api/messages` webhook. Enterprise does not provide that webhook;

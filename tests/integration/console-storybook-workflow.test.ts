@@ -288,30 +288,26 @@ test("Settings stories distinguish read-only access from an endpoint refusal", (
   ]);
 });
 
-test("directory preview rejects malformed requests without losing search or ID lookup", async () => {
+test("directory preview uses Credential Sources and rejects malformed lookups", async () => {
   const { Check }: { Check(schema: unknown, value: unknown): boolean } =
     controller("typebox/value");
   const validEnvelope = (value: unknown): value is { data: ChannelDirectoryResult } =>
     Check(ChannelDirectoryLookupResponse, value);
-  const secretId = "sec_demo_slack_bot_token";
-  const canonicalSecretId = "sec_00000000-0000-4000-8000-000000000001";
+  const sourceId = "cs_00000000-0000-4000-8000-000000000001";
   const configurationId = "cfg_00000000-0000-4000-8000-000000000001";
   const agentId = "agt_00000000-0000-4000-8000-000000000001";
-  const base = { kind: "users", secretId };
-  const secrets = new Map([[secretId, {}]]);
+  const base = { kind: "users", sourceId };
+  const sources = new Map([[sourceId, {}]]);
   const evidence: Parameters<typeof serveChannelDirectory>[2] = { directoryResponses: [] };
   const fixture = createFixtureFetch([], [], async (_url, _method, body) =>
-    serveChannelDirectory(body, secrets, evidence),
+    serveChannelDirectory(body, sources, evidence),
   );
   const url = "https://preview.example.test/channel-directory/lookup";
   const post = (body: unknown) => fixture(url, { method: "POST", body: JSON.stringify(body) });
   async function lookup(fields: object) {
-    // The wire schema uses a UUID where the preview uses a seeded Secret alias.
-    assert.equal(
-      Check(ChannelDirectoryLookupBody, { ...base, ...fields, secretId: canonicalSecretId }),
-      true,
-    );
-    const response = await post({ ...base, ...fields });
+    const body = { ...base, ...fields };
+    assert.equal(Check(ChannelDirectoryLookupBody, body), true);
+    const response = await post(body);
     assert.equal(response.status, 200);
     const envelope: unknown = await response.json();
     assert.ok(validEnvelope(envelope));
@@ -353,6 +349,7 @@ test("directory preview rejects malformed requests without losing search or ID l
   }
   for (const body of [
     null,
+    { kind: "users", secretId: "sec_00000000-0000-4000-8000-000000000001" },
     { ...base, query: 1 },
     { ...base, ids: {} },
     { ...base, ids: "UDEMO123" },
@@ -366,8 +363,8 @@ test("directory preview rejects malformed requests without losing search or ID l
     await rejected(body, "Malformed channel directory preview request.");
   }
   await rejected(
-    { ...base, secretId: "sec_absent" },
-    "The simulated Secret is not in this preview.",
+    { ...base, sourceId: "cs_00000000-0000-4000-8000-000000000002" },
+    "The simulated Credential Source is not in this preview.",
   );
   await rejected(
     { ...base, cursor: "unknown-preview-page" },
