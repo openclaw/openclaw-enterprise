@@ -110,11 +110,11 @@ Use **Deployment needs Secret operate** to check access that stays denied.
 
 Use **Current version's Sandbox lost** to check the warning while returning to the same version.
 
-In **Bootstrap failure with cleanup pending**, point at **Deployment**. Scroll
-sideways on phones. When v7 fails, click without moving the pointer. Check v7’s
-failed record. The selected version stays unchanged. One Sandbox check changes
-**Sandbox running** to **Sandbox lost** and shows **Deploy a new version**. Cleanup
-triggers no further checks.
+In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
+Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
+Check v7’s failed record, pending cleanup and
+unchanged selection. One check changes **Sandbox running** to **Sandbox lost**,
+offering **Deploy a new version**. Cleanup triggers no further checks.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
