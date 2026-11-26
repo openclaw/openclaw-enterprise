@@ -5,6 +5,7 @@ import type {
   RuntimeLogContainerSourceId,
   RuntimeLogSourceId,
 } from "../../packages/contracts/src/index.ts";
+import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
 
 const workStatuses = new Set(["queued", "running", "succeeded", "failed"] as const);
@@ -143,7 +144,7 @@ interface RedeployContext extends RevisionIds {
 interface DeploymentObservation {
   status: WorkStatus | "unknown";
   lastAttemptCode: ProgressCode | "none";
-  errorCode?: FailureCode | "none";
+  errorCode?: string;
 }
 
 interface FailureObservation {
@@ -178,6 +179,10 @@ function markerOrAbsent<T extends string>(value: unknown, known: ReadonlySet<T>)
 
 const failureCategory = (code: unknown): FailureCode =>
   isKnown(runtimeFailureCodes, code) ? code : "unrecognized";
+const deploymentFailureCategory = (code: unknown): string =>
+  typeof code === "string" && Object.hasOwn(DEPLOYMENT_FAILURE_STEPS, code)
+    ? code
+    : failureCategory(code);
 const progressCode = (code: unknown): ProgressCode =>
   isKnown(deploymentProgressCodes, code) ? code : "unknown";
 const errorCode = (record: Record<string, unknown> | undefined) => asRecord(record?.error)?.code;
@@ -320,6 +325,7 @@ async function observeNativeFailure(diagnostics: ProvisioningDiagnostics | undef
         revision,
         diagnostics.request,
         diagnosticSignal,
+        failureCategory,
         diagnostics.readProbePod,
       );
     } catch {
@@ -385,6 +391,7 @@ async function observeDeployment(
   revision: RevisionBinding,
   request: ReadDiagnostic,
   signal: AbortSignal,
+  classifyFailure: (code: unknown) => string,
   readProbePod?: ReadProbePod,
 ) {
   const deployment = boundDeployment(value, revision);
@@ -394,7 +401,7 @@ async function observeDeployment(
   const code = errorCode(deployment);
   observation.deployment = {
     status: observedStatus(deployment.status),
-    errorCode: absentOr(code, failureCategory),
+    errorCode: absentOr(code, classifyFailure),
     lastAttemptCode: absentOr(lastAttemptCode(deployment), progressCode),
   };
   const expectedProbeCode = isKnown(runtimeFailureCodes, code)
@@ -415,7 +422,7 @@ async function observeDeployment(
 // does not tell us whether credentials were attached when the request was made.
 function failNativeWork(
   expectation: string,
-  code: unknown,
+  category: string,
   { modelProbe, probePodImage, ...work }: FailureObservation,
 ): never {
   const observation = {
@@ -427,7 +434,7 @@ function failNativeWork(
     probePodImage,
     ...work,
   };
-  assert.fail(`${expectation}: ${failureCategory(code)} ${JSON.stringify(observation)}`);
+  assert.fail(`${expectation}: ${category} ${JSON.stringify(observation)}`);
 }
 
 export async function assertNativeWorkNotFailed(
@@ -439,7 +446,7 @@ export async function assertNativeWorkNotFailed(
   assert.ok(work && hasWorkStatus(work), "Native work returned an invalid status");
   if (work.status === "failed") {
     const observation = await observeNativeFailure(diagnostics);
-    failNativeWork(expectation, errorCode(work), observation);
+    failNativeWork(expectation, failureCategory(errorCode(work)), observation);
   }
 }
 
@@ -452,13 +459,20 @@ async function failNativeRedeploy(
 ): Promise<never> {
   const observation: FailureObservation = { deployment: "unavailable" };
   try {
-    await observeDeployment(observation, deployment, revision, request, diagnosticBudget(signal));
+    await observeDeployment(
+      observation,
+      deployment,
+      revision,
+      request,
+      diagnosticBudget(signal),
+      deploymentFailureCategory,
+    );
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
   return failNativeWork(
     "Redeployment with the retained native workspace must succeed",
-    errorCode(deployment),
+    deploymentFailureCategory(errorCode(deployment)),
     observation,
   );
 }
