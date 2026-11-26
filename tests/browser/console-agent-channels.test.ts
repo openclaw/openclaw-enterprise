@@ -261,7 +261,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     await dialog
       .getByText(
-        "Choose existing ready static Credential Sources for the Slack bot and app tokens.",
+        "Choose ready static Credential Sources or add new credentials for the Slack bot and app tokens.",
         { exact: false },
       )
       .scrollIntoViewIfNeeded();
@@ -677,7 +677,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     await page.getByRole("button", { name: "Edit Slack" }).click();
     assert.equal(await slackSelectionValue(channelIds), "CUNBOUND123");
-    assert.equal(await dialog.getByLabel("Slack app token").inputValue(), "");
+    assert.equal(await dialog.getByLabel("Slack app token", { exact: true }).inputValue(), "");
 
     await setSlackSelection(channelIds, "CUNBOUND123, CBOUND456");
     await dialog.getByLabel("Slack app token", { exact: true }).selectOption(slackAppSource.id);
@@ -687,14 +687,22 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await dialog.getByRole("link", { name: "Open Agent Credentials (opens in new tab)" }).count(),
       0,
     );
-    await dialog.getByText(/Choose existing ready static Credential Sources/).waitFor();
+    await dialog
+      .getByText(/Choose ready static Credential Sources or add new credentials/)
+      .waitFor();
     await page.goBack();
     await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
     await page.goForward();
     await dialog.waitFor();
     assert.equal(await slackSelectionValue(channelIds), "CUNBOUND123, CBOUND456");
-    assert.equal(await dialog.getByLabel("Slack app token").inputValue(), slackAppSource.id);
-    assert.equal(await dialog.getByLabel("Slack bot token").inputValue(), slackBotSource.id);
+    assert.equal(
+      await dialog.getByLabel("Slack app token", { exact: true }).inputValue(),
+      slackAppSource.id,
+    );
+    assert.equal(
+      await dialog.getByLabel("Slack bot token", { exact: true }).inputValue(),
+      slackBotSource.id,
+    );
     const beforeSave: unknown = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,

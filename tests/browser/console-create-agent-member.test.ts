@@ -981,14 +981,14 @@ test("a member without Secret create sees the inline Create Secret action disabl
   // A forced click skips the disabled check: choosing the action still opens nothing.
   await action.click({ force: true });
   assert.equal(await page.getByRole("dialog").count(), 0);
-  // Slack selection is independent of the Secret picker: it offers stored Sources only.
+  // Slack credentials use Credential Sources independently of the model Secret picker.
   await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "Configure Slack" });
   await drawer.getByLabel("Slack app token", { exact: true }).waitFor();
   assert.equal(await drawer.getByText("Create new Secret...", { exact: true }).count(), 0);
   await drawer
     .getByText(
-      "Choose existing ready static Credential Sources for the Slack bot and app tokens. Create Sources in Credentials before returning here. An enabled Slack channel requires both tokens.",
+      "Choose ready static Credential Sources or add new credentials for the Slack bot and app tokens. An enabled Slack channel requires both tokens.",
       { exact: true },
     )
     .waitFor();

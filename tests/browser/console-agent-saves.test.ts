@@ -1392,7 +1392,7 @@ test("a Channels conflict does not carry a Secret picked back to the saved one",
         "Your edits are applied over the reloaded settings: Direct-message policy. Review them, then save.",
     })
     .waitFor();
-  await waitForInputValue(dialog.getByLabel("Slack bot token"), otherBot.id);
+  await waitForInputValue(dialog.getByLabel("Slack bot token", { exact: true }), otherBot.id);
   await dialog.getByRole("button", { name: "Save configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
