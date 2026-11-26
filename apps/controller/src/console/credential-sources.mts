@@ -572,7 +572,7 @@ export function renderCredentialSources(context: Context) {
       "data-trim": "",
     });
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
-    const { value, reveal, multiline } = credentialValueControl("credential-source-value");
+    const { value, reveal, multiline, reset } = credentialValueControl("credential-source-value");
     const valueField = field({
       label: "Credential value",
       control: value,
@@ -750,7 +750,7 @@ export function renderCredentialSources(context: Context) {
 
     async function selectionChanged() {
       const number = ++selectionNumber;
-      value.value = "";
+      reset();
       client = null;
       selectedScopes = undefined;
       device?.setActive(false);

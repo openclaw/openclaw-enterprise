@@ -3310,7 +3310,7 @@ async function loadPage({
                 panel(
                   denied.view,
                   status === 403 ? "Access denied" : "Namespace unavailable",
-                  `The Source was created, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
+                  `Your change succeeded, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
                 );
                 if (requestId) {
                   denied.view.querySelector(".state-panel")?.append(requestIdDisclosure(requestId));

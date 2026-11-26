@@ -177,7 +177,7 @@ export const credentialSourceScenarios = {
       { selector: "#credential-source-choice", value: "plain" },
     ],
     description:
-      "The Static credential preset shows only Source name and the write-only credential value. It does not label the value as a model credential or associate it with a Template.",
+      "The Static credential preset asks for a Source name and a write-only credential value. Enter a dummy value, select Show value, then switch presets and return. The value is empty and masked again.",
   },
   credentialsSourceCodexOAuth: {
     group: "Pages/Credentials",

@@ -967,6 +967,11 @@ test("Credential Source maintenance checks exact update authority, replaces cust
   await login(page, fixture, `/console/secrets?namespace=${namespace.id}`);
   const table = page.getByRole("table", { name: "Credential Sources", exact: true });
   const bound = table.getByRole("row").filter({ hasText: "Bound model Source" });
+  // The action must fit before Playwright can scroll the clipped table to click it.
+  const tableBox = await table.boundingBox();
+  const deleteBox = await bound.getByRole("button", { name: "Delete Source" }).boundingBox();
+  assert.ok(tableBox && deleteBox);
+  assert.ok(deleteBox.x + deleteBox.width <= tableBox.x + tableBox.width);
   const sourceUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources/${sourceId}`;
   const restoreUpdate = revokeAdministratorGrant(fixture, ["update", "credential_source"]);
   await bound.getByRole("button", { name: "Replace value", exact: true }).click();
@@ -1028,14 +1033,23 @@ test("Credential Source maintenance checks exact update authority, replaces cust
   const spareUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources/${spareId}`;
   await spare.getByRole("button", { name: "Delete Source", exact: true }).click();
   dialog = page.getByRole("dialog", { name: "Delete Credential Source", exact: true });
+  // Exact delete still succeeds if Namespace read is withdrawn before the inventory refresh.
+  const restoreNamespaceRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
   const removed = page.waitForResponse(
     (response) => response.url() === spareUrl && response.request().method() === "DELETE",
+  );
+  const inventoryDenied = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/credential-sources` &&
+      response.request().method() === "GET",
   );
   await dialog.getByRole("button", { name: "Delete Source", exact: true }).click();
   const removedResponse = await removed;
   assert.equal(removedResponse.status(), 204);
-  await page.getByText("Unreferenced Source was deleted.", { exact: true }).waitFor();
-  assert.equal(await spare.count(), 0);
+  assert.equal((await inventoryDenied).status(), 403);
+  await page.getByText(/^Your change succeeded, but Namespace access was refused/).waitFor();
+  assert.equal(await table.count(), 0);
+  restoreNamespaceRead();
   assert.equal(
     (await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources/${spareId}`))
       .status,
@@ -1217,6 +1231,23 @@ test("Credential Sources lists and creates public metadata; an exact create deni
   );
   const form = await fill("Research model");
   await form.getByText("Templates unavailable", { exact: true }).waitFor();
+  // A new preset starts with an empty, masked value even if the last one was revealed.
+  const preset = form.getByLabel("Preset or Connection Template", { exact: true });
+  const credentialValue = form.getByLabel("Credential value", { exact: true });
+  await form.getByRole("button", { name: "Show value", exact: true }).click();
+  await preset.selectOption("builtin:codex-oauth");
+  await credentialValue.waitFor({ state: "detached" });
+  await preset.selectOption("model:openai");
+  assert.equal(await credentialValue.inputValue(), "");
+  assert.equal(
+    await credentialValue.evaluate((input) =>
+      input instanceof HTMLInputElement
+        ? input.type === "password"
+        : getComputedStyle(input).getPropertyValue("-webkit-text-security") === "disc",
+    ),
+    true,
+  );
+  await credentialValue.fill("synthetic-source-value");
   const created = page.waitForResponse(
     (response) =>
       response.url() === fixture.origin + base && response.request().method() === "POST",

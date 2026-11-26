@@ -59,11 +59,16 @@ function failureMessage(cause: unknown, action: Action, source: CredentialSource
       `This needs Credential Source ${permission} on ${source.id}. Ask an administrator for access.`
     );
   }
-  if (status === 409 && action !== "replace") {
-    return (
-      serverMessage ??
-      "This Source is still referenced. Remove its blocking references before deleting it."
-    );
+  if (status === 409) {
+    if (action !== "replace") {
+      return (
+        serverMessage ??
+        "This Source is still referenced. Remove its blocking references before deleting it."
+      );
+    }
+    if (serverMessage) {
+      return `${serverMessage} Refresh the Source inventory and check the credential owner before retrying.`;
+    }
   }
   if (status === 400 || status === 404 || status === 429) {
     return (

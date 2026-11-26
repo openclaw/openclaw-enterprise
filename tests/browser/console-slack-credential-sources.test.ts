@@ -97,6 +97,12 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
   const replacementEnrollment = await enroll("Replacement bot credential");
   const replacement = replacementEnrollment.source;
   const signing = (await enroll("Signing credential", "synthetic")).source;
+  const allowedUser = await fixture.createSecret(namespace.id, "Slack allowed user", "U12345678");
+  const namedBindings = {
+    OPS_APP: { source: app.ref, delivery: { type: "env" } },
+    OPS_BOT: { source: replacement.ref, delivery: { type: "env" } },
+    SLACK_ALLOWED_USER: { source: allowedUser.ref, delivery: { type: "env" } },
+  };
   const agent = await fixture.createAgent(
     namespace.id,
     "Slack Source operator",
@@ -282,6 +288,8 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
       } = namedValues.channels.slack;
       namedValues.channels.slack = {
         ...otherSlackSettings,
+        dmPolicy: "allowlist",
+        allowFrom: ["${SLACK_ALLOWED_USER}"],
         accounts: {
           ops: {
             enabled: true,
@@ -289,10 +297,6 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
             botToken: "${OPS_BOT}",
           },
         },
-      };
-      const namedBindings = {
-        OPS_APP: { source: app.ref, delivery: { type: "env" } },
-        OPS_BOT: { source: replacement.ref, delivery: { type: "env" } },
       };
       const namedPrepared = await fixture.request("PATCH", configurationPath, {
         body: {
@@ -412,7 +416,13 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
       );
       assert.deepEqual(payload.secretBindings.SLACK_SIGNING_SECRET.source, signing.ref);
       const committed = await fixture.request("GET", configurationPath);
-      assert.deepEqual(committed.data.secretBindings.SLACK_SIGNING_SECRET.source, signing.ref);
+      assert.equal(committed.status, 200);
+      // Replacing a Channel credential must preserve the ordinary Secret-backed policy binding.
+      assert.deepEqual(committed.data.secretBindings, {
+        ...namedBindings,
+        SLACK_SIGNING_SECRET: { source: signing.ref, delivery: { type: "env" } },
+      });
+      assert.deepEqual(committed.data.values.channels.slack.allowFrom, ["${SLACK_ALLOWED_USER}"]);
       assert.equal(
         committed.data.values.channels.slack.accounts.ops.signingSecret,
         "${SLACK_SIGNING_SECRET}",

@@ -53,15 +53,21 @@ export function credentialValueControl(id: string, attributes: Record<string, st
   }
   const reveal = button(
     "Show value",
-    () => {
-      const masked = value.classList.toggle("secret-value--masked");
-      if (value instanceof HTMLInputElement) {
-        value.type = masked ? "password" : "text";
-      }
-      reveal.textContent = masked ? "Show value" : "Hide value";
-      reveal.setAttribute("aria-pressed", String(!masked));
-    },
+    () => setMasked(!value.classList.contains("secret-value--masked")),
     { tone: "ghost", size: "sm", "aria-pressed": "false", "aria-controls": id },
   );
-  return { value, reveal, multiline };
+  function setMasked(masked: boolean) {
+    value.classList.toggle("secret-value--masked", masked);
+    if (value instanceof HTMLInputElement) {
+      value.type = masked ? "password" : "text";
+    }
+    reveal.textContent = masked ? "Show value" : "Hide value";
+    reveal.setAttribute("aria-pressed", String(!masked));
+  }
+  function reset() {
+    value.value = "";
+    value.setCustomValidity("");
+    setMasked(true);
+  }
+  return { value, reveal, multiline, reset };
 }
