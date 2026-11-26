@@ -1731,15 +1731,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         });
         await created.applyIAMConfiguration();
         controller = created;
-        reply.status(201).send({
-          data: clientInstallation(
+        reply.status(201);
+        return sendData(
+          clientInstallation(
             created.installation,
             options.computeDriver,
             options.nativeAdmin?.enabled === true,
           ),
-          meta: { requestId: request.id },
-        });
-        return;
+        );
       } finally {
         bootstrapping = false;
       }
@@ -1848,8 +1847,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         await unit.audit.append(event(operation, request, target, "mutation", context));
         return created;
       });
-      reply.status(201).send({ data: namespace, meta: { requestId: request.id } });
-      return;
+      reply.status(201);
+      return sendData(namespace);
     }
 
     if (operation.operationId === "listNamespaces") {
@@ -1911,8 +1910,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
         return deleting;
       });
-      reply.status(202).send({ data: namespace, meta: { requestId: request.id } });
-      return;
+      reply.status(202);
+      return sendData(namespace);
     }
 
     if (operation.operationId === "discoverAgentModels") {

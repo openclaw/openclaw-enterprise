@@ -394,6 +394,7 @@ export async function injectedRequest(
   }
   const body: unknown = await response.json();
   assert(Check(InjectedResponseEnvelope, body), JSON.stringify(body));
+  assert.equal(body.meta.requestId, response.headers.get("x-request-id"));
   return { status: response.status, headers: response.headers, body, data: body.data };
 }
 
