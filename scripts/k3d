@@ -35,7 +35,11 @@ Commands:
   help  Show this help.
 
 The helper detects a running Podman API socket or Docker daemon. Set
-OCC_K3D_CONTAINER_ENGINE=podman or docker to select one explicitly.
+OCC_K3D_CONTAINER_ENGINE=podman, podman-rootful or docker to select one
+explicitly; OCC_K3D_PODMAN_SOCKET overrides the socket path. On Linux hosts
+without Docker, podman-rootful selects the system podman.socket and behaves
+closest to Docker. See
+docs/guides/deploy/local-kubernetes-podman.md for host setup.
 --harness defaults to codex. Select openclaw for the dedicated native worker
 test or browser demo through OpenShell.
 The openclaw choice prepares the OpenShell lane with the pinned runtime image.
@@ -79,28 +83,127 @@ prompt_openai_api_key() {
   export OPENAI_API_KEY
 }
 
+# Fail fast when the selected Podman engine cannot run the privileged k3d
+# node containers. k3d reports these host gaps as deep, opaque failures late
+# in a long preparation, so name each gap here with its host remediation.
+preflight_podman_engine() {
+  [ "$(uname -s)" = "Linux" ] || return 0 # podman-machine runs a rootful VM
+  socket_dir="$(dirname "$podman_socket")"
+  if [ ! -x "$socket_dir" ] || { [ -e "$podman_socket" ] && { [ ! -r "$podman_socket" ] || [ ! -w "$podman_socket" ]; }; }; then
+    fail "the Podman socket $podman_socket is not accessible by $(id -un). Grant access once with:
+  sudo setfacl -m u:$(id -un):x $socket_dir
+  sudo setfacl -m u:$(id -un):rw $podman_socket"
+  fi
+  if [ ! -S "$podman_socket" ]; then
+    case "$podman_socket" in
+      /run/user/*) hint="systemctl --user start podman.socket" ;;
+      *) hint="sudo systemctl start podman.socket" ;;
+    esac
+    fail "the Podman socket $podman_socket is not present. Start it with:
+  $hint"
+  fi
+  if ! "$podman_bin" info >/dev/null 2>&1; then
+    fail "the Podman socket $podman_socket is present but not answering. Verify the Podman service and retry."
+  fi
+  case "$podman_socket" in
+    /run/user/*) ;;
+    *) return 0 ;; # A rootful Podman daemon has root cgroups and privileges.
+  esac
+  # Rootless k3s requires the cpuset cgroup controller; distributions
+  # commonly delegate only cpu, io, memory and pids to user sessions.
+  if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    user_service="/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service"
+    missing=""
+    for level in \
+      /sys/fs/cgroup/user.slice \
+      "/sys/fs/cgroup/user.slice/user-$(id -u).slice" \
+      "$user_service" \
+      "$user_service/user.slice"; do
+      [ -d "$level" ] || continue
+      if ! grep -qw cpuset "$level/cgroup.subtree_control" 2>/dev/null; then
+        missing="$level"
+        break
+      fi
+    done
+    if [ -n "$missing" ]; then
+      fail "the cgroup controller cpuset is not enabled at $missing; k3s requires it.
+Enable it for this session (reverts at reboot):
+  echo +cpuset | sudo tee /sys/fs/cgroup/user.slice/cgroup.subtree_control
+  echo +cpuset | sudo tee /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.subtree_control
+  echo +cpuset > /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control
+  echo +cpuset > /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/user.slice/cgroup.subtree_control"
+    fi
+  fi
+  # An unprivileged session cannot lower oom_score_adj for containers, so a
+  # non-zero inherited value breaks every rootless container that requests a
+  # lower one. systemd's user@.service defaults to 100 on some distributions.
+  session_oom="$(cat /proc/self/oom_score_adj 2>/dev/null || echo 0)"
+  if [ "$session_oom" != "0" ]; then
+    fail "this session runs with oom_score_adj=$session_oom, and rootless Podman cannot lower it for containers, so the k3d node containers will not start. The value is inherited from the user systemd manager (check: systemctl show user@$(id -u).service -p OOMScoreAdjust). Select the rootful Podman socket with OCC_K3D_CONTAINER_ENGINE=podman-rootful, or clear the session's OOMScoreAdjust and sign in again."
+  fi
+}
+
 configure_podman() {
   podman_bin="$(command -v podman)" || return 1
   podman_compose_bin="$(command -v podman-compose)" || return 1
-  case "$(uname -s)" in
-    Darwin)
-      podman_socket="$($podman_bin machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)" ||
-        return 1
-      ;;
-    Linux)
-      podman_socket="$($podman_bin info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null)" ||
-        return 1
-      ;;
-    *) return 1 ;;
-  esac
+  # An explicit socket selection wins over discovery and is diagnosed by the
+  # preflight instead of falling back to Docker. The rootful Podman socket
+  # behaves closest to the Docker daemon the k3d lanes expect, so
+  # podman-rootful selects it without further configuration.
+  explicit_socket="false"
+  podman_socket="${OCC_K3D_PODMAN_SOCKET:-}"
+  [ -n "$podman_socket" ] && explicit_socket="true"
+  if [ -z "$podman_socket" ] && [ "${OCC_K3D_CONTAINER_ENGINE:-}" = "podman-rootful" ]; then
+    podman_socket="/run/podman/podman.sock"
+    explicit_socket="true"
+  fi
+  if [ -z "$podman_socket" ]; then
+    docker_host="${DOCKER_HOST:-}"
+    if [ "${docker_host#unix://}" != "$docker_host" ]; then
+      # Honor an explicitly exported Docker socket, the docker-client convention.
+      podman_socket="${docker_host#unix://}"
+      explicit_socket="true"
+    fi
+  fi
   podman_socket="${podman_socket#unix://}"
-  [ -S "$podman_socket" ] || return 1
+  if [ "$explicit_socket" != "true" ]; then
+    case "$(uname -s)" in
+      Darwin)
+        podman_socket="$($podman_bin machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}' 2>/dev/null)" ||
+          return 1
+        ;;
+      Linux)
+        podman_socket="$($podman_bin info --format '{{.Host.RemoteSocket.Path}}' 2>/dev/null)" ||
+          return 1
+        ;;
+      *) return 1 ;;
+    esac
+    podman_socket="${podman_socket#unix://}"
+    [ -S "$podman_socket" ] || return 1
+  fi
 
   engine="podman"
-  engine_label="Podman"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    engine_label="Podman"
+  else
+    case "$podman_socket" in
+      /run/user/*) engine_label="Podman" ;;
+      *) engine_label="Podman (rootful)" ;;
+    esac
+  fi
   container_bin="$podman_bin"
   export DOCKER_HOST="unix://$podman_socket"
+  if [ "$(uname -s)" = "Linux" ]; then
+    # k3d bind-mounts the socket named by DOCKER_SOCK into its tools node and
+    # otherwise defaults to /var/run/docker.sock, which rootless Podman never
+    # provides on Linux.
+    export DOCKER_SOCK="$podman_socket"
+    # The Linux podman CLI ignores DOCKER_HOST; CONTAINER_HOST routes it to the
+    # same socket so image pulls and builds reach the storage k3d reads.
+    export CONTAINER_HOST="$DOCKER_HOST"
+  fi
   export PODMAN_COMPOSE_PROVIDER="$podman_compose_bin"
+  preflight_podman_engine
 }
 
 configure_docker() {
@@ -116,7 +219,7 @@ configure_docker() {
 
 select_engine() {
   case "${OCC_K3D_CONTAINER_ENGINE:-}" in
-    podman)
+    podman | podman-rootful)
       configure_podman ||
         fail "a Podman API socket and podman-compose must be running and available"
       ;;
@@ -143,7 +246,7 @@ select_engine() {
           ;;
       esac
       ;;
-    *) fail "OCC_K3D_CONTAINER_ENGINE must be podman or docker" ;;
+    *) fail "OCC_K3D_CONTAINER_ENGINE must be podman, podman-rootful or docker" ;;
   esac
 }
 
