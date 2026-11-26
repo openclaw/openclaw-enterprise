@@ -63,7 +63,7 @@ The Slack editor selects a ready static Source or calls `POST /namespaces/:names
 
 For supported models, Console enrolls a TokenService Source. Codex PAT enrollment can precede Apps discovery. Retries reuse confirmed Sources; check Credentials after uncertain enrollment. Direct authentication runs preflight before writing a Namespace Secret.
 
-Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving credentials again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret or ServiceAccount takes a fresh ID and unlocks the form for a replacement. A deleted channel-editor Secret is dropped from the bindings the replacement resubmits.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without saving credentials again. A refused retry keeps the admitted identity: Create Agent resends the same request ID, and the API returns that job — finished or not — instead of admitting a duplicate. A failed job, a different-plan refusal, or one naming a deleted Secret or ServiceAccount takes a fresh ID and unlocks the form for a replacement. A deleted channel-editor Secret or Credential Source is dropped from the bindings the replacement resubmits.
 
 Draft creation saves the Configuration and Agent. At deployment, admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must authorize the Agent. Credential-access retry retains the Agent but cannot grant Slack Source access.
 
@@ -242,18 +242,14 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-27 10:30: Adapt the deleted channel-binding drop to Credential Sources after the credential cutover; move older changelog entries to history. (feat/create-agent-progress - 8d190b865f)
 - 2026-11-26 23:36: Trace Slack enrollment failures. (authoring-run/3897c8a4-2327-47c6-a552-30b5e7ed61c2 - 0978257f991a04b699ce411820326119c09be20a)
 - 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
-- 2026-11-24 23:10: Remove the deleted Credential Source recovery: the credential cutover routes TokenService enrollment through the draft path, so provisioning no longer references a Source. (feat/create-agent-progress - c69e6e266b)
-- 2026-11-23 03:35: Follow the maintainer review: the completed form stays terminal after a refused deployment read, so the finished request cannot be replayed. (feat/create-agent-progress - bd48943c78)
+- 2026-11-24 23:10: Remove the deleted Credential Source recovery: the credential cutover routes TokenService enrollment through the draft path, so provisioning no longer references a Source. (feat/create-agent-progress - aaf1b6476d)
+- 2026-11-23 03:35: Follow the maintainer review: the completed form stays terminal after a refused deployment read, so the finished request cannot be replayed. (feat/create-agent-progress - 12cd0ba762)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)
-- 2026-11-22 02:50: Follow the maintainer review: the sticky line is the one live provisioning status and takes focus; a refused deployment read completes on the form with an Open Agent offer. (feat/create-agent-progress - bd48943c78)
-- 2026-11-20 21:40: Follow the maintainer review: drop a deleted channel-editor Secret from the replacement plan; cover the different-plan replay refusal with a fresh request ID in tests. (feat/create-agent-progress - 9ff528188f)
-
-- 2026-11-17 16:05: Clear a deleted Secret from a restored draft's saved status and picker; a new request requires a replacement. (feat/create-agent-progress - 6003f14936)
-
-- 2026-11-14 11:20: Apply the maintainer's unattributed-failure correction; clear deleted credentials from the saved form state. (feat/create-agent-progress - 04dad57586)
+- 2026-11-22 02:50: Follow the maintainer review: the sticky line is the one live provisioning status and takes focus; a refused deployment read completes on the form with an Open Agent offer. (feat/create-agent-progress - 12cd0ba762)
 
 [Agent provisioning documentation history](agent-provisioning/history.md) preserves the older dated entries.
