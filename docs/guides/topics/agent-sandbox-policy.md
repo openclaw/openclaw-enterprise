@@ -91,12 +91,14 @@ refresh and review the current additions. After a timeout or unconfirmed
 application, refresh and inspect the recorded state before submitting another
 request.
 
-While a revision uses the Credential Proxy, you can clear saved additions. To
-save a nonempty list, stop the Agent and wait for the active revision to clear.
-Then save the rules and deploy a new version. Deployment checks the rules
-against the Installation ceiling and the Sandbox Driver's policy. For native
-Git, the Credential Proxy also rejects any rule that overlaps an admitted
-Repository credential route.
+Live application is unavailable while the active revision uses the Credential
+Proxy. Clearing additions updates the saved policy. To remove the running
+revision's access, stop the Agent and wait for Stop to complete. You can then
+edit the saved rules and deploy a new version.
+
+Deployment checks the rules against the Installation ceiling and the Sandbox
+Driver's policy. For native Git, the Credential Proxy also rejects any rule
+that overlaps an admitted Repository credential route.
 
 ## CLI
 
