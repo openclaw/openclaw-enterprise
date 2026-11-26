@@ -192,12 +192,21 @@ scripts/upgrade-channel-egress run \
 
 Add `--preflight-only` and use a separate fresh evidence directory for a rehearsal.
 It creates temporary readiness probes and startup/migration Jobs, then cleans
-them. It does not stop Agents or OCC and does not run the revision checks at the
-Stop boundary. A successful rehearsal is not execution proof.
+them. It does not stop Agents or OCC and does not run the Configuration or revision
+checks at the Stop boundary. A successful rehearsal is not execution proof.
 
 Execution records the complete original running-Agent set. Before submitting
 any Stop, it checks that every original revision needed for redeployment can
-supply its requested Harness overrides. A readable revision must contain an
+supply its requested Harness overrides. It also reads each Agent's current saved
+Configuration. If enabled Slack settings reference a public Namespace Secret
+binding, the script refuses before it stops any Agent. Stop the affected Slack
+Agents under the old controller and start a fresh upgrade attempt. After the
+upgrade, select the qualified OCC
+TokenService with Kubernetes Compute, recreate their credentials as Credential
+Sources, update their Slack Configuration bindings, and deploy them yourself.
+The script does not import the old Secret values.
+
+A readable revision must contain an
 overrides object, including an explicit `{}` when none were requested. For
 unreadable saved settings, the exact revision's Harness summary must establish
 the recorded overrides or that none were recorded. If a check fails, inspect
@@ -244,7 +253,8 @@ from a missing response or missing completion marker.
 
 After completion, verify a model turn, channel delivery, OCC directory lookup,
 and allowed/denied egress for the affected Agents. Successful deployment status
-alone does not prove a Slack exchange or model execution.
+alone does not prove a Slack exchange or model execution. For manually stopped
+Slack Agents, first recreate their Sources and deploy their updated Configurations.
 
 After verification succeeds, stage the updated `--values` file at
 `$ATTEMPT_DIRECTORY/values.yaml` and `$INPUT_DIRECTORY/installation.yaml` as a

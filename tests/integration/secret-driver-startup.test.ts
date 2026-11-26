@@ -180,7 +180,7 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     namespaceId,
     id: `ccr_${randomUUID()}`,
     tokenServiceInstanceId: initialInstance,
-    tokenUrl: "https://issuer.example.org/token",
+    issuer: "https://issuer.example.org",
   };
   const firstClientSecret = randomUUID();
   await owner.registerClientSecret(client, firstClientSecret, AbortSignal.timeout(5_000));
@@ -189,10 +189,10 @@ test("TokenService startup keeps marker ownership with the selected private Secr
     firstClientSecret,
   );
 
-  // TokenService custody is scoped to the exact selected owner, Namespace and approved endpoint.
+  // TokenService custody is scoped to the exact selected owner, Namespace and issuer.
   await assert.rejects(
     owner.resolveClientSecret(
-      { ...client, tokenUrl: "https://other.example.org/token" },
+      { ...client, issuer: "https://other.example.org" },
       AbortSignal.timeout(5_000),
     ),
     SecretBackendUnavailableError,

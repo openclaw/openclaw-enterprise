@@ -1,4 +1,3 @@
-import type { ChannelDirectoryLookupBody } from "../../../packages/contracts/src/api/common.ts";
 import type { ChannelDirectoryResult } from "@openclaw-enterprise/contracts";
 import { fixtureError, fixtureResponse } from "./preview-rules.mts";
 
@@ -9,26 +8,34 @@ interface DirectoryEvidence {
   ids: string[] | null;
 }
 
-// Secret aliases belong to the preview map. Optional owner IDs retain their wire forms.
+// Source IDs belong to the preview map. Optional owner IDs retain their wire forms.
 // eslint-disable-next-line no-control-regex -- directory IDs must exclude ASCII control characters.
 const idControls = /[\u0000-\u001f\u007f]/;
 const ownerId = /^(?:agt|cfg)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const commonFields = ["kind", "secretId", "agentId", "configurationId"];
+const commonFields = ["kind", "sourceId", "agentId", "configurationId"];
 const lookupFields = [...commonFields, "query", "cursor"];
 const hydrationFields = [...commonFields, "ids"];
 
-function isLookupBody(body: unknown): body is ChannelDirectoryLookupBody {
+function isLookupBody(body: unknown): body is {
+  kind: "users" | "channels";
+  sourceId: string;
+  agentId?: string;
+  configurationId?: string;
+  ids?: string[];
+  query?: string;
+  cursor?: string;
+} {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return false;
   }
   if (
     !("kind" in body) ||
     (body.kind !== "users" && body.kind !== "channels") ||
-    !("secretId" in body) ||
-    typeof body.secretId !== "string" ||
-    !body.secretId ||
-    [...body.secretId].length > 200 ||
-    body.secretId.includes("\0") ||
+    !("sourceId" in body) ||
+    typeof body.sourceId !== "string" ||
+    !body.sourceId ||
+    [...body.sourceId].length > 200 ||
+    body.sourceId.includes("\0") ||
     ("agentId" in body && "configurationId" in body)
   ) {
     return false;
@@ -78,14 +85,18 @@ function isLookupBody(body: unknown): body is ChannelDirectoryLookupBody {
 
 export function serveChannelDirectory(
   body: unknown,
-  secrets: ReadonlyMap<string, unknown>,
+  sources: ReadonlyMap<string, unknown>,
   evidence: { directoryResponses: DirectoryEvidence[] },
 ): Response {
   if (!isLookupBody(body)) {
     return fixtureError(400, "INVALID_REQUEST", "Malformed channel directory preview request.");
   }
-  if (!secrets.has(body.secretId)) {
-    return fixtureError(400, "INVALID_REQUEST", "The simulated Secret is not in this preview.");
+  if (!sources.has(body.sourceId)) {
+    return fixtureError(
+      400,
+      "INVALID_REQUEST",
+      "The simulated Credential Source is not in this preview.",
+    );
   }
   const ids = "ids" in body ? body.ids : undefined;
   const query = "query" in body ? body.query : undefined;

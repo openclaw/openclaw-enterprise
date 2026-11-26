@@ -34,9 +34,10 @@ credentials; it does not publish container images.
 
 Protect `main`, require `CI Required` for merge, and review workflow changes.
 The standalone image and CLI workflows require successful push CI for the
-release commit. **Release OCE** qualifies the selected commit through Full
-Integration and requires the dispatcher's approval through
+release commit. **Release OCE** requires the dispatcher's approval through
 [`integration-main-approval`](../testing/ci/configuration.md#environments).
+Full releases require Full Integration. [Image-only publication](README.md#publish-images-only)
+skips that suite and requires the native image checks.
 Keep provider credentials in the integration environments.
 
 Create a separate `container-publish` environment: no required reviewers or wait

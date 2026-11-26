@@ -134,6 +134,7 @@ export function registerInitialWorkspaceCases(): void {
       const home = managed ? "/opt/oce/managed/private/home" : "/sandbox/.openclaw-runtime/home";
       assert.equal(execution.environment.HOME, home);
       assert.equal(execution.environment.OPENCLAW_STATE_DIR, `${home}/.openclaw`);
+      assert.equal(execution.environment.OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF, "1");
       setup.completed = true;
       setupData["setup.json"] = Buffer.from(JSON.stringify(setup)).toString("base64");
       await provision();

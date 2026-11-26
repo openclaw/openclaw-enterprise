@@ -136,6 +136,6 @@ export const REPOSITORY_CHOICES_CREATE_DENIED = `Repository choices are not show
 
 // A Slack people or channel lookup the API refused without naming a grant.
 export const SLACK_LOOKUP_DENIED = notIncluded(
-  "looking up Slack people and channels with the selected Slack bot Secret",
-  "Secret operate on it",
+  "looking up Slack people and channels with the selected Slack bot Credential Source",
+  "Credential Source operate on it",
 );

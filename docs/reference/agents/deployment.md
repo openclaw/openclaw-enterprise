@@ -30,11 +30,9 @@ Harness. Both modes are supported in production. OCC token verification,
 identity exchange, and ServicePrincipal
 authentication through the controller API remain deferred.
 
-An Agent may also reference one same-Namespace, OCC-owned
-[service account](../service-accounts.md) through
-`harnessAuth: { method: "codex_pat", source: { kind: "service_account", namespaceId, id: serviceAccountId } }`; setting
-`harnessAuth` to `null` clears it. This credential binding does not
-replace its ServicePrincipal or Kubernetes ServiceAccount.
+To use a PAT issued for a same-Namespace [ServiceAccount](../service-accounts.md#version-snapshots-and-credential-delivery),
+bind its Credential Source through `harnessAuth`. Model authentication is
+separate from the Agent's ServicePrincipal and Kubernetes ServiceAccount.
 
 ## Execution mode
 
@@ -44,34 +42,29 @@ Each Agent explicitly records how its selected Harness runs:
   default when creation omits `executionMode` and is supported in development
   and production; the combined workload receives its own Agent identity and
   model key.
-- `dedicated` starts an Agent-owned gateway and a separate Codex app-server.
-  Production uses separate workload identities, authenticated gateway-to-Codex
-  transport, and either an operator-owned model API key or an associated
-  account's directly projected access token mounted only into Codex.
+- `dedicated` starts an Agent-owned gateway and a separate Harness. Codex uses
+  an authenticated app-server transport. Dedicated native OpenClaw enrolls a
+  worker with the gateway. Only the Harness can use the model credential.
 
 The Agent's native Configuration selects a Harness through model/provider
 `agentRuntime.id` policy. The [Harness execution reference](../harness-execution.md)
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with a reason that names the setting to change. A selected SandboxDriver currently requires
-`dedicated` Codex execution; it does not support embedded OpenClaw.
+with a reason that names the setting to change. A selected Sandbox Driver
+requires `dedicated` execution. Check the supported Harnesses for that Driver.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
 alongside its required `configurationId`. Omission preserves the current value;
 `harnessAuth: null` clears authentication and `backendId: null` clears the
 Backend. Existing versions retain their immutable placement, auth binding, and
 Backend association. For the current `harnessAuth` source, an update checks only
-the caller's grant (Secret or credential source `operate`, account `read`) and
-reads no record. After the Installation selects another Secret Driver or
-Credential Gateway, an update can still omit, clear, or replace the old binding;
-naming it again fails with `503`, and so does deploying with it. For a Secret,
-that `503`, like creating an Agent with one, says to bind a Secret stored
-through the selected driver. The named Configuration's Secret bindings get the
-full check on every update, even when `configurationId` is unchanged: until
-that Configuration's `secretBindings` name Secrets stored through the selected
-driver, updates and deploys fail with `503` and a message that says so.
-Updating that Configuration, or naming another one, resolves it. See the
+the caller's grant on the existing credential without reading its record.
+An update can omit, clear, or replace that binding after its owner becomes
+unavailable. Naming it again or deploying with it requires the correct owner.
+OCC checks the named Configuration's Secret bindings on every update. Updates
+and deploys return `503` until the Configuration binds Secrets stored through
+the selected Driver. Update the Configuration or select another one. See the
 [Harness execution topology flow](../../flows/harness-execution-topology.md) for
 runtime selection, identity boundaries, and activation.
 

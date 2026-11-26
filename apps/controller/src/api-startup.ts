@@ -15,6 +15,7 @@ import {
 } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { closeResources } from "./composition/close-resources.ts";
 import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 import { controlPlaneAuditEnabled } from "./composition/control-plane-audit.ts";
 import {
@@ -398,6 +399,18 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     environment: env,
     startupConfiguration,
   });
+  let app: Awaited<ReturnType<typeof composeProduction>>;
+  // Composition owns cleanup once it returns an app. InstalledDriver.close is idempotent.
+  await using _startupCleanup = {
+    async [Symbol.asyncDispose]() {
+      if (app === undefined) {
+        await closeResources(
+          drivers?.protectedDriver,
+          drivers?.credentialDeliveryRegistration,
+        ).catch(() => undefined);
+      }
+    },
+  };
   let serviceAccountDriverFactory: ServiceAccountDriverFactory | undefined;
   const selectedServiceAccountDriver = drivers?.installation.drivers.service_account;
   if (drivers !== undefined && selectedServiceAccountDriver !== undefined) {
@@ -443,7 +456,6 @@ export async function startApi(env: ApiEnvironment): Promise<void> {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
   }
   phaseCompleted("configuration");
-  let app: Awaited<ReturnType<typeof composeProduction>>;
   if (settings.mode === "production") {
     if (drivers === undefined) {
       throw new Error("Production Driver configuration is unavailable.");

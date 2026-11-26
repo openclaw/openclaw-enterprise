@@ -15,6 +15,22 @@ export type RepositoryGitRestAuthority = readonly Readonly<{
   createPullRequests?: true;
 }>[];
 
+/** A PR may name another repository covered by the same installation token as its head. */
+export function restrictRepositoryPullRequestCreation(
+  authority: RepositoryGitRestAuthority,
+  credentialRepositories: readonly Readonly<{ repository: string }>[],
+  grants: readonly RepositoryNetworkGrant[],
+): RepositoryGitRestAuthority {
+  const granted = new Set(grants.map(({ repository }) => repository));
+  if (
+    credentialRepositories.length > 0 &&
+    credentialRepositories.every(({ repository }) => granted.has(repository))
+  ) {
+    return authority;
+  }
+  return Object.freeze(authority.map(({ createPullRequests, ...rest }) => Object.freeze(rest)));
+}
+
 export function limitRepositoryApi(
   limits: RepositoryApiLimits | undefined,
   resource: "issues" | "pull_requests",

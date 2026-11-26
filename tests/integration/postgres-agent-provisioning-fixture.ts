@@ -23,11 +23,10 @@ import {
   createControllerWorker,
   type ControllerWorkerOptions,
 } from "../../apps/controller/src/worker.ts";
-import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/objects.ts";
-import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders } from "../helpers/auth-session.ts";
 import { composePostgresDevelopment } from "../helpers/password-hasher.ts";
 import type { createTestSecretDriver as runtimeSecretFixture } from "../helpers/secret-driver.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -52,7 +51,6 @@ type WorkerStatementHook = (
 ) => void | Promise<void>;
 
 interface FixtureOptions extends Partial<FixtureDrivers> {
-  slackFetch?: typeof fetch;
   nativeAdmin?: boolean;
   nativeAdminDomain?: string;
   beforeWorkerStatement?: WorkerStatementHook;
@@ -208,9 +206,7 @@ function installationDrivers({
     computeDriver,
     configurationDriver,
     secretDriver,
-    // This PostgreSQL workflow supplies an explicit Driver with mocked Slack
-    // transport. It does not prove Envoy availability or network enforcement.
-    channelDrivers: [{ provider: "slack", driver: new SlackChannelDriver(globalThis.fetch) }],
+    channelDrivers: [],
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(repoDriver === undefined
       ? {}
@@ -279,20 +275,6 @@ export async function createProvisioningFixture<
     claimProvisioningWork,
   }: FixtureDependencies,
 ) {
-  // Keep real admission and Secret access; only Slack's external response is a fixture.
-  const originalFetch = globalThis.fetch;
-  context.mock.method(globalThis, "fetch", (async (url, init) => {
-    if (String(url) === "https://slack.com/api/auth.test") {
-      assert.match(
-        (init as { headers: { authorization: string } }).headers.authorization,
-        /^Bearer xoxb-/,
-      );
-      return options.slackFetch === undefined
-        ? Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" })
-        : options.slackFetch(url, init);
-    }
-    return originalFetch(url, init);
-  }) satisfies typeof originalFetch);
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
   const state = new PostgresPlatformState(pool);
   await ensureProvisioningBootstrap(context, state);

@@ -1,7 +1,7 @@
 # Review the Agent detail layout
 
-Use the desktop Console first, then a 390-pixel phone frame. These stories use
-simulated API state; they do not prove persistence or live runtime behavior.
+Start on desktop, then test at 390 px. These stories simulate API responses and
+cannot verify persistence or live runtime behavior.
 
 Open **Pages / Agent detail / First version** at desktop width. Focus the selected tab,
 then press End and Left to focus the tab before last. Narrow the window to
@@ -102,18 +102,21 @@ controller-backed browser regression in `tests/browser/console-agent-logs.test.t
 checks the source switch through the Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own preview tab. Select **Deploy new version**. Check that the unavailable
-button's accessible description names the Secret in the refusal. Switch to
-another tab and return. The simulated grant clears the refusal and enables
-Deploy on the same draft. Returning to the tab sends no Deploy request.
-Use **Deployment needs Secret operate** to check access that stays denied.
+in its own tab. Select **Deploy new version**. The unavailable button’s
+accessible description should name the Secret. Switch tabs and return. The
+simulated grant clears the refusal and enables Deploy on the same draft without
+sending a Deploy request. Use **Deployment needs Secret operate** to check
+access that stays denied.
 
-Use **Current version's Sandbox lost** to check the warning while returning to the same version.
+Return to the same version in **Current version's Sandbox lost**. Check the warning.
 
-In **Bootstrap failure with cleanup pending**, stay on the page as the replacement
-fails. The selected version stays the same. **Sandbox running** changes to
-**Sandbox lost** with **Deploy a new version** after one fresh Sandbox check.
-Cleanup updates do not trigger more checks. The story simulates both responses.
+In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
+Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
+Check v7’s failed record, pending cleanup and unchanged v6 selection. One check
+changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
+Cleanup triggers no further checks.
+
+Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
@@ -181,9 +184,9 @@ Cleanup updates do not trigger more checks. The story simulates both responses.
    completion. When the badge reads **Completed**, check that focus stays visible.
    Press Enter to open **Deployment** for v7.
 
-8. In **New version queued**, fold **Deployment details**, then Tab to **Run
-   diagnostics for this version**. Routine polls keep the fold and the visible
-   focused button in place. Repeat expanded, at desktop and phone widths.
+8. In **New version queued**, check the picker's keyboard round trip. Fold
+   **Deployment details** and Tab to **Run diagnostics for this version**.
+   Polls keep the fold, focus and button position. Repeat expanded at both widths.
    In **Deployment activity loading**, Configuration shows **Deploying version**
    on reply. **Deployment activity unavailable** stays neutral.
    In **New version in progress, one status read fails**, open Deployment before

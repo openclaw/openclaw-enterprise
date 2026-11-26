@@ -8,8 +8,10 @@ in-memory storage for those API boundaries.
 1. Open **Pages/Namespaces → Ready and provisioning**. Select **Create Namespace**.
    Enter a unique name, create it, and inspect **Namespace created**. Select
    **Done**: its card reads **Provisioning**. Repeat with another name and select
-   **Open Agents**: the Namespace selector names the new Namespace. After
-   **Done** or Escape, focus is on **Create Namespace**.
+   **Open Agents** to see the new Namespace in the selector. While the
+   dialog checks access, watch **Done**. It keeps its position and keyboard
+   focus when **Open Agents** appears. Tab to **Open Agents** to choose it.
+   After **Done** or Escape, focus is on **Create Namespace**.
 2. Open **Empty**. Creation is available even without a readable Namespace.
    In **Empty for a member**, **Create Namespace** is a secondary action and the
    empty state says to ask an administrator. In
@@ -19,9 +21,13 @@ in-memory storage for those API boundaries.
 3. Open **Create Required**: the inline error describes the focused field.
    In **Create Invalid Name**, the pasted tab is refused at the field; replace
    it with a space and the error clears. More than 200 characters is refused too.
-   In **Create Conflict**, the error names the clash with no request ID; change
-   the retained name and resubmit. In **Create Denied**, inspect the access
-   guidance, its request ID for support, and the disabled submit. In
+   In **Create Conflict**, the refusal for **Engineering** appears in place
+   of the dialog introduction. The field keeps its help and focus. There is
+   no request ID. Enter another name and pause before submitting. The
+   introduction returns. Enter **Engineering** again. The refusal returns
+   without another request. Editing the name does not check availability.
+   In **Create Denied**, inspect the access guidance, its request ID for
+   support, and the disabled submit. In
    **Create refused, then closed**, the closed form leaves **Create Namespace** disabled
    with its reason focused; the reason says to select **Refresh** after an administrator
    grants access, and Refresh offers **Create Namespace** again.

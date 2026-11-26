@@ -245,7 +245,7 @@ The OAuth2 refresh PR implements this proposal: the `credential_refresh`
 capability and its OpenShell Driver, the `oauth2-client-credentials` and
 `oauth2-refresh-token` types, `POST …/rotate`, and
 `occ credential-source rotate`. The current contract is owned by the
-[CredentialRefreshDriver reference](../../../docs/reference/drivers/credential-refresh.md).
+[CredentialRefreshDriver reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/drivers/credential-refresh.md).
 The real OpenShell suite proves registration, background re-minting in a
 running Harness, forced rotation, reauthorization, a failed update, and
 deletion against an in-cluster Keycloak. OCC conformance proves that

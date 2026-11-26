@@ -7,15 +7,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import type { Locator, Page, Response } from "playwright";
+import type { Locator, Page, Response, Route } from "playwright";
 import { responseTo } from "./console-action-helpers.ts";
 import type { PluginFieldCatalog } from "../../apps/controller/src/console/agents/plugin-fields.mjs";
 import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
-import type {
-  PluginApprovers,
-  PluginCatalogEntry,
-  SecretMetadata,
-} from "../../packages/contracts/src/index.ts";
+import type { PluginApprovers, PluginCatalogEntry } from "../../packages/contracts/src/index.ts";
 
 import {
   CodexPluginDriver,
@@ -28,6 +24,7 @@ import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.m
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import {
   apiRequests,
+  createSlackSourceConsoleFixture,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -35,15 +32,14 @@ import {
   nativeValues,
   newPage,
   nextFrames,
-  operateDeniedSecretOption,
   pathRequests,
-  selectSecret,
+  settlePageRequests,
   settledView,
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { callerDenied, SECRET_CREATE_DENIED } from "../helpers/refusal-text.mjs";
+import { callerDenied } from "../helpers/refusal-text.mjs";
 import { refusedNamed, SLACK_LOOKUP_DENIED } from "../helpers/refusal-access.ts";
 import { grantRole, liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { within } from "../helpers/wait-for.ts";
@@ -78,18 +74,6 @@ function controller(fixture: Fixture): OpenClawController {
   const value: unknown = fixture.controller;
   assert.ok(value instanceof OpenClawController);
   return value;
-}
-
-function secretEntity(value: unknown): SecretMetadata {
-  const result = record(value);
-  const ref = record(result.ref);
-  assert.equal(ref.kind, "secret");
-  return {
-    id: text(result.id),
-    name: text(result.name),
-    namespaceId: text(result.namespaceId),
-    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
-  };
 }
 
 function lastBody(requests: ReturnType<typeof pathRequests>) {
@@ -202,7 +186,7 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   catalog.release();
 });
 
-test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+async function defaultCatalogAgent(t: TestContext) {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createReadyConsoleNamespace(t, "Default plugin catalog");
   const namespace = entity(namespaceValue);
@@ -224,27 +208,174 @@ test("A dedicated Agent with empty configuration can browse the default OpenClaw
       },
     ),
   );
-  const catalogUrl = new URL(
-    `/namespaces/${namespace.id}/agents/${agent.id}/plugins`,
-    fixture.origin,
-  ).href;
+  const catalogPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  const catalogUrl = new URL(catalogPath, fixture.origin).href;
+  return { fixture, namespace, agent, catalogPath, catalogUrl };
+}
+
+const workspaceQuery = "Workspace";
+
+test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+  const { fixture, namespace, agent, catalogPath, catalogUrl } = await defaultCatalogAgent(t);
   const { page } = await newPage(t, fixture, { browser });
-  await Promise.all([
+  const [, catalog] = await Promise.all([
     responseTo(page, "GET", `${catalogUrl}/capabilities`).then((response) =>
       assert.equal(response.status(), 200, "saved Agent plugin capabilities"),
     ),
-    responseTo(page, "POST", catalogUrl).then((response) =>
-      assert.equal(response.status(), 200, "saved Agent plugin catalog"),
-    ),
+    responseTo(page, "POST", catalogUrl),
     (async () => {
       await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
       await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
     })(),
   ]);
-  await page
-    .getByRole("dialog", { name: "Configure plugins", exact: true })
-    .getByRole("button", { name: "Google Workspace", exact: true })
-    .waitFor({ state: "visible" });
+  assert.equal(catalog.status(), 200, "saved Agent plugin catalog");
+  const { plugins } = responseData(await catalog.json());
+  assert.ok(Array.isArray(plugins) && plugins.length > 1);
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).waitFor();
+
+  // Just above the split layout breakpoint, the longer failure message wraps.
+  await page.setViewportSize({ width: 1101, height: 700 });
+  const search = dialog.getByRole("searchbox", { name: "Search plugins" });
+  const controls = dialog.locator(".plugin-browser-status");
+  const status = controls.getByRole("status");
+  const retry = controls.getByRole("button");
+  assert.equal(await status.innerText(), `Page 1 · ${plugins.length} plugins`);
+  assert.equal((await status.getAttribute("aria-live")) ?? "polite", "polite");
+
+  const requests = apiRequests(page, fixture.origin);
+  const writesOrCatalogReads = () =>
+    requests
+      .filter(({ method }) => /^(POST|PUT|PATCH|DELETE)$/.test(method))
+      .map(({ method, path, body }) => [method, path, record(body).q]);
+  const read = ["POST", catalogPath, workspaceQuery];
+
+  const intercepted = Promise.withResolvers<Route>();
+  await page.route(catalogUrl, intercepted.resolve, { times: 1 });
+  await search.fill(workspaceQuery);
+  const route = await within(intercepted.promise, "the catalog search");
+  assert.equal((await route.fetch({ maxRedirects: 0 })).status(), 200);
+  await status.filter({ hasText: /^Searching plugins…$/u }).waitFor();
+  assert.ok(await retry.evaluate((el) => el instanceof HTMLButtonElement && el.disabled));
+  const busyLabel = await retry.innerText();
+
+  // A center click can still hit a shorter button. Keep the point at its original left edge.
+  await retry.scrollIntoViewIfNeeded();
+  const bounds = await retry.boundingBox();
+  assert.ok(bounds);
+  const point = { x: bounds.x + 5, y: bounds.y + bounds.height / 2 };
+  const hitsRetry = () =>
+    retry.evaluate((el, { x, y }) => el.contains(document.elementFromPoint(x, y)), point);
+  assert.ok(await hitsRetry(), "busy button covers the test point");
+  await page.mouse.click(point.x, point.y);
+  await nextFrames(page);
+  assert.deepEqual(writesOrCatalogReads(), [read], "busy click starts no retry");
+
+  await discoveryResponse(
+    page,
+    catalogUrl,
+    () =>
+      route.fulfill({
+        status: 503,
+        json: { error: { code: "PLUGIN_DISCOVERY_UNAVAILABLE", message: "Transient failure." } },
+      }),
+    503,
+  );
+  await status.filter({ hasText: /plugin service is unavailable/i }).waitFor();
+  assert.equal(await search.inputValue(), workspaceQuery);
+  assert.ok(await retry.isEnabled());
+  assert.deepEqual(writesOrCatalogReads(), [read], "failure waits for explicit retry");
+  assert.ok(await hitsRetry(), "enabled button still covers the same point");
+  assert.equal(busyLabel, "Load plugins");
+
+  await discoveryResponse(page, catalogUrl, async () => {
+    await page.mouse.down();
+    await page.mouse.up();
+  });
+  await expectWorkspaceCatalog(dialog, search);
+  await status.filter({ hasText: /^Page 1 · 1 plugin$/u }).waitFor();
+  await settlePageRequests(page);
+  assert.deepEqual(writesOrCatalogReads(), [read, read], "one retry and no writes");
+});
+
+async function openPendingDefaultCatalog(t: TestContext) {
+  const { fixture, namespace, agent, catalogPath, catalogUrl } = await defaultCatalogAgent(t);
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const capabilitiesUrl = `${catalogUrl}/capabilities`;
+  const capabilities = await holdRequests(t, page, capabilitiesUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  assert.equal((await capabilities.requested)?.status(), 200, "saved Agent plugin capabilities");
+
+  const configure = page.getByRole("button", { name: "Configure plugins", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  const search = dialog.getByRole("searchbox", { name: "Search plugins" });
+  // Keep observing the status when closing the dialog removes it from the accessibility tree.
+  const checkingCatalog = page
+    .locator("dialog.plugin-dialog .plugin-browser-status [role=status]")
+    .filter({ hasText: "Checking plugin catalog availability…" });
+  await configure.click();
+  await checkingCatalog.waitFor({ state: "visible" });
+
+  async function releaseCapabilities() {
+    await page.clock.install();
+    await page.clock.pauseAt(Date.now() + 1000);
+    const response = responseTo(page, "GET", capabilitiesUrl);
+    capabilities.release();
+    assert.equal((await response).status(), 200, "browser received plugin capabilities");
+    await checkingCatalog.waitFor({ state: "detached" });
+    await page.clock.runFor(400);
+    await page.clock.resume();
+    await settlePageRequests(page);
+  }
+
+  const catalogQueries = () =>
+    pathRequests(requests, "POST", catalogPath).map(({ body }) => record(body).q);
+  return { page, configure, dialog, search, catalogUrl, releaseCapabilities, catalogQueries };
+}
+
+async function expectWorkspaceCatalog(dialog: Locator, search: Locator) {
+  assert.equal(await search.inputValue(), workspaceQuery);
+  await dialog.getByRole("button", { name: "Google Workspace", exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Slack", exact: true }).count(), 0);
+}
+
+test("A closed plugin picker defers its pending search until reopened", async (t) => {
+  const { page, configure, dialog, search, catalogUrl, releaseCapabilities, catalogQueries } =
+    await openPendingDefaultCatalog(t);
+  await search.fill(workspaceQuery);
+  await dialog.getByRole("button", { name: "Done", exact: true }).press("Enter");
+  await dialog.waitFor({ state: "hidden" });
+  await configure.and(page.locator(":focus")).waitFor();
+  await releaseCapabilities();
+  assert.deepEqual(catalogQueries(), [], "a closed picker does not request the catalog");
+
+  const response = responseTo(page, "POST", catalogUrl);
+  await configure.press("Enter");
+  assert.equal((await response).status(), 200, "reopened picker catalog");
+  await expectWorkspaceCatalog(dialog, search);
+  await settlePageRequests(page);
+  assert.deepEqual(catalogQueries(), [workspaceQuery], "the reopened picker searches once");
+});
+
+test("The plugin picker searches after switching back to Available while capabilities are pending", async (t) => {
+  const { dialog, search, releaseCapabilities, catalogQueries } =
+    await openPendingDefaultCatalog(t);
+  const configured = dialog.getByRole("button", { name: "Configured plugins", exact: true });
+  const available = dialog.getByRole("button", { name: "Available plugins", exact: true });
+  await configured.click();
+  assert.equal(await configured.getAttribute("aria-pressed"), "true");
+  await available.click();
+  assert.equal(await available.getAttribute("aria-pressed"), "true");
+  await search.fill(workspaceQuery);
+  await releaseCapabilities();
+  assert.deepEqual(catalogQueries(), [workspaceQuery], "the Available tab searches automatically");
+  await expectWorkspaceCatalog(dialog, search);
 });
 
 async function savedCodexPluginFixture(
@@ -2154,6 +2285,7 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
     current: {
       mode: "mcp_discovery",
       issuer: issuers[0],
+      issuerVerification: { tokenEndpointAuthMethods: ["none"] },
       mcp: { serverUrl: recipient.serverUrl, resource: recipient.resource },
       scopes: [],
     },
@@ -2164,7 +2296,14 @@ test("reconnecting a saved MCP account clears the prior account's tool approvals
   await page.route(`**/namespaces/${namespace.id}/connections/oauth-clients?*`, (route) =>
     route.fulfill({
       json: {
-        data: [{ kind: "oauth2", id: fakeClientId, displayName: "Controlled client" }],
+        data: [
+          {
+            kind: "oauth2",
+            id: fakeClientId,
+            displayName: "Controlled client",
+            tokenEndpointAuthMethod: "none",
+          },
+        ],
         meta: {},
       },
     }),
@@ -2389,21 +2528,23 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   assert.deepEqual(await liveWrites(), []);
 });
 
-test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
+test("Create Agent searches approvers with a search-only Slack Source", async (t) => {
   const preset = record(
     JSON.parse(
       await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
     ),
   );
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
-  await fixture.bootstrap();
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Approver search",
+    {
+      defaultPresets: [preset],
+    },
+  );
   const driver = new CodexPluginDriver();
   controller(fixture).registerDriver(driver);
   controller(fixture).selectDriver("plugin", driver.id);
-  const namespace = entity(await fixture.createNamespace("Approver search", { ready: true }));
-  const bot = secretEntity(
-    await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token"),
-  );
+  const bot = (await enroll("Search bot")).source;
   const { page, artifacts } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const lookups: ReturnType<typeof lookupBody>[] = [];
@@ -2469,21 +2610,25 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   });
   await people.fill("free");
   await page
-    .getByText("Select a Slack bot token Secret to search by name. You can still paste exact IDs.")
+    .getByText(
+      "Select a Slack bot token Credential Source to search by name. You can still paste exact IDs.",
+    )
     .first()
     .waitFor();
   await people.evaluate((node) => node.scrollIntoView({ block: "center" }));
   await page.screenshot({ path: join(artifacts, "approver-before-search.png") });
-  const secret = page.getByLabel("Slack bot token Secret for people search", { exact: true });
-  assert.equal(await secret.count(), 1);
+  const source = page.getByLabel("Slack bot Credential Source for people search", { exact: true });
+  assert.equal(await source.count(), 1);
   await people.fill("UOTHER123");
   await people.press("Enter");
   await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
   await page.getByRole("button", { name: "Remove selected person 1 (name unavailable)" }).click();
-  await selectSecret(page, "Slack bot token Secret for people search", bot);
+  await page
+    .getByLabel("Slack bot Credential Source for people search", { exact: true })
+    .selectOption(bot.id);
   denied = true;
   await people.fill("denied");
-  // The API named no grant here, so the console names the Secret's.
+  // The API named no grant here, so the Console names the Source permission.
   await page.getByText(SLACK_LOOKUP_DENIED).waitFor();
   denied = false;
   await people.fill("nobody");
@@ -2502,7 +2647,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
     .getByRole("button", { name: "Remove Freeman Example (@freeman)", exact: true })
     .waitFor();
   releaseLookup.resolve();
-  assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
+  assert.ok(lookups.some((body) => body.sourceId === bot.id && body.query === "free"));
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
   await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
@@ -2519,7 +2664,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   );
 });
 
-test("Create Agent keeps the search Secret out of plugin approver lookups", async (t) => {
+test("Create Agent keeps the search Source out of plugin approver lookups", async (t) => {
   const pluginId = "occ-plugin:diffs";
   const preset = {
     name: "OpenClaw approvers",
@@ -2532,26 +2677,17 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
       },
     },
   };
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
-  await fixture.bootstrap();
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Approver privacy",
+    {
+      defaultPresets: [preset],
+    },
+  );
   const driver = new OCCPluginDriver();
   controller(fixture).registerDriver(driver);
   controller(fixture).selectDriver("plugin", driver.id);
-  const namespace = entity(await fixture.createNamespace("Approver privacy", { ready: true }));
-  const bot = secretEntity(
-    await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token"),
-  );
-  const spare = secretEntity(
-    await fixture.createSecret(namespace.id, "Spare bot", "synthetic-spare-token"),
-  );
-  // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
-  // denies Secret create; nothing here creates one.
-  restrict(fixture.policy, "create", "secret", { namespaceId: namespace.id });
-  // Nor operate the spare token, which a people search needs on its Secret (finding 2469).
-  restrict(fixture.policy, "operate", "secret", {
-    namespaceId: namespace.id,
-    resourceId: spare.id,
-  });
+  const bot = (await enroll("Search bot")).source;
   const { page } = await newPage(t, fixture, { browser });
   const lookups: ReturnType<typeof lookupBody>[] = [];
   await page.route(
@@ -2573,27 +2709,9 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   await page.getByRole("button", { name: "Use Preset", exact: true }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
-  // The people search's Secret picker follows the answer: its inline Create Secret is disabled
-  // with the reason (finding 2451).
   await page
-    .getByLabel("Slack bot token Secret for people search", { exact: true })
-    .fill("no matching Secret");
-  const createAction = page
-    .locator('[id^="approver-directory-secret-option-"]')
-    .filter({ hasText: "Create new Secret..." });
-  assert.equal(await createAction.textContent(), `Create new Secret... ${SECRET_CREATE_DENIED}`);
-  assert.equal(await createAction.getAttribute("aria-disabled"), "true");
-  // The spare token is listed disabled with the reason, and a forced click chooses nothing, so
-  // no search is made with it.
-  const deniedSpare = await operateDeniedSecretOption(
-    page,
-    "Slack bot token Secret for people search",
-    spare,
-  );
-  await deniedSpare.click({ force: true });
-  await page.getByLabel("Slack bot token Secret for people search", { exact: true }).press("Enter");
-  assert.equal(await page.getByText("Ready to search.").count(), 0);
-  await selectSecret(page, "Slack bot token Secret for people search", bot);
+    .getByLabel("Slack bot Credential Source for people search", { exact: true })
+    .selectOption(bot.id);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog.getByRole("button", { name: pluginId, exact: true }).click();
@@ -2603,28 +2721,25 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   });
   await pluginPeople.fill("unrelated");
   await dialog
-    .getByText("Select a Slack bot token Secret to search by name. You can still paste exact IDs.")
+    .getByText(
+      "Select a Slack bot token Credential Source to search by name. You can still paste exact IDs.",
+    )
     .first()
     .waitFor();
   assert.deepEqual(lookups, []);
 });
 
 test("Agent plugin approver selectors save inheritance and workspace-qualified users", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(
+    t,
+    "Slack directory picker",
+  );
   // Plugin and tool overrides need a Driver that advertises them; Codex offers only the default.
   const pluginDriver = new OCCPluginDriver();
   controller(fixture).registerDriver(pluginDriver);
   controller(fixture).selectDriver("plugin", pluginDriver.id);
-  const namespace = entity(
-    await fixture.createNamespace("Slack directory picker", { ready: true }),
-  );
-  const appSecret = secretEntity(
-    await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret"),
-  );
-  const botSecret = secretEntity(
-    await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret"),
-  );
+  const appSource = (await enroll("Slack app token", "xapp")).source;
+  const botSource = (await enroll("Slack bot token")).source;
   const slack = {
     enabled: true,
     mode: "socket",
@@ -2642,8 +2757,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
         // Channels need a dedicated Agent workload, which Agent save checks.
         executionMode: "dedicated",
         secretBindings: {
-          SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
-          SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+          SLACK_APP_TOKEN: { source: appSource.ref, delivery: { type: "env" } },
+          SLACK_BOT_TOKEN: { source: botSource.ref, delivery: { type: "env" } },
         },
       },
     ),
@@ -2672,7 +2787,10 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
           body: JSON.stringify({
             error: {
               code: "FORBIDDEN",
-              message: callerDenied("Secret operate", "a Secret this request uses"),
+              message: callerDenied(
+                "Credential Source operate",
+                "a Credential Source this request uses",
+              ),
             },
             meta: { requestId: "req_test_slack_directory_denied" },
           }),
@@ -2825,7 +2943,13 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   directoryDenied = true;
   await people.fill("UTEST998");
   await picker
-    .getByText(refusedNamed("Slack lookup", "Secret operate", "a Secret this request uses"))
+    .getByText(
+      refusedNamed(
+        "Slack lookup",
+        "Credential Source operate",
+        "a Credential Source this request uses",
+      ),
+    )
     .waitFor();
   directoryDenied = false;
   directoryAvailable = true;
@@ -2880,7 +3004,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   directoryAvailable = true;
   assert.deepEqual(directoryBodies[0], {
-    secretId: botSecret.id,
+    sourceId: botSource.id,
     kind: "users",
     agentId: agent.id,
   });
@@ -3187,8 +3311,8 @@ test("No Slack approvers does not ask the operator to select hidden people", asy
       },
       label: "Approvers",
       allowInherit: false,
-      getSecretId() {
-        return "sec_1";
+      getSourceId() {
+        return "cs_1";
       },
       getValue() {
         return value;
@@ -3270,10 +3394,8 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
   await page.clock.runFor(1000);
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).waitFor();
-  assert.equal(
-    await dialog.getByRole("button", { name: "Loading plugins…", exact: true }).count(),
-    0,
-  );
+  const loadPlugins = dialog.getByRole("button", { name: "Load plugins", exact: true });
+  assert.equal(await loadPlugins.isEnabled(), true, "the reopened catalog can refresh");
   assert.deepEqual(
     responseData(await fixture.request("GET", agentPath)).plugins,
     initialSelections,
