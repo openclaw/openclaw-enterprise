@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { codexRuntimeArtifact } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
 import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
@@ -80,6 +81,7 @@ export async function verifyCodexPackaging(
     {
       historicalCodex,
       stagingCodexVersion,
+      authorizedBinaries: OPEN_SHELL_CODEX_BINARIES,
       deadlineMs: 30000 * imageSmokeTimeoutMultiplier,
     },
     codexExecutableSource,
