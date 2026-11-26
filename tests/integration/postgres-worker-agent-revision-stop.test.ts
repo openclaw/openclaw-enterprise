@@ -2878,9 +2878,16 @@ revisionTest(
   async (fixture) => {
     const { owner, candidate } = await fixture.admitInitialRevision("stop-initial-failure");
     const stopped: string[] = [];
+    const teardownEffects: string[] = [];
     await fixture.start(
       {
         ...fixture.compute,
+        async bindAgent(input) {
+          if (input.namespace.id === fixture.namespace.id && input.agent.id === owner.id) {
+            teardownEffects.push("bind");
+          }
+          await fixture.compute.bindAgent?.(input);
+        },
         async prepareRevision(revision) {
           return { ...(await fixture.compute.prepareRevision(revision)), ready: false };
         },
@@ -2891,18 +2898,30 @@ revisionTest(
           }
           return fixture.compute.stopRevision(revision);
         },
+        async retireRevision(revision) {
+          if (revision.namespaceId === fixture.namespace.id && revision.agentId === owner.id) {
+            teardownEffects.push("retire");
+          }
+          return fixture.compute.retireRevision(revision);
+        },
+        async deleteAgentRuntimeCredentials(input) {
+          if (input.namespace.id === fixture.namespace.id && input.agent.id === owner.id) {
+            teardownEffects.push("delete credentials");
+          }
+          await fixture.compute.deleteAgentRuntimeCredentials?.(input);
+        },
       },
       { convergenceTimeoutMs: 50 },
     );
     await fixture.work(candidate, "failed_permanent");
-    // Historical records from another selected Compute are not cleanup inputs
-    // for this worker, even when the Agent has no active pointer.
+    // A retired implementation may reuse the selected Compute ID.
+    const retiredRevisionId = `rev_${randomUUID()}`;
     await fixture.state.transact((unit) =>
       unit.revisions.createRevision({
         ...candidate,
-        id: `rev_${randomUUID()}`,
+        id: retiredRevisionId,
         revision: 2,
-        compute: { id: "retired-compute", implementation: "retired-compute" },
+        compute: { id: candidate.compute.id, implementation: "retired-compute" },
       }),
     );
     const stop = await fixture.requestStop(owner);
@@ -2911,6 +2930,24 @@ revisionTest(
     const current = required(await fixture.currentAgent(owner));
     assert.equal(current.desiredRuntimeState, "stopped");
     assert.equal(current.activeRevisionId, undefined);
+
+    // Deletion checks all revisions before issuing any Compute teardown call.
+    const priorEffects = [...teardownEffects];
+    const deletion = await fixture.requestDeletion(owner);
+    const work = await waitFor("permanent Agent deletion refusal", async () => {
+      const observed = await fixture.state.read((view) =>
+        view.operations.findWork(deletion.idempotencyKey),
+      );
+      assert.deepEqual(stopped, [candidate.id], "Delete attempted another stop");
+      assert.deepEqual(teardownEffects, priorEffects, "Delete attempted Compute teardown");
+      return observed?.state === "failed_permanent" ? observed : undefined;
+    });
+    assert.equal(work.reasonCode, "COMPUTE_DRIVER_MISMATCH");
+    assert.ok(await fixture.currentAgent(owner));
+    const retained = await fixture.state.read((view) =>
+      view.revisions.listRevisions(fixture.namespace.id, owner.id),
+    );
+    assert.deepEqual(retained.map(({ id }) => id).sort(), [candidate.id, retiredRevisionId].sort());
   },
 );
 

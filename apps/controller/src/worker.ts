@@ -923,6 +923,12 @@ function workerPassErrorCode(error: unknown): string {
   return "WORKER_UNAVAILABLE";
 }
 
+function matchesComputeDriver(revision: Readonly<AgentRevision>, compute: ComputeDriver): boolean {
+  return (
+    revision.compute.id === compute.id && revision.compute.implementation === compute.implementation
+  );
+}
+
 function validDriver(driver: ComputeDriver): boolean {
   return (
     typeof driver.id === "string" &&
@@ -2565,10 +2571,7 @@ export class ControllerWorker {
       if (!closeLiveSessions) {
         return cleanup;
       }
-      if (
-        revision.compute.id !== this.compute.id ||
-        revision.compute.implementation !== this.compute.implementation
-      ) {
+      if (!matchesComputeDriver(revision, this.compute)) {
         throw new Error("COMPUTE_DRIVER_MISMATCH");
       }
       const resources = await this.state.read(async (view) => ({
@@ -3483,10 +3486,7 @@ export class ControllerWorker {
           servicePrincipalId: agent.servicePrincipalId,
         });
       }
-      const ownedByCompute = (revision: Readonly<AgentRevision>) =>
-        revision.compute.id === this.compute.id &&
-        revision.compute.implementation === this.compute.implementation;
-      if (active !== undefined && !ownedByCompute(active)) {
+      if (active !== undefined && !matchesComputeDriver(active, this.compute)) {
         return await this.finalizeAgentStop(claim, {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
@@ -3501,7 +3501,7 @@ export class ControllerWorker {
         ...revisions.filter(
           (revision) =>
             revision.id !== active?.id &&
-            ownedByCompute(revision) &&
+            matchesComputeDriver(revision, this.compute) &&
             revisionAdmittedBeforeWork(revision, claim),
         ),
       ];
@@ -3675,13 +3675,7 @@ export class ControllerWorker {
           code: "INVALID_REVISION_OWNER",
         });
       }
-      if (
-        revisions.some(
-          (revision) =>
-            revision.compute.id !== this.compute.id ||
-            revision.compute.implementation !== this.compute.implementation,
-        )
-      ) {
+      if (revisions.some((revision) => !matchesComputeDriver(revision, this.compute))) {
         return await this.finalizeAgentDeletion(claim, {
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
@@ -4049,9 +4043,7 @@ export class ControllerWorker {
       }
       if (allowed.length > 0) {
         const compute = this.compute;
-        const matchesCompute =
-          revision.compute.id === compute.id &&
-          revision.compute.implementation === compute.implementation;
+        const matchesCompute = matchesComputeDriver(revision, compute);
         const withdraw = matchesCompute
           ? compute.withdrawCredentialSource?.bind(compute)
           : undefined;
@@ -4837,10 +4829,7 @@ export class ControllerWorker {
         });
         return;
       }
-      if (
-        revision.compute.id !== this.compute.id ||
-        revision.compute.implementation !== this.compute.implementation
-      ) {
+      if (!matchesComputeDriver(revision, this.compute)) {
         await refuseAdmission({
           outcome: "permanent",
           code: "COMPUTE_DRIVER_MISMATCH",
@@ -6905,8 +6894,7 @@ export class ControllerWorker {
       revision.namespaceId !== namespace.id ||
       revision.agentId !== agent.id ||
       revision.servicePrincipalId !== agent.servicePrincipalId ||
-      revision.compute.id !== compute.id ||
-      revision.compute.implementation !== compute.implementation ||
+      !matchesComputeDriver(revision, compute) ||
       agent.activeRevisionId === revision.id
     ) {
       return;
@@ -7572,11 +7560,7 @@ export class ControllerWorker {
           continue;
         }
         const candidate = await view.revisions.findRevision(namespaceId, agentId, entry.id);
-        if (
-          candidate === undefined ||
-          candidate.compute.id !== this.compute.id ||
-          candidate.compute.implementation !== this.compute.implementation
-        ) {
+        if (candidate === undefined || !matchesComputeDriver(candidate, this.compute)) {
           continue;
         }
         const exclusive = this.compute.requiresStoppedPredecessors?.(candidate) === true;
