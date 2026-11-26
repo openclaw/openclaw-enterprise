@@ -53,9 +53,36 @@ interface WorkOutcomeEvent extends WorkEvent {
   outcome?: string;
 }
 
+export type WorkerEvent = Readonly<Record<string, unknown>> & {
+  event?: string;
+  workId?: string;
+  outcome?: string;
+  code?: string;
+  stopYields?: number;
+};
+
 type WaitDescription = Parameters<typeof waitFor>[0];
 type WaitOptions = Parameters<typeof waitFor>[2];
 type WaitReader<Value> = Parameters<typeof waitFor<Value>>[1];
+
+export function checkedWorkerEvent<T extends Readonly<Record<string, unknown>>>(
+  event: T,
+): T & WorkerEvent {
+  for (const key of ["event", "workId", "outcome", "code"]) {
+    assert.ok(event[key] === undefined || typeof event[key] === "string", `invalid worker ${key}`);
+  }
+  assert.ok(
+    event.stopYields === undefined || typeof event.stopYields === "number",
+    "invalid stop yield count",
+  );
+  return event;
+}
+
+export function workPasses<Event extends WorkEvent>(events: readonly Event[], work: WorkIdentity) {
+  return events.filter(
+    ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
+  );
+}
 
 // The worker emits worker.completed after its queue transaction commits, so another
 // connection can see the committed Work state first. Wait for the event instead of
@@ -85,9 +112,7 @@ export async function completedPasses<Event extends WorkOutcomeEvent>(
       event.workId === work.idempotencyKey &&
       event.outcome === outcome,
   );
-  const passes = events.filter(
-    ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
-  );
+  const passes = workPasses(events, work);
   assert.equal(passes.at(-1), ended);
   return passes;
 }

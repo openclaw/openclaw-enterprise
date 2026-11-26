@@ -33,6 +33,11 @@ import {
 } from "../helpers/postgres-repository-restart-inventory.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { waitFor, within } from "../helpers/wait-for.ts";
+import {
+  checkedWorkerEvent,
+  workPasses as stopPasses,
+  type WorkerEvent,
+} from "../helpers/postgres-worker-revision-queue.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
@@ -61,31 +66,12 @@ type CleanupWorkRow = {
   state: string;
 };
 type AuditRow = { actorId: string; outcome: string; details: unknown; action?: string };
-type WorkerEvent = Readonly<Record<string, unknown>> & {
-  event?: string;
-  workId?: string;
-  outcome?: string;
-  code?: string;
-  stopYields?: number;
-};
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function auditDetails(value: unknown): Readonly<Record<string, unknown>> {
   assert.ok(isRecord(value), "audit details must be an object");
   return value;
-}
-function checkedWorkerEvent<T extends Readonly<Record<string, unknown>>>(
-  event: T,
-): T & WorkerEvent {
-  for (const key of ["event", "workId", "outcome", "code"]) {
-    assert.ok(event[key] === undefined || typeof event[key] === "string", `invalid worker ${key}`);
-  }
-  assert.ok(
-    event.stopYields === undefined || typeof event.stopYields === "number",
-    "invalid stop yield count",
-  );
-  return event;
 }
 // The deletion refusal case supplies a Driver with a provisioning marker but no
 // credential deletion capability. Its marker is never called.
@@ -418,12 +404,6 @@ function gatewayDrainCompute(
   const record = records.get(owners[0].id);
   assert.ok(record);
   return { compute, busy, records, record };
-}
-
-function stopPasses<T extends WorkerEvent>(events: readonly T[], stop: { idempotencyKey: string }) {
-  return events.filter(
-    ({ event, workId }) => event === "worker.completed" && workId === stop.idempotencyKey,
-  );
 }
 
 async function stopAudit(fixture: Fixture, owner: { id: string }) {
@@ -2131,15 +2111,23 @@ test(
   },
 );
 
+function readyNamespace(prefix: string): Namespace {
+  return {
+    id: `ns_${randomUUID()}`,
+    name: `${prefix}-${randomUUID()}`,
+    status: "ready",
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function namespaceDeletion(namespace: Pick<Namespace, "id">): WorkIdentity {
+  return { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` };
+}
+
 revisionTest(
   "repeating Namespace deletion recovers a teardown that exceeded its convergence deadline",
   async (fixture) => {
-    const namespace: Namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-exhausted-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
+    const namespace = readyNamespace("delete-exhausted");
     await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
     // A stuck finalizer keeps the Namespace terminating past the deadline.
     let terminating = true;
@@ -2155,10 +2143,7 @@ revisionTest(
       },
       { convergenceTimeoutMs: 1 },
     );
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
+    const deletion = namespaceDeletion(namespace);
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
@@ -2237,12 +2222,7 @@ revisionTest(
   async (fixture) => {
     // D323: each worker pass while Kubernetes namespaces terminated wrote its own
     // lifecycle.delete audit row (38 rows for one deletion).
-    const namespace: Namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-audit-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
+    const namespace = readyNamespace("delete-audit");
     await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
     let deleteAttempts = 0;
     await fixture.start({
@@ -2253,10 +2233,7 @@ revisionTest(
         return { namespaceId: target.id, namespaceDeleted: deleteAttempts >= 4 };
       },
     });
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
+    const deletion = namespaceDeletion(namespace);
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
     await fixture.work(deletion, "succeeded");
     assert.equal(deleteAttempts, 4);
@@ -2405,10 +2382,7 @@ test(
     assert.equal(JSON.stringify(rows).includes("timed out"), false);
     // A delete pass logs no reason, even when its Driver returns one.
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(
-      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` },
-      "succeeded",
-    );
+    await fixture.work(namespaceDeletion(namespace), "succeeded");
     const deleted = await waitFor("both Namespace delete passes", async () => {
       const passes = events.filter(
         (event) =>
@@ -2428,12 +2402,7 @@ test(
 revisionTest(
   "Namespace teardown records the same waiting state again after a retry in between",
   async (fixture) => {
-    const namespace: Namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-retry-audit-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
+    const namespace = readyNamespace("delete-retry-audit");
     await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
     let deleteAttempts = 0;
     await fixture.start({
@@ -2447,10 +2416,7 @@ revisionTest(
       },
     });
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
-    await fixture.work(
-      { id: namespace.id, idempotencyKey: `namespace:${namespace.id}:reconcile:deleted` },
-      "succeeded",
-    );
+    await fixture.work(namespaceDeletion(namespace), "succeeded");
     assert.equal(deleteAttempts, 6);
     const { rows } = await fixture.observerPool.query<{ outcome: string; code: string | null }>(
       `SELECT outcome, details->>'reasonCode' AS code FROM occ.audit_events
@@ -2473,12 +2439,7 @@ revisionTest(
 revisionTest(
   "another authorized actor takes over failed Namespace deletion once the initiator loses permission",
   async (fixture) => {
-    const namespace: Namespace = {
-      id: `ns_${randomUUID()}`,
-      name: `delete-takeover-${randomUUID()}`,
-      status: "ready",
-      createdAt: new Date().toISOString(),
-    };
+    const namespace = readyNamespace("delete-takeover");
     await fixture.state.transact((unit) => unit.namespaces.createNamespace(namespace));
     // A stuck finalizer keeps the Namespace terminating past the deadline.
     let terminating = true;
@@ -2494,10 +2455,7 @@ revisionTest(
       },
       { convergenceTimeoutMs: 1 },
     );
-    const deletion = {
-      id: namespace.id,
-      idempotencyKey: `namespace:${namespace.id}:reconcile:deleted`,
-    };
+    const deletion = namespaceDeletion(namespace);
     const observe = () =>
       fixture.state.read((view) => view.operations.findWork(deletion.idempotencyKey));
     await fixture.controller.deleteNamespace(fixture.actor.id, namespace.id);
@@ -2796,6 +2754,40 @@ revisionTest(
   },
 );
 
+type WorkerStartOptions = NonNullable<Parameters<Fixture["start"]>[1]>;
+
+function pauseStopAuthorization(owner: Pick<Agent, "id">) {
+  const started = Promise.withResolvers<void>();
+  const released = Promise.withResolvers<void>();
+  const transformDrivers: WorkerStartOptions["transformDrivers"] = (drivers) => {
+    const createIAMDriver = drivers.createIAMDriver;
+    return {
+      ...drivers,
+      createIAMDriver(state) {
+        const iam = createIAMDriver(state);
+        return {
+          id: iam.id,
+          implementation: iam.implementation,
+          capability: iam.capability,
+          lookupIdentity: iam.lookupIdentity.bind(iam),
+          async authorize(request) {
+            if (
+              request.action === "operate" &&
+              request.resource.kind === "agent" &&
+              request.resource.id === owner.id
+            ) {
+              started.resolve();
+              await released.promise;
+            }
+            return iam.authorize(request);
+          },
+        };
+      },
+    };
+  };
+  return { transformDrivers, observed: started.promise, release: released.resolve };
+}
+
 test(
   "a deployment admitted after stop supersedes stale stop work before Compute mutation",
   requiresPostgres,
@@ -2806,52 +2798,29 @@ test(
     const fixture = await setup(context, { metrics });
     const { owner, candidate: first } = await fixture.admitInitialRevision("stop-then-deploy");
     const stoppedRevisions: string[] = [];
-    const { promise: stopAuthorizationReleased, resolve: releaseStopAuthorization } =
-      Promise.withResolvers<void>();
-    const { promise: stopAuthorizationObserved, resolve: stopAuthorizationStarted } =
-      Promise.withResolvers<void>();
+    const authorization = pauseStopAuthorization(owner);
     const compute: ComputeDriver = {
       ...fixture.compute,
       async stopRevision(candidate) {
         stoppedRevisions.push(candidate.id);
       },
     };
-    await fixture.start(compute, {
-      pool: fixture.workerPool,
-      transformDrivers: (drivers) => {
-        const createIAMDriver = drivers.createIAMDriver;
-        return {
-          ...drivers,
-          createIAMDriver(state) {
-            const iam = createIAMDriver(state);
-            return {
-              id: iam.id,
-              implementation: iam.implementation,
-              capability: iam.capability,
-              lookupIdentity: iam.lookupIdentity.bind(iam),
-              async authorize(request) {
-                if (
-                  request.action === "operate" &&
-                  request.resource.kind === "agent" &&
-                  request.resource.id === owner.id
-                ) {
-                  stopAuthorizationStarted();
-                  await stopAuthorizationReleased;
-                }
-                return iam.authorize(request);
-              },
-            };
-          },
-        };
-      },
-    });
-    await fixture.work(first, "succeeded");
+    let stop: WorkIdentity;
+    let second: WorkIdentity;
+    try {
+      await fixture.start(compute, {
+        pool: fixture.workerPool,
+        transformDrivers: authorization.transformDrivers,
+      });
+      await fixture.work(first, "succeeded");
 
-    const stop = await fixture.requestStop(owner);
-    await stopAuthorizationObserved;
-    // This later admission changes intent while stop is inside its required IAM check.
-    const second = await fixture.revision(owner, 2);
-    releaseStopAuthorization();
+      stop = await fixture.requestStop(owner);
+      await within(authorization.observed, "Stop authorization to start");
+      // This later admission changes intent while stop is inside its required IAM check.
+      second = await fixture.revision(owner, 2);
+    } finally {
+      authorization.release();
+    }
 
     await Promise.all([fixture.work(stop, "succeeded"), fixture.work(second, "succeeded")]);
     const running = required(await fixture.currentAgent(owner));
@@ -2862,14 +2831,7 @@ test(
       await metrics.exposition(),
       /occ_agent_operation_duration_seconds_count\{[^\n]*operation="stop"[^\n]*\} 0(?:\n|$)/,
     );
-    const audit = await fixture.observerPool.query(
-      `SELECT details->>'reasonCode' AS reason_code
-       FROM occ.audit_events
-       WHERE namespace_id = $1 AND action = 'openclaw.agents.lifecycle.stop'
-         AND resource_id = $2`,
-      [fixture.namespace.id, owner.id],
-    );
-    assert.deepEqual(audit.rows, [{ reason_code: "STOP_SUPERSEDED" }]);
+    assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
   },
 );
 
@@ -3249,12 +3211,15 @@ revisionTest(
         return fixture.compute.stopRevision(revision);
       },
     });
-    await waitFor("revision preparation to start", async () =>
-      preparationStarted ? true : undefined,
-    );
-
-    const stop = await fixture.requestStop(owner);
-    releasePreparation();
+    let stop: WorkIdentity;
+    try {
+      await waitFor("revision preparation to start", async () =>
+        preparationStarted ? true : undefined,
+      );
+      stop = await fixture.requestStop(owner);
+    } finally {
+      releasePreparation();
+    }
     await fixture.work(candidate, "succeeded");
     await fixture.work(stop, "succeeded");
     await foreign.work(foreignRevision, "succeeded");
@@ -3320,12 +3285,11 @@ revisionTest(
         return fixture.compute.retireRevision(revision);
       },
     });
-    await waitFor("candidate activation to start", async () =>
-      activationStarted ? true : undefined,
-    );
-
-    let stop: Awaited<ReturnType<Fixture["requestStop"]>> | undefined;
+    let stop: WorkIdentity;
     try {
+      await waitFor("candidate activation to start", async () =>
+        activationStarted ? true : undefined,
+      );
       stop = await fixture.requestStop(owner);
     } finally {
       releaseActivation();
@@ -3428,8 +3392,7 @@ revisionTest(
     await fixture.copyActorGrants(replacementActor);
     const activationStarted = Promise.withResolvers<void>();
     const releaseActivation = Promise.withResolvers<void>();
-    const stopAuthorizationStarted = Promise.withResolvers<void>();
-    const releaseStopAuthorization = Promise.withResolvers<void>();
+    const authorization = pauseStopAuthorization(owner);
     const prepared: string[] = [];
     const stopped: string[] = [];
     const compute: ComputeDriver = {
@@ -3452,34 +3415,7 @@ revisionTest(
     };
     assert.equal(compute.requiresStoppedPredecessors, undefined, "replacement is non-exclusive");
     try {
-      await fixture.start(compute, {
-        transformDrivers: (drivers) => {
-          const createIAMDriver = drivers.createIAMDriver;
-          return {
-            ...drivers,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (
-                    request.action === "operate" &&
-                    request.resource.kind === "agent" &&
-                    request.resource.id === owner.id
-                  ) {
-                    stopAuthorizationStarted.resolve();
-                    await releaseStopAuthorization.promise;
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
-      });
+      await fixture.start(compute, { transformDrivers: authorization.transformDrivers });
       await within(activationStarted.promise, "original activation to start");
       const stop = await fixture.requestStop(owner);
       // The original claim acknowledges while Stop intent is still committed. There
@@ -3487,14 +3423,14 @@ revisionTest(
       assert.equal(required(await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
       releaseActivation.resolve();
       await fixture.work(first, "succeeded");
-      await within(stopAuthorizationStarted.promise, "Stop authorization to start");
+      await within(authorization.observed, "Stop authorization to start");
       assert.equal(required(await fixture.currentAgent(owner)).desiredRuntimeState, "stopped");
 
       // Existing admission storage changes intent and queues the replacement. Revoke
       // only its actor before dispatch, so real IAM refuses it before any cutover.
       const second = await fixture.revision(owner, 2, { actorId: replacementActor });
       await removeAccessBindings(fixture, replacementActor);
-      releaseStopAuthorization.resolve();
+      authorization.release();
       await fixture.work(stop, "succeeded");
       assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
       await fixture.work(second, "failed_permanent");
@@ -3526,7 +3462,7 @@ revisionTest(
     } finally {
       // Release worker calls before the fixture joins them during disposal.
       releaseActivation.resolve();
-      releaseStopAuthorization.resolve();
+      authorization.release();
     }
   },
   { timeout: 60_000 },
