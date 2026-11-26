@@ -25,6 +25,7 @@ async function verifyGatewayStartupCredentials(f, agent, stopQaAgent) {
   });
   const configuration = await f.api("GET", `${base}/configurations/${agent.configurationId}`);
   await f.api("PATCH", `${base}/configurations/${configuration.id}`, {
+    values: configuration.values,
     secretBindings: {
       ...configuration.secretBindings,
       [variable]: { source: source.ref, delivery: { type: "env" } },
