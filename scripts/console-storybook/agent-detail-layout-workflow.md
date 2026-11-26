@@ -102,19 +102,21 @@ controller-backed browser regression in `tests/browser/console-agent-logs.test.t
 checks the source switch through the Console API.
 
 Open **Pages / Agent detail / Deployment regains Secret operate on refocus**
-in its own preview tab. Select **Deploy new version**. Check that the unavailable
-button's accessible description names the Secret in the refusal. Switch to
-another tab and return. The simulated grant clears the refusal and enables
-Deploy on the same draft. Returning to the tab sends no Deploy request.
-Use **Deployment needs Secret operate** to check access that stays denied.
+in its own tab. Select **Deploy new version**. The unavailable button’s
+accessible description should name the Secret. Switch tabs and return. The
+simulated grant clears the refusal and enables Deploy on the same draft without
+sending a Deploy request. Use **Deployment needs Secret operate** to check
+access that stays denied.
 
-Use **Current version's Sandbox lost** to check the warning while returning to the same version.
+Return to the same version in **Current version's Sandbox lost**. Check the warning.
 
 In **Bootstrap failure with cleanup pending**, scroll down (sideways on phones).
 Point at **Deployment**. When v7 fails, click without moving. The tab stays put.
-Check v7’s failed record, pending cleanup and
-unchanged selection. One check changes **Sandbox running** to **Sandbox lost**,
-offering **Deploy a new version**. Cleanup triggers no further checks.
+Check v7’s failed record, pending cleanup and unchanged v6 selection. One check
+changes **Sandbox running** to **Sandbox lost**, offering **Deploy a new version**.
+Cleanup triggers no further checks.
+
+Reopen the story. Focus **View deployment**. After cleanup, Enter opens v7.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).

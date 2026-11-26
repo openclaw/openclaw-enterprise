@@ -1870,6 +1870,7 @@ export const createAgentProvisioningScenarios = {
       "Selecting a GitHub repository shows the registered App Client picker and changes the action to Save Agent draft. Application allows only Read-only Git; tooling starts at Read/write Git. Change tooling to Read-only Git, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
     steps: [
       "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Switch tooling to Read-only Git and back. Check the hint for public metadata reads and the additional pull request requirements.",
       "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
     ],
