@@ -741,15 +741,19 @@ export function liveHolderKeepsStateTest(title: string): void {
         collect: () => Promise<{ output: string; running: boolean }>;
       }) => {
         // The native child waits during config preflight under its CLI title. Only the
-        // later Gateway run loop sets openclaw-gateway. Signal the wrapper's child.
+        // later Gateway run loop sets openclaw-gateway. Find the wrapper by its node -e
+        // arguments because Linux names its main thread MainThread.
         await runDocker([
           "exec",
           containerName,
           "sh",
           "-ec",
-          `wrapper=$(pgrep -P 1 -x node)
+          `showTreeAndFail() { ps -eo pid,ppid,comm >&2; exit 1; }
+           set -- $(pgrep -P 1 -f '^node -e ')
+           [ "$#" -eq 1 ] || showTreeAndFail
+           wrapper=$1
            set -- $(pgrep -P "$wrapper" -fx 'openclaw(-gateway)?')
-           if [ "$#" -ne 1 ]; then ps -eo pid,ppid,comm >&2; exit 1; fi
+           [ "$#" -eq 1 ] || showTreeAndFail
            kill -KILL "$1"`,
         ]);
         const deadline = Date.now() + budgetMs;
