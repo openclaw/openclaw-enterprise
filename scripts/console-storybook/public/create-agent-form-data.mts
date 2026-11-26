@@ -17,6 +17,7 @@ export const managedStaticForm: StoryAction[] = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
+  { selector: "#agent-model-credential", value: "new" },
   { selector: "#provider-api-key", value: "storybook-model-api-key" },
 ];
 
@@ -25,7 +26,6 @@ export const provisionableForm: StoryAction[] = [
   ...form,
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
-  { selector: "#model-credential-storage", value: "secret" },
   { selector: "#provider-credential-secret", value: "sec_demo_model" },
 ];
 

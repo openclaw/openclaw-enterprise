@@ -10,11 +10,16 @@ import {
   type ConnectionTemplateSettings,
   type StaticKeyTemplateValues,
   type McpAuthorizationMetadata,
+  type OAuthClient,
 } from "@openclaw-enterprise/contracts";
 
 import type { ControllerAuthority } from "./controller-authority.ts";
 import type { ControllerTransactions } from "./controller-transactions.ts";
-import { ResourceStateConflictError, ScopeViolationError } from "./errors.ts";
+import {
+  DependencyUnavailableError,
+  ResourceStateConflictError,
+  ScopeViolationError,
+} from "./errors.ts";
 import type { PlatformUnitOfWork } from "./ports/platform-unit-of-work.ts";
 import { lockNamespace } from "./resource-scope.ts";
 
@@ -47,6 +52,21 @@ export type CreateConnectionTemplateInput = TemplateInput & {
 export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
 export type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
+
+/** Code-only collaborator for issuer-owned endpoint validation and pinned token requests. */
+export interface OAuthIssuerOperations {
+  verifyTemplate(
+    template: ConnectionTemplateValues,
+    signal: AbortSignal,
+  ): Promise<NonNullable<ConnectionTemplateValues["issuerVerification"]>>;
+  revalidate(
+    template: ConnectionTemplateValues & {
+      readonly tokenEndpointAuthMethod: OAuthClient["tokenEndpointAuthMethod"];
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
+  fetchToken(template: ConnectionTemplateValues, init: RequestInit): Promise<Response>;
+}
 
 async function effectiveConnectionTemplate(
   input: TemplateInput,
@@ -123,6 +143,8 @@ interface ConnectionAdministrationDependencies {
   readonly installationId: string;
   readonly transactions: Pick<ControllerTransactions, "read" | "transact">;
   readonly authority: Pick<ControllerAuthority, "authorize">;
+  readonly tokenServiceTimeoutMs: number;
+  readonly oauthIssuer: OAuthIssuerOperations | undefined;
   readonly timestamp: () => string;
 }
 
@@ -130,6 +152,8 @@ export function createConnectionAdministration({
   installationId,
   transactions,
   authority,
+  tokenServiceTimeoutMs,
+  oauthIssuer,
   timestamp,
 }: ConnectionAdministrationDependencies) {
   const { read, transact } = transactions;
@@ -186,9 +210,10 @@ export function createConnectionAdministration({
     discover: DiscoverMcp,
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+    verifyIssuer = true,
   ): Promise<Readonly<ConnectionTemplate>> {
     await authorizeAdministration(principalId);
-    const values = await effectiveConnectionTemplate(input, discover);
+    const values = await approvedTemplate(input, discover, verifyIssuer);
     return transact(async (state) => {
       await authorizeAdministration(principalId);
       await lockTemplateScope(state, input.namespaceId);
@@ -227,7 +252,7 @@ export function createConnectionAdministration({
         "Create a new connection template to change its authentication method.",
       );
     }
-    const values = "mode" in input ? await effectiveConnectionTemplate(input, discover) : undefined;
+    const values = "mode" in input ? await approvedTemplate(input, discover) : undefined;
     return transact(async (state) => {
       await authorizeAdministration(principalId);
       const current = await state.connectionTemplates.lockConnectionTemplate(id);
@@ -274,6 +299,21 @@ export function createConnectionAdministration({
         await state.audit.append(audit);
       }
     });
+  }
+
+  async function approvedTemplate(input: TemplateInput, discover: DiscoverMcp, verify = true) {
+    const values = await effectiveConnectionTemplate(input, discover);
+    if (values.mode === "static_bearer" || !verify) {
+      return values;
+    }
+    if (!oauthIssuer) {
+      throw new DependencyUnavailableError("OAuth issuer verification is unavailable.");
+    }
+    const issuerVerification = await oauthIssuer.verifyTemplate(
+      values,
+      AbortSignal.timeout(tokenServiceTimeoutMs),
+    );
+    return { ...values, issuerVerification };
   }
 
   return {

@@ -777,6 +777,22 @@ export class OpenClawController {
     );
   }
 
+  /** Bootstrap can seed a starter without contacting an external issuer. */
+  async seedBootstrapConnectionTemplate(
+    principalId: string,
+    input: CreateConnectionTemplateInput,
+    discover: DiscoverMcp,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    return this.composition.credentials.connectionAdministration.createConnectionTemplate(
+      principalId,
+      input,
+      discover,
+      undefined,
+      undefined,
+      false,
+    );
+  }
+
   async updateConnectionTemplate(
     principalId: string,
     id: string,

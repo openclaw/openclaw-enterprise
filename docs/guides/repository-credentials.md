@@ -1,23 +1,40 @@
 # Give an Agent repository access
 
-Select approved repositories, deploy an Agent, then use ordinary `git` and the `oce-github` draft helper.
-The worker Token Service owns GitHub App credentials. Choose an
+For Dedicated Codex with an OpenShell Sandbox, use [native GitHub App access](repository-credentials/openshell-git-push.md).
+TokenService owns the Source. Sandbox installs each Agent's approved Repository
+network rules, and Credential Proxy prepares the token Provider. Choose an
 [access level](../reference/repository-credentials/access-levels.md) for the task.
 
-For a dedicated OpenShell Agent, use [GitHub App access](#select-a-github-source-for-an-openshell-agent)
-with TokenService and native Credential Proxy.
+The prepared repository sender is a separate no-Sandbox path outside Credential
+Design 1.0. Its exact-ref and draft-PR features do not belong to Source-backed Git
+and do not require the legacy egress proxy.
 
-Keep the gateway private to approved clients, with enforced NetworkPolicies and
-HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
-check forwarding, Ingress, load balancers and effective policy enforcement.
+<a id="select-a-github-source-for-an-openshell-agent"></a>
 
-## Prepare the platform installation
+## Set GitHub App access for an OpenShell Agent
+
+Select TokenService, the paired OpenShell Sandbox and Credential Proxy, and the
+GitHub Backend with its approved repository registry. Register an eligible GitHub
+App Client, select repositories and access levels on the Agent, then deploy. Follow
+the [native Git walkthrough](repository-credentials/openshell-git-push.md) for setup,
+verification, and renewal. The admitted Repository grant stays valid until withdrawal
+or its explicit deadline; the GitHub installation token has a separate expiry.
+
+## Use the prepared repository sender
+
+<a id="prepare-the-platform-installation"></a>
+
+### Prepare the repository sender installation
 
 For the prepared repository sender, select `repository.nativeSender` with
 `repository.preparedGitHub`. Controller startup rejects the legacy Installation
 `drivers.repo` selection. Drain accepted
 work on its original owner before cutover; do not replay an unknown result. See
 [prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
+
+Keep the gateway private to approved clients, with enforced NetworkPolicies and
+HTTPS on port 443. A `.svc` hostname or ClusterIP alone does not establish isolation;
+check forwarding, Ingress, load balancers and effective policy enforcement.
 
 Use Kubernetes Compute-owned **Dedicated Codex**, compatible Harness authentication
 and no Sandbox Driver. Enable the optional credential sidecar
@@ -47,47 +64,9 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.103.2. Publish or
 import it, select its digest and configure model authentication.
 
-<a id="select-a-github-source-for-an-openshell-agent"></a>
+### Keep Git access on the same running Agent
 
-## Set GitHub App access for an OpenShell Agent
-
-This path requires the selected TokenService, the paired OpenShell Sandbox and
-Credential Proxy, and qualified runtime images. Dedicated Codex can use the
-operator-managed or service-mode Sandbox. Select the GitHub Backend and its
-approved registry with `repository.id` and
-`repository.configuration.sessionDurationSeconds`. In each registry entry, use
-the short GitHub name, such as `project`, and grant its Namespace access.
-Use the [TokenService registry example](../reference/repository-credentials/access-levels.md#tokenservice-registry-example)
-for the matching `repositoryNetworkPolicyCeiling`. The selected Client supplies
-the signing key. TokenService verifies the installation owner and saves the
-repository IDs returned by GitHub.
-
-In Helm, set `repositoryCredentials.registryConfigMapName` to the approved
-registry ConfigMap. Set the GitHub Backend's `registryPath` to
-`/etc/openclaw/repository-registry/registry.json`.
-
-1. As Installation administrator, open **Credentials → Credential clients →
-   Register client**. Select **GitHub App**, choose **Installation-wide** or
-   the Agent's Namespace, enter the App ID, and select its PEM signing key.
-   TokenService verifies the key and keeps it private.
-2. In the Agent's **Repositories** settings, choose the approved repositories,
-   their access levels, and a GitHub App Client available in that Namespace.
-   Selecting or changing the Client requires Installation administration.
-3. Select the model credential, then save and deploy. Deploy requires permission
-   to use an eligible Namespace Source or to create one. TokenService mints a
-   finite installation token when needed. Credential Proxy injects it only on
-   requests allowed by the Agent's saved grants.
-
-Use **Rotate GitHub App key** on the same Client to replace its signing key.
-TokenService uses that key at the next mint. Existing installation tokens keep
-their own expiry.
-
-The Agent's saved Repository grants apply for that deployment, subject to
-withdrawal. The configured session duration applies to legacy Repository sessions.
-
-## Keep Git access on the same running Agent
-
-For legacy Repository sessions, an Agent administrator can approve one
+For session-based Repository access, an Agent administrator can approve one
 repository binding until they remove that approval.
 The worker can then open another short session for the same running Agent without an hourly
 approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
@@ -129,7 +108,7 @@ If it returns after a known provider expiry, it waits out the clock allowance an
 `expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
 still requires recovery. Do not repeat an operation whose outcome is unknown.
 
-## Create and deploy an Agent
+### Create and deploy an Agent
 
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit
 the Agent default; expand a selected repository’s card to customize its access.
@@ -202,7 +181,7 @@ alone does not prove a model task or GitHub operation. Failed policy checks,
 unsupported topology, missing material or expired authority must be corrected
 before proceeding; do not add a PAT as a fallback.
 
-## Ask the Agent to work in the repository
+### Ask the Agent to work in the repository
 
 Select the Ready active `GATEWAY_POD` using the
 [production TUI procedure](deploy/production-tui.md),

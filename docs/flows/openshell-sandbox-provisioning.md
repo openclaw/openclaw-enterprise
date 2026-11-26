@@ -161,16 +161,11 @@ matching name, OCC Namespace ID, managed-by labels and active phase. Conflicts f
 
 `harnessLaunch` prepares inputs; `sandboxRequirements` adds operator-mode PVC
 mounts. The Agent Service remains inactive; Gateway transport fails closed.
-Attachments and provider/Sandbox creation await Gateway readiness and the Agent-owned
-setup Secret. `validateHarnessAuth` rejects projected identity at
-`servicePrincipalCredentials.mode`: OpenShell cannot preserve the Agent ServiceAccount/token.
-
-For `credential_source`, Compute uses the catalog login mode without a model
-Secret; `requirements.credentialAttachments` carries version and
-`attachForRevision` provider names. `chatgptAuthTokens` omits static
-`CODEX_ACCESS_TOKEN` but retains account metadata. Codex gets only `APP_TOKEN_SHA`
-from its Agent transport Secret. Compute renders the admitted plugin snapshot as
-`runtime.json` and `config.toml`, removing their ConfigMap environment paths.
+For managed credentials, Compute prepares an idle Sandbox. The Worker
+reauthorizes each selected Source and asks Credential Proxy to configure its
+Provider and placeholder. The launcher receives the model binding and, for
+Codex OAuth, trusted account metadata. The Agent transport Secret still
+supplies its separate app-server authentication. See [prepare credential delivery](credential-source-lifecycle.md#3-prepare-credential-delivery).
 
 `configureAgent` sets full access/user review across login modes and removes `appServer.networkProxy`.
 `deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
@@ -182,17 +177,15 @@ OpenShell blocks nested bubblewrap; model readiness does not prove shell executi
 `codexLaunchEntrypoint` selects by revision, authentication, protection and workspace node.
 Existing revisions retain encoding; new PAT/workspace setup children are packed on first use.
 
-For a [PAT source](../reference/drivers/openshell-credential-gateway.md#source-type-catalog),
+For a [Codex PAT Source](../reference/credential-sources/managed-static.md#codex-pat),
 `prepareHarnessAuth` selects native login. Startup verifies login using a placeholder in private `auth.json`.
 `openShellPatRecovery` requires exact upgrade refusals, a later same-thread HTTPS fallback,
 then a nonempty answer and tool-free completion. Terminal HTTPS 401/403 leaves the Harness
 unready with `AUTHENTICATION_FAILED`.
-`requireModelSourceDestination` checks immutable `config.authorized_base_url` before binding
-the [shared provider](../reference/drivers/kubernetes-compute/model-provider.md)
-URL plus `/**`, preserving `/api/v1` prefixes. `attachForRevision` translates native
-OpenClaw configuration and matches endpoints. For explicit Codex endpoints,
-`apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
-selects the named HTTPS Responses provider.
+OCC matches the model preset against the configured provider and admits
+the exact destination and requests. Compute prepares the executable and verifies
+the [admitted model projection](credential-source-lifecycle.md#2-bind-and-admit-an-agent-revision)
+matches the selected Harness.
 
 ### 3. Validate and serialize the Sandbox
 
@@ -411,7 +404,7 @@ setup, retry and restart under setgid parents. It excludes Kubernetes and model 
 
 - [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
 
-- [OpenShell Sandbox Driver](../reference/drivers/openshell-sandbox.md) and [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md)
+- [OpenShell Sandbox Driver](../reference/drivers/openshell-sandbox.md) and [Credential Proxy](../reference/drivers/credential-proxy.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [OpenShell tests](../testing/openshell.md)
 - [Kubernetes Compute Driver](../reference/drivers/kubernetes-compute.md)

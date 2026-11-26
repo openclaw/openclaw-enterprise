@@ -24,10 +24,9 @@ import { lockNamespace } from "./resource-scope.ts";
 
 export type CreateCredentialClientInput = Pick<CredentialClient, "displayName" | "namespaceId"> &
   (
-    | (Pick<
-        OAuthClient,
-        "kind" | "clientId" | "tokenEndpointAuthMethod" | "issuer" | "tokenUrl" | "revocationUrl"
-      > & { readonly clientSecret?: string })
+    | (Pick<OAuthClient, "kind" | "clientId" | "tokenEndpointAuthMethod" | "issuer"> & {
+        readonly clientSecret?: string;
+      })
     | { readonly kind: "github-app"; readonly appId: string; readonly privateKey: string }
   );
 export type RotateCredentialClientInput =
@@ -103,20 +102,23 @@ export function createCredentialClientAdministration({
     };
     return client.kind === "github-app"
       ? { ...owner, kind: client.kind, appId: client.appId }
-      : { ...owner, kind: client.kind, tokenUrl: client.tokenUrl };
+      : { ...owner, kind: client.kind, issuer: client.issuer };
   }
 
   function signal() {
     return AbortSignal.timeout(tokenServiceTimeoutMs);
   }
 
-  function checkedOAuthUrl(field: "issuer" | "tokenUrl" | "revocationUrl", value: string) {
+  function checkedOAuthIssuer(value: string) {
     if (
       !/^https:\/\/[^/?#@\s\\]+(?:[/?][^#\s\\]*)?$/.test(value) ||
       !URL.canParse(value) ||
-      (field === "issuer" && value.includes("?"))
+      value.includes("?")
     ) {
-      throw new ConnectionTemplateValidationError(field, `${field} must be an approved HTTPS URL.`);
+      throw new ConnectionTemplateValidationError(
+        "issuer",
+        "issuer must be an approved HTTPS URL.",
+      );
     }
   }
 
@@ -159,11 +161,7 @@ export function createCredentialClientAdministration({
       material = input.privateKey;
     } else {
       const oauth = input;
-      checkedOAuthUrl("issuer", oauth.issuer);
-      checkedOAuthUrl("tokenUrl", oauth.tokenUrl);
-      if (oauth.revocationUrl !== undefined) {
-        checkedOAuthUrl("revocationUrl", oauth.revocationUrl);
-      }
+      checkedOAuthIssuer(oauth.issuer);
       if (
         !/^[!-~]{1,256}$/.test(oauth.clientId) ||
         !["none", "client_secret_basic", "client_secret_post"].includes(
@@ -190,9 +188,7 @@ export function createCredentialClientAdministration({
         kind: "oauth2",
         clientId: oauth.clientId,
         issuer: oauth.issuer,
-        tokenUrl: oauth.tokenUrl,
         tokenEndpointAuthMethod: oauth.tokenEndpointAuthMethod,
-        ...(oauth.revocationUrl !== undefined && { revocationUrl: oauth.revocationUrl }),
       };
       material = oauth.clientSecret;
     }

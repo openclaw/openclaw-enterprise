@@ -11,7 +11,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 1. Open **Pages/Create Agent → ChatGPT OAuth before sign-in (Experimental)**. Confirm the
    provider is OpenAI, the harness is Codex, and authentication is **ChatGPT OAuth (Experimental)**. Confirm the Experimental
    notice explains that sign-in, plugins, deployment, and recovery may have limitations.
-   Confirm **Sign in with OAuth** is available. The model picker remains usable; no token input appears.
+   Confirm **Model credential** offers **Sign in with OAuth** and the sign-in button is
+   available. The model picker remains usable; no token input appears.
 2. Open **ChatGPT device login pending (Experimental)**. Inspect the displayed code and the
    **Open Codex sign-in** link. Do not submit the simulated code to the provider.
    Choose **Cancel login** and confirm the sign-in button returns.
@@ -44,6 +45,11 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
    authentication is selected. Switching providers also clears the selected model
    credential. A staged login is discarded only through its explicit control.
 
+Open **Pages/Create Agent → Reuse a saved ChatGPT OAuth Source**. Confirm the saved
+built-in Source is selected under **Model credential**. Select **Create Agent** and
+check that the draft references its exact Source ID. The simulated request log must
+show no new device authorization or Source enrollment.
+
 ## Check a refused poll
 
 Open **Components/Credentials → ChatGPT login poll denied (Experimental)** and choose
@@ -56,7 +62,7 @@ log shows separate starts for the failed attempt and the successful login.
 ## Return after an interrupted start
 
 Open **Pages/Create Agent → ChatGPT sign-in interrupted by navigation (Experimental)**.
-Choose **Sign in with OAuth**, then **Secrets** while the start is pending.
+Choose **Sign in with OAuth**, then **Credentials** while the start is pending.
 Use browser Back. Confirm that the Console asks an administrator to investigate
 and disables another sign-in. Switch to API key and back: sign-in stays disabled.
 The request log must show one start and no poll or cancellation.

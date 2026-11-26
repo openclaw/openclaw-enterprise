@@ -14,6 +14,7 @@ import {
   type DeviceIssuerOptions,
 } from "../helpers/device-token-service.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
 import {
   MEMBER_WRITE,
@@ -97,9 +98,9 @@ async function createOAuthConsoleNamespace(
     },
   });
   assert.ok(state);
-  await installDeviceTokenService(result.fixture.controller, state, secrets);
+  const { owner } = await installDeviceTokenService(result.fixture.controller, state, secrets);
   const issuer = controlDeviceIssuer(t, issuerOptions);
-  return { ...result, issuer };
+  return { ...result, issuer, owner };
 }
 
 async function sourceCount(
@@ -132,19 +133,28 @@ async function signInReady(page: Page, advanceApiClock: (ms: number) => void) {
     .waitFor();
 }
 
-test("Codex OAuth console saves a credential source and reuses it for plugin editing", async (t) => {
+test("Codex OAuth console saves and reuses a Source for Agent creation and plugin editing", async (t) => {
   let apiClockAheadMs = 0;
   const advanceApiClock = (ms: number) => {
     apiClockAheadMs += ms;
   };
   let approved = false;
-  const { fixture, namespace, issuer } = await createOAuthConsoleNamespace(
+  const externalIssuer = "https://issuer.example.test";
+  const { fixture, namespace, issuer, owner } = await createOAuthConsoleNamespace(
     t,
     "OAuth console",
     {
       provisionedPeople: [],
       agentProvisioning: true,
       now: () => new Date(Date.now() + apiClockAheadMs),
+      oauthIssuer: fixtureOAuthIssuer(
+        {
+          issuer: externalIssuer,
+          authorizationUrl: `${externalIssuer}/authorize`,
+          tokenUrl: `${externalIssuer}/token`,
+        },
+        ["none"],
+      ),
     },
     { approve: async () => approved },
   );
@@ -216,6 +226,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
   // The Console polls only after the interval the login asks for, and follows a longer one a
   // poll answer asks for, as a provider's slow_down does (finding 1651). Each poll is held, so
@@ -454,10 +465,33 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal((await racedSave).status(), 200);
   releaseDiscard.resolve();
   assert.equal(await within(slowDiscard.promise, "the server's answer to the held discard"), 204);
+  // The save rebuilds the draft after its PATCH response. Wait for that rebuild before
+  // navigating, so its late completion cannot replace the Credentials inventory.
+  await page.getByText("Authentication source saved.", { exact: true }).waitFor();
   const retainedAgent = jsonObject((await fixture.request("GET", agentPath)).data);
   assert.deepEqual(retainedAgent.harnessAuth, replaced);
   assert.deepEqual(retainedAgent.credentialSources, replacedAgent.credentialSources);
+  // The Namespace inventory uses the actual filtered collection route for both OAuth Sources
+  // created by the controlled issuer flow, including the retained Source from before replacement.
+  const collectionPath = `/namespaces/${namespace.id}/credential-sources`;
+  const collectionRead = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === collectionPath && response.request().method() === "GET",
+  );
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
+  const collectionResponse = await collectionRead;
+  assert.equal(collectionResponse.status(), 200);
+  const collectionBody = await collectionResponse.json();
+  const listed = jsonObject(collectionBody).data;
+  assert.ok(Array.isArray(listed));
+  const sources = page.getByRole("table", { name: "Credential Sources", exact: true });
+  for (const sourceId of [originalAuth.sourceId, replaced.sourceId]) {
+    assert.ok(listed.some((source) => jsonObject(source).id === sourceId));
+    const row = sources.getByRole("row").filter({ hasText: sourceId });
+    await row.getByText("OAuth refresh token", { exact: true }).waitFor();
+  }
   const serializedRequests = JSON.stringify(requests);
+  const serializedCollection = JSON.stringify(collectionBody);
   const bodyText = await page.locator("body").innerText();
   assert.ok(issuer.handles.size > 0, "the issuer must issue a private device handle");
   for (const credential of [
@@ -471,11 +505,157 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
       "browser API requests must not contain credential material",
     );
     assert.equal(
+      serializedCollection.includes(credential),
+      false,
+      "the Source collection must not contain credential material",
+    );
+    assert.equal(
       bodyText.includes(credential),
       false,
       "visible body text must not contain credential material",
     );
   }
+  // A Template OAuth Source is a valid readable OAuth credential, but it does not carry the
+  // built-in Codex consent needed to authenticate this model provider.
+  const template = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: "External account",
+      mode: "manual",
+      issuer: externalIssuer,
+      authorizationUrl: `${externalIssuer}/authorize`,
+      tokenUrl: `${externalIssuer}/token`,
+      scopes: ["read"],
+      destinations: [{ host: "api.example.test", path: "/v1/**" }],
+    },
+  });
+  assert.equal(template.status, 201);
+  const templateData = jsonObject(template.data);
+  const client = await fixture.request("POST", "/credential-clients", {
+    body: {
+      kind: "oauth2",
+      namespaceId: namespace.id,
+      issuer: externalIssuer,
+      displayName: "External account client",
+      clientId: "public-fixture-client",
+      tokenEndpointAuthMethod: "none",
+    },
+  });
+  assert.equal(client.status, 201);
+  const templateSource = await owner.createSource(
+    {
+      type: "oauth2-refresh-token",
+      namespaceId: namespace.id,
+      name: "External OAuth account",
+      connectionTemplateId: jsonString(templateData.id),
+      consent: {
+        kind: "connection_template",
+        version: Number(jsonObject(templateData.current).version),
+        oauthClientId: jsonString(jsonObject(client.data).id),
+        ownerPrincipalId: fixture.principal.id,
+      },
+      grant: {
+        accessToken: "external-access-fixture",
+        refreshToken: "external-refresh-fixture",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        requestedScopes: ["read"],
+        grantedScopes: ["read"],
+      },
+    },
+    t.signal,
+  );
+
+  // Reuse the already issued built-in Source through the actual Create Agent form. Discovery
+  // needs read; saving checks operate on the exact Source and never starts another OAuth login.
+  const loginsBeforeReuse = issuer.operations.filter((operation) => operation === "start").length;
+  const reuseRequestStart = requests.length;
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  const existing = page.getByLabel("Model credential", { exact: true });
+  await existing.selectOption(originalAuth.sourceId);
+  assert.equal(await existing.locator(`option[value="${templateSource.id}"]`).count(), 0);
+  // A confirmed Namespace refusal removes previously readable candidates and the staged choice.
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "namespace"]);
+  const refusedList = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === collectionPath && response.request().method() === "GET",
+  );
+  await page.getByRole("button", { name: "Refresh Source list", exact: true }).click();
+  assert.equal((await refusedList).status(), 403);
+  await page.getByRole("button", { name: "Retry Source list", exact: true }).waitFor();
+  assert.equal(await existing.locator(`option[value="${originalAuth.sourceId}"]`).count(), 0);
+  assert.equal(await existing.inputValue(), "");
+  await existing.selectOption("new");
+  assert.equal(
+    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isVisible(),
+    true,
+  );
+  assert.equal(
+    issuer.operations.filter((operation) => operation === "start").length,
+    loginsBeforeReuse,
+  );
+  restoreRead();
+  await page.getByRole("button", { name: "Retry Source list", exact: true }).click();
+  await existing.selectOption(originalAuth.sourceId);
+  await page.getByLabel("Agent name", { exact: true }).fill("Reused OAuth Agent");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  const restoreOperate = revokeAdministratorGrant(fixture, ["operate", "credential_source"]);
+  const denial = await submitCreateAgent(page, fixture, namespace.id, { status: 403 });
+  const denialMessage = jsonString(jsonObject(jsonObject(await denial.json()).error).message);
+  assert.match(denialMessage, /CredentialSource operate/);
+  assert.ok(denialMessage.includes(originalAuth.sourceId));
+  const agentsAfterDenial = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+  assert.ok(Array.isArray(agentsAfterDenial.data));
+  assert.equal(
+    agentsAfterDenial.data.some((agent) => jsonObject(agent).name === "Reused OAuth Agent"),
+    false,
+  );
+  restoreOperate();
+  const reused = responseData(
+    await (await submitCreateAgent(page, fixture, namespace.id, { status: 201 })).json(),
+  );
+  assert.deepEqual(reused.harnessAuth, {
+    method: "credential_source",
+    sourceId: originalAuth.sourceId,
+  });
+  assert.deepEqual(reused.credentialSources, [{ sourceId: originalAuth.sourceId }]);
+  const savedReuse = jsonObject(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${jsonString(reused.id)}`))
+      .data,
+  );
+  assert.deepEqual(savedReuse.harnessAuth, reused.harnessAuth);
+  assert.deepEqual(savedReuse.credentialSources, reused.credentialSources);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const detailSource = page.getByLabel("Existing Credential Source", { exact: true });
+  const originalName = jsonString(
+    jsonObject(listed.find((source) => jsonObject(source).id === originalAuth.sourceId)).name,
+  );
+  await detailSource
+    .getByRole("option", { name: `${originalName} · ${originalAuth.sourceId}` })
+    .waitFor({ state: "attached" });
+  assert.equal(await detailSource.inputValue(), originalAuth.sourceId);
+  assert.equal(await detailSource.locator(`option[value="${replaced.sourceId}"]`).count(), 1);
+  assert.equal(await detailSource.locator(`option[value="${templateSource.id}"]`).count(), 0);
+  const reuseRequests = requests.slice(reuseRequestStart);
+  assert.equal(
+    reuseRequests.some(
+      (request) => request.method === "POST" && request.path.endsWith("/device-authorizations"),
+    ),
+    false,
+  );
+  assert.equal(
+    reuseRequests.some((request) => request.method === "POST" && request.path === collectionPath),
+    false,
+  );
+  assert.equal(
+    issuer.operations.filter((operation) => operation === "start").length,
+    loginsBeforeReuse,
+  );
   assert.equal(
     providerRequests.some((url) => url.includes("revoke") || url.includes("whoami")),
     false,
@@ -555,6 +735,9 @@ for (const savedAgent of [false, true]) {
       await page
         .getByLabel(agent ? "Authentication source" : "Authentication method")
         .selectOption(agent ? "device_login" : "credential_source");
+      if (!agent) {
+        await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+      }
       const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
       const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
       const starts = () =>
@@ -593,6 +776,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
   await waitForEnabled(start);
 
@@ -628,6 +812,7 @@ test("Codex sign-in cannot repeat a start with an unreadable confirmation", asyn
   const method = page.getByLabel("Authentication method");
   await method.selectOption("api_key");
   await method.selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal(await start.isDisabled(), true);
   await start.dispatchEvent("click");
   await settlePageRequests(page);
@@ -674,6 +859,9 @@ for (const savedAgent of [false, true]) {
     }
     const methodLabel = agent ? "Authentication source" : "Authentication method";
     await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
+    if (!agent) {
+      await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+    }
     const beginPath = `/namespaces/${namespace.id}/agents${agent ? `/${agent.id}` : ""}/device-authorizations`;
     const held = await holdRequests(t, page, `**${beginPath}`, {
       once: true,
@@ -711,6 +899,10 @@ for (const savedAgent of [false, true]) {
     // Method changes rerender controls; even a delivered click cannot repeat the write.
     await page.getByLabel(methodLabel).selectOption("api_key");
     await page.getByLabel(methodLabel).selectOption(agent ? "device_login" : "credential_source");
+    if (!agent) {
+      await page.getByLabel("Model credential", { exact: true }).selectOption("new");
+    }
+    assert.equal(await start.isDisabled(), true);
     await start.dispatchEvent("click");
     await settlePageRequests(page);
     assert.equal(
@@ -1059,6 +1251,7 @@ test("a refused device login start on Create Agent names the create grants it ch
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   const refused = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname ===
@@ -1082,6 +1275,7 @@ test("a member's refused Installation read leaves Sign in offered on Create Agen
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`, member.credentials);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
+  await page.getByLabel("Model credential", { exact: true }).selectOption("new");
   assert.equal((await installationRead).status(), 403);
   await page.getByText("Sign in to connect your ChatGPT account.", { exact: true }).waitFor();
   const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });

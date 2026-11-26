@@ -40,6 +40,7 @@ import {
 } from "./agents/access-reasons.mjs";
 import {
   createApiClient,
+  namedDenial,
   requestFailure,
   responseFields,
   type RequestOptions,
@@ -51,6 +52,7 @@ import {
   createNavigation,
   pages,
   type AgentsLanding,
+  type RestoreHistory,
 } from "./navigation.mjs";
 import {
   brandContents,
@@ -69,6 +71,7 @@ import {
   type NamespacePageContext,
 } from "./namespaces.mjs";
 import { renderSecrets } from "./secrets.mjs";
+import { renderCredentialSources } from "./credential-sources.mjs";
 import {
   passwordSignInFailure,
   providerCallbackFailure,
@@ -1350,7 +1353,6 @@ function mountRetainedView(current: Route, retained: RetainedView, feature: Page
     shell.diagnostics = retained.state.diagnostics;
   }
   mountedRouteKey = routeKey(current);
-  window.scrollTo({ top: retained.scrollY, left: 0 });
   return shell;
 }
 
@@ -1744,6 +1746,50 @@ function showCheckingSession(checking = () => true) {
   }, startupStatusDelayMs);
 }
 
+// Chrome restores the previous scroll position after the return popstate. Wait for that
+// frame before focusing the existing explanation, unless the reader has already moved on.
+function revealAfterReturn(feedback: HTMLElement) {
+  const message = feedback.firstChild;
+  const cancel = new AbortController();
+  const signal = AbortSignal.any([cancel.signal, lifetime.signal]);
+  const stop = () => cancel.abort();
+  for (const event of ["focusin", "blur", "keydown", "input", "pointerdown", "wheel", "pagehide"]) {
+    window.addEventListener(event, stop, { capture: true, passive: true, signal });
+  }
+  // A canceled traversal has no popstate. A later visit to that same entry must not
+  // inherit its focus request. Older browsers still use the ordinary history path.
+  window.navigation?.addEventListener(
+    "navigate",
+    (event) => event.signal.addEventListener("abort", stop, { signal }),
+    { once: true, signal },
+  );
+  return () => {
+    requestAnimationFrame(() => {
+      if (signal.aborted) {
+        return;
+      }
+      cancel.abort();
+      if (
+        !resumePending &&
+        !loggingOut &&
+        document.hasFocus() &&
+        feedback.isConnected &&
+        feedback.firstChild === message
+      ) {
+        // Calling focus() again does not reveal a message the reader scrolled away from.
+        if (document.activeElement === feedback) {
+          const { top, bottom } = feedback.getBoundingClientRect();
+          if (top < 0 || bottom > window.innerHeight) {
+            feedback.scrollIntoView({ block: "center" });
+          }
+        } else {
+          shellUI.focusLeaveFeedback(feedback);
+        }
+      }
+    });
+  };
+}
+
 async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
@@ -1761,7 +1807,7 @@ async function loadPage({
   reuseView?: boolean;
   fromRefresh?: boolean;
   confirmAgentPermissions?: boolean;
-  restoreHistory?: ((url: string) => void) | null;
+  restoreHistory?: RestoreHistory | null;
   openingAgent?: boolean;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
   agentsLanding?: AgentsLanding | null;
@@ -1794,11 +1840,20 @@ async function loadPage({
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
-  const tabNavigation = fromNavigation && navigateAgentTab?.(current.url);
+  let feedback: HTMLElement | undefined;
+  const tabNavigation =
+    fromNavigation &&
+    navigateAgentTab?.(current.url, (node) => {
+      feedback = node;
+    });
   if (tabNavigation === "blocked") {
     // Back or Forward already moved to an existing entry. Return to the tab we kept open,
     // leaving that entry intact; only a newly requested navigation needs its URL replaced.
-    (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    if (restoreHistory && feedback) {
+      restoreHistory(mountedRouteKey!, revealAfterReturn(feedback));
+    } else {
+      (restoreHistory ?? replaceUrl)(mountedRouteKey!);
+    }
     return;
   }
   if (tabNavigation) {
@@ -1854,6 +1909,17 @@ async function loadPage({
       ? mountedViewState?.deferredAgentSearch
       : undefined;
   const focused = document.activeElement;
+  const { agentId } = current;
+  // Only a switch from this Agent’s picker. Links and history have their own focus targets.
+  const switchingVersion =
+    fromNavigation &&
+    !restoreHistory &&
+    agentId &&
+    current.namespace &&
+    matchesAgentIdentity(mountedAgent, agentId, current.namespace) &&
+    focused instanceof HTMLSelectElement &&
+    focused.id === "revision-selector" &&
+    mountedViewState?.view.contains(focused);
   // Only resume the tab or its editing controls. Returning must not put a destructive action under Enter.
   const leavingDraftControl =
     agentHistory &&
@@ -2300,6 +2366,7 @@ async function loadPage({
     // The destination's first read runs before its shell renders, so the held page (or
     // loading) is replaced once, by the page itself (finding 1407).
     let firstItems: unknown = null;
+    let secretCollectionFailure: ReturnType<typeof requestFailure> | null = null;
     let firstAgent: AgentRead | null = null;
     // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
     // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
@@ -2349,10 +2416,26 @@ async function loadPage({
         try {
           firstItems = current.feature === "namespaces" ? namespaces : await request(itemsPath);
         } catch (error) {
-          if (search && document.hasFocus() && retryableAgentRecheck(error)) {
-            searchForRetry = pendingSearch();
+          const failure = requestFailure(error);
+          const { status } = failure;
+          const { name } = responseFields(error);
+          if (
+            current.feature === "secrets" &&
+            status !== 401 &&
+            !isAccessRefusal(status) &&
+            name !== "AbortError"
+          ) {
+            // The Credentials page can still show independently readable Sources when the
+            // Secret collection is temporarily unavailable. Never reuse the partial view.
+            secretCollectionFailure = failure;
+            firstItems = [];
+            reuseView = false;
+          } else {
+            if (search && document.hasFocus() && retryableAgentRecheck(error)) {
+              searchForRetry = pendingSearch();
+            }
+            throw error;
           }
-          throw error;
         }
       }
       if (!lifetime.isCurrent(active)) {
@@ -2476,6 +2559,18 @@ async function loadPage({
       retained && resumingView && current.feature === "namespaces" && !restoreFocus
         ? focusInShownView()
         : null;
+    // The reader can leave the held heading while the snapshot loads. Capture that choice
+    // immediately before either shell replacement, only for the same admitted Agent.
+    const versionHeaderFocus = () =>
+      switchingVersion &&
+      document.hasFocus() &&
+      previousOwner !== null &&
+      owner === previousOwner &&
+      selectedNamespace === current.namespace &&
+      matchesAgentIdentity(firstAgent, agentId, selectedNamespace) &&
+      document.activeElement?.matches(".page-header--agent :is(a.page-back, button.page-meta-copy)")
+        ? focusInShownView()
+        : null;
     if (unchanged && retainedView && retainedState) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -2486,7 +2581,14 @@ async function loadPage({
       if (returningToDraft && heldHeading?.isConnected && document.activeElement !== heldHeading) {
         returnFocusMoved = true;
       }
+      const headerFocus = versionHeaderFocus();
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
+      // The shell already restores Namespace focus. Keep that control in view too.
+      const keptNamespaceFocus =
+        switchingVersion && restoredShell.scopeSelector?.contains(document.activeElement);
+      if (!headerFocus && !keptNamespaceFocus) {
+        window.scrollTo({ top: retainedView.scrollY, left: 0 });
+      }
       shell = restoredShell;
       // Landing notices stay on a refocus of the same view and clear on a new navigation.
       if (!resumingView) {
@@ -2506,7 +2608,7 @@ async function loadPage({
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => {
-        (restoreFocus ?? namespaceShellFocus)?.restore(restoredShell.view);
+        (restoreFocus ?? namespaceShellFocus ?? headerFocus)?.restore(restoredShell.view);
         if (returningToDraft && mayReturnFocus() && document.activeElement === document.body) {
           retainedView.restoreAgentControl?.();
         }
@@ -2797,7 +2899,7 @@ async function loadPage({
           // An Agent page still hidden behind a stand-in leaves tab navigation to a full load: it
           // must not switch tabs, or mark its route mounted, while another page is on screen
           // (finding 1542).
-          const navigateTab: TabNavigation = (next) => shownStandIn === null && handler(next);
+          const navigateTab: TabNavigation = (...args) => shownStandIn === null && handler(...args);
           viewState.tabNavigation = navigateTab;
           navigateAgentTab = navigateTab;
         }
@@ -2947,6 +3049,7 @@ async function loadPage({
             document.activeElement === pendingAgentHeading ||
             (heldHeading !== null && document.activeElement === heldHeading) ||
             shownNow.view.contains(document.activeElement);
+          const headerFocus = versionHeaderFocus();
           const detailShell = renderShell(privatePage, false);
           shell = detailShell;
           detailShell.view.replaceWith(detailView);
@@ -2968,6 +3071,7 @@ async function loadPage({
             // A rebuilt snapshot may reveal before its shortcuts are ready.
             heldHeading = heading;
           }
+          headerFocus?.restore(detailView);
           markRevealed();
           runAfterReveal();
         };
@@ -3008,7 +3112,11 @@ async function loadPage({
     if (!Array.isArray(items) || itemsPath === null) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(itemsPath, JSON.stringify(items));
+    if (secretCollectionFailure) {
+      viewState.reusable = false;
+    } else {
+      viewState.reads.set(itemsPath, JSON.stringify(items));
+    }
     if (current.feature === "agents" && selectedNamespace !== null) {
       renderAgentList({
         ...agentContext,
@@ -3065,21 +3173,111 @@ async function loadPage({
         retained && reuseView && selectedNamespace === current.namespace && !linkedSecretId
           ? retainedView?.snapshot
           : undefined;
-      renderSecrets({
-        ...agentContext,
-        searchQuery: previous?.querySelector<HTMLInputElement>("#secret-search")?.value ?? "",
-        namespaceId: selectedNamespace,
-        items,
-        sorted,
-        permissions: firstPermissions,
-        openSecretId: linkedSecretId,
+      const sourceView = element("section", { "aria-label": "Credential Sources" });
+      const secretView = element("section", { "aria-label": "Secrets" });
+      const credentialsNamespaceId = selectedNamespace;
+      shell.view.replaceChildren(
+        element("div", { className: "credential-inventories" }, sourceView, secretView),
+      );
+      type WritingHold = Parameters<NamespacePageContext["holdWhileWriting"]>[0];
+      const holds: WritingHold[] = [];
+      const holdWhileWriting = (hold: WritingHold) => holds.push(hold);
+      agentContext.holdWhileWriting({
+        writing: () => holds.some((hold) => hold.writing()),
+        held: () => holds.filter((hold) => hold.writing()).forEach((hold) => hold.held()),
+        released: () => holds.forEach((hold) => hold.released?.()),
       });
+      if (secretCollectionFailure) {
+        secretView.replaceChildren(
+          statusBlock(
+            "warning",
+            "Secrets unavailable",
+            "The Secret inventory could not be loaded. Select Refresh to check again.",
+            secretCollectionFailure.requestId
+              ? [requestIdDisclosure(secretCollectionFailure.requestId)]
+              : [],
+          ),
+        );
+      } else {
+        renderSecrets({
+          ...agentContext,
+          view: secretView,
+          holdWhileWriting,
+          searchQuery: previous?.querySelector<HTMLInputElement>("#secret-search")?.value ?? "",
+          namespaceId: selectedNamespace,
+          items,
+          sorted,
+          permissions: firstPermissions,
+          openSecretId: linkedSecretId,
+        });
+        // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
+        linkedSecret = null;
+      }
+      async function loadSources() {
+        sourceView.replaceChildren(statusBlock("info", null, "Loading Credential Sources…"));
+        try {
+          const sourceItems = await agentContext.request(
+            `/namespaces/${encodeURIComponent(credentialsNamespaceId)}/credential-sources`,
+          );
+          if (agentContext.isCurrent()) {
+            renderCredentialSources({
+              ...agentContext,
+              view: sourceView,
+              holdWhileWriting,
+              namespaceId: credentialsNamespaceId,
+              items: sourceItems,
+              onInventoryAccessRefused(cause) {
+                if (!agentContext.isCurrent()) {
+                  return;
+                }
+                clearRetainedViewsForNamespace(credentialsNamespaceId);
+                resetReads();
+                const denied = renderShell("secrets");
+                const { status, requestId } = requestFailure(cause);
+                panel(
+                  denied.view,
+                  status === 403 ? "Access denied" : "Namespace unavailable",
+                  `The Source was created, but Namespace access was refused while refreshing the inventory. ${namedDenial(cause) ?? "Select Refresh to check access again."}`,
+                );
+                if (requestId) {
+                  denied.view.querySelector(".state-panel")?.append(requestIdDisclosure(requestId));
+                }
+                denied.refresh.disabled = false;
+                denied.view.setAttribute("aria-busy", "false");
+              },
+            });
+          }
+        } catch (error) {
+          if (!agentContext.isCurrent()) {
+            return;
+          }
+          const { status, requestId } = requestFailure(error);
+          if (status === 401 || isAccessRefusal(status)) {
+            // Both inventories authorize Namespace read. A refusal invalidates the whole page,
+            // including Secret metadata already rendered by the first collection read.
+            throw error;
+          }
+          sourceView.replaceChildren(
+            statusBlock(
+              "warning",
+              "Credential Sources unavailable",
+              "The Source inventory could not be loaded. Retry to check current access and saved state.",
+              [
+                button("Retry Source inventory", () => void loadPage()),
+                requestId ? requestIdDisclosure(requestId) : null,
+              ],
+            ),
+          );
+        }
+      }
+      await loadSources();
+      if (!agentContext.isCurrent()) {
+        return;
+      }
       if (previous) {
         const rebuiltView = shell.view;
         restoreRefocus = () => restoreFocus?.restore(rebuiltView, { rebuilt: true });
       }
-      // Shown (its dialog opened or the unlisted note), so a later load does not reopen it.
-      linkedSecret = null;
     } else if (current.feature === "backends") {
       if (backendsDenied) {
         backendsDenied = false;
@@ -3221,7 +3419,8 @@ async function loadPage({
         : installationDenied
           ? `Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. ${askForGrant("access")}`
           : status === 403
-            ? `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`
+            ? ((current.feature === "secrets" ? namedDenial(error) : undefined) ??
+              `Your account does not have access to this page in this Namespace. Choose another Namespace, or ${ASK_INSTALLATION_ADMINISTRATOR} for access.`)
             : "The read could not be completed. Retry to check current access and saved state.",
       // Retrying a permission refusal gives the same answer; the header's Refresh checks access
       // again after a grant (finding 2549). The Request ID stays for whoever traces the denial,

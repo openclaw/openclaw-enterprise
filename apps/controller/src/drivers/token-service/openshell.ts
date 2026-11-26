@@ -3,7 +3,6 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   isName,
-  SOURCE_PROVIDER_PRESET_CONFIG_KEY,
   type AccessBinding,
   type Backend,
   type CredentialClientSecretInstance,
@@ -39,6 +38,7 @@ import {
   SOURCE_ID_LABEL,
   openShellOwnedBy,
   openShellProviderName,
+  openShellSourceCredentialEnvironment,
   openShellStaticBearerProfile,
   openShellStaticBearerProfileVersion,
   openShellWorkspaceName,
@@ -54,7 +54,6 @@ import type {
 const namespaceLabel = "openclaw.dev/namespace-id";
 const tokenServiceLabel = "openclaw.dev/token-service";
 const deliveryLabel = "openclaw.dev/credential-proxy-delivery";
-const environment = "OPENAI_API_KEY";
 const maxProviderCredentialBytes = 8192;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -259,7 +258,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     return openShellStaticBearerProfile({
       id: openShellProviderName(ref.id),
       displayName: "OpenClaw Enterprise static credential",
-      environment,
+      environment: openShellSourceCredentialEnvironment(ref.id),
       annotations: this.labels(ref),
     });
   }
@@ -268,7 +267,28 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     profile: OpenShellStoredProviderProfile | undefined,
     ref: CredentialSourceReference,
   ): string {
-    return openShellStaticBearerProfileVersion(profile, this.profile(ref)) ?? ownershipConflict();
+    const version = openShellStaticBearerProfileVersion(profile, this.profile(ref));
+    if (version === undefined) {
+      throw new ResourceStateConflictError(
+        "The OpenShell Source profile uses an unsupported credential format. Enroll a new Source.",
+      );
+    }
+    return version;
+  }
+
+  private ownedProfileVersion(
+    profile: OpenShellStoredProviderProfile | undefined,
+    ref: CredentialSourceReference,
+  ): string {
+    if (
+      !profile ||
+      profile.id !== openShellProviderName(ref.id) ||
+      !/^[1-9]\d*$/.test(profile.resourceVersion) ||
+      !isDeepStrictEqual(profile.annotations, this.labels(ref))
+    ) {
+      ownershipConflict();
+    }
+    return profile.resourceVersion;
   }
 
   private async workspaceFor(
@@ -333,12 +353,14 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     ref: CredentialSourceReference,
     providerId: string,
     signal: AbortSignal,
+    purpose: "delivery" | "withdrawal" = "delivery",
   ): Promise<OpenShellNativeProvider> {
     const name = openShellProviderName(ref.id);
-    const profileVersion = this.profileVersion(
-      await client.getProviderProfile(workspace, name, signal),
-      ref,
-    );
+    const profile = await client.getProviderProfile(workspace, name, signal);
+    const profileVersion =
+      purpose === "withdrawal"
+        ? this.ownedProfileVersion(profile, ref)
+        : this.profileVersion(profile, ref);
     const current = this.provider(
       await client.getProvider(workspace, name, signal),
       ref,
@@ -369,11 +391,6 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
       );
     }
     validateLifecycle(input.lifecycleConfig);
-    if (input.config[SOURCE_PROVIDER_PRESET_CONFIG_KEY] !== "openai") {
-      throw new TokenServiceSourceInputError(
-        "OpenShell static Sources require the OpenAI model provider preset.",
-      );
-    }
     const credential = staticCredential(input.secret);
     const ref: CredentialSourceReference = {
       kind: "credential_source",
@@ -405,7 +422,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
             name: profile.id,
             type: profile.id,
             labels: this.labels(ref),
-            credentials: { [environment]: credential },
+            credentials: { [openShellSourceCredentialEnvironment(ref.id)]: credential },
           },
           signal,
         ),
@@ -422,6 +439,9 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
         tokenServiceInstanceId: this.options.tokenServiceInstanceId,
         state: "ready",
         config: input.config,
+        ...(input.connectionTemplateId === undefined
+          ? {}
+          : { connectionTemplateId: input.connectionTemplateId }),
         backendRef: { workspaceId, providerId: created.id },
         createdAt: new Date().toISOString(),
       });
@@ -464,7 +484,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
             name: current.name,
             type: current.name,
             labels: this.labels(ref),
-            credentials: { [environment]: credential },
+            credentials: { [openShellSourceCredentialEnvironment(ref.id)]: credential },
           },
           current.resourceVersion,
           signal,
@@ -517,12 +537,13 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
   async resolveNativeProvider(
     source: TokenServiceSourceInstance<CredentialSourceReference>,
     signal: AbortSignal,
+    purpose: "delivery" | "withdrawal" = "delivery",
   ): Promise<OpenShellNativeProvider> {
     signal.throwIfAborted();
     const ref = this.ownedRef(source);
     const { namespace, workspaceId, providerId } = await this.readySource(ref);
     const placed = await this.workspaceFor(namespace, signal, workspaceId);
-    return this.readProvider(placed, ref, providerId, signal);
+    return this.readProvider(placed, ref, providerId, signal, purpose);
   }
 
   async resolveCredential(
@@ -538,7 +559,7 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
     const resolved = await operator.getProviderCredential(
       current.workspace,
       current.name,
-      environment,
+      openShellSourceCredentialEnvironment(ref.id),
       signal,
     );
     const after = await this.workspaceFor(namespace, signal, workspaceId);
@@ -588,18 +609,20 @@ export class OpenShellTokenServiceDriver implements TokenServiceDriver {
       const { client, workspace } = await this.workspaceFor(namespace, signal, workspaceId);
       const name = openShellProviderName(ref.id);
       const current = await client.getProvider(workspace, name, signal);
+      const profile = await client.getProviderProfile(workspace, name, signal);
+      if (profile) {
+        this.ownedProfileVersion(profile, ref);
+      }
       if (current) {
         this.provider(current, ref, workspace, providerId);
         // TODO: Require the registered Provider ID on delete when OpenShell #5931 ships.
         await client.deleteProvider(workspace, name, signal);
       }
-      const profile = await client.getProviderProfile(workspace, name, signal);
       await this.workspaceFor(namespace, signal, workspaceId);
       if (await client.getProvider(workspace, name, signal)) {
         ownershipConflict();
       }
       if (profile) {
-        this.profileVersion(profile, ref);
         await client.deleteProviderProfile(workspace, name, signal);
       }
       signal.throwIfAborted();

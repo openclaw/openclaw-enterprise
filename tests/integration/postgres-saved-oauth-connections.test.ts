@@ -17,8 +17,13 @@ import {
   PostgresHumanAuthentication,
   ResourceStateConflictError,
 } from "../../packages/occ/src/index.ts";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
-import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { asRecord } from "../../packages/utils/src/index.ts";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
+import {
+  keycloakRealmAdmin,
+  keycloakRealmRows,
+  rotateKeycloakClientSecret,
+} from "../helpers/ci-keycloak-realm.ts";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.ts";
@@ -27,9 +32,9 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { installDeviceTokenService } from "../helpers/device-token-service.ts";
+import { controlledOAuthIssuer, oauthIssuerWithTransport } from "../helpers/oauth-issuer.ts";
 
 const issuer = process.env.OCC_TEST_KEYCLOAK_ISSUER;
-const tokenOrigin = process.env.OCC_TEST_KEYCLOAK_TOKEN_ORIGIN;
 const secretsFile = process.env.OCC_TEST_KEYCLOAK_SECRETS_FILE;
 const publicOrigin = "https://occ-connections.test";
 const redirectUri = `${publicOrigin}/oauth/callback`;
@@ -80,8 +85,9 @@ test(
   "OAuth callback persists issuer-granted initial scopes and refuses refresh escalation",
   requiresPostgres,
   async (t) => {
-    const localIssuer = "https://issuer.scope.test";
-    const tokenUrl = `${localIssuer}/token`;
+    const controlled = await controlledOAuthIssuer(t);
+    const localIssuer = controlled.issuer;
+    const tokenUrl = controlled.tokenUrl;
     const destinations = [{ host: "api.scope.test", port: 443, path: "/resource" }];
     const secrets = {
       ...createTestSecretDriver({ id: "scope-pg-secret" }),
@@ -93,6 +99,7 @@ test(
         authSecret: "scope-grant-test-auth-secret-minimum-32-bytes",
         secretDriver: secrets,
         appOptions: { publicOrigin },
+        controllerOptions: { oauthIssuer: controlled.operations },
       });
     const deliveries: { version: string; due: boolean }[] = [];
     await installDeviceTokenService(
@@ -115,25 +122,52 @@ test(
     assert.equal(namespace.statusCode, 201, namespace.body);
     const namespaceId = namespace.json().data.id;
     await controller.handleNamespaceLifecycle(principal.id, namespaceId, "ready");
-    const template = await inject("POST", "/connection-templates", {
+    const forged = await inject("POST", "/connection-templates", {
+      mode: "manual",
+      namespaceId,
+      displayName: "Forged issuer endpoint",
+      issuer: localIssuer,
+      authorizationUrl: controlled.authorizationUrl,
+      tokenUrl: `${localIssuer}/forged-token`,
+      destinations,
+      scopes: ["read"],
+    });
+    assert.equal(forged.statusCode, 400, forged.body);
+    assert.equal(
+      controlled.requests.length,
+      0,
+      "approval never sends a code or credential to the forged endpoint",
+    );
+    const templateInput = {
       mode: "manual",
       namespaceId,
       displayName: "Issuer scope grant",
       issuer: localIssuer,
-      authorizationUrl: `${localIssuer}/authorize`,
+      authorizationUrl: controlled.authorizationUrl,
       tokenUrl,
       destinations,
       scopes: ["read"],
-    });
+    };
+    for (const capabilities of [
+      { grant_types_supported: ["refresh_token"] },
+      { code_challenge_methods_supported: ["plain"] },
+    ]) {
+      controlled.setMetadataCapabilities(capabilities);
+      const incompatible = await inject("POST", "/connection-templates", templateInput);
+      assert.equal(incompatible.statusCode, 400, incompatible.body);
+    }
+    controlled.setMetadataCapabilities({});
+    const template = await inject("POST", "/connection-templates", templateInput);
     assert.equal(template.statusCode, 201, template.body);
+    const selectedSecret = randomUUID();
     const client = await inject("POST", "/credential-clients", {
       kind: "oauth2",
       namespaceId,
       issuer: localIssuer,
-      tokenUrl,
       displayName: "Scope client",
       clientId: "scope-client",
-      tokenEndpointAuthMethod: "none",
+      tokenEndpointAuthMethod: "client_secret_basic",
+      clientSecret: selectedSecret,
     });
     assert.equal(client.statusCode, 201, client.body);
     const clientId = client.json().data.id;
@@ -141,7 +175,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer: localIssuer,
-      tokenUrl,
       displayName: "Second scope client",
       clientId: "scope-client-2",
       tokenEndpointAuthMethod: "none",
@@ -150,9 +183,8 @@ test(
     const incompatible = await inject("POST", "/credential-clients", {
       kind: "oauth2",
       namespaceId,
-      issuer: localIssuer,
-      tokenUrl: `${localIssuer}/other-token`,
-      displayName: "Other endpoint",
+      issuer: "https://other.oauth.test",
+      displayName: "Other issuer",
       clientId: "scope-other",
       tokenEndpointAuthMethod: "none",
     });
@@ -178,11 +210,34 @@ test(
       connectionTemplateId: template.json().data.id,
     });
     assert.equal(missingSelection.statusCode, 400);
-    const wrongEndpoint = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+    const wrongIssuer = await inject("POST", `/namespaces/${namespaceId}/connections`, {
       connectionTemplateId: template.json().data.id,
       oauthClientId: incompatible.json().data.id,
     });
-    assert.notEqual(wrongEndpoint.statusCode, 201);
+    assert.notEqual(wrongIssuer.statusCode, 201);
+    const stale = await inject("POST", `/namespaces/${namespaceId}/connections`, {
+      connectionTemplateId: template.json().data.id,
+      oauthClientId: clientId,
+    });
+    assert.equal(stale.statusCode, 201, stale.body);
+    const staleState = new URL(stale.json().data.authorizationUrl).searchParams.get("state");
+    assert.ok(staleState);
+    const secretRead = t.mock.method(secrets.privateSecrets, "withValue");
+    const readsBefore = secretRead.mock.calls.length;
+    controlled.setMetadataTokenUrl(`${localIssuer}/changed-token`);
+    const refusedCallback = await inject(
+      "GET",
+      `/oauth/callback?${new URLSearchParams({ state: staleState, code: "unspent-code", iss: localIssuer })}`,
+    );
+    controlled.setMetadataTokenUrl(undefined);
+    assert.match(String(refusedCallback.headers.location), /connection=failed/);
+    assert.equal(
+      secretRead.mock.calls.length,
+      readsBefore,
+      "revalidation fails before opening the Client secret",
+    );
+    assert.equal(controlled.requests.length, 0, "revalidation fails before sending the code");
+    secretRead.mock.restore();
     const started = await inject("POST", `/namespaces/${namespaceId}/connections`, {
       connectionTemplateId: template.json().data.id,
       oauthClientId: clientId,
@@ -197,14 +252,21 @@ test(
     const exchangeReached = Promise.withResolvers<void>();
     const resumeExchange = Promise.withResolvers<void>();
     t.after(() => resumeExchange.resolve());
-    // Only the issuer response is controlled; Fastify, IAM, TokenService custody and PostgreSQL are real.
-    t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
-      assert.equal(String(url), tokenUrl);
-      const body = init?.body as URLSearchParams;
+    // Fastify, IAM, TokenService custody, PostgreSQL and the HTTPS transport are real.
+    controlled.setTokenHandler(async ({ authorization, parameters: body }) => {
+      if (
+        authorization !==
+        "Basic " + Buffer.from(`scope-client:${selectedSecret}`).toString("base64")
+      ) {
+        return Response.json({ error: "invalid_client" }, { status: 401 });
+      }
       grantType = body.get("grant_type");
       if (grantType === "authorization_code") {
         exchangeReached.resolve();
         await resumeExchange.promise;
+        // Once the code has been consumed, storing its grant must not depend on another
+        // issuer metadata request. The next issuer operation will revalidate independently.
+        controlled.setMetadataTokenUrl(`${localIssuer}/changed-token`);
       }
       if (grantType === "refresh_token") {
         refreshCalls++;
@@ -239,6 +301,7 @@ test(
     assert.equal(inUse.statusCode, 409, inUse.body);
     resumeExchange.resolve();
     const callback = await callbackPromise;
+    controlled.setMetadataTokenUrl(undefined);
     assert.match(String(callback.headers.location), /connection=connected/);
     assert.equal(grantType, "authorization_code");
     const sources = `/namespaces/${namespaceId}/credential-sources`;
@@ -264,6 +327,19 @@ test(
       oauth_granted_scopes: ["read", "issuer.default"],
     });
     const rotate = () => inject("POST", `${sources}/${source.id}/rotate`);
+    const refreshSecretReads = t.mock.method(secrets.privateSecrets, "withValue");
+    const clientSecretReads = () =>
+      refreshSecretReads.mock.calls.filter((call) => call.arguments[0].id.includes(clientId))
+        .length;
+    const clientReadsBefore = clientSecretReads();
+    const requestsBefore = controlled.requests.length;
+    controlled.setMetadataTokenUrl(`${localIssuer}/changed-token`);
+    const rejectedRefresh = await rotate();
+    controlled.setMetadataTokenUrl(undefined);
+    assert.equal(rejectedRefresh.statusCode, 503, rejectedRefresh.body);
+    assert.equal(clientSecretReads(), clientReadsBefore, "refusal does not open the Client secret");
+    assert.equal(controlled.requests.length, requestsBefore, "refusal does not send the grant");
+    refreshSecretReads.mock.restore();
     const schedule = () =>
       state.read(({ oauthCredentials }) =>
         oauthCredentials.findTokenCustody(namespaceId, source.id),
@@ -326,6 +402,7 @@ test(
       const removed = await inject("DELETE", `/credential-clients/${id}`);
       assert.equal(removed.statusCode, 204, removed.body);
     }
+    await controller.cleanupCredentialClients();
   },
 );
 
@@ -333,12 +410,39 @@ test(
   "OAuth consent creates an owner-bound Source and refreshes it through the TokenService",
   {
     skip:
-      requiresPostgres.skip ||
-      (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
+      requiresPostgres.skip || (!(issuer && secretsFile) && "Prepare the keycloak-oidc CI lane."),
   },
   async (t) => {
-    assert.ok(issuer && tokenOrigin && secretsFile);
+    assert.ok(issuer && secretsFile);
     const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
+    const discovery = await fetch(`${issuer}/.well-known/openid-configuration`);
+    assert.equal(discovery.status, 200);
+    const advertised = asRecord(await discovery.json());
+    assert.equal(advertised?.issuer, issuer);
+    assert.equal(typeof advertised?.token_endpoint, "string");
+    const tokenUrl = advertised.token_endpoint as string;
+    const secondIssuer = "https://second-issuer.example.test";
+    // The lane maps its private Keycloak hostname/port through the test global dispatcher.
+    // MCP's public DNS classification is controlled here; the issuer metadata, TLS and token
+    // exchange still reach Keycloak, and the separate controlled issuer test exercises pinning.
+    const keycloakOperations = oauthIssuerWithTransport({
+      resolveHost: async () => [{ address: "1.1.1.1", family: 4 }],
+      async fetchMetadata(value, request) {
+        if (String(value) === `${secondIssuer}/.well-known/oauth-authorization-server`) {
+          return Response.json({
+            issuer: secondIssuer,
+            authorization_endpoint: secondIssuer + "/authorize",
+            token_endpoint: secondIssuer + "/token",
+            response_types_supported: ["code"],
+            token_endpoint_auth_methods_supported: ["none"],
+          });
+        }
+        const { dispatcher: _dispatcher, ...mapped } = request as RequestInit & {
+          dispatcher?: unknown;
+        };
+        return fetch(value, mapped);
+      },
+    });
     const clientId = `oce-saved-${randomUUID()}`;
     const clientSecret = randomUUID();
     await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
@@ -357,11 +461,8 @@ test(
       },
     });
     t.after(async () => {
-      const [client] = await keycloakRealmAdmin(
-        issuer,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
+      const [client] = keycloakRealmRows(
+        await keycloakRealmAdmin(issuer, secrets.admin, "GET", `/clients?clientId=${clientId}`),
       );
       if (client) {
         await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/clients/${client.id}`);
@@ -377,13 +478,13 @@ test(
     const privateStore = secretDriver.privateSecrets;
     const serverUrl = "https://api.connections.test/mcp";
     let discoveredResource = serverUrl;
-    const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
     const { app, createApp, controller, state, principal, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
         label: "saved-account",
         poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
         authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
         secretDriver,
+        controllerOptions: { oauthIssuer: keycloakOperations },
         appOptions: {
           // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
           discoverMcpAuthorization: async (discoveredUrl: string) => ({
@@ -502,8 +603,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer,
-      tokenUrl,
-      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
       displayName: "Saved accounts",
       clientId,
       clientSecret,
@@ -671,14 +770,14 @@ test(
       displayName: "Provider defaults",
     });
     assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
-    const [keycloakClient] = await keycloakRealmAdmin(
-      issuer,
-      secrets.admin,
-      "GET",
-      "/clients?clientId=" + clientId,
+    const [keycloakClient] = keycloakRealmRows(
+      await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/clients?clientId=" + clientId),
     );
-    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
-    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
+    const realmScopes = keycloakRealmRows(
+      await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes"),
+    );
+    assert.ok(keycloakClient);
+    const profile = realmScopes.find((scope) => scope.name === "profile");
     assert.ok(profile);
     const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
     await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
@@ -727,7 +826,9 @@ test(
     // The provider grant remains refreshable through its original consent even if the current issuer changes.
     const incompatible = await inject("PATCH", templatePath, {
       ...manualConfig,
-      issuer: issuer + "/different",
+      issuer: secondIssuer,
+      authorizationUrl: secondIssuer + "/authorize",
+      tokenUrl: secondIssuer + "/token",
       scopes: [],
     });
     assert.equal(incompatible.statusCode, 200, incompatible.body);
@@ -994,15 +1095,18 @@ test(
     const alice = await subject(original);
     assert.ok(alice);
     async function setIssuedLifetime(seconds: number) {
-      const [client] = await keycloakRealmAdmin(
-        issuer!,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
+      const [client] = keycloakRealmRows(
+        await keycloakRealmAdmin(issuer!, secrets.admin, "GET", `/clients?clientId=${clientId}`),
+      );
+      assert.ok(client);
+      const attributes = asRecord(client.attributes);
+      assert.ok(
+        client.attributes === undefined || client.attributes === null || attributes,
+        "invalid Keycloak client attributes",
       );
       await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", `/clients/${client.id}`, {
         ...client,
-        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
+        attributes: { ...attributes, "access.token.lifespan": String(seconds) },
       });
     }
     assert.equal(
@@ -1063,7 +1167,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer,
-      tokenUrl,
       displayName: "Future consent",
       clientId: clientId + "-future",
       clientSecret: randomUUID(),
@@ -1303,7 +1406,6 @@ test(
     // A second issuer becomes eligible after the first browser obtained its code. Even after the
     // template changes, callbacks from both usable versions could still be in flight.
     const pending = await begin();
-    const secondIssuer = "https://second-issuer.example.test";
     const secondTemplate = await inject("POST", "/connection-templates", {
       ...manualConfig,
       namespaceId,
@@ -1318,7 +1420,6 @@ test(
       kind: "oauth2",
       namespaceId,
       issuer: secondIssuer,
-      tokenUrl: secondIssuer + "/token",
       displayName: "Second server public registration",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",

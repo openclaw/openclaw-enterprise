@@ -1560,6 +1560,15 @@ export function createAgentDetailScenarios({
           "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
         gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
       },
+      pluginAccountConsentMultipleClients: {
+        ...accountConsent,
+        oauthCatalog: "plugin-consent-multiple-clients",
+        name: "Choose an eligible OAuth Client",
+        description:
+          "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
+        steps: ["Choose Support alternate and confirm it remains selected."],
+        gap: "Client eligibility is simulated. This does not complete OAuth or create a Source.",
+      },
       pluginAccountConsentNoClients: {
         ...accountConsent,
         name: "No eligible OAuth Client for a Plugin Template",
@@ -1643,8 +1652,8 @@ export function createAgentDetailScenarios({
           click("Connect account"),
         ],
         description:
-          "An Installation admin sees the existing Google OAuth Template that needs a client and can configure it instead of creating a duplicate. Connect stays unavailable until a client is assigned.",
-        gap: "Template and permission responses are simulated. This does not register an OAuth client or start consent.",
+          "An Installation administrator sees the unverified Google starter and can edit it instead of creating a duplicate. Consent remains unavailable until a verified version and eligible client exist.",
+        gap: "Template verification and permission responses are simulated. This does not contact Google, register an OAuth client, or start consent.",
       },
       slackMcpSavedToolsUnavailable: {
         ...slackMcpBase,
@@ -2080,6 +2089,7 @@ export function createAgentDetailScenarios({
         steps: [
           "Fold Deployment details and Tab to Run diagnostics for this version. Routine queued polls keep the fold, focus and visible button position. Repeat expanded at desktop and phone widths; unchanged healthy Refresh deployment also keeps the fold.",
           'Selected for service reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+          "On Configuration, use Viewing version to choose v6, then v7. Repeat with the keyboard. Each time you return to v7, the picker should show v7 and the notice should say Deploying version. Selected for service stays v6.",
           "Open draft and check the hint beside the enabled Deploy new version button. It reads “v7 was queued at the last check.”",
         ],
       },
@@ -2381,6 +2391,32 @@ export function createAgentDetailScenarios({
         ],
         gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
       },
+      deploymentFailedStatusOnly: {
+        group: "Pages/Agent detail",
+        name: "New version failed, viewer may inspect runtime status",
+        path: currentVersion,
+        deployed: true,
+        candidateDeploymentStatus: "failed",
+        candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+        agentPermissionSummary: {
+          update: false,
+          deploy: false,
+          operate: true,
+          readLogs: false,
+          delete: false,
+          administer: false,
+        },
+        description:
+          "The viewer can inspect failed v7’s runtime status but cannot read log text or deploy. Recovery offers View v7 runtime status in Logs and says whom to ask about logs.",
+        steps: [
+          "Check that the startup failure says who can deploy a new version after the fix.",
+          "At 1440 and 390 wide, check that View v7 runtime status in Logs and the advice about checking logs are both visible.",
+          "Press Tab to reach the action and Enter to open it. Viewing version changes from v6 to v7 and the Logs tab receives focus.",
+          "Inspect the simulated runtime status. Log text, Follow and Download remain unavailable.",
+          "Use Back to return to v6. Reach the same action with Tab and press Enter again. Check that v7’s runtime status appears again.",
+        ],
+        gap: "Permissions and runtime status are simulated. This story does not verify Controller authorization, a live runtime or which reads the Console sends.",
+      },
       sandboxLost: {
         group: "Pages/Agent detail",
         name: "Current version's Sandbox lost",
@@ -2641,8 +2677,8 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can read the Agent. Recovery tells them to ask a Configuration editor to choose a model and someone with deploy access to redeploy.",
         steps: [
-          "Check that the recovery has one link, Open v7 Logs, and the header says Open draft. The picker includes Draft and its Configuration access.",
-          "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
+          "Check that recovery says whom to ask for logs. The viewer cannot read logs or runtime status, so the block has no Logs link.",
+          "The header still offers Open draft. The picker includes Draft and its Configuration access.",
         ],
         gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
       },
@@ -2657,6 +2693,7 @@ export function createAgentDetailScenarios({
           update: false,
           deploy: true,
           operate: false,
+          readLogs: false,
           delete: false,
           administer: false,
           configurationUpdate: false,
@@ -2669,7 +2706,7 @@ export function createAgentDetailScenarios({
         description:
           "The viewer can deploy the Agent. Recovery tells them to ask a Configuration editor to choose a model, then redeploy after the editor saves it.",
         steps: [
-          "Select Open draft and confirm the Configuration tab opens in view, focused, without deploying.",
+          "Confirm Open draft is the only recovery action. Select it and check that the Configuration tab opens in view, focused, without deploying.",
         ],
         gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
       },
@@ -4127,6 +4164,7 @@ export function createAgentDetailRepositoryScenarios(
   const repositoryCollaborator = {
     ...repositoryEditor,
     name: "Select repository collaborator from an empty set",
+    policyState: "repositoryPermissions",
     repositoryOptions: collaboratorRepositoryOptions,
     repositoryAccess: { defaultProfile: "git-full", repositories: [] },
     description:

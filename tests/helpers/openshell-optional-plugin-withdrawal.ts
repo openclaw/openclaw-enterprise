@@ -27,8 +27,9 @@ import { createEnvoyWorkspaceGatewayPlan } from "./envoy-workspace-gateway.mjs";
 import { createHarnessConfiguration, nativeAdminGatewayAuth } from "./harness-configuration.mjs";
 import { loadInstallationFile } from "./installation-file.ts";
 import {
-  createOpenShellInstallationConfiguration,
+  createOpenShellTokenServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
+  waitForOpenShellRevisionActivation,
 } from "./openshell-kubernetes-real.mjs";
 import { createPostgresAgentApp } from "./postgres-agent-app.mjs";
 import { databaseUrl } from "./postgres-database.mjs";
@@ -140,7 +141,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
     host: "storage.googleapis.com",
     ports,
   };
-  const configuration = createOpenShellInstallationConfiguration({
+  const configuration = createOpenShellTokenServiceInstallationConfiguration({
     authentication: { mode: "kubeconfig", kubeconfigPath, context: kubernetesContext },
     platformNamespace,
     gatewayImage,
@@ -152,10 +153,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const backend = asRecord((startup.backend as unknown[])[0])!;
   const sandbox = asRecord(asRecord(drivers.sandbox)?.configuration)!;
   const sandboxKubernetes = asRecord(sandbox.kubernetes)!;
-  Reflect.deleteProperty(drivers, "credential_gateway");
-  Reflect.deleteProperty(asRecord(backend.drivers)!, "credential_gateway");
   Object.assign(drivers, {
-    token_service: { id: "occ", configuration: {} },
     plugin: [{ id: "occ-plugin", configuration: {} }],
   });
   configuration.drivers.compute.id = controller.selectedDriver("compute").id;
@@ -312,7 +310,6 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
       kind: "oauth2",
       namespaceId: namespace.id,
       issuer: googleSlot.issuer,
-      tokenUrl: googleSlot.tokenEndpoint,
       displayName: "Google fixture client",
       clientId: randomUUID(),
       tokenEndpointAuthMethod: "none",
@@ -350,7 +347,7 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   const agentConfig = await request(
     "POST",
     `${base}/configurations`,
-    { name: "Optional Plugin", kind: "agent", values },
+    { kind: "agent", values },
     201,
   );
   const agent = await request(
@@ -414,11 +411,27 @@ export async function verifyOpenShellOptionalPluginWithdrawal(t: TestContext): P
   });
   resources.worker = worker;
   await worker.start();
-  await waitFor(
-    "the native staged Agent to become active",
-    async () =>
-      (await request("GET", agentPath)).activeRevisionId === revision.id ? true : undefined,
-    { timeoutMs: 180_000, intervalMs: 500 },
+  await waitForOpenShellRevisionActivation(
+    (description, read) => waitFor(description, read, { timeoutMs: 180_000, intervalMs: 500 }),
+    {
+      request: async (method, path) => {
+        try {
+          const response = await inject(method, path, undefined, app);
+          const status = response.statusCode;
+          if (status !== 200) {
+            return { status, data: undefined };
+          }
+          const data = asRecord(asRecord(response.json())?.data);
+          assert.ok(data);
+          return { status, data };
+        } catch {
+          throw new Error("OpenShell activation status read failed.");
+        }
+      },
+      agentPath,
+      revisionId: revision.id,
+      reportDeploymentStatusOnTimeout: true,
+    },
   );
   assert.ok(runtime.sandboxDriver.harnessResource);
   const target = runtime.sandboxDriver.harnessResource({

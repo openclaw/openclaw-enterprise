@@ -24,6 +24,8 @@ interface LoginIntent {
 
 export type AgentsLanding = "deletion-status-unavailable";
 
+export type RestoreHistory = (url: string, onReturn?: () => void) => void;
+
 interface NavigationOptions {
   getNamespaceId(): string | null;
   isLoggingOut(): boolean;
@@ -31,7 +33,7 @@ interface NavigationOptions {
     fromNavigation: boolean;
     openingAgent?: boolean;
     agentsLanding?: AgentsLanding | null;
-    restoreHistory?(url: string): void;
+    restoreHistory?: RestoreHistory;
   }): void;
 }
 
@@ -50,7 +52,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
-  let restoring: number | null = null;
+  let restoring: { position: number | null; onReturn: (() => void) | undefined } | null = null;
   replaceUrl(canonicalUrl(location.href));
 
   function route() {
@@ -228,15 +230,16 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     // same distance, then consume that popstate without reloading the page we kept mounted.
     const previous = position;
     position = entryPosition();
-    const returned = restoring !== null && position === restoring;
+    const returned = position === restoring?.position ? restoring : null;
     restoring = null;
     // Never skip the admission recheck of an inert or no longer mounted page.
     if (returned && fromNavigation && mountedUrl === location.pathname + location.search) {
+      returned.onReturn?.();
       return;
     }
     void loadPage({
       fromNavigation,
-      restoreHistory(url) {
+      restoreHistory(url, onReturn) {
         const delta = position === null || previous === null ? null : previous - position;
         if (
           delta === null ||
@@ -249,8 +252,9 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
           // and reload during the write. Impossible steps do nothing. Keep the editor's URL
           // with an available Back entry when the step is untracked, zero or unrestorable.
           pushUrl(url);
+          onReturn?.();
         } else {
-          restoring = previous;
+          restoring = { position: previous, onReturn };
           history.go(delta);
         }
       },

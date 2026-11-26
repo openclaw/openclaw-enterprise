@@ -14,6 +14,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { namedDenial, requestFailure, responseFields } from "../api-client.mjs";
+import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
 import type { AgentRecheck, ConsolePageContext, LeaveGuard } from "../page-context.mjs";
 import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
@@ -40,6 +41,7 @@ import {
   isUnavailable,
   jsonObjectDiagnostic,
   revealStatus,
+  setDescription,
   setHidden,
   setStatusTone,
   setText,
@@ -52,6 +54,7 @@ import {
 import {
   configuredHarnessId,
   configuredModel,
+  credentialSourceOperateDenial,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -237,6 +240,7 @@ interface ConfigurationDraft {
   outcomeUnknown?: boolean;
   reloadRequired?: boolean;
   carried?: boolean;
+  reviewNote?: string;
 }
 
 type AuthenticationFields = ReturnType<ReturnType<typeof createHarnessAuthFields>["capture"]>;
@@ -2552,12 +2556,14 @@ export async function renderAgentDetail(
     }
     chooser.value = selected;
     chooser.addEventListener("change", () => {
-      if (draftEditorBlocksNavigation() || sharingWrite) {
-        chooser.value = selected;
+      const requested = chooser.value;
+      // Navigation can retain this page and restore its picker on a later visit.
+      chooser.value = selected;
+      if (sharingWrite) {
         showLeaveBlock();
         return;
       }
-      change(chooser.value, "configuration");
+      change(requested, "configuration");
     });
     trackRevisionControl(chooser);
     const older =
@@ -3614,6 +3620,13 @@ export async function renderAgentDetail(
     let snapshot: Configuration = found;
     let values = snapshot.values;
     const executionMode = agent.executionMode;
+    const harnessSourceId =
+      agent.harnessAuth?.method === "credential_source" &&
+      executionMode === "dedicated" &&
+      configuredHarnessId(values) === "codex"
+        ? agent.harnessAuth.sourceId
+        : undefined;
+    let sourceDestinationChecking = harnessSourceId !== undefined;
     let deployPending = false;
     let deployReloadMessage = "";
     const repositoryDeploymentWarning = element(
@@ -4035,6 +4048,7 @@ export async function renderAgentDetail(
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        sourceDestinationChecking ||
         (reviewRepositories &&
           (!repositoryReview || callerPermissions?.sandboxPolicyRead !== true)) ||
         proxyDirty ||
@@ -4210,7 +4224,7 @@ export async function renderAgentDetail(
     }
     function updateDeployControls() {
       harnessControls.hidden = callerPermissions?.deploy !== true;
-      harnessControls.toggleAttribute("inert", deployPending);
+      harnessControls.toggleAttribute("inert", deployPending || sourceDestinationChecking);
       authenticationForm?.toggleAttribute("inert", Boolean(credentials?.mutationPending()));
       credentials?.section?.toggleAttribute("inert", authenticationSaveState !== "idle");
       const retainedConfiguration = retainedConfigurationState();
@@ -4291,6 +4305,8 @@ export async function renderAgentDetail(
           deployMessage = "Review saved GitHub access before deploying.";
         } else if (deployReloadMessage) {
           deployMessage = deployReloadMessage;
+        } else if (sourceDestinationChecking) {
+          deployMessage = "Checking Credential Source destination…";
         } else if (authenticationSaveState === "saving") {
           deployMessage = "Wait for the authentication save to finish before deploying.";
         } else if (authenticationSaveState === "uncertain") {
@@ -4661,12 +4677,14 @@ export async function renderAgentDetail(
         updateChecklist();
       });
     }
+    const sourceDestinationHint = element("p", { className: "hint", hidden: true });
     const harnessControls = element(
       "details",
       { className: "card agent-harness-settings" },
       element("summary", {}, "Harness destination"),
       field({ label: "Harness settings", control: harnessChoice }),
       providerFields,
+      sourceDestinationHint,
       element(
         "p",
         { className: "hint" },
@@ -4994,6 +5012,52 @@ export async function renderAgentDetail(
       draftActions.insertAdjacentElement("afterend", harnessControls);
     }
     renderDetailHeading();
+    if (harnessSourceId) {
+      void (async () => {
+        try {
+          const permissions = await latestPermissionsRead;
+          if (
+            permissions?.deploy !== true ||
+            !context.isCurrent() ||
+            generation !== detailsGeneration
+          ) {
+            return;
+          }
+          const sourcePath = `/namespaces/${encodeURIComponent(namespaceId)}/credential-sources/${encodeURIComponent(harnessSourceId)}`;
+          const source = readCredentialSourceMetadata(await request(sourcePath), namespaceId);
+          if (source?.id !== harnessSourceId) {
+            throw new Error("The Credential Source metadata did not match the saved Source.");
+          }
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (source.modelPreset === "codex-pat" || source.oauthConsentKind === "builtin_codex") {
+            harnessChoice.querySelector('option[value="retain"]')?.remove();
+            harnessChoice.querySelector<HTMLOptionElement>('option[value="custom"]')!.disabled =
+              true;
+            harnessChoice.value = "default";
+            const kind = source.modelPreset === "codex-pat" ? "PAT" : "OAuth";
+            sourceDestinationHint.textContent = `This Codex ${kind} Source has a fixed destination. Model provider overrides are unavailable.`;
+            sourceDestinationHint.hidden = false;
+          }
+        } catch (cause) {
+          if (!context.isCurrent() || generation !== detailsGeneration) {
+            return;
+          }
+          if (requestFailure(cause).status === 401) {
+            context.onExpired();
+            return;
+          }
+          sourceDestinationHint.textContent = `${namedDenial(cause) ?? "Credential Source metadata is unavailable."} Deployment will check whether the requested Harness destination is compatible.`;
+          sourceDestinationHint.hidden = false;
+        } finally {
+          if (context.isCurrent() && generation === detailsGeneration) {
+            sourceDestinationChecking = false;
+            updateDeployControls();
+          }
+        }
+      })();
+    }
     return {
       get snapshot() {
         return snapshot;
@@ -5418,6 +5482,21 @@ export async function renderAgentDetail(
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === mountedTab.keeping) {
         mountedTab.nodes = [...content.childNodes];
+        // Detaching the live editor keeps its selection but resets its internal scroll.
+        const editor =
+          mountedTab.id === "configuration"
+            ? content.querySelector<HTMLTextAreaElement>("#configuration-json")
+            : null;
+        if (editor) {
+          const { scrollTop, scrollLeft, scrollHeight } = editor;
+          mountedTab.resumeDrafts = () => {
+            resumeDrafts();
+            // If lines rewrapped while away, the old offset can hide the selection.
+            if (content.contains(editor) && editor.scrollHeight === scrollHeight) {
+              editor.scrollTo(scrollLeft, scrollTop);
+            }
+          };
+        }
         // Its editor's block note returns with it, not the last built tab's (finding 1962).
         mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);
@@ -5669,8 +5748,8 @@ export async function renderAgentDetail(
           }
           return result && requestFailure(result.error).status === 403 ? false : undefined;
         }),
-        // The failed-version recovery stops offering Logs as soon as they are denied.
-        onLogsDenied: () => {
+        // Keep the failed version’s recovery action in sync with the reads available in Logs.
+        onRuntimeAvailabilityChanged: () => {
           if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
@@ -6130,6 +6209,8 @@ export async function renderAgentDetail(
         configuredHarnessId(values),
         {
           agentName: agent.name,
+          executionMode: agent.executionMode,
+          configuration: values,
           draft: retained?.fields,
           onChange: () => syncUnsavedAuthentication(),
           onStartSettled: () => recordAuthentication(),
@@ -6533,10 +6614,20 @@ export async function renderAgentDetail(
             // A refused write names the chosen Secret when a fresh answer says the caller may not
             // operate it (finding 2453).
             const chosen = auth.changedSecret;
-            const named =
-              mutationStarted && requestFailure(error).status === 403 && chosen
-                ? await refusedSecretBinding("agent", [chosen])
+            const sourceId =
+              harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined;
+            const currentId =
+              baseline.harnessAuth?.method === "credential_source"
+                ? baseline.harnessAuth.sourceId
                 : undefined;
+            const namedSource =
+              (sourceId ? credentialSourceOperateDenial(error, sourceId) : undefined) ??
+              (currentId ? credentialSourceOperateDenial(error, currentId, true) : undefined);
+            const named =
+              namedSource ??
+              (mutationStarted && requestFailure(error).status === 403 && chosen
+                ? await refusedSecretBinding("agent", [chosen])
+                : undefined);
             if (!context.isCurrent()) {
               return;
             }
@@ -6599,7 +6690,7 @@ export async function renderAgentDetail(
               (binding) =>
                 `${binding.repositoryRef} · ${draft ? draftRepositoryLabel(binding) : (repositoryProfile(binding.profile)?.label ?? "Unknown access level")}`,
             )
-            .join(", ") ?? "None",
+            .join(", ") || (draft ? "None selected" : "None"),
         ],
         [
           "Harness authentication",
@@ -7001,7 +7092,17 @@ export async function renderAgentDetail(
   ) {
     const retained = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     if (!retained?.carried) {
-      return { retained, note: "" };
+      // The note describes the saved values used for this merge. Refresh can keep the
+      // draft even when it rereads a different Configuration or generation.
+      const note =
+        retained?.reviewNote &&
+        retained.baseline.id === snapshot.id &&
+        retained.baseline.generation === snapshot.generation &&
+        !retained.outcomeUnknown &&
+        !retained.reloadRequired
+          ? retained.reviewNote
+          : "";
+      return { retained, note };
     }
     const initialText = JSON.stringify(values, null, 2);
     if (retained.baseline?.id !== snapshot.id) {
@@ -7088,6 +7189,8 @@ export async function renderAgentDetail(
       safety.node,
     );
     const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
+    const reviewReminder = "Review the merged draft. Saving may replace other changes.";
+    let reviewNote = retained ? carriedNote : "";
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
     let pending = false;
@@ -7103,6 +7206,20 @@ export async function renderAgentDetail(
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
+    // Chrome can leave a textarea with selected text offscreen on Tab. Require its
+    // input-device information to preserve scripted preventScroll focus.
+    editor.addEventListener("focus", (event) => {
+      if (!("sourceCapabilities" in event) || !event.sourceCapabilities) {
+        return;
+      }
+      if (document.activeElement !== editor || editor.selectionStart === editor.selectionEnd) {
+        return;
+      }
+      const box = editor.getBoundingClientRect();
+      if (box.top >= window.innerHeight || box.bottom <= 0) {
+        editor.scrollIntoView({ block: "center", inline: "nearest" });
+      }
+    });
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
@@ -7112,6 +7229,7 @@ export async function renderAgentDetail(
             text: editor.value,
             initialText,
             baseline,
+            reviewNote,
             outcomeUnknown: outcomeUnknown || pending,
             reloadRequired,
           }
@@ -7122,13 +7240,13 @@ export async function renderAgentDetail(
       const draft = value as ConfigurationDraft | undefined;
       return !!draft && (draft.text !== draft.initialText || !!draft.outcomeUnknown);
     });
+    const shownSavedNotice = savedNotice;
     const feedback = element(
       "p",
       { className: "hint", role: "status", id: "configuration-editor-feedback" },
-      [savedNotice, carriedNote].filter(Boolean).join(" "),
+      retained ? "" : [shownSavedNotice, carriedNote].filter(Boolean).join(" "),
     );
-    // The carried-edits note stays until the reader edits again.
-    let feedbackLocked = Boolean(carriedNote);
+    let feedbackLocked = false;
     // Entering the editor replaces the pressed button; focus moves to the editor (finding 1620).
     function startEditing() {
       editing = true;
@@ -7201,10 +7319,15 @@ export async function renderAgentDetail(
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       tone: "primary",
-      // Reload draft focuses Save after carrying edits; the note says what was applied.
-      ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
+    function clearReview() {
+      if (reviewNote) {
+        setDescription(save, feedback.id, false);
+        reviewNote = "";
+      }
+    }
     const cancel = button("Cancel", () => {
+      clearReview();
       baseline = { id: snapshot.id, generation: snapshot.generation };
       initialText = JSON.stringify(values, null, 2);
       editing = false;
@@ -7314,6 +7437,22 @@ export async function renderAgentDetail(
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
       syncSafety();
+      let reviewMessage = "";
+      if (reviewNote) {
+        // An unconfirmed permission check hides the saved values; only a denial retires them.
+        const confirmed =
+          callerPermissions !== unconfirmedPermissions &&
+          isAgentPermissionSummary(callerPermissions);
+        if (confirmed && (!callerPermissions?.configurationRead || configurationReadOnly())) {
+          reviewNote = reviewReminder;
+        }
+        if (!save.disabled && !feedbackLocked) {
+          reviewMessage = [shownSavedNotice, confirmed ? reviewNote : reviewReminder]
+            .filter(Boolean)
+            .join(" ");
+        }
+        setDescription(save, feedback.id, Boolean(reviewMessage));
+      }
       if (outcomeUnknown) {
         setStatusTone(feedback, "danger");
         feedback.textContent =
@@ -7331,7 +7470,10 @@ export async function renderAgentDetail(
         }
       } else if (dirty) {
         if (!feedbackLocked) {
-          feedback.textContent = "Save or cancel these Configuration edits before deploying.";
+          setText(
+            feedback,
+            reviewMessage || "Save or cancel these Configuration edits before deploying.",
+          );
         }
       } else if (!pending && editing) {
         if (!feedbackLocked) {
@@ -7345,16 +7487,20 @@ export async function renderAgentDetail(
       feedback.textContent = "";
       setStatusTone(feedback, null);
       feedback.setAttribute("role", "status");
+      if (editor.value !== retained?.text) {
+        clearReview();
+      }
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
     });
-    showDraftEditorNavigationBlock = () => {
+    showDraftEditorNavigationBlock = (focusFeedback) => {
       if (draftEditorNavigationBlock) {
         setStatusTone(feedback, null);
         feedback.setAttribute("role", "status");
         feedback.textContent = draftEditorNavigationBlock;
         feedbackLocked = true;
+        focusFeedback?.(feedback);
       }
     };
 
@@ -7395,6 +7541,7 @@ export async function renderAgentDetail(
           freshAgent.configurationId !== baseline.id ||
           freshConfig.generation !== baseline.generation
         ) {
+          clearReview();
           // An alert before its text is written (finding 2010).
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
@@ -7405,6 +7552,7 @@ export async function renderAgentDetail(
         mutationStarted = true;
         await saveConfigurationEdit(freshConfig, nextValues);
         configurationSaved = true;
+        clearReview();
         if (context.isCurrent()) {
           context.drafts.forget("configuration");
           await refreshDraftInPlace({
@@ -7416,11 +7564,16 @@ export async function renderAgentDetail(
         if (!context.isCurrent()) {
           return;
         }
-        if (requestFailure(error).status === 401) {
+        const { status } = requestFailure(error);
+        // After an access refusal, never repeat the saved values from the earlier review.
+        if (reviewNote && (status === 403 || status === 404)) {
+          reviewNote = reviewReminder;
+        }
+        if (status === 401) {
           context.onExpired();
           return;
         }
-        if (!mutationStarted && requestFailure(error).status === 403) {
+        if (!mutationStarted && status === 403) {
           retireSaveRead(
             error,
             rejectionMessage(refusedSave(error, "configuration", false), false),
@@ -7433,6 +7586,7 @@ export async function renderAgentDetail(
           refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
+          clearReview();
           setStatusTone(feedback, "danger");
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
@@ -7459,8 +7613,11 @@ export async function renderAgentDetail(
             rejectionMessage(error, mutationStarted);
         }
         feedbackLocked = true;
-        outcomeUnknown =
-          mutationStarted && !refusedWriteStatuses.includes(requestFailure(error).status);
+        outcomeUnknown = mutationStarted && !refusedWriteStatuses.includes(status);
+        // A definite refusal leaves the same merge to review after Refresh.
+        if (outcomeUnknown) {
+          clearReview();
+        }
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -7575,7 +7732,7 @@ export async function renderAgentDetail(
   }
 
   view.append(dangerZone);
-  context.setTabNavigation((next) => {
+  context.setTabNavigation((next, onBlocked) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const requestedTab = next.searchParams.get("tab");
     const nextTab =
@@ -7601,7 +7758,9 @@ export async function renderAgentDetail(
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      showLeaveBlock();
+      showLeaveBlock(
+        selectedTab === "repositories" && !draftWriteInFlight() ? onBlocked : undefined,
+      );
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });

@@ -9,7 +9,7 @@ import { OpenShellSandboxConfigurationFailure } from "./openshell-sandbox-errors
 import {
   compileOpenShellCredentialPolicy,
   credentialPolicyFailure,
-  openShellCredentialProviderName,
+  openShellBindingProviderName,
   openShellNetworksOverlappingCredentialPath,
 } from "./openshell-credential-policy.ts";
 
@@ -24,7 +24,10 @@ import {
   ensureNamespaceGatewayIdentity,
   namespaceGatewayExists,
 } from "./openshell-namespace-gateway.ts";
-import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
+import {
+  managedCredentialAliasesEnvironment,
+  managedCredentialEnvironment,
+} from "./openshell-plugin-runtime.ts";
 import {
   STAGED_HARNESS_ACTIVATE,
   STAGED_HARNESS_PREPARE,
@@ -167,6 +170,7 @@ import type {
 import {
   isOpenShellProviderName,
   openShellProviderName,
+  openShellSourceCredentialEnvironment,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -2600,6 +2604,7 @@ function sandboxLaunchSpec(
 function stagedAttachedBindings(
   revision: Readonly<AgentRevision>,
   sandbox: OpenShellSandboxResponse,
+  nativeSourceOwner = false,
 ): { readonly activeBindingRefs: ReadonlySet<string>; readonly modelsAttached: boolean } {
   const bindings = revision.credentialDeployment?.bindings;
   const providers = sandbox.spec?.providers;
@@ -2614,7 +2619,7 @@ function stagedAttachedBindings(
   const attached = new Set(providers);
   const activeBindingRefs = new Set(
     bindings
-      .filter((binding) => attached.has(openShellCredentialProviderName(binding)))
+      .filter((binding) => attached.has(openShellBindingProviderName(binding, nativeSourceOwner)))
       .map(({ bindingRef }) => bindingRef),
   );
   return {
@@ -3290,6 +3295,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   protected readonly openShellGit: OpenShellGitRuntime | undefined;
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
 
+  private get nativeSourceOwner(): boolean {
+    return this.backend.drivers.token_service !== undefined;
+  }
+
   static validateConfiguration(
     configuration: Readonly<OpenShellSandboxDriverOptions>,
   ): readonly ErrorDetail[] {
@@ -3635,7 +3644,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   ): Promise<void> {
     this.requireStagedRevision(context);
     const { client, sandbox } = await this.policyTarget(context);
-    const { activeBindingRefs, modelsAttached } = stagedAttachedBindings(context.revision, sandbox);
+    const { activeBindingRefs, modelsAttached } = stagedAttachedBindings(
+      context.revision,
+      sandbox,
+      this.nativeSourceOwner,
+    );
     const bindings = context.revision.credentialDeployment!.bindings.filter(({ bindingRef }) =>
       activeBindingRefs.has(bindingRef),
     );
@@ -3665,12 +3678,37 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               typeof account.isFedramp !== "boolean"
             : account !== undefined) ||
           (projection.placeholder.kind === "proxy" &&
-            !isNonEmptyString(projection.placeholder.value))
+            (!isNonEmptyString(projection.placeholder.value) || this.nativeSourceOwner))
         );
       })
     ) {
       throw new OpenShellSandboxConfigurationFailure("The staged Harness projections are invalid.");
     }
+    const projectionEnvironments = new Set(projections.map(({ environment }) => environment));
+    const preparedProjections = projections.map(
+      ({ bindingRef, environment, placeholder, account }) => {
+        const binding = bindings.find((candidate) => candidate.bindingRef === bindingRef)!;
+        const runtimeEnvironment =
+          this.nativeSourceOwner && placeholder.kind === "runtime"
+            ? openShellSourceCredentialEnvironment(binding.sourceRef.id)
+            : undefined;
+        if (runtimeEnvironment !== undefined && projectionEnvironments.has(runtimeEnvironment)) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The staged Harness projection conflicts with native custody.",
+          );
+        }
+        return {
+          bindingRef,
+          environment,
+          placeholder,
+          ...(account === undefined ? {} : { account }),
+          ...(runtimeEnvironment === undefined ? {} : { runtimeEnvironment }),
+          ...(runtimeEnvironment !== undefined && binding.consumer.kind === "plugin"
+            ? { plugin: true }
+            : {}),
+        };
+      },
+    );
     const ref = this.sandboxRef(context);
     if (!(await this.initializeWorkspace(context, ref, client))) {
       throw new ActivationPendingError(
@@ -3684,7 +3722,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         sandbox: ref.resourceName,
         command: ["/usr/local/bin/node", "-e", STAGED_HARNESS_PREPARE],
         environment: { HOME: this.harnessHome },
-        stdin: JSON.stringify(projections),
+        stdin: JSON.stringify(preparedProjections),
         timeoutSeconds: 30,
       },
       context.signal,
@@ -3729,6 +3767,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       context.revision.harness.mode !== "dedicated"
     ) {
       throw new OpenShellSandboxConfigurationFailure("The staged Harness revision is invalid.");
+    }
+    if (this.nativeSourceOwner) {
+      compileOpenShellCredentialPolicy(context.revision.credentialDeployment, undefined, true);
     }
   }
 
@@ -3974,6 +4015,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       WORKSPACE_NODE_SETUP_ENVIRONMENT,
       WORKSPACE_NODE_CA_ENVIRONMENT,
       managedCredentialEnvironment,
+      managedCredentialAliasesEnvironment,
       ...(!codex
         ? managedInstalls.flatMap(({ credentials }) =>
             Object.values(credentials).map((slot) => slot.delivery.env),
@@ -4020,6 +4062,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           supervisorSpec.policy,
           context.revision,
           context.revision.sandboxPolicy!,
+          undefined,
+          this.nativeSourceOwner,
         ).idle as typeof supervisorSpec.policy,
         restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
       };
@@ -5453,7 +5497,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "The staged credential route does not match the admitted binding.",
       );
     }
-    const routes = compileOpenShellCredentialPolicy(deployment).credentialRoutes;
+    const routes = compileOpenShellCredentialPolicy(
+      deployment,
+      undefined,
+      this.nativeSourceOwner,
+    ).credentialRoutes;
     const selected = routes.filter((route) => route.binding.bindingRef === bindingRef);
     if (selected.length === 0) {
       throw new OpenShellSandboxConfigurationFailure("The staged credential binding has no route.");
@@ -5474,7 +5522,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       context.revision,
       context.signal,
     );
-    const admitted = stagedCredentialPolicies(baseline, context.revision, snapshot).admitted;
+    const admitted = stagedCredentialPolicies(
+      baseline,
+      context.revision,
+      snapshot,
+      undefined,
+      this.nativeSourceOwner,
+    ).admitted;
     const admittedNetworks = asRecord(admitted.network_policies);
     const current = await client.getPolicyStatus(request, context.signal);
     const currentNetworks = asRecord(asRecord(current.policy)?.network_policies);
@@ -5606,10 +5660,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const staged =
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined;
-    const attached = staged ? stagedAttachedBindings(context.revision, sandbox) : undefined;
+    const attached = staged
+      ? stagedAttachedBindings(context.revision, sandbox, this.nativeSourceOwner)
+      : undefined;
     let candidate = attached
-      ? stagedCredentialPolicies(baseline, context.revision, snapshot, attached.activeBindingRefs)
-          .admitted
+      ? stagedCredentialPolicies(
+          baseline,
+          context.revision,
+          snapshot,
+          attached.activeBindingRefs,
+          this.nativeSourceOwner,
+        ).admitted
       : openShellPolicyCandidate(baseline, snapshot);
     if (
       attached &&
@@ -5621,6 +5682,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const routes = compileOpenShellCredentialPolicy(
         context.revision.credentialDeployment!,
         snapshot.defaults,
+        this.nativeSourceOwner,
       ).credentialRoutes.filter(({ binding }) =>
         attached.activeBindingRefs.has(binding.bindingRef),
       );
@@ -5693,7 +5755,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const staged =
       context.revision.executionAdmission.mode === "standalone" &&
       context.revision.credentialDeployment !== undefined;
-    const attached = staged ? stagedAttachedBindings(context.revision, sandbox) : undefined;
+    const attached = staged
+      ? stagedAttachedBindings(context.revision, sandbox, this.nativeSourceOwner)
+      : undefined;
     if (attached && !attached.modelsAttached) {
       throw new OpenShellSandboxConfigurationFailure("A required staged model Provider is absent.");
     }
@@ -5703,6 +5767,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           context.revision,
           input.snapshot,
           attached.activeBindingRefs,
+          this.nativeSourceOwner,
         ).admitted
       : openShellPolicyCandidate(baseline, input.snapshot);
     const plugin = googleRequestPolicyFromSandbox(baseline);

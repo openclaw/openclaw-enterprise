@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-25
-last_updated_session: authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12
+last_updated_session: authoring-run/dadb5e9f-d65b-4fae-8fe3-20232e7d6f5c
 ---
 
 # Platform console request flow
@@ -197,12 +197,9 @@ return Agent detail and creation to Agents.
 
 `packages/occ/src/namespace-operations.ts:listNamespaces`, `packages/occ/src/agent-queries.ts:listAgents`
 
-Agent and Secret requests use the selected Namespace. OCC filters Installation
-Namespaces and exact Agents by read permission. The Console requests Agents
-only in readable Namespaces.
-`GET /backends` ignores selection and requires Installation `administer` before
-returning safe startup summaries. Empty configuration returns an empty list;
-missing wiring or failed dependencies return errors.
+Agent, Secret and Source requests use the selected readable Namespace; OCC filters exact reads.
+`GET /backends` requires Installation `administer`; missing wiring or dependencies return errors.
+The [Credential Source flow](platform-console/credential-sources.md) traces discovery and registration.
 
 [`secrets.mts:renderSecrets`](../guides/console/secrets.md) lists metadata.
 Actions read `consumers` and advisory `callerPermissions`. Only readable Agents
@@ -286,28 +283,28 @@ Late names preserve state/focus; metadata failures keep IDs; unknown grants stay
 [Save handling](platform-console/agent-editing.md#5-save-authentication-and-deploy-the-first-version)
 owns receipts and draft retirement.
 
-**Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
-Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
-the tab leaves visible output in place. Recovery links scroll their version tab into view
-and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
+Recovery normally offers **Open vN Logs** for the failed version. If the
+Console skips log text, operators see **View vN runtime status in Logs**
+on every visit while status remains available. Status denial hides only
+that version’s status link. An unreadable version or a server refusal of
+log text hides both links. Neither link needs an extra read.
+Recovery focuses and scrolls to Logs, smoothly unless rebuilding or motion is reduced.
+Direct navigation focuses and scrolls to output. Tab selection preserves it. Stop and Delete stay put.
 
-[Runtime logs](agent-runtime-logs.md) explains access. A false `readLogs` in the Agent
-permission answer skips the audited log read. Status `403` hides Pod details, not
-separately authorized logs. Denials last until logout; newly granted `operate` permits another
-status read. Refused reads or downloads clear the rows; late successes cannot restore them or
-download. Refusing allowed log text rereads status at once, superseding stale reads. Back
-rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
-replaced; rate-limit notices update at the retry time without rereading. New streams or
-rejected cursors clear rows.
+[Runtime logs](agent-runtime-logs.md) explains access and row handling.
+`readLogs: false` skips the audited text read. Refresh and sign-out clear remembered denials.
+Status `403` hides Pods but preserves authorized logs. Newly granted `operate` permits one retry.
+Revoking readable text triggers a fresh status check. Back rebuilds refused
+views. Rate notices update without rereading.
 
 ### 7. Commit only the current response, or clear the view
 
-`apps/controller/src/console/console.mjs:loadPage`, `logout`
+`apps/controller/src/console/console.mts:loadPage`, `logout`
 
-`loadPage` moves body focus to the destination heading with `preventScroll`,
-including Agents opened from the list. Controls keep focus.
-Tabs use one Tab stop and arrows. Navigation, Namespace changes and logout
-invalidate reads by generation. Refocus events coalesce.
+`loadPage` moves body focus to headings without scrolling, including list → Agent.
+Arrow keys navigate tabs within one Tab stop. If repository edits block Back or
+Forward, `loadPage` restores the URL and focuses the explanation unless interrupted.
+Navigation, Namespace changes and logout invalidate reads by generation. Refocus events coalesce.
 `revalidateMountedAgent` rereads session, Namespace, Agent, version and
 [permissions](platform-console/agent-stop-and-deletion.md#stop-agent).
 
@@ -384,6 +381,11 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 21:19: Blocked repository navigation. (authoring-run/dadb5e9f-d65b-4fae-8fe3-20232e7d6f5c - 2fece6e5c56d39aa228648a166e4d4e6cbc664e9)
+- 2026-11-25 11:30: Trace Namespace Source discovery and write-only registration in Console. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
+
+- 2026-11-25 08:48: Trace runtime status on return to Logs. (authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747 - 1238aef6d77aa4544bfabfd80215ef1ea7414f2d)
 
 - 2026-11-25 02:20: Trace failed replacement refresh. (authoring-run/edcfef1d-bfa1-402e-bb5b-bf1e12d2fe12 - cdd3ab41242cce4734163c6edc4abe115fd90f83)
 

@@ -53,7 +53,7 @@ import {
 import {
   createAuthenticatedControllerRequest,
   createTestAuthPrincipal,
-} from "../helpers/auth-session.mjs";
+} from "../helpers/auth-session.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";

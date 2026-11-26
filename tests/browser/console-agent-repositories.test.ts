@@ -26,6 +26,11 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  consoleViewports,
+  detailUrl,
+  hasFocus,
+  inViewport,
+  nextFrames,
   holdRequests,
   login,
   MEMBER_WRITE,
@@ -533,6 +538,9 @@ test("Agent repository tab offers Save only to drop every binding while reposito
   );
   // Nothing is left to save, so no dead Save is offered.
   await save.waitFor({ state: "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const access = page.locator('.configuration-summary dt:text-is("Repository access") + dd');
+  assert.equal(await access.textContent(), "None selected");
 });
 
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
@@ -1381,8 +1389,9 @@ test("Agent repository pagination keeps focus when every result on a page is sel
 });
 
 test("Agent repository search prioritizes exact names before prefix matches", async (t) => {
+  const prefixMatch = "alpha/application-api-with-a-long-common-repository-name-ending-in-blue";
   const repositories = [
-    "alpha/application-api",
+    prefixMatch,
     "beta/my-application",
     "omega/application",
     "zeta/application",
@@ -1416,19 +1425,89 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   // Enter adds the first match, so exact short names must outrank a different owner's prefix.
   assert.deepEqual(
     await page.locator("#repository-results .repository-identity strong").allTextContents(),
-    ["omega/application", "zeta/application", "alpha/application-api", "beta/my-application"],
+    ["omega/application", "zeta/application", prefixMatch, "beta/my-application"],
   );
-  await search.press("Enter");
+  const submissions = await page.evaluateHandle(() => {
+    const count = { value: 0 };
+    document.addEventListener("submit", () => count.value++, true);
+    return count;
+  });
+  // Holding Enter must add only the first match.
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  await page.keyboard.up("Enter");
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(
     await page.locator(".repository-card .repository-identity strong").innerText(),
     "omega/application",
   );
   assert.equal(await search.inputValue(), "ApPlIcAtIoN");
-  // Repeated Enter skips the already checked choice and selects the next match.
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
+
+  // Confirming typed text must not submit the form or select the next match.
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await search.selectText();
+    await cdp.send("Input.imeSetComposition", {
+      text: "application",
+      selectionStart: 11,
+      selectionEnd: 11,
+    });
+    await page.keyboard.press("Enter");
+    assert.equal(await submissions.evaluate((count) => count.value), 0);
+    assert.ok(await search.evaluate((input) => input === document.activeElement));
+    await cdp.send("Input.insertText", { text: "application" });
+    assert.equal(await search.inputValue(), "application");
+  } finally {
+    await cdp.detach();
+  }
+  assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), false);
   await search.press("Enter");
   assert.equal(await repositoryCheckbox(page, "omega/application").isChecked(), true);
   assert.equal(await repositoryCheckbox(page, "zeta/application").isChecked(), true);
+
+  // On a phone the next match can be below the fold. Keep search focused and
+  // leave the results heading above the sticky form actions.
+  await page.setViewportSize(consoleViewports[1]);
+  await nextFrames(page);
+  await results.getByRole("heading", { name: "Approved repositories" }).evaluate((heading) => {
+    heading.scrollIntoView({ block: "end", behavior: "instant" });
+  });
+  assert.ok(await hasFocus(search));
+  assert.ok(await inViewport(search));
+  assert.ok(
+    await results
+      .getByText(prefixMatch, { exact: true })
+      .evaluate((name) => name.getBoundingClientRect().top >= globalThis.innerHeight),
+    "The next result must be below the viewport before Enter",
+  );
+  const nextChoice = repositoryCheckbox(page, prefixMatch);
+  assert.equal(await nextChoice.isChecked(), false);
+  assert.ok(
+    await search.evaluate(
+      (input, name) =>
+        input.ariaDescribedByElements?.some((description) => {
+          const bounds = description.getBoundingClientRect();
+          return (
+            description.textContent.includes(name) &&
+            bounds.height > 0 &&
+            bounds.top >= 0 &&
+            bounds.bottom <= globalThis.innerHeight &&
+            description.scrollWidth <= description.clientWidth
+          );
+        }),
+      prefixMatch,
+    ),
+    "The focused search must show the full next repository name",
+  );
+
+  await page.keyboard.press("Enter");
+  assert.ok(await nextChoice.isChecked());
+  assert.equal(await repositoryCheckbox(page, "beta/my-application").isChecked(), false);
+  assert.ok(await hasFocus(search));
+  assert.equal(await search.inputValue(), "application");
+  assert.equal(await submissions.evaluate((count) => count.value), 0);
 });
 
 for (const discoveryState of ["later page", "search filter", "dismissed results"]) {
@@ -1695,5 +1774,131 @@ for (const defaultProfile of ["git-read", "git-write", "git-full"] as const) {
       repositoryAccessSelections(saved.data.repositoryAccess),
       saved.data.repositoryAccess.repositories,
     );
+  });
+}
+
+for (const viewport of consoleViewports) {
+  test(`Back and Forward show how to leave unsaved repository changes at ${viewport.width}px`, async (t) => {
+    const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+      ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"].map((repositoryRef, i) => ({
+        repositoryRef,
+        repositoryId: String(1700 + i),
+        repository: `example/${repositoryRef}`,
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      })),
+    );
+    const agent = await fixture.createAgent(namespace.id, "Plan", nativeValues("base"));
+    const { page } = await newPage(t, fixture);
+    await page.setViewportSize(viewport);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    // Keep real history entries on both sides of Repositories.
+    const configuration = page.url();
+    await page.getByRole("tab", { name: "Repositories" }).click();
+    const search = page.getByLabel("Find a repository");
+    await search.waitFor();
+    const repositories = page.url();
+    await page.getByRole("tab", { name: "Configuration" }).click();
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(repositories);
+    const choice = repositoryCheckbox(page, "example/alpha");
+    await choice.check();
+    const historyLength = await page.evaluate(() => history.length);
+    const afterReturn = async () => {
+      await page.waitForURL(repositories);
+      // popstate precedes native scroll restoration. Check the settled viewport before
+      // any locator or keyboard action that could scroll the editor into view.
+      await nextFrames(page);
+      assert.equal(await page.evaluate(() => history.length), historyLength);
+    };
+    const cancel = page.getByRole("tabpanel").getByRole("button", { name: "Cancel", exact: true });
+    const save = page.getByRole("button", { name: "Save repository access", exact: true });
+    const status = page.getByText("Save or cancel repository changes before leaving this tab.", {
+      exact: true,
+    });
+    const changes = await page
+      .getByText("Save or cancel repository changes before deploying.", { exact: true })
+      .evaluateHandle((note) => {
+        const count = { value: 0 };
+        new MutationObserver((records) => {
+          count.value += records.length;
+        }).observe(note, { childList: true });
+        return count;
+      });
+    await search.focus();
+    for (const direction of ["goBack", "goForward"] as const) {
+      // Scroll back to the choices without moving focus away from the explanation.
+      await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+      if (direction === "goForward") {
+        assert.ok(await hasFocus(status));
+        assert.equal(await inViewport(status), false);
+      }
+      const before = await changes.evaluate((count) => count.value);
+      await page[direction]({ waitUntil: "commit" });
+      await afterReturn();
+      assert.equal(await changes.evaluate((count) => count.value), before + 1);
+      assert.ok(await hasFocus(status), "Focus the explanation once the browser returns");
+      for (const target of [status, save, cancel]) {
+        assert.ok(await inViewport(target));
+        assert.ok(
+          await target.evaluate((node) => {
+            const rect = node.getBoundingClientRect();
+            return node.contains(
+              document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2),
+            );
+          }),
+        );
+      }
+      assert.ok(await choice.isChecked());
+    }
+    await page.keyboard.press("Shift+Tab");
+    assert.ok(await hasFocus(cancel));
+    // A reader who returns to search before the inverse traversal keeps focus there.
+    await search.focus();
+    await search.evaluate((input) => input.scrollIntoView({ block: "center" }));
+    await cancel.evaluate((button) => {
+      const input = document.activeElement;
+      if (!(input instanceof HTMLInputElement)) {
+        throw Error("Expected repository search");
+      }
+      window.addEventListener(
+        "popstate",
+        () => {
+          button.focus({ preventScroll: true });
+          input.focus({ preventScroll: true });
+        },
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search), "Keep the reader’s later focus choice");
+    assert.ok(await inViewport(search));
+    // Cancel only the inverse traversal. A later manual Forward reaches the same entry,
+    // but must not deliver the canceled request's feedback.
+    await page.evaluate(() => {
+      const { navigation } = globalThis;
+      navigation.addEventListener(
+        "navigate",
+        () =>
+          navigation.addEventListener("navigate", (event) => event.preventDefault(), {
+            once: true,
+          }),
+        { once: true },
+      );
+    });
+    await page.goBack({ waitUntil: "commit" });
+    await nextFrames(page);
+    assert.equal(page.url(), configuration);
+    await page.goForward({ waitUntil: "commit" });
+    await afterReturn();
+    assert.ok(await hasFocus(search));
+    await cancel.click();
+    await waitForEnabled(page.getByRole("tab", { name: "Configuration" }));
+    await page.goBack({ waitUntil: "commit" });
+    await page.waitForURL(configuration);
   });
 }

@@ -8,7 +8,7 @@ An OAuth Connection Template defines approved authorization settings without sel
 
 Template and client scopes are independent: an Installation-wide template can be used with a client registered in the destination Namespace. The selected TokenService defines supported secret scopes; OCC uses those capabilities to govern OAuth client registration.
 
-This amendment revises the OAuth registration and consent decisions in [RFC-0027](../0027-agent-oauth-connections/index.md) and the proposed TokenService contract in [RFC-0023](index.md). The following flow is proposed.
+This amendment revises the OAuth registration and consent decisions in [RFC-0027](../0027-agent-oauth-connections/index.md) and the proposed TokenService contract in [RFC-0023](../0023-egress-proxy-credential-lifecycle/index.md). The following flow is proposed.
 
 ```mermaid
 ---

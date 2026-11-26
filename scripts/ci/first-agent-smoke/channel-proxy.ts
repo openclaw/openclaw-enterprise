@@ -855,8 +855,15 @@ export async function proveControlledChannelProxy(
       );
     const before = deniedObservations();
     const peerListener = await managedProxy(stack, bGateway);
-    await deniedTcp(stack, aGateway, peerListener.hostname, Number(peerListener.port));
-    await deniedTcp(stack, aGateway, modelAddress, 443);
+    const tcpDenials = await Promise.allSettled([
+      deniedTcp(stack, aGateway, peerListener.hostname, Number(peerListener.port)),
+      deniedTcp(stack, aGateway, modelAddress, 443),
+    ]);
+    for (const denial of tcpDenials) {
+      if (denial.status === "rejected") {
+        throw denial.reason;
+      }
+    }
     for (const authority of deniedAuthorities) {
       assert.equal(
         await rawConnect(stack, aGateway, authority),
@@ -952,16 +959,15 @@ export async function proveControlledChannelProxy(
       "cleared selection contacted an upstream proxy",
     );
     const directGateway = await readyGateway(stack, a.agent.id, directRevision);
-    const proxyCount = https.observations.length;
     assert.equal(
       await rawConnect(stack, directGateway, "slack.com:443"),
       200,
       "cleared selection did not restore managed direct routing",
     );
-    assert.equal(
-      https.observations.length,
-      proxyCount,
-      "cleared selection still contacted upstream proxy",
+    assert.deepEqual(
+      proxyCounts(proxies),
+      proxiesBeforeClear,
+      "cleared selection contacted an upstream proxy during the direct CONNECT check",
     );
 
     const badCredential = await grantSecret(stack, a, bad.authorization, "a-bad-cert");
@@ -993,8 +999,22 @@ export async function proveControlledChannelProxy(
       0,
       "credential-bearing CONNECT reached an untrusted proxy",
     );
+
+    // Restore trust on the same endpoint and verify the existing revision can use it.
+    bad.replaceCertificate(material);
+    assert.equal(
+      await rawConnect(stack, badGateway, "slack.com:443"),
+      200,
+      "trusted certificate did not restore CONNECT on the same proxy endpoint",
+    );
+    assert.ok(
+      bad.observations.some(
+        (item) => item.authority === "slack.com:443" && item.authenticated && item.forwarded,
+      ),
+      "trusted proxy saw no authenticated forwarded tunnel after certificate replacement",
+    );
     log(
-      "controlled channel proxy: two dedicated Agents, HTTP/HTTPS private CA, policy denials, OCC isolation, 407 recovery, revision edit/clear, wrong-host/untrusted TLS and credential containment passed",
+      "controlled channel proxy: two dedicated Agents, HTTP/HTTPS private CA, policy denials, OCC isolation, 407 recovery, revision edit/clear, wrong-host/untrusted TLS refusal and trusted recovery, credential containment passed",
     );
   } catch (error) {
     scenarioError = error;

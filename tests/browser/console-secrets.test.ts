@@ -35,7 +35,7 @@ import type {
   NamespaceWire,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
 import {
   CONSOLE_NAMESPACE_NOT_READY,
   RESOURCE_NOT_FOUND,
@@ -53,6 +53,7 @@ import { liftRestriction, restrict } from "../helpers/iam-grants.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessibleDescription,
@@ -62,8 +63,10 @@ import {
   fileBrowser,
   hasFocus,
   holdRequests,
+  inViewport,
   login,
   newPage,
+  nextFrames,
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.ts";
@@ -79,6 +82,17 @@ const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${names
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
 const SECRET_REFERENCED = "This Secret is referenced.";
+const directoryIssuer = {
+  issuer: "https://identity.example.test",
+  authorizationUrl: "https://identity.example.test/authorize",
+  tokenUrl: "https://identity.example.test/token",
+};
+const googleIssuer = {
+  issuer: "https://accounts.google.com",
+  authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenUrl: "https://oauth2.googleapis.com/token",
+  revocationUrl: "https://oauth2.googleapis.com/revoke",
+};
 
 async function expectSecretFocusInView(control: Locator, stop: string) {
   const { focused, outlined, clearance } = await control.evaluate((node) => {
@@ -130,6 +144,7 @@ async function clientConsoleFixture(
 ) {
   let state: PlatformStateStore | undefined;
   const fixture = await createConsoleAppFixture(t, {
+    oauthIssuer: fixtureOAuthIssuer(directoryIssuer, ["none", "client_secret_basic"]),
     ...options,
     wrapState(current: PlatformStateStore) {
       state = current;
@@ -158,8 +173,10 @@ async function clientConsoleFixture(
   return fixture;
 }
 
-test("Credentials opens Secrets and lets an Installation administrator manage shared templates", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors");
+test("Credentials opens the unified inventory and lets an Installation administrator manage shared templates", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Template editors", {
+    oauthIssuer: fixtureOAuthIssuer(googleIssuer),
+  });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/settings");
   await page.getByRole("heading", { name: "Signed-in account" }).waitFor();
@@ -167,10 +184,11 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   await page.getByRole("link", { name: "Credentials", exact: true }).click();
   const sections = page.getByRole("navigation", { name: "Credential sections" });
   await sections
-    .getByRole("link", { name: "Secrets", exact: true })
+    .getByRole("link", { name: "Credentials", exact: true })
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
   await sections.getByRole("link", { name: "Connection templates" }).click();
+  await page.getByText("https://accounts.google.com · Unverified", { exact: true }).waitFor();
   const editGoogle = page.getByRole("button", { name: "Edit Google OAuth", exact: true });
   await editGoogle.click();
   const googleEditor = dialog(page, "Edit connection template");
@@ -214,6 +232,9 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
     ),
   );
   assert.equal(template.current.oauthClientId, undefined);
+  assert.deepEqual(template.current.issuerVerification, {
+    tokenEndpointAuthMethods: ["client_secret_basic"],
+  });
   assert.equal(template.current.version, 2);
   await page.getByText("Saved Google OAuth, version 2.", { exact: true }).waitFor();
   const googleRow = page.getByRole("row").filter({
@@ -229,7 +250,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   await editor.getByRole("button", { name: "Cancel" }).click();
   await page.goBack();
   await sections
-    .getByRole("link", { name: "Secrets", exact: true })
+    .getByRole("link", { name: "Credentials", exact: true })
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
   // A bookmark naming an unavailable Namespace must not silently select the readable one.
@@ -376,7 +397,8 @@ test("a template needs an explicit availability when the administrator has no Na
   const registration = dialog(page, "Register credential client");
   assert.equal(await registration.getByLabel("Availability").inputValue(), "installation");
   assert.equal(await registration.getByLabel("Issuer URL").inputValue(), template.current.issuer);
-  assert.equal(await registration.getByLabel("Token URL").inputValue(), template.current.tokenUrl);
+  assert.equal(await registration.getByLabel("Token URL").count(), 0);
+  assert.equal(await registration.getByLabel("Revocation URL").count(), 0);
   await registration.getByLabel("Client name").fill("Tools client");
   await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
   const publicMethod = registration.getByLabel("Token endpoint authentication method", {
@@ -393,7 +415,6 @@ test("a template needs an explicit availability when the administrator has no Na
     kind: "oauth2",
     displayName: "Tools client",
     issuer: template.current.issuer,
-    tokenUrl: template.current.tokenUrl,
     clientId: "tools-client",
     tokenEndpointAuthMethod: "none",
   });
@@ -427,21 +448,42 @@ test("an administrator registers independent OAuth clients with exact availabili
   const fixture = await clientConsoleFixture(t, { publicOrigin: true });
   const namespace = await fixture.createNamespace("OAuth client owners", { ready: true });
   const other = await fixture.createNamespace("Other client owners", { ready: true });
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { permissions: ["clipboard-read", "clipboard-write"] },
+  });
   await login(page, fixture, secretsUrl(namespace));
   const sections = page.getByRole("navigation", { name: "Credential sections" });
   await sections.getByRole("link", { name: "Credential clients", exact: true }).click();
   await page.getByRole("button", { name: "Register client" }).click();
   const form = dialog(page, "Register credential client");
   assert.equal(await form.getByLabel("Connection template").count(), 0);
-  assert.equal(
-    await form.getByLabel("Redirect URI").inputValue(),
-    fixture.origin + "/oauth/callback",
+  const redirect = form.getByLabel("Redirect URI", { exact: true });
+  const callback = fixture.origin + "/oauth/callback";
+  assert.equal(await redirect.inputValue(), callback);
+  assert.equal(await redirect.isEditable(), false);
+  const copy = form.getByRole("button", { name: "Copy redirect URI" });
+  await copy.click();
+  await form.getByRole("status").filter({ hasText: "Redirect URI copied." }).waitFor();
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), callback);
+  await page.evaluate(() =>
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: () => Promise.reject(new Error("Clipboard unavailable")),
+    }),
+  );
+  await copy.click();
+  await form.getByRole("status").filter({ hasText: "Use your copy shortcut" }).waitFor();
+  assert.deepEqual(
+    await redirect.evaluate((input: HTMLInputElement) => [
+      input.selectionStart,
+      input.selectionEnd,
+    ]),
+    [0, callback.length],
   );
   await form.getByLabel("Availability").selectOption(namespace.id);
   await form.getByLabel("Client name").fill("Engineering directory");
   await form.getByLabel("Issuer URL").fill("https://identity.example.test");
-  await form.getByLabel("Token URL").fill("https://identity.example.test/token");
+  assert.equal(await form.getByLabel("Token URL").count(), 0);
   await form.getByLabel("Client ID", { exact: true }).fill("engineering-directory");
   const privateValue = "browser-write-only-client-material";
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
@@ -492,7 +534,6 @@ test("a Template neither assigns nor fences an independent credential client", a
       displayName: "Google app",
       clientId: "google-app",
       issuer: google.current.issuer,
-      tokenUrl: google.current.tokenUrl,
       tokenEndpointAuthMethod: "none",
     },
   });
@@ -626,7 +667,9 @@ test("an administrator registers and rotates a verified GitHub App signing key",
 
 for (const outcome of ["lost", "versionless"]) {
   test(`a ${outcome} Template creation response does not start Client registration`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery", {
+      oauthIssuer: fixtureOAuthIssuer(directoryIssuer),
+    });
     const { page } = await newPage(t, fixture, { browser });
     await login(page, fixture, secretsUrl(namespace));
     await page
@@ -710,6 +753,44 @@ test("refocusing a changed Secret library keeps the search and follows only read
   await selector.selectOption(namespace.id);
   await result.waitFor();
   assert.equal(await search.inputValue(), "modeL");
+});
+
+test("Escape reveals the focused Secret row after the list reflows", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Reporting");
+  const query = "Reporting key";
+  const name = (index: number) =>
+    `${query} ${String(index).padStart(2, "0")} for the monthly reconciliation of customer invoices and archived payment exports`;
+  for (let i = 1; i <= 15; i += 1) {
+    await fixture.createSecret(namespace.id, name(i), "synthetic-reporting-value");
+  }
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1280, height: 720 } },
+  });
+  await login(page, fixture, secretsUrl(namespace));
+  const search = page.getByRole("searchbox", { name: "Search Secrets" });
+  await search.fill(query);
+  const target = name(8);
+  const trigger = page.getByRole("button", { name: target, exact: true, includeHidden: true });
+  const row = page.getByRole("listitem", { includeHidden: true }).filter({ has: trigger });
+  await trigger.focus();
+  assert.ok(await inViewport(row));
+  await page.keyboard.press("Enter");
+  const inspector = dialog(page, target);
+  await inspector.getByText("No current consumers were found.", { exact: true }).waitFor();
+
+  // Earlier names wrap while the inspector is open, pushing its row below the viewport.
+  await page.setViewportSize({ width: 390, height: 720 });
+  await nextFrames(page);
+  assert.ok(
+    await trigger.evaluate((node) => node.getBoundingClientRect().top >= globalThis.innerHeight),
+  );
+  await page.keyboard.press("Escape");
+  await inspector.waitFor({ state: "hidden" });
+  await nextFrames(page);
+  assert.ok(await hasFocus(trigger));
+  assert.ok(await inViewport(row), "the focused row is visible without further input");
+  assert.equal(await search.inputValue(), query);
 });
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {

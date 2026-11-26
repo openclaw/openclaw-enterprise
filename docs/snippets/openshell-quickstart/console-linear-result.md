@@ -14,7 +14,7 @@ Expand the activity for that turn and open the Linear **list Teams** tool result
 
 </Frame>
 
-A separate example below shows the expanded tool output for a filtered search. The empty `teams` list gives a count of zero. If the chat hides your result, [read the existing turn’s transcript](#read-the-existing-runs-native-transcript).
+A separate example below shows the expanded tool output for a filtered search. The empty `teams` list gives a count of zero. If the chat hides your result, [read the existing turn’s transcript](../../guides/integrations/codex-plugins.md#read-the-existing-runs-native-transcript).
 
 <Frame caption="In a separate search, Linear returned an empty team list for the filter oce-docs-example-no-match.">
 

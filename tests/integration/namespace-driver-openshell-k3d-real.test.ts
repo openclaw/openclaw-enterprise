@@ -29,13 +29,13 @@ import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.t
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { boundedTeardown } from "../helpers/bounded-teardown.ts";
-import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
+import { createAuthenticatedControllerRequest } from "../helpers/auth-session.ts";
 import {
   developmentBootstrapEnvironment,
   runBootstrapInstallation,
 } from "../helpers/bootstrap-installation.mjs";
 import {
-  createOpenShellInstallationConfiguration,
+  createOpenShellTokenServiceInstallationConfiguration,
   createOpenShellKubernetesFixture,
   openshellHash,
   openShellChartImageValues,
@@ -51,7 +51,7 @@ import {
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { redactedQaTail } from "../helpers/qa-secrets.ts";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -150,9 +150,10 @@ test(
     const kubeconfig = await fixture.validateOpenShellPrerequisites();
     const directory = await mkdtemp(join(tmpdir(), "oce-namespace-bootstrap-"));
     const platformNamespace = `oce-ns-${openshellHash(randomUUID())}`;
+    const custodyNamespace = `${platformNamespace}-credentials`;
     const placements: string[] = [];
     context.after(async () => {
-      for (const name of [...placements, platformNamespace]) {
+      for (const name of [...placements, custodyNamespace, platformNamespace]) {
         await fixture.kubectl(
           "delete",
           "namespace",
@@ -170,6 +171,31 @@ test(
       platformNamespace,
       kubeconfig,
     );
+    // Match the chart's private TokenService store and its separate API and worker grants.
+    await fixture.kubectl("create", "namespace", custodyNamespace);
+    for (const [account, verbs] of [
+      [identity.apiIdentity.account, "get,create,update,delete"],
+      [identity.account, "get,delete"],
+    ] as const) {
+      await fixture.kubectl(
+        "create",
+        "role",
+        account,
+        "-n",
+        custodyNamespace,
+        "--resource=secrets",
+        `--verb=${verbs}`,
+      );
+      await fixture.kubectl(
+        "create",
+        "rolebinding",
+        account,
+        "-n",
+        custodyNamespace,
+        `--role=${account}`,
+        `--serviceaccount=${platformNamespace}:${account}`,
+      );
+    }
     // Gateway workloads use the same tenant binding as other runtime workloads. No cluster-wide
     // workload permission is granted; RBAC prerequisites below remain operator-owned.
     await fixture.kubectl(
@@ -236,20 +262,34 @@ test(
       ...gatewayHelpers,
       gatewayImage,
     });
-    const configuration = createOpenShellInstallationConfiguration({
+    const configuration = createOpenShellTokenServiceInstallationConfiguration({
       authentication: identity.authentication,
       platformNamespace,
       cluster: env.OCC_TEST_KUBERNETES_CONTEXT,
       gatewayImage: env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE,
       codexImage: env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
-    }) as ReturnType<typeof createOpenShellInstallationConfiguration> & {
+    }) as ReturnType<typeof createOpenShellTokenServiceInstallationConfiguration> & {
       backend: { configuration: { serviceName: string; insecureTransport: string } }[];
       drivers: {
         sandbox: { configuration: OpenShellSandboxDriverOptions };
-        credential_gateway: { configuration: { binaries: string[] } };
       };
     };
-    const modelBaseUrl = env.OCC_TEST_OPENSHELL_MODEL_BASE_URL ?? "https://api.openai.com/v1";
+    const modelBaseUrl = "https://api.openai.com/v1";
+    assert.ok(
+      URL.parse(env.OCC_TEST_OPENSHELL_MODEL_BASE_URL || modelBaseUrl)?.href.replace(/\/$/u, "") ===
+        modelBaseUrl,
+      "The OpenAI model preset requires its approved endpoint.",
+    );
+    Object.assign(configuration, {
+      sandboxNetworkPolicyCeiling: [
+        {
+          id: "openai-responses",
+          binary: "/usr/local/bin/node",
+          host: "api.openai.com",
+          ports: [{ from: 443, to: 443 }],
+        },
+      ],
+    });
     const compute = configuration.drivers.compute.configuration;
     Object.assign(compute, {
       gatewayRouting: { ...workspaceGateway.routing, endpointPort: gatewayEndpointPort },
@@ -259,8 +299,6 @@ test(
         gatewayClients: undefined,
         pluginStatusProxySourceCidrs: await apiServerPodProxySourceCidrs(),
       },
-      // The task explicitly permits the supported OpenShell Credential Gateway topology's
-      // existing identity and credential placement. This proof does not change those contracts.
       servicePrincipalCredentials: { mode: "disabled" },
       resources: {
         ...compute.resources,
@@ -279,8 +317,6 @@ test(
         modelProvider: { protocol: "openai-responses", baseUrl: modelBaseUrl },
       },
     });
-    // Native OpenClaw uses Node for model traffic; the Codex-only binary policy must not apply.
-    configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
     const sandboxResources = configuration.drivers.sandbox.configuration.kubernetes
       .agentResources as {
       limits: Record<string, string>;
@@ -411,7 +447,12 @@ test(
     };
     const authSecret = randomBytes(32).toString("hex");
     const authBaseURL = "https://console.oce.localhost";
-    const environment = { ...env, OCC_CONFIG_PATH: startupPath, OCC_GATEWAY_API_KEY_PATH: keyPath };
+    const environment = {
+      ...env,
+      OCC_CONFIG_PATH: startupPath,
+      OCC_GATEWAY_API_KEY_PATH: keyPath,
+      OCC_INSTALLATION_SECRET_NAMESPACE: custodyNamespace,
+    };
     const databaseUrl = env.OCC_TEST_DATABASE_URL!;
     const pool = new pg.Pool({ connectionString: databaseUrl });
     context.after(() => pool.end());
@@ -687,6 +728,11 @@ test(
           }
         }
         await writeFile(startupPath, JSON.stringify(configuration), { mode: 0o600 });
+        // The gateway templates contribute to the Sandbox registration. The API must admit
+        // Agent revisions against the same repaired configuration as the successor worker.
+        await app.close();
+        app = await startApi(await loadDrivers(true));
+        request = await createAuthenticatedControllerRequest(app, credentials, authBaseURL);
         worker = startWorker(await loadDrivers());
         await worker.start();
         assert.equal(
@@ -750,56 +796,14 @@ test(
       const placement = kubernetesNamespaceName(namespaceId);
       const { client: provider } = await connected(placement);
       const workspaceBefore = await provider.getWorkspace(placement, AbortSignal.timeout(10_000));
-      const modelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
-        name: "model-key",
-        value: env.OPENAI_API_KEY,
-      });
-      assert.equal(modelSecret.status, 201);
-      assert.equal(JSON.stringify(modelSecret).includes(env.OPENAI_API_KEY!), false);
       const source = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
         name: "model-source",
-        type: "openai",
-        config: { authorized_base_url: modelBaseUrl },
-        secrets: { api_key: modelSecret.data.ref },
+        type: "static",
+        config: { provider_preset: "openai" },
+        secret: env.OPENAI_API_KEY,
       });
-      if (source.status !== 201) {
-        const pod = observedPod(await fixture.resource("pod", `${service}-0`, placement));
-        const permissions: Record<string, string> = {};
-        for (const verb of ["get", "list", "watch", "create", "update", "patch", "delete"]) {
-          permissions[verb] = String(
-            await fixture
-              .kubectl(
-                "auth",
-                "can-i",
-                verb,
-                "secrets",
-                "--namespace",
-                placement,
-                `--as=system:serviceaccount:${placement}:${pod.spec.serviceAccountName}`,
-                "--quiet=false",
-              )
-              .catch(() => "denied"),
-          ).trim();
-        }
-        const logs = String(
-          await fixture
-            .kubectl("logs", `${service}-0`, "--namespace", placement, "--tail=100")
-            .catch(() => "unavailable"),
-        );
-        apiLogs.push({
-          event: "gateway-registration-diagnostic",
-          permissions,
-          categories: [
-            ...new Set(
-              logs.match(
-                /forbidden|permission denied|deadline exceeded|timed out|connection refused|unreachable|failed to resolve|unable to resolve/giu,
-              ) ?? [],
-            ),
-          ],
-        });
-      }
       assert.equal(source.status, 201, `${JSON.stringify(source.error)} ${apiDiagnostic()}`);
-      assert.deepEqual(source.data.status, { state: "ready" });
+      assert.equal(source.data.state, "ready");
       assert.equal(JSON.stringify(source).includes(env.OPENAI_API_KEY!), false);
       const base = createHarnessConfiguration(
         "openclaw",
@@ -903,24 +907,32 @@ test(
         "Agent deployment must reuse the Workspace created by Namespace reconciliation",
       );
       assert.deepEqual(workspaceAfter.labels, workspaceBefore.labels);
-      const gatewayPods = (await observedPods(placement)).filter(
-        (pod) =>
-          pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
-          pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+      // Enrollment updates the Gateway Pod template. Wait for its replacement to carry
+      // the node ID before comparing that ID with the live Gateway's connection.
+      const workspaceNodeId = await fixture.waitFor(
+        "the revision's single Gateway Pod with its enrolled node ID",
+        async () => {
+          const gatewayPods = (await observedPods(placement)).filter(
+            (pod) =>
+              pod.metadata.labels?.["openclaw.dev/agent"] === agent.data.id &&
+              pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+          );
+          const [gatewayPod] = gatewayPods;
+          if (gatewayPods.length !== 1 || !gatewayPod) {
+            return undefined;
+          }
+          assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/namespace"], namespaceId);
+          assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/revision"], deployed.data.id);
+          const gateway = gatewayPod.spec.containers.find(
+            (container) => container.name === "gateway",
+          );
+          return (
+            gateway?.env?.find((entry) => entry.name === "OPENCLAW_WORKSPACE_NODE_ID")?.value ||
+            undefined
+          );
+        },
+        120_000,
       );
-      assert.equal(gatewayPods.length, 1);
-      const [gatewayPod] = gatewayPods;
-      assert.ok(gatewayPod);
-      assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/namespace"], namespaceId);
-      assert.equal(gatewayPod.metadata.labels?.["openclaw.dev/revision"], deployed.data.id);
-      const gatewayContainer = gatewayPod.spec.containers.find(
-        (container) => container.name === "gateway",
-      );
-      const workspaceNodeId = gatewayContainer?.env?.find(
-        (entry) => entry.name === "OPENCLAW_WORKSPACE_NODE_ID",
-      )?.value;
-      assert.ok(typeof workspaceNodeId === "string");
-      assert.ok(workspaceNodeId.length > 0);
       const { GatewayClient } = await import(require.resolve("@openclaw/gateway-client"));
       const hello = Promise.withResolvers();
       const client = new GatewayClient({
@@ -964,10 +976,27 @@ test(
         );
         const nonce = `namespace-proof-${randomUUID()}`;
         const sessionKey = `agent:main:${nonce}`;
-        const sent = await client.request("chat.send", {
+        const turn = {
           sessionKey,
           idempotencyKey: randomUUID(),
           message: `Reply with exactly this nonce and no other text: ${nonce}`,
+        };
+        // A paired worker can be visible before the Gateway admits chat. Retry only the
+        // Gateway's explicit startup refusal and keep the same turn identity.
+        const sent = await fixture.waitFor("Gateway chat admission", async () => {
+          try {
+            return await client.request("chat.send", turn);
+          } catch (error) {
+            const failure = asRecord(error);
+            if (
+              failure?.gatewayCode === "UNAVAILABLE" &&
+              failure.retryable === true &&
+              asRecord(failure.details)?.reason === "startup-sidecars"
+            ) {
+              return undefined;
+            }
+            throw error;
+          }
         });
         await fixture.waitFor(
           "real Agent model turn completion",
@@ -1071,7 +1100,6 @@ test(
       // Namespace deletion requires each independent resource owner to finish its cleanup.
       for (const resource of [
         `credential-sources/${source.data.id}`,
-        `secrets/${modelSecret.data.id}`,
         `configurations/${agentConfiguration.data.id}`,
       ]) {
         const removed = await request("DELETE", `/namespaces/${namespaceId}/${resource}`);

@@ -23,7 +23,7 @@ import {
   SecretListResponse,
   IAMAccessBindingListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -264,6 +264,38 @@ test("the Agent Network proxy editor never sends URL credentials to OCC", async 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const input = page.getByLabel("Network proxy URL");
   await input.waitFor();
+
+  // A narrow window and enlarged text must leave the full format example readable.
+  const viewport = page.viewportSize();
+  assert.ok(viewport);
+  await page.setViewportSize({ width: 360, height: 844 });
+  const example = await page
+    .getByText(/^For Basic authentication, select a Secret/)
+    .evaluate((hint) => {
+      const fontSize = hint.style.fontSize;
+      hint.style.fontSize = "24px";
+      const selection = hint.ownerDocument.getSelection();
+      selection?.selectAllChildren(hint);
+      const root = hint.ownerDocument.documentElement;
+      const result = {
+        selected: selection?.toString(),
+        hintWidth: hint.clientWidth,
+        textWidth: hint.scrollWidth,
+        pageWidth: root.scrollWidth,
+        viewportWidth: root.clientWidth,
+      };
+      selection?.removeAllRanges();
+      hint.style.fontSize = fontSize;
+      return result;
+    });
+  await page.setViewportSize(viewport);
+  assert.ok(example.selected?.includes("Basic <base64(username:password)>"));
+  assert.ok(
+    example.hintWidth > 0 && example.textWidth <= example.hintWidth,
+    JSON.stringify(example),
+  );
+  assert.ok(example.pageWidth <= example.viewportWidth, JSON.stringify(example));
+
   const password = randomUUID();
   const unsafe = syntheticCredentialUrl({
     protocol: "https",
@@ -1288,6 +1320,121 @@ test("A refused harness grant read leaves an administrator's Deploy alone", asyn
   await settlePageRequests(page);
   await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+});
+
+test("Returning from Plugins preserves the reading position of a Configuration selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Reading position", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Reading position Agent",
+    nativeValues("base"),
+  );
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 540, height: 900 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const marker = "here";
+  const trailingLines = Array<string>(24).fill("trailing line");
+  const draft = JSON.stringify(
+    { notes: ["Plan details ".repeat(72), marker, ...trailingLines] },
+    null,
+    2,
+  );
+  await editor.fill(draft);
+  await page.keyboard.press("Control+End");
+  // Move past the closing object, the closing array, and its trailing entries.
+  for (let i = 0; i < trailingLines.length + 2; i++) {
+    await page.keyboard.press("ArrowUp");
+  }
+  await page.keyboard.press("End");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("ArrowLeft");
+  for (let i = 0; i < marker.length; i++) {
+    await page.keyboard.press("Shift+ArrowLeft");
+  }
+
+  const position = () =>
+    editor.evaluate((node) => {
+      if (!(node instanceof HTMLTextAreaElement)) {
+        throw new Error("Configuration JSON must be a textarea");
+      }
+      return {
+        selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+        scroll: node.scrollTop,
+        maxScroll: node.scrollHeight - node.clientHeight,
+      };
+    });
+  const before = await position();
+  const start = draft.lastIndexOf(marker);
+  assert.deepEqual(before.selection, [start, start + marker.length, "backward"]);
+  assert.ok(before.scroll > 0 && before.scroll < before.maxScroll);
+
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  for (const widen of [false, true]) {
+    await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+    await editor.waitFor({ state: "hidden" });
+    if (widen) {
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    await configuration.click();
+    await editor.waitFor();
+    assert.ok(await hasFocus(configuration));
+    const returned = await position();
+    if (widen) {
+      // The shorter wrapped entry now puts the selection on the first screen.
+      assert.ok(returned.maxScroll < before.maxScroll);
+      assert.deepEqual(returned.selection, before.selection);
+      assert.equal(returned.scroll, 0);
+    } else {
+      assert.deepEqual(returned, before);
+    }
+    for (let i = 0; i < 20 && !(await hasFocus(editor)); i++) {
+      await page.keyboard.press("Tab");
+    }
+    await nextFrames(page);
+    assert.ok(await hasFocus(editor));
+    assert.deepEqual(await position(), returned);
+  }
+  await page.keyboard.type("X");
+  assert.equal(
+    await editor.inputValue(),
+    draft.slice(0, start) + "X" + draft.slice(start + marker.length),
+  );
+
+  // Select at the end, then wheel away without changing the selection.
+  const edited = await editor.inputValue();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await editor.hover();
+  assert.ok((await position()).scroll > 0);
+  await page.mouse.wheel(0, -2000);
+  await page.waitForFunction(
+    () => document.querySelector<HTMLTextAreaElement>("#configuration-json")?.scrollTop === 0,
+  );
+  await page.keyboard.press("Shift+Tab");
+  await configuration.hover();
+  await page.mouse.wheel(0, -20000);
+  await page.waitForFunction(() => window.scrollY === 0);
+  await nextFrames(page);
+  assert.ok(!(await hasFocus(editor)));
+  assert.equal((await position()).scroll, 0);
+  assert.ok(await editor.evaluate((node) => node.getBoundingClientRect().top >= innerHeight));
+
+  await page.keyboard.press("Tab");
+  await nextFrames(page);
+  assert.ok(await hasFocus(editor));
+  assert.equal(await editor.inputValue(), edited);
+  assert.deepEqual((await position()).selection, [edited.length - 1, edited.length, "backward"]);
+  assert.ok(
+    await inViewport(editor),
+    "Tab should reveal the focused Configuration JSON editor before typing",
+  );
+  await page.keyboard.type("Y");
+  assert.equal(await editor.inputValue(), edited.slice(0, -1) + "Y");
 });
 
 for (const [focus, refocus] of [

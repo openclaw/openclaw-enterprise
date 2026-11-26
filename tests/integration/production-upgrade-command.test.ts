@@ -397,6 +397,132 @@ test("status treats candidate checks as historical and rejects invalid preflight
   assert.match(inconsistent.stderr, /inconsistent preflight status markers/u);
 });
 
+test("status warns that Agent deployments may have been accepted when dispatch evidence exists", async (t) => {
+  const f = await fixture(t);
+  const dispatch = join(f.evidence, "dispatch");
+  const entry = "private-agent-reference.intent";
+  const content = "private-attempt-content";
+  await mkdir(f.evidence, { mode: 0o700 });
+  await mkdir(dispatch, { mode: 0o700 });
+  await mkdir(join(f.evidence, ".upgrade-lock"), { mode: 0o700 });
+  await writeFile(join(f.evidence, "helm-started"), "", { mode: 0o600 });
+  await writeFile(join(dispatch, entry), content, { mode: 0o600 });
+
+  const result = run("status", f);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Helm intent was recorded.*outcome remains uncertain/u);
+  assert.match(result.stdout, /Agent deployments may already have been accepted/u);
+  assert.match(
+    result.stdout,
+    /Check revision history, deployment status, and audit records before resuming/u,
+  );
+  assert.match(result.stdout, /Do not repeat an unconfirmed deploy/u);
+  assert.match(result.stdout, /Verify separately whether the previous process is still running/u);
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /private-agent-reference|private-attempt-content/u,
+  );
+});
+
+test("status keeps Helm uncertainty with absent or empty dispatch evidence and gives completion precedence", async (t) => {
+  const f = await fixture(t);
+  const dispatch = join(f.evidence, "dispatch");
+  await mkdir(f.evidence, { mode: 0o700 });
+  await writeFile(join(f.evidence, "helm-started"), "", { mode: 0o600 });
+
+  for (const state of ["absent", "empty"]) {
+    if (state === "empty") {
+      await mkdir(dispatch, { mode: 0o700 });
+    }
+    const result = run("status", f);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Helm intent was recorded.*outcome remains uncertain/u);
+    assert.doesNotMatch(result.stdout, /Agent deployments may|No deployment|safe to retry/iu);
+  }
+
+  await writeFile(join(dispatch, "attempt.intent"), "", { mode: 0o600 });
+  await writeFile(join(f.evidence, "completed"), "", { mode: 0o600 });
+  const completed = run("status", f);
+  assert.equal(completed.status, 0, completed.stderr);
+  assert.match(completed.stdout, /Completion was recorded/u);
+  assert.doesNotMatch(completed.stdout, /Helm intent|Agent deployments may/u);
+});
+
+test("status keeps Helm uncertainty with linked, nonprivate, or unreadable dispatch evidence", async (t) => {
+  const f = await fixture(t);
+  const dispatch = join(f.evidence, "dispatch");
+  const linked = join(f.directory, "private-link-target");
+  await mkdir(f.evidence, { mode: 0o700 });
+  await writeFile(join(f.evidence, "helm-started"), "", { mode: 0o600 });
+  await mkdir(linked, { mode: 0o700 });
+  await writeFile(join(linked, "attempt.intent"), "", { mode: 0o600 });
+  await symlink(linked, dispatch);
+
+  const assertHelmUncertainty = () => {
+    const result = run("status", f);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Helm intent was recorded.*outcome remains uncertain/u);
+    assert.doesNotMatch(
+      result.stdout + result.stderr,
+      /Agent deployments may|No deployment|safe to retry|private-link-target/iu,
+    );
+  };
+  assertHelmUncertainty();
+  await rm(dispatch);
+  await mkdir(dispatch, { mode: 0o700 });
+  await writeFile(join(dispatch, "attempt.intent"), "", { mode: 0o600 });
+  await chmod(dispatch, 0o755);
+  assertHelmUncertainty();
+  await chmod(dispatch, 0o100);
+  try {
+    assertHelmUncertainty();
+  } finally {
+    await chmod(dispatch, 0o700);
+  }
+});
+
+test("status withholds conclusions when dispatch evidence is replaced during the scan", async (t) => {
+  const f = await fixture(t);
+  const dispatch = join(f.evidence, "dispatch");
+  await mkdir(f.evidence, { mode: 0o700 });
+  await mkdir(dispatch, { mode: 0o700 });
+  await writeFile(join(f.evidence, "helm-started"), "", { mode: 0o600 });
+  await writeFile(join(dispatch, "attempt.intent"), "", { mode: 0o600 });
+
+  // Replace the directory after it is opened so the old descriptor still has an entry.
+  const interleave = `
+import os
+import runpy
+import sys
+
+dispatch = os.path.join(sys.argv[-1], "dispatch")
+inode = os.stat(dispatch).st_ino
+scandir = os.scandir
+
+def scandir_during_upgrade(fd):
+    if isinstance(fd, int) and os.fstat(fd).st_ino == inode:
+        os.rename(dispatch, dispatch + ".previous")
+        os.mkdir(dispatch, 0o700)
+    return scandir(fd)
+
+os.scandir = scandir_during_upgrade
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+`;
+  const result = spawnSync(
+    "python3",
+    ["-c", interleave, command, "status", "--evidence-dir", f.evidence],
+    { cwd: repository, encoding: "utf8", env: { PATH: process.env.PATH } },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /evidence changed during this read.*Run status again/u);
+  assert.doesNotMatch(
+    result.stdout,
+    /Historical local evidence|Agent deployments may|No deployment/u,
+  );
+  assert.deepEqual(await readdir(dispatch), []);
+});
+
 test("status withholds conclusions when preparation is recorded during the scan", async (t) => {
   const f = await fixture(t);
   await mkdir(f.evidence, { mode: 0o700 });
@@ -481,6 +607,7 @@ test("apply requires approval of the current target before reserving private evi
   assert.match(plan.stdout, /Database migration mode: hook/);
   assert.match(plan.stdout, /interrupts the OCC API and Worker even when no migration is pending/);
   assert.doesNotMatch(plan.stdout, /separate migration pause/);
+  assert.doesNotMatch(plan.stdout, /Qualify a recovery controller before maintenance/);
   assert.ok(plan.stdout.includes(profile.images.controller));
   assert.ok(plan.stdout.includes(`Kubeconfig: ${join(f.directory, profile.kubeconfig)}`));
   assert.ok(
@@ -917,7 +1044,7 @@ test("the same local candidate is explained by plan and apply without printing i
   const releasedController = `sha256:${"b".repeat(64)}`;
   const candidateController = f.input.images.controller.split("@")[1];
   assert.ok(candidateController);
-  // The existing preview accepts the pair and does not promote the advisory to live proof.
+  // The candidate can pass even when the released image rejected the upgraded history.
   const compatibilityReceipt = {
     ...postgresCompatibilityReport(releasedController, candidateController, "unsupported"),
     privateReceipt: receiptCanary,
@@ -955,6 +1082,9 @@ test("the same local candidate is explained by plan and apply without printing i
   assert.match(plan.stdout, /select a staged immutable Installation Secret/);
   assert.match(plan.stdout, /compatibility receipt matches the selected controller/);
   assert.match(plan.stdout, /installed controller digest requires live preflight/);
+  const historyWarning =
+    /released controller rejected the upgraded migration history in at least one reported check\. Qualify a recovery controller before maintenance/;
+  assert.match(plan.stdout, historyWarning);
   assert.ok(plan.stdout.includes(f.input.images.controller));
   const output = plan.stdout + plan.stderr + apply.stdout + apply.stderr;
   assert.doesNotMatch(output, /rejected the candidate migration history/);
@@ -983,6 +1113,25 @@ test("the same local candidate is explained by plan and apply without printing i
     "operator.json",
     "rendered",
   ]);
+
+  // A passing check must not hide another check's rejection.
+  const [file] = compatibilityReceipt.files;
+  const current = [{ kind: "released-controller-history", status: "current" }];
+  const cases = [
+    { measurements: [...current, ...file.measurements], warn: true },
+    { measurements: current, warn: false },
+    { measurements: undefined, warn: false },
+  ];
+  for (const { measurements, warn } of cases) {
+    await writeFile(
+      receipt,
+      JSON.stringify({ ...compatibilityReceipt, files: [{ ...file, measurements }] }),
+    );
+    const result = run("plan", f, options);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /installed controller digest requires live preflight/);
+    assert.equal(historyWarning.test(result.stdout), warn);
+  }
 
   const valid = JSON.stringify(compatibilityReceipt);
   for (const invalid of [

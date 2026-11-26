@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-11-24
-last_updated_session: authoring-run/b4223689-a451-496c-b340-82c77ada247b
+updated: 2026-11-25
+last_updated_session: authoring-run/e0f0437d-aacb-456e-800b-6f4a189cd799
 ---
 
 # Agent Plugin Deployment Flow
@@ -31,11 +31,10 @@ graph TD
   E0 -->|managed MCP| M0["Check current Source or verified Agent binding"] --> D5
   E0 -->|credentialSource| E1
   D1 -->|stored source or managed connection| D2["Caller Source operate"] --> D6["Select Harness catalog"]
-  D1 -->|token or none| D6
+  D1 -->|no credential| D6
   D6 -->|unsupported| D7["Unsupported"]
-  D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Check Source and selected owner; resolve unless canceled"]
+  D6 -->|credentialless catalog| D4["Call PluginDriver"]
+  D6 -->|TokenService Source| D9["Check Source and owner, then resolve"]
   D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
@@ -73,9 +72,9 @@ graph TD
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires Agent `create`; catalog `credentialSlots` expose eligible readable Sources. Managed MCP details use `managedConnection` and require caller Source `operate`. Saved discovery requires Agent `read`/`update`; delegation requires a Driver-validated saved release, slot, Source and Template plus Agent Source `operate`.
 
-`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. Gateway Sources use their reader. OCC rechecks authority before dispatch; cancellation discards late credentials.
+`plugin-discovery.ts:withPluginDiscoveryCredential` checks caller and saved-Agent Source access. OCC resolves the bearer through TokenService and passes it and consent account metadata to PluginDriver. OCC rechecks authority before dispatch; cancellation discards late credentials.
 
-For managed MCP, OCC resolves the Source through its TokenService and rechecks the target and authorization before each server request. Discovery lists tools without selecting them. `driverPolicy.toolNames` pins the selected upstream names. Changing accounts clears names and overrides. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) limit size and time, refuse redirects and credential echoes, and send `Cache-Control: no-store`. Canonical duplicates return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
+For managed MCP, OCC lists tool names, rejects bearer echoes, and passes the names to the selected Plugin Driver's `getCatalogPlugin`. The Driver filters aliases; OCC validates unique upstream IDs and ownership. Account changes clear `driverPolicy.toolNames`. [Hosted reads](../reference/drivers/plugin-bundled.md#selection-and-catalogs) reject redirects and credential echoes; duplicate IDs return `503 PLUGIN_DISCOVERY_INVALID_RESPONSE`.
 
 Console connects accounts before creation or reconnects saved Plugins. The verified callback reports the Source through a nonce-bound popup; Console stages it or PATCHes the Agent and confirms by GET. If confirmation fails, reload: the attachment may have changed.
 
@@ -112,7 +111,7 @@ On save, the [Plugin Driver](../../packages/occ/src/plugin-credential-bindings.t
 
 Worker checks Driver–Harness compatibility. Gateway and Worker verify Compute descriptors.
 
-- **CLI packages.** Gateway loads skills; Harness runs the pinned executable. OpenShell restricts staged Google injection by endpoint/method/path; Google enforces permissions. The legacy [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) verifies the [Gateway guard](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts) version before attachment; that guard enforces Source scope and requests. Unsigned WebSockets and timely frames naming another Sandbox return `PERMISSION_DENIED`; matching or live late frames return `http_only`. Signed silence waits up to 400 ms, unless the caller deadline expires first. Preflights, independent of HTTP, cap at 256 per Sandbox and 1,024 per guard.
+- **CLI packages.** Gateway loads skills; Harness runs the pinned executable. OpenShell restricts staged Google injection by endpoint/method/path; Google enforces permissions. The [Sandbox](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) verifies the [Plugin guard](../../apps/controller/src/plugin-request-guard.ts) version; the guard enforces Source scope and requests. It still uses [shared egress code](../../apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts), which legacy removal must preserve or relocate. Unsigned WebSockets and timely frames naming another Sandbox return `PERMISSION_DENIED`; matching or live late frames return `http_only`. Signed silence waits up to 400 ms, unless the caller deadline expires first. Preflights, independent of HTTP, cap at 256 per Sandbox and 1,024 per guard.
 - **Hosted MCP packages.** Worker advertises selected tools. Gateway grants same-node execution. Hooks and cross-node calls return Code Mode results or denials. The credential Driver attaches the Source. Sandbox supplies its placeholder. OpenShell enforces tool names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
@@ -304,6 +303,8 @@ OpenClaw model probes cap CPU-based deadlines at 600 s. CPU wait is max(PSI, thr
 
 ## Changelog
 
+- 2026-11-25 05:24: Trace MCP discovery ownership. (authoring-run/e0f0437d-aacb-456e-800b-6f4a189cd799 - 9f6ff4c897cb780a447b555abb03ccd054b414f2)
+- 2026-11-25 05:05: Trace Plugin-owned managed MCP discovery and deployable tool names. (authoring-run/b9f24e92-44b3-482b-9d41-92c36f1baa37 - d5172886e361468c5642dddb2c49c2aee1f15950)
 - 2026-11-24 05:34: Trace Plugin account connection, Source-scoped discovery, and saved binding recovery. (authoring-run/b4223689-a451-496c-b340-82c77ada247b - 1b597e9758cee83e2a084d5a54d81c6a5be088d3)
 - 2026-11-24 02:32: Trace Codex and Gateway discovery. (authoring-run/3020b1e1-86c1-4a99-bb6b-890205dab49b - 1f256635c37842e2d94846259303fa17cfe83be2)
 - 2026-11-23 09:56: Clarify current Template destinations. (authoring-run/dd61beab-f923-4970-a46a-5bfc34f8a38b - c0f1cf9e9)
