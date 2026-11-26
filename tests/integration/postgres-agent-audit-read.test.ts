@@ -5,7 +5,7 @@ import type { AgentAuditPage } from "@openclaw-enterprise/contracts";
 
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, withPool } from "../helpers/postgres-database.mjs";

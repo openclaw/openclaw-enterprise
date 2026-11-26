@@ -1674,6 +1674,66 @@ test(
     assert.equal(scopedSource.json().data.clientId, namespaceClientId);
     assert.deepEqual(scopedSource.json().data.scope.repositories, gitSource.scope.repositories);
 
+    const retiringClient = await registerScopedClient("Retiring GitHub App", namespaceId);
+    assert.equal(retiringClient.statusCode, 201, retiringClient.body);
+    const retiringClientId: string = retiringClient.json().data.id;
+    const receiptWritesBeforeRetirement = core.calls.createNamespacedSecret;
+    const mintsBeforeRetirement = github.issuesOfTokens.length;
+    const retirement = await pool.connect();
+    let enrollment: Promise<Awaited<ReturnType<typeof request>>> | undefined;
+    try {
+      // Hold the retirement update open so enrollment can read the previously ready Client
+      // and mint against it. Synchronize on PostgreSQL's wait before committing retirement.
+      await retirement.query("BEGIN");
+      const held = await retirement.query(
+        `SELECT pg_backend_pid() AS pid FROM occ.oauth_clients
+         WHERE id=$1 AND cleanup_after IS NULL FOR UPDATE`,
+        [retiringClientId],
+      );
+      assert.equal(held.rowCount, 1);
+      await retirement.query("UPDATE occ.oauth_clients SET cleanup_after=now() WHERE id=$1", [
+        retiringClientId,
+      ]);
+      enrollment = Promise.resolve(
+        request("POST", `${base}/credential-sources`, {
+          ...sourceInput,
+          name: "Enrollment racing Client retirement",
+          clientId: retiringClientId,
+        }),
+      );
+      await waitFor("Source enrollment to wait on Client retirement", async () => {
+        const blocked = await pool.query(
+          "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
+          [held.rows[0].pid],
+        );
+        return blocked.rowCount ? true : undefined;
+      });
+      assert.equal(github.issuesOfTokens.length, mintsBeforeRetirement + 1);
+      await retirement.query("COMMIT");
+    } catch (error) {
+      await retirement.query("ROLLBACK");
+      throw error;
+    } finally {
+      retirement.release();
+      if (enrollment) {
+        await Promise.allSettled([enrollment]);
+      }
+    }
+    const refusedEnrollment = await enrollment;
+    assert.equal(refusedEnrollment.statusCode, 409, refusedEnrollment.body);
+    assert.equal(core.calls.createNamespacedSecret, receiptWritesBeforeRetirement);
+    assert.equal(github.trace.at(-1)?.method, "DELETE");
+    assert.equal(github.trace.at(-1)?.target, "/installation/token");
+    assert.equal(github.trace.at(-1)?.tokenIndex, github.issuesOfTokens.at(-1)?.index);
+    assert.equal(
+      (
+        await pool.query("SELECT 1 FROM occ.credential_sources WHERE github_app_client_id=$1", [
+          retiringClientId,
+        ])
+      ).rowCount,
+      0,
+    );
+
     // Source-backed authorization still uses finite installation credentials. Cross the issuer
     // receipt's expiry after the Worker has shut down so only custody resolution sees this clock.
     t.mock.timers.enable({ apis: ["Date"], now: Date.parse(creatorCredential.expiresAt) + 1 });

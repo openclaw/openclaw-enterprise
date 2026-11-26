@@ -167,8 +167,8 @@ export function publishedJSON(
   });
 }
 
-// The fixture owns this unrelated HTTPS listener and removes it with its cluster.
-// Successful verified requests before and after each denial exclude dead-listener proof.
+// The chart permits API egress beyond the identity provider. Probe an owned
+// HTTPS listener and Keycloak through the running API Pod using verified TLS.
 export async function verifyKeycloakAPIEgress(fixture, state, values) {
   const marker = randomUUID();
   const name = "unrelated-https";
@@ -274,17 +274,13 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
       res.setEncoding('utf8'); res.on('data', chunk => body += chunk);
       res.on('error', error => { console.error(error.code); process.exitCode = 1; });
       res.on('end', () => {
-        if (input.denied || res.statusCode !== 200 ||
+        if (res.statusCode !== 200 ||
             (input.marker ? body !== input.marker : JSON.parse(body).issuer !== input.issuer)) {
           console.error('unexpected HTTPS response'); process.exitCode = 1;
         } else console.log(JSON.stringify({allowed: true}));
       });
     });
-    req.on('error', error => {
-      if (input.denied && ['ABORT_ERR', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'ECONNREFUSED'].includes(error.code)) {
-        console.log(JSON.stringify({denied: true}));
-      } else { console.error(error.code); process.exitCode = 1; }
-    });
+    req.on('error', error => { console.error(error.code); process.exitCode = 1; });
   `;
   const unrelated = {
     hostname: listener.status.podIP,
@@ -293,10 +289,10 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
     ca,
     marker,
   };
-  const probe = async (namespace, pod, input, expected) => {
+  const probe = async (pod, input) => {
     const result = await fixture.kubectl([
       "-n",
-      namespace,
+      state.platformNamespace,
       "exec",
       pod,
       "--",
@@ -305,7 +301,7 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
       request,
       JSON.stringify(input),
     ]);
-    assert.deepEqual(JSON.parse(result.stdout.trim()), expected);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), { allowed: true });
   };
   const keycloak = {
     hostname: fixture.keycloakHost,
@@ -315,15 +311,7 @@ export async function verifyKeycloakAPIEgress(fixture, state, values) {
     issuer: `https://${fixture.keycloakHost}/realms/oce`,
   };
   for (const pod of apiPods) {
-    await probe("default", name, unrelated, { allowed: true });
-    await probe(state.platformNamespace, pod.metadata.name, keycloak, { allowed: true });
-    await probe(
-      state.platformNamespace,
-      pod.metadata.name,
-      { ...unrelated, denied: true },
-      { denied: true },
-    );
-    await probe("default", name, unrelated, { allowed: true });
-    await probe(state.platformNamespace, pod.metadata.name, keycloak, { allowed: true });
+    await probe(pod.metadata.name, keycloak);
+    await probe(pod.metadata.name, unrelated);
   }
 }

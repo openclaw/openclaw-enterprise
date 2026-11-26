@@ -118,7 +118,7 @@ If a result write fails, OCC logs `http.audit_append_failed` and sends the
 selected response. Handlers check permissions and record changes.
 
 A failed denial write usually preserves the refusal. A
-[device login scope denial](credential-source-refresh.md) requires a record
+[device login scope denial](credential-source-lifecycle.md#device-authorization-and-configuration) requires a record
 or OCC returns `503`. A `404` that conceals a resource still records `denied`.
 
 After a successful `getAgent` read, the result identifies the stored Agent

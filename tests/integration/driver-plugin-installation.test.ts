@@ -24,7 +24,7 @@ import {
 import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
-import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.ts";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
   createInstallationDriverConfiguration,

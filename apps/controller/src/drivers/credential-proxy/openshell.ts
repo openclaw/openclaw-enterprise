@@ -32,7 +32,7 @@ import type { OpenShellSandboxDriver } from "../sandbox/openshell.ts";
 import { OpenShellSandboxConfigurationFailure } from "../sandbox/openshell-sandbox-errors.ts";
 import {
   compileOpenShellCredentialPolicy,
-  openShellCredentialProviderName,
+  openShellBindingProviderName,
   openShellNetworksOverlappingCredentialPath,
   openShellProjectedCredentialProviderName,
   type OpenShellCredentialRoute,
@@ -80,7 +80,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly id: string;
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
-  private readonly nativeSourceOwner: boolean;
+  readonly nativeSourceOwner: boolean;
   private readonly sandbox: SandboxDriver &
     Pick<OpenShellSandboxDriver, "gitRuntimeProviderName" | "withdrawStagedCredentialRoute">;
   private sourceNamespaceResolver?: (
@@ -99,6 +99,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   private nativeSourceResolver?: (
     sourceRef: CredentialSourceReference,
     signal: AbortSignal,
+    purpose: "delivery" | "withdrawal",
   ) => Promise<OpenShellNativeProvider>;
 
   constructor(selection: {
@@ -190,17 +191,26 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.nativeSourceResolver = resolve;
   }
 
-  private async readNativeSource(sourceRef: CredentialSourceReference, signal: AbortSignal) {
+  private async readNativeSource(
+    sourceRef: CredentialSourceReference,
+    signal: AbortSignal,
+    purpose: "delivery" | "withdrawal" = "delivery",
+  ) {
     if (!this.nativeSourceResolver) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
-    return this.nativeSourceResolver(sourceRef, signal);
+    return this.nativeSourceResolver(sourceRef, signal, purpose);
+  }
+
+  private providerName(binding: DeploymentCredentialBinding): string {
+    return openShellBindingProviderName(binding, this.nativeSourceOwner);
   }
 
   private async readDeploymentProvider(
     context: CredentialDeploymentContext,
     target: { client: OpenShellGatewayClient; workspace: string },
     binding: DeploymentCredentialBinding,
+    purpose: "delivery" | "withdrawal" = "delivery",
   ) {
     if (!this.nativeSourceOwner) {
       return readOpenShellPushedProvider({
@@ -211,12 +221,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         signal: context.signal,
       });
     }
-    const provider = await this.readNativeSource(binding.sourceRef, context.signal);
+    const provider = await this.readNativeSource(binding.sourceRef, context.signal, purpose);
     if (
-      binding.bindingRef !== "model" ||
-      binding.projection.environment !== "OPENAI_API_KEY" ||
+      binding.projection.presentation !== "bearer" ||
       provider.workspace !== target.workspace ||
-      provider.name !== openShellCredentialProviderName(binding)
+      provider.name !== this.providerName(binding)
     ) {
       throw new OpenShellCredentialDeliveryRefusedError();
     }
@@ -548,8 +557,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       (attached !== undefined && !Array.isArray(attached)) ||
       [...remaining.values()].some(
         (binding) =>
-          binding.consumer.kind === "model" ||
-          attached?.includes(openShellCredentialProviderName(binding)),
+          binding.consumer.kind === "model" || attached?.includes(this.providerName(binding)),
       )
     ) {
       throw new OpenShellCredentialDeliveryRefusedError();
@@ -645,7 +653,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         !Array.isArray(providers) ||
         admitted.bindings.some((binding) => {
           const selected = !remaining.has(binding.bindingRef);
-          return providers.includes(openShellCredentialProviderName(binding)) !== selected;
+          return providers.includes(this.providerName(binding)) !== selected;
         })
       ) {
         throw new OpenShellCredentialDeliveryRefusedError();
@@ -700,7 +708,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               client: initialTarget.client,
               workspace: initialTarget.workspace,
               source: binding.sourceRef,
-              name: openShellCredentialProviderName(binding),
+              name: this.providerName(binding),
               signal: context.signal,
               retainIfAttached: true,
             }),
@@ -727,7 +735,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         return { state: "pending" };
       }
       const bindings = admitted.bindings.filter((binding) =>
-        attached.includes(openShellCredentialProviderName(binding)),
+        attached.includes(this.providerName(binding)),
       );
       const active = new Set(bindings.map(({ bindingRef }) => bindingRef));
       if (
@@ -962,7 +970,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
       };
       for (const binding of bindings) {
-        const providerName = openShellCredentialProviderName(binding);
+        const providerName = this.providerName(binding);
         const sandbox = (await refused(readSandbox)) ?? (await absent());
         if (sandbox) {
           assertTarget(sandbox);
@@ -991,7 +999,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
               try {
                 await refused(async () => {
                   if (this.nativeSourceOwner) {
-                    await this.readDeploymentProvider(context, scope, binding);
+                    await this.readDeploymentProvider(context, scope, binding, "withdrawal");
                   } else {
                     await readOwnedOpenShellPushedProvider({
                       client: scope.client,
@@ -1102,7 +1110,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     try {
       return narrowOpenShellRepositoryRoutes(
         revision,
-        compileOpenShellCredentialPolicy(policy).credentialRoutes,
+        compileOpenShellCredentialPolicy(policy, undefined, this.nativeSourceOwner)
+          .credentialRoutes,
       );
     } catch {
       throw new OpenShellCredentialDeliveryRefusedError();

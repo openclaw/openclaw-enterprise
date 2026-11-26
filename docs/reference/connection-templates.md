@@ -46,7 +46,7 @@ A new OAuth template starts with **No template limit** (`scopes: []`). Select **
 Use `POST /connection-templates` with one of these setup methods.
 
 - With `mode: static_bearer`, supply 1 to 128 allowed HTTP destinations. Each row must contain an exact DNS host or private IPv4 address, port, path and uppercase HTTP method, for example `{"host":"service.example.test","port":443,"path":"/reports/**","method":"GET"}`. Use an absolute exact path or a terminal `/**` subtree. Dot segments and other wildcard forms are rejected. The mode specifies Bearer authentication. The template stores no credential material and needs no OAuth client.
-- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. Each row describes an allowed destination. Agent delivery of saved OAuth credentials is not yet supported.
+- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. Each row describes an allowed destination. Eligible saved OAuth Sources can be selected for named Plugin accounts.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the selected issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 Use `GET /connection-templates` to list templates and `GET /connection-templates/{connectionTemplateId}` to read one. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change settings. A change creates an immutable version; changing only `displayName` renames the template without creating a version. Use `DELETE /connection-templates/{connectionTemplateId}` to remove it. These operations require Installation administration.
@@ -59,7 +59,7 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
-OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Delivery through a running Plugin Agent remains unqualified.
+OCC handles browser consent and the callback. After the code exchange, the selected TokenService creates an OAuth CredentialSource and takes custody of the grant. It renews the grant with the original client registration. Eligible Plugin selections can use the OAuth Source at Agent admission without a separate attachment. Live delivery has been verified for Slack OAuth MCP; see the [current support limits](credential-sources.md#implementation-status).
 
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires

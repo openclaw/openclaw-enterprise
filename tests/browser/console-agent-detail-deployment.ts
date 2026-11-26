@@ -14,7 +14,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error-response.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   credentialSourceDeliveryBinding,

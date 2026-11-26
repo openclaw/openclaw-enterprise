@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { cp, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test, { type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
   InstallationFieldError,
@@ -11,7 +13,13 @@ import { openShellRepositoryConfiguration } from "../../apps/controller/src/driv
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import type { validateSelectedBackendDrivers as validateBackendSelection } from "../../packages/occ/src/index.ts";
 import { asRecord } from "../../packages/utils/src/index.ts";
-import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { setEnvironment } from "../helpers/environment.ts";
+import {
+  createCredentialProxyInstallationConfiguration,
+  createInstallationDriverConfiguration,
+} from "../helpers/installation-driver-configuration.ts";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
+import { createChatGPTInstallation } from "./configuration-startup-resolution-cases.ts";
 import type {
   StartupProcessFixtures,
   StartupSiblingWait,
@@ -266,6 +274,86 @@ export function registerStartupCredentialProxyCases({
   productionServer,
   settled,
 }: StartupCredentialProxyFixtures): void {
+  test("API startup closes its installed registration when composition cannot start", async (t) => {
+    const id = "api-startup-protected-fixture";
+    const { directory } = await protectedDriverPackage(t, id);
+    const controller = fileURLToPath(new URL("../../apps/controller/", import.meta.url));
+    const owner = join(directory, "apps", "controller");
+    // Run the real API against its own installed dependency. Production package discovery reads
+    // the manifest next to this source, so stage it without modifying the checkout's dependencies.
+    await mkdir(owner, { recursive: true });
+    await mkdir(join(directory, "deploy"));
+    await writeFile(
+      join(owner, "package.json"),
+      JSON.stringify({ type: "module", dependencies: { [id]: "1.0.0" } }),
+    );
+    await rename(join(directory, "node_modules"), join(owner, "node_modules"));
+    await symlink(join(controller, "node_modules"), join(directory, "node_modules"), "dir");
+    await symlink(join(controller, "plugins"), join(owner, "plugins"), "dir");
+    await symlink(new URL("../../packages", import.meta.url), join(directory, "packages"), "dir");
+    await symlink(
+      new URL("../../deploy/presets", import.meta.url),
+      join(directory, "deploy", "presets"),
+      "dir",
+    );
+    await cp(join(controller, "src"), join(owner, "src"), { recursive: true });
+    const { startApi } = (await import(
+      join(owner, "src", "api-startup.ts")
+    )) as typeof import("../../apps/controller/src/api-startup.ts");
+    const { calls, closeProbe } = (await import(
+      join(owner, "node_modules", id, "index.mjs")
+    )) as typeof import("../fixtures/driver-packages/protected-execution-driver/index.ts");
+    const base = createInstallationDriverConfiguration();
+    const configuration = {
+      ...base,
+      drivers: {
+        ...base.drivers,
+        sandbox: { id, package: id, configuration: { endpoint: "https://127.0.0.1:1", ca: "" } },
+        credential_proxy: { id, configuration: {} },
+        token_service: { id: "occ", configuration: {} },
+      },
+    };
+
+    await t.test("missing ServiceAccount admin key", async (t) => {
+      const chatgpt = createChatGPTInstallation(createInstallationDriverConfiguration);
+      const backend = chatgpt.backend[0];
+      const path = await fixture(t, {
+        ...configuration,
+        backend: [
+          {
+            ...backend,
+            configuration: {
+              ...backend.configuration,
+              apiKeyPath: join(directory, "missing-admin-key"),
+            },
+          },
+        ],
+        drivers: { ...configuration.drivers, service_account: chatgpt.drivers.service_account },
+      });
+      await assert.rejects(startApi({ ...startupEnvironment(path), ...productionServer }), {
+        message: "The configured ChatGPT admin-key Secret is unavailable.",
+      });
+      assert.equal(calls.create, 1);
+      assert.equal(calls.close, 1, "startup must close the installed Driver exactly once");
+    });
+
+    await t.test("database pool refusal with failing Driver cleanup", async (t) => {
+      setEnvironment(t, { OCC_DATABASE_AUTH: "unsupported" });
+      closeProbe.fail = true;
+      const previousCloses = calls.close;
+      const path = await fixture(t, configuration);
+      await assert.rejects(startApi({ ...startupEnvironment(path), ...productionServer }), {
+        message: "Unsupported OCC_DATABASE_AUTH mode.",
+      });
+      assert.equal(calls.create, 2);
+      assert.equal(
+        calls.close,
+        previousCloses + 1,
+        "startup must attempt cleanup and preserve the pool error",
+      );
+    });
+  });
+
   async function checkBoots(
     entries: readonly { source: StartupDiagnosticSource; env: NodeJS.ProcessEnv }[],
     code: string,

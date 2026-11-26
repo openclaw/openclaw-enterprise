@@ -6,7 +6,7 @@ import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
 import { CredentialSourceListResponse } from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { jsonLineDestination } from "../helpers/json-lines.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.ts";
 import {
   assertNoCredentials,
   createFixture,

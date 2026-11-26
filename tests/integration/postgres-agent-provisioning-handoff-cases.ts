@@ -23,7 +23,7 @@ import type {
 import { handedOff, readPendingEffect, required } from "./postgres-agent-provisioning-setup.ts";
 
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
-import { assertApiError } from "../helpers/api-error.mjs";
+import { assertApiError } from "../helpers/api-error.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter, withNamespaceLockHeld } from "../helpers/postgres-locks.ts";
 import { waitFor } from "../helpers/wait-for.ts";

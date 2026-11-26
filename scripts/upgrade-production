@@ -661,6 +661,7 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         if controller is None:
             parser.error("--controller-compatibility-results requires a selected controller image")
     mappings = {}
+    effects = []
     for role, filename in paths.items():
         if role in digests:
             continue
@@ -671,7 +672,11 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         elif check_compatibility:
             try:
                 evidence = runpy.run_path("scripts/upgrade-evidence.py")
-                evidence["validate_compatibility_preview"](content, controller)
+                if evidence["validate_compatibility_preview"](content, controller):
+                    effects.append(
+                        "The released controller rejected the upgraded migration history in at least "
+                        "one reported check. Qualify a recovery controller before maintenance."
+                    )
             except (OSError, AttributeError, TypeError, ValueError, RecursionError):
                 parser.error(
                     "Supply a passing PostgreSQL compatibility report for the selected controller and retry."
@@ -697,10 +702,10 @@ def preview_inputs(parser, profile, resolve_path, options, paths, digests, *, op
         migration = "hook"
     if migration not in ("hook", "separate"):
         parser.error("candidate Helm values must select hook or separate database.upgradeMigration")
-    effects = [
+    effects.extend([
         f"Database migration mode: {migration}",
         "The upgrade can overwrite values.yaml and submit a Helm upgrade.",
-    ]
+    ])
     if migration == "separate":
         effects.append(
             "If apply reports a separate migration pause (exit 3), confirm both writers are stopped. "
