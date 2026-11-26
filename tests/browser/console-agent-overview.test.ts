@@ -3996,6 +3996,76 @@ for (const viewport of [
   });
 }
 
+test("Workspace preserves focus on Deployment when the first version activates", async (t) => {
+  const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
+  const { fixture, namespace, agent, page } = await agentPage(t, "First deployment", "Workspace");
+  await page.setViewportSize({ width: 390, height: 844 });
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
+  await trackSettledFetches(page);
+  let outcome: DeploymentResponseOptions["status"] = "queued";
+  await page.route(recordUrl, (route) =>
+    route.fulfill(deploymentStatusResponse(pending, { status: outcome })),
+  );
+
+  await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "workspace"));
+  await page.locator(settledView).waitFor();
+  await expectDeploymentOutcome(page, "Queued", { reveal: false });
+  const strip = page.getByRole("tablist", { name: "Agent configuration views" });
+  const deployment = strip.getByRole("tab", { name: "Deployment", exact: true });
+  const panel = page.getByRole("tabpanel", { name: "Workspace files" });
+  const heading = panel.getByRole("heading", { name: "Workspace files", exact: true });
+  const before = required(await heading.elementHandle());
+  await waitForIdleFetches(page);
+  const writes = apiRequests(page, fixture.origin);
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await strip.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
+  await strip.getByRole("tab", { name: "Workspace files" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  await nextFrames(page);
+
+  const expectDeploymentFocus = async () => {
+    assert.equal(await panel.isVisible(), true);
+    assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "Workspace files");
+    assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
+    assert.equal(
+      await deployment.evaluate((node) => node.matches(":focus")),
+      true,
+      "Deployment keeps focus while Workspace files is selected",
+    );
+    assert.equal(await strip.locator('[role="tab"][tabindex="0"]').textContent(), "Deployment");
+  };
+  await expectDeploymentFocus();
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1000));
+
+  // Only the worker outcome is modeled. The Agent read sees the fixture's real selection.
+  await fixture.activateRevision(namespace.id, agent.id, pending.id);
+  outcome = "succeeded";
+  const read = responseTo(page, "GET", recordUrl);
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  assert.equal((await read).status(), 200);
+  await page.clock.resume();
+  await page.waitForFunction((node) => !node.isConnected, before);
+  await before.dispose();
+  await heading.waitFor();
+  await waitForIdleFetches(page);
+  await nextFrames(page);
+  await expectDeploymentFocus();
+
+  // Enter goes to the browser's current focus. Pressing it on a locator would move focus first.
+  await page.keyboard.press("Enter");
+  await page
+    .getByRole("tabpanel", { name: "Deployment", exact: true })
+    .getByText("Recorded outcome: Completed", { exact: true })
+    .waitFor();
+  assert.equal(await deployment.getAttribute("aria-selected"), "true");
+  assert.equal(new URL(page.url()).searchParams.get("revision"), pending.id);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "deployment");
+  assert.deepEqual(writeRequests(writes), []);
+});
+
 test("A failed deployment keeps a parked click on its Deployment tab", async (t) => {
   const { DEPLOYMENT_POLL_MS } = await importConsoleModule("agents/deployment-evidence.mjs");
   const { page, recordUrl, pending, open } = await pendingDeploy(
