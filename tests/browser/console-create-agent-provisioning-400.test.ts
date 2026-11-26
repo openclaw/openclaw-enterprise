@@ -1065,7 +1065,9 @@ test("Credential Sources lists and creates public metadata; an exact create deni
 
   const fill = async (name: string, purpose = "model:openai") => {
     const form = await open();
-    await form.getByLabel("Source name", { exact: true }).fill(name);
+    const sourceName = form.getByLabel("Source name", { exact: true });
+    assert.equal(await hasFocus(sourceName), true, "untouched dialog should focus Source name");
+    await sourceName.fill(name);
     await form.getByLabel("Credential purpose", { exact: true }).selectOption(purpose);
     await form.getByLabel("Credential value", { exact: true }).fill("synthetic-source-value");
     return form;
