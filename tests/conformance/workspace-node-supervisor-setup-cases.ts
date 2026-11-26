@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,10 +118,33 @@ export async function waitsForSetupBeforeStopping(t: TestContext) {
   // supervisor keeps the stop to itself and waits for setup to end on its own.
   const directory = await mkdtemp(join(tmpdir(), "oce-node-supervisor-setup-stop-"));
   const release = join(directory, "release-setup");
-  // A failed assertion must also let the fixture release its lock before teardown waits for exit.
-  t.after(() => writeFile(release, ""));
-  const { supervisor, exited, events, waitFor, output } = await startSupervisor(t, directory, {
+  const stopSent = join(directory, "stop-sent");
+  // Unblock both the supervisor and setup before teardown waits for exit, even on failure.
+  t.after(async () => {
+    await Promise.all([writeFile(stopSent, ""), writeFile(release, "")]);
+  });
+  const run = await startSupervisor(t, directory, {
     child: recordingChild,
+    // The real setup child can run before spawn returns to the supervisor. Hold that
+    // return until the test sends SIGTERM, then acknowledge the next event-loop turn.
+    stubs: [
+      "const spawnFixture = cp.spawn;",
+      "cp.spawn = (command, args, options) => {",
+      "  const child = spawnFixture(command, args, options);",
+      '  if (args[1] === "setup") {',
+      '    const fs = require("node:fs");',
+      `    const stopSent = ${JSON.stringify(stopSent)};`,
+      "    const deadline = performance.now() + 5000;",
+      "    const wait = new Int32Array(new SharedArrayBuffer(4));",
+      "    while (!fs.existsSync(stopSent)) {",
+      '      if (performance.now() >= deadline) throw new Error("Timed out waiting for SIGTERM send");',
+      "      Atomics.wait(wait, 0, 0, 10);",
+      "    }",
+      "    setImmediate(() => fs.unlinkSync(stopSent));",
+      "  }",
+      "  return child;",
+      "};",
+    ],
     setup: [
       'const { appendFileSync, existsSync } = require("node:fs");',
       "const [events] = process.argv.slice(2);",
@@ -136,20 +160,28 @@ export async function waitsForSetupBeforeStopping(t: TestContext) {
     ],
     env: { OPENCLAW_NODE_SETUP_CODE: "fixture-node-setup" },
   });
+  const { supervisor, exited, events, waitFor, waitForValue, output } = run;
   const setup = (
     await waitFor("native setup started", (rows) => rows.some(({ kind }) => kind === "setup"))
   ).find((row) => row.kind === "setup");
   assert.ok(setup, "native setup recorded its start");
-  supervisor.kill("SIGTERM");
-  // While setup holds its lock, the stopped supervisor must not exit. The real
-  // supervisor cannot exit before setup does, so this wait cannot fail it; one
-  // that exits on the stop does so well within the wait.
-  const early = await Promise.race([exited, delay(500).then(() => "running")]);
+  assert.ok(supervisor.kill("SIGTERM"), "sent SIGTERM to the supervisor");
+  await writeFile(stopSent, "");
+  // Count only time when the supervisor can process the stop and setup still holds its lock.
+  const resumed = waitForValue(
+    "supervisor returned from spawn",
+    (pending) => !pending,
+    () => existsSync(stopSent),
+  );
+  const early = await Promise.race([exited, resumed.then(() => delay(500, "running"))]);
   assert.equal(early, "running", output());
+  // Check the PID at the exit notification, even if the release write is still pending.
+  const observedExit = exited.then((status) => ({ status, setupGone: pidGone(setup.pid) }));
   await writeFile(release, "");
-  assert.deepEqual(await exited, [0, null], output());
-  // The supervisor exited after setup ended: setup was gone when it exited.
-  assert.ok(pidGone(setup.pid), "native setup outlived the supervisor");
+  const result = await Promise.race([observedExit, delay(5_000, undefined, { ref: false })]);
+  assert.ok(result, "supervisor did not exit after setup finished: " + output());
+  assert.deepEqual(result.status, [0, null], output());
+  assert.ok(result.setupGone, "native setup outlived the supervisor");
   // Setup finished undisturbed, and the stopped Harness started neither child.
   assert.deepEqual(
     (await events()).map(({ kind }) => kind),

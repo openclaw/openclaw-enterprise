@@ -236,19 +236,31 @@ function outdatedOpenClawDatabases(stateDirectory) {
 // as spawnSync reports a child, and terminating when a stop arrived.
 function runOpenClawStateOwner(args, options, { forwardStop, onStdout }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
     let terminating = false;
+    const pendingStops = [];
+    let sendStop = (signal) => pendingStops.push(signal);
     const stop = (signal) => {
       terminating = true;
-      if (forwardStop) child.kill(signal);
+      if (forwardStop) sendStop(signal);
     };
     const onTerm = () => stop("SIGTERM");
     const onInt = () => stop("SIGINT");
-    process.on("SIGTERM", onTerm);
-    process.on("SIGINT", onInt);
-    const settle = (result) => {
+    const removeStopListeners = () => {
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);
+    };
+    // The child can take the lock before spawn returns to the wrapper.
+    process.on("SIGTERM", onTerm);
+    process.on("SIGINT", onInt);
+    let child;
+    try {
+      child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
+    } catch (cause) {
+      removeStopListeners();
+      throw cause;
+    }
+    const settle = (result) => {
+      removeStopListeners();
       resolve({ status: null, signal: null, ...result, terminating });
     };
     let error;
@@ -259,6 +271,9 @@ function runOpenClawStateOwner(args, options, { forwardStop, onStdout }) {
     }
     // A piped final result can arrive after exit; close also waits for its EOF.
     child.on(onStdout ? "close" : "exit", (status, signal) => settle({ status, signal, error }));
+    // A stop emitted synchronously during spawn must wait for the child's error listener.
+    sendStop = (signal) => child.kill(signal);
+    for (const signal of pendingStops) sendStop(signal);
   });
 }
 
