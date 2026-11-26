@@ -12,7 +12,11 @@ import {
   credentialSourceDeliveryBinding,
   installationControllerOptions,
 } from "./installation-config.ts";
-import { installTokenServiceDriver, scheduleTokenServiceMaintenance } from "./token-service.ts";
+import {
+  installTokenServiceDriver,
+  scheduleTokenServiceMaintenance,
+  gatewayStartupSourceDelivery,
+} from "./token-service.ts";
 import { installSelectedSandboxDrivers } from "./sandbox-drivers.ts";
 import { validatePersistedNativeIAMState } from "@openclaw-enterprise/iam";
 import {
@@ -217,6 +221,7 @@ export async function composeProduction(
           config.drivers.repositoryRegistry,
         ),
         credentialSourceDelivery: credentialSourceDeliveryBinding(config.drivers),
+        gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(config.drivers),
         namespaceLifecycleBindings: config.drivers.namespaceLifecycleBindings,
         state,
         ...(auditEnabled ? { agentAuditState: postgresAgentAuditState(state) } : {}),

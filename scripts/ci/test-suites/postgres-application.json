@@ -137,7 +137,13 @@
         "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
         "standalone activation commits the prepared revision and delivers an active Source PATCH",
         "standalone activation refuses a source grant removed during preparation",
-        "the Worker activates an eligible OAuth grant but refuses expired custody without renewing it"
+        "the Worker activates an eligible OAuth grant but refuses expired custody without renewing it",
+        "the Worker denies reuse of a staged Gateway credential after Source authority is revoked",
+        "the Worker permanently refuses Gateway credentials that exceed one Kubernetes Secret",
+        "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",
+        "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
+        "the Worker reports a withdrawn Gateway Source before resolving or staging credentials",
+        "the Worker retains failed-preparation cleanup while an abandoned Gateway Source revision cannot be read"
       ]
     },
     {

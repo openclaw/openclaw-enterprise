@@ -52,6 +52,7 @@ import {
   type SandboxDriver,
   type SandboxNetworkGrant,
   type SourceProviderPresetId,
+  type TokenServiceDriver,
   type GitHubAppInstallationCredentialSource,
   type StaticKeyTemplateValues,
   type SecretDriver,
@@ -97,6 +98,7 @@ import type { createProvisioningWorker } from "./agent-provisioning-worker.ts";
 import {
   exactConfiguration,
   storedSecretBindings,
+  requireDedicatedGatewaySources,
   type createConfigurationOperations,
 } from "./configuration-operations.ts";
 import type { createCredentialEgressAdmission } from "./credential-egress-admission.ts";
@@ -205,6 +207,8 @@ export interface DeploymentAdmissionDependencies {
     ReturnType<typeof createConfigurationOperations>,
     "authorizeBindings"
   >;
+  readonly gatewayStartupSourceDelivery:
+    ((compute: ComputeDriver, owner: TokenServiceDriver) => boolean) | undefined;
   readonly modelPolicyAgent: (
     mode: HarnessExecutionMode,
     resolveHarness: HarnessResolver,
@@ -224,7 +228,7 @@ export interface DeploymentAdmissionDependencies {
   readonly egress: Pick<ReturnType<typeof createCredentialEgressAdmission>, "admitProxyPlan">;
   readonly selectedProxyOwner: () => InstalledDriver;
   readonly selectedCredentialDeliveryOwner: () => InstalledDriver;
-  readonly ownedTokenServiceDriver: (instanceId: string) => unknown;
+  readonly ownedTokenServiceDriver: (instanceId: string) => TokenServiceDriver;
   readonly sandboxNetworkPolicyCeiling: () => Promise<readonly SandboxNetworkGrant[]>;
   readonly modelCredentialPreset:
     | ((input: {
@@ -587,15 +591,20 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
     state: PlatformUnitOfWork,
     principalId: string,
     agent: Readonly<Agent>,
+    compute: ComputeDriver,
     metadataBindings: Configuration["secretBindings"],
   ) {
     const secretBindings = storedSecretBindings(metadataBindings);
+    requireDedicatedGatewaySources(secretBindings, agent.executionMode);
     const bound = await dependencies.configuration.authorizeBindings(
       state,
       principalId,
       agent.namespaceId,
       secretBindings,
     );
+    if (bound.gatewayTokenServiceInstanceId !== undefined) {
+      requireGatewaySourceDelivery(compute, bound.gatewayTokenServiceInstanceId);
+    }
     const proxySecret = await authorizeNetworkProxySecret(
       state,
       dependencies.authority,
@@ -604,7 +613,7 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       agent.namespaceId,
       agent.networkProxy,
     );
-    const sources = [...bound];
+    const sources = [...bound.secrets];
     if (proxySecret && !sources.some((secret) => secret.id === proxySecret.id)) {
       sources.push(proxySecret);
     }
@@ -626,7 +635,32 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         throw new DependencyUnavailableError("The Secret backend identity changed.");
       }
     }
-    return { secretBindings, secretDriver };
+    const gatewaySources = new Map(
+      Object.values(secretBindings)
+        .map(({ source }) => source)
+        .filter((source) => source.kind === "credential_source")
+        .map((source) => [source.id, source] as const),
+    );
+    for (const source of gatewaySources.values()) {
+      await dependencies.authority.authorizeAgentPrincipal(principalId, agent, "operate", source);
+    }
+    return {
+      secretBindings,
+      secretDriver,
+      gatewayTokenServiceInstanceId: bound.gatewayTokenServiceInstanceId,
+    };
+  }
+
+  function requireGatewaySourceDelivery(compute: ComputeDriver, instanceId: string): void {
+    const owner = dependencies.ownedTokenServiceDriver(instanceId);
+    if (
+      dependencies.selectedCompute() !== compute ||
+      dependencies.gatewayStartupSourceDelivery?.(compute, owner) !== true
+    ) {
+      throw new ResourceStateConflictError(
+        "The selected Compute and TokenService do not support Gateway Source delivery.",
+      );
+    }
   }
 
   async function ensureRuntimeCredentials(
@@ -1174,12 +1208,14 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         selectedPlugins,
       );
       const credentialSources = admittedSources.snapshots;
-      const { secretBindings, secretDriver } = await admitConfigurationSecrets(
-        state,
-        principalId,
-        lockedAgent,
-        metadata.secretBindings,
-      );
+      const { secretBindings, secretDriver, gatewayTokenServiceInstanceId } =
+        await admitConfigurationSecrets(
+          state,
+          principalId,
+          lockedAgent,
+          compute,
+          metadata.secretBindings,
+        );
       const admittedConfiguration = agentRuntimeConfiguration(
         configuration.values,
         revisionHarness,
@@ -1501,7 +1537,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
         },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
         ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
+        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id }),
+        ...(Object.keys(secretBindings).length === 0 ? {} : { secretBindings }),
+        ...(gatewayTokenServiceInstanceId === undefined ? {} : { gatewayTokenServiceInstanceId }),
         ...(pluginState === undefined ? {} : { plugins: pluginState }),
         ...(lockedAgent.pluginApprovers === undefined
           ? {}
@@ -1592,6 +1630,9 @@ export function createAgentDeploymentAdmission(dependencies: DeploymentAdmission
       }
 
       const candidate = policyAdmittedRevision ?? prepareComputeRevision(compute, revisionDraft);
+      if (gatewayTokenServiceInstanceId !== undefined) {
+        requireGatewaySourceDelivery(compute, gatewayTokenServiceInstanceId);
+      }
       // Database locks do not freeze process-local selections across awaited Driver calls.
       if (prepared !== undefined) {
         dependencies.channels.assertPreparedDeploymentDrivers(prepared);

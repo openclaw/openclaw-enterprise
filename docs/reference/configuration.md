@@ -17,8 +17,7 @@ trusted startup YAML, not in Agent Configurations.
 Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 `values` holds the native OpenClaw document, including `env`, `file`, and `exec`
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
-Secrets to selected gateway environment variables; the Secret Driver stores the
-values separately. A reviewed Configuration Driver, bundled or installed, stores
+Secrets or supported static CredentialSources to selected Gateway environment variables; the selected owner stores values separately. A reviewed Configuration Driver, bundled or installed, stores
 the native document in development and production. The bundled Kubernetes Driver
 uses one `openclaw.json` ConfigMap entry, so values must serialize to less than
 1 MiB; a save over that is refused with
@@ -57,8 +56,8 @@ unsupported settings, and unavailable Drivers stop startup before requests run.
 
 `sandboxNetworkPolicyCeiling` seeds the persistent network ceiling once. Later
 starts preserve saved rules; administrators change them through the API or
-Console. The retired `sandboxNetworkPolicyCeilingOverwriteOnStartup` setting is
-rejected. See [Installation ceiling](sandbox-policies.md#installation-ceiling)
+Console. `sandboxNetworkPolicyCeilingOverwriteOnStartup` is rejected.
+See [Installation ceiling](sandbox-policies.md#installation-ceiling)
 for ownership, grant limits, and authorization.
 See [repository delegation](sandbox-policies.md#repository-network-policy).
 

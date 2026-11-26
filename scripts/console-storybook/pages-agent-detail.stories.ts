@@ -192,6 +192,9 @@ export const DeploymentFailedDeployAgainUnreadable = story("deploymentFailedDepl
 export const DeploymentFailedAdmissionUnavailable = story("deploymentFailedAdmissionUnavailable");
 export const DeploymentFailedCodexPolicy = story("deploymentFailedCodexPolicy");
 export const DeploymentFailedCodexRequirementsSize = story("deploymentFailedCodexRequirementsSize");
+export const DeploymentFailedGatewayCredentialDelivery = story(
+  "deploymentFailedGatewayCredentialDelivery",
+);
 export const DeploymentFailedStoredInconsistent = story("deploymentFailedStoredInconsistent");
 export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
   "deploymentModelProbeFailedDeployOnlyUnreadable",
