@@ -147,22 +147,21 @@ function renderBindingReference(
   context: ChannelDrawerContext,
   source: SecretBindings[string]["source"] | undefined,
 ) {
-  if (
-    source?.kind === "credential_source" &&
-    provider.acceptsBinding?.(source, context.namespaceId)
-  ) {
-    return element("code", { className: "resource-id" }, source.id);
-  }
-  if (
-    source?.kind === "secret" &&
-    provider.acceptsBinding &&
-    !provider.acceptsBinding(source, context.namespaceId)
-  ) {
-    return element(
-      "span",
-      {},
-      "Create and select a Credential Source for this former Secret-backed setting.",
-    );
+  if (provider.acceptsBinding) {
+    if (
+      source?.kind === "credential_source" &&
+      provider.acceptsBinding(source, context.namespaceId)
+    ) {
+      return element("code", { className: "resource-id" }, source.id);
+    }
+    if (source?.kind === "secret") {
+      return element(
+        "span",
+        {},
+        "Create and select a Credential Source for this former Secret-backed setting.",
+      );
+    }
+    return element("span", {}, "No Credential Source bound");
   }
   return renderSecretReference(context, channelSecretSource(source));
 }

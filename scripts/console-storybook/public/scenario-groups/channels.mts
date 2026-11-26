@@ -483,7 +483,8 @@ export function channelsScenarios({
       group: "Components/Channels",
       name: "Not configured",
       path: `${draft}&tab=channels`,
-      description: "Configure Slack from the supported channel card.",
+      description:
+        "The Slack card marks both token Credential Sources as unbound. Configure Slack to select existing Sources.",
     },
     channelsReadOnly: {
       group: "Components/Channels",

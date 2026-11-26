@@ -473,6 +473,9 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
   await t.test("approver directory follows the selected channel bot Source", async () => {
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+    const unbound = page.getByText("No Credential Source bound", { exact: true });
+    await unbound.first().waitFor();
+    assert.equal(await unbound.count(), 2);
     await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
     let drawer = page.getByRole("dialog", { name: "Configure Slack", exact: true });
     await drawer.getByLabel("Direct-message policy").selectOption("disabled");
