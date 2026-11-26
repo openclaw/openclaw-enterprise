@@ -99,6 +99,43 @@ test("Configuration keeps invalid drafts and reveals syntax errors on keyboard S
   assert.equal(await json.inputValue(), draft);
   assert.equal(patches, 0);
 
+  // A curly quote deep in a pasted list gives a longer repair instruction in a narrow window.
+  await page.setViewportSize({ width: 320, height: 480 });
+  const labels = Array.from({ length: 48 }, (_, index) => `"intake-queue-${index + 1}"`);
+  const listDraft = corrected.replace(
+    '"marker": "corrected"',
+    `"marker": "corrected", "routingLabels": [${labels.join(", ")}, "manual-review"]`,
+  );
+  const pasted = listDraft.replace('"manual-review"', '“manual-review"');
+  const quote = pasted.indexOf("“");
+  assert.ok(quote >= 0);
+  await json.fill(pasted);
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Tab");
+  assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Enter");
+  await error.getByText(/curly quote “.*straight quote/u).waitFor();
+  await nextFrames(page);
+  assert.equal(patches, 0);
+  assert.equal(await json.inputValue(), pasted);
+  assert.equal(await focusedId(page), "configuration-json");
+  assert.deepEqual(
+    await json.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd]),
+    [quote, quote],
+  );
+  // Measure the rendered lines before typing can scroll the field.
+  const instructionVisible = await error.evaluate((node) => {
+    const text = document.createRange();
+    text.selectNodeContents(node);
+    const bounds = text.getBoundingClientRect();
+    return bounds.height > 0 && bounds.top >= 0 && bounds.bottom <= window.innerHeight;
+  });
+  assert.ok(instructionVisible, "the full repair instruction is visible before typing");
+  await page.keyboard.press("Delete");
+  await page.keyboard.type('"');
+  assert.equal(await json.inputValue(), listDraft);
+  assert.equal(await error.isHidden(), true);
+
   // Save from the end of the draft so focus alone cannot leave the first line in view.
   for (const viewport of [
     { width: 1440, height: 900 },

@@ -31,21 +31,20 @@ export function registerConsoleJsonErrorDiagnosticsCases(): void {
   test("an invisible or space-like character elsewhere is named at its position", () => {
     assert.equal(
       jsonObjectProblem('\n  \uFEFF{"a": 1}'),
-      "Invalid JSON at line 2, column 3: remove the invisible byte order mark there. Enter a valid JSON object.",
+      "Invalid JSON at line 2, column 3: remove the invisible byte order mark there.",
     );
     assert.equal(
       jsonObjectProblem('{"a":\u00A01}'),
-      "Invalid JSON at line 1, column 6: remove the non-breaking space there. Enter a valid JSON object.",
+      "Invalid JSON at line 1, column 6: remove the non-breaking space there.",
     );
     assert.equal(
       jsonObjectProblem('{"a": 1,\u200B"b": 2}'),
-      "Invalid JSON at line 1, column 9: remove the invisible zero-width space there. Enter a valid JSON object.",
+      "Invalid JSON at line 1, column 9: remove the invisible zero-width space there.",
     );
   });
 
   test("space-like separators and curly quotes are named at their position (finding 1959)", () => {
-    const named = (where: string, fix: string) =>
-      `Invalid JSON${where}: ${fix}. Enter a valid JSON object.`;
+    const namedAt = (where: string, fix: string) => `Invalid JSON at ${where}: ${fix}.`;
     for (const [character, name] of [
       ["\u2028", "invisible line separator"],
       ["\u2029", "invisible paragraph separator"],
@@ -54,43 +53,34 @@ export function registerConsoleJsonErrorDiagnosticsCases(): void {
     ] as const) {
       assert.equal(
         jsonObjectProblem(`{"a":${character}1}`),
-        named(" at line 1, column 6", `remove the ${name} there`),
+        namedAt("line 1, column 6", `remove the ${name} there`),
         codePoint(character),
       );
     }
     // A word processor's quotes around a key or a value, and a chat app's single quotes.
     assert.equal(
       jsonObjectProblem("{\u201Cmodel\u201D: 1}"),
-      named(
-        " at line 1, column 2",
-        'replace the curly quote \u201C there with a straight quote (")',
-      ),
+      namedAt("line 1, column 2", 'replace the curly quote \u201C there with a straight quote (")'),
     );
     assert.equal(
       jsonObjectProblem('{\n  "model": \u201Cgpt\u201D\n}'),
-      named(
-        " at line 2, column 12",
+      namedAt(
+        "line 2, column 12",
         'replace the curly quote \u201C there with a straight quote (")',
       ),
     );
     assert.equal(
       jsonObjectProblem("\u2018x\u2019"),
-      named("", 'replace the curly quote \u2018 at the start with a straight quote (")'),
+      'Invalid JSON: replace the curly quote \u2018 at the start with a straight quote ("). Enter a valid JSON object.',
     );
     // Autocorrect can also curl both quotes the closing way.
     assert.equal(
       jsonObjectProblem('{"a": \u201Db\u201D}'),
-      named(
-        " at line 1, column 7",
-        'replace the curly quote \u201D there with a straight quote (")',
-      ),
+      namedAt("line 1, column 7", 'replace the curly quote \u201D there with a straight quote (")'),
     );
     assert.equal(
       jsonObjectProblem("{\u2019a\u2019: 1}"),
-      named(
-        " at line 1, column 2",
-        'replace the curly quote \u2019 there with a straight quote (")',
-      ),
+      namedAt("line 1, column 2", 'replace the curly quote \u2019 there with a straight quote (")'),
     );
     // Inside a string they are ordinary text.
     assert.equal(jsonObjectProblem('{"a": "\u201Cquoted\u201D\u2028\u3000"}'), undefined);
@@ -108,7 +98,7 @@ export function registerConsoleJsonErrorDiagnosticsCases(): void {
     );
     assert.equal(
       jsonObjectProblem("\n \u3000"),
-      "Invalid JSON at line 2, column 2: remove the full-width space there. Enter a valid JSON object.",
+      "Invalid JSON at line 2, column 2: remove the full-width space there.",
     );
   });
 }
