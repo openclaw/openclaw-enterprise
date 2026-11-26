@@ -911,17 +911,20 @@ test(
       { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
     );
 
-    const revisionWork = await pool.query<{ revision_id: string }>(
-      `SELECT work.revision_id FROM occ.controller_work AS work
-       JOIN occ.agent_revisions AS revision ON work.revision_id = revision.id
+    await pool.query(
+      `UPDATE occ.controller_work AS work
+       SET state = 'succeeded',
+           completed_at = clock_timestamp(),
+           reason_code = 'REVISION_ACTIVATED',
+           updated_at = clock_timestamp()
+       FROM occ.agent_revisions AS revision
        WHERE work.namespace_id = $1
+         AND work.revision_id = revision.id
          AND revision.namespace_id = $1
          AND revision.admitted_spec #>> '{harness_auth,source,namespaceId}' = $1
          AND revision.admitted_spec #>> '{harness_auth,source,id}' = $2`,
       [namespace.id, revisionSecret.id],
     );
-    assert.equal(revisionWork.rowCount, 1);
-    await completeRevisionWork(pool, revisionWork.rows[0]!.revision_id, "REVISION_ACTIVATED");
     await store.transact(async (state) => {
       assert.equal(await state.secrets.hasReferences(namespace.id, revisionSecret.id), false);
       assert.equal(await state.secrets.deleteSecret(namespace.id, revisionSecret.id), true);

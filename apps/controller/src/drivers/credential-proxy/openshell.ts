@@ -21,6 +21,7 @@ import type {
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
 import {
+  ActivationPendingError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
@@ -48,6 +49,7 @@ import {
 import { openShellWorkspaceName, type OpenShellGateway } from "../../backends/openshell.ts";
 import type {
   OpenShellGatewayClient,
+  OpenShellPolicyStatus,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 import type { OpenShellNativeProvider } from "../token-service/openshell.ts";
@@ -664,15 +666,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           { workspace: target.workspace, sandbox: target.name },
           context.signal,
         );
-        if (
-          status.state !== "POLICY_STATUS_LOADED" ||
-          status.activeVersion !== status.version ||
-          ![repositoryPolicy.idle, repositoryPolicy.generic, repositoryPolicy.combined].some(
-            (policy) => sameOpenShellPolicy(status.policy, policy),
-          )
-        ) {
-          throw new OpenShellCredentialDeliveryRefusedError();
-        }
+        requireLoadedRepositoryPolicy(status, repositoryPolicy);
         if (!sameOpenShellPolicy(status.policy, repositoryPolicy.combined)) {
           if (!target.sandbox.resourceVersion || !target.client.updatePolicy) {
             throw new DependencyUnavailableError(
@@ -699,6 +693,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         })),
       };
     } catch (attachmentError) {
+      if (
+        attachmentError instanceof ActivationPendingError &&
+        attachmentError.code === "CREDENTIAL_ACTIVATION_PENDING"
+      ) {
+        throw attachmentError;
+      }
       throw await failureAfterCleanup(
         attachmentError,
         "Native credential attachment failed and Provider cleanup is unconfirmed.",
@@ -969,6 +969,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           throw error;
         }
       };
+      if (!exactWithdrawal && this.sandbox.workspaceStorage === "provider") {
+        const sandbox = (await refused(readSandbox)) ?? (await absent());
+        if (sandbox) {
+          assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
+          await refused(() =>
+            this.removeStoppedCredentialRoutes(
+              context,
+              expected,
+              { ...scope, sandbox },
+              new Set(bindings.map((binding) => this.providerName(binding))),
+            ),
+          );
+        }
+      }
       for (const binding of bindings) {
         const providerName = this.providerName(binding);
         const sandbox = (await refused(readSandbox)) ?? (await absent());
@@ -1174,17 +1188,61 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       { workspace: target.workspace, sandbox: target.name },
       context.signal,
     );
-    if (
-      status.state !== "POLICY_STATUS_LOADED" ||
-      status.activeVersion !== status.version ||
-      ![policies.idle, policies.generic, policies.combined].some((policy) =>
-        sameOpenShellPolicy(status.policy, policy),
-      )
-    ) {
-      throw new OpenShellCredentialDeliveryRefusedError();
-    }
+    requireLoadedRepositoryPolicy(status, policies);
     await this.readSandboxTarget(context, expected);
     return policies;
+  }
+
+  private async removeStoppedCredentialRoutes(
+    context: CredentialDeploymentContext,
+    expected: CredentialDeploymentConfiguration,
+    target: Awaited<ReturnType<OpenShellCredentialProxyDriver["readSandboxTarget"]>>,
+    providers: ReadonlySet<string>,
+  ): Promise<void> {
+    const { client, workspace, name, sandbox } = target;
+    const stopped = (value: OpenShellSandboxResponse) =>
+      value.phase === "SANDBOX_PHASE_STOPPED" || value.phase === 7;
+    if (!stopped(sandbox) || !client.getPolicyStatus || !client.updatePolicy) {
+      throw new DependencyUnavailableError("The stopped Sandbox policy cannot be reduced.");
+    }
+    const request = { workspace, sandbox: name };
+    const { policy } = await client.getPolicyStatus(request, context.signal);
+    const networks = asRecord(policy.network_policies) ?? {};
+    const remaining = { ...networks };
+    for (const [name, value] of Object.entries(networks)) {
+      const rule = asRecord(value);
+      if (!rule || !Array.isArray(rule.endpoints)) {
+        continue;
+      }
+      const endpoints = rule.endpoints.filter((value) => {
+        const provider = asRecord(asRecord(value)?.credential_binding)?.provider;
+        return typeof provider !== "string" || !providers.has(provider);
+      });
+      if (endpoints.length === 0 && rule.endpoints.length > 0) {
+        delete remaining[name];
+      } else if (endpoints.length !== rule.endpoints.length) {
+        remaining[name] = { ...rule, endpoints };
+      }
+    }
+    const reduced = { ...policy, network_policies: remaining };
+    if (sameOpenShellPolicy(policy, reduced)) {
+      return;
+    }
+    // OpenShell validates detach against the stored policy, even with no supervisor running.
+    await client.updatePolicy(
+      {
+        ...request,
+        policy: reduced,
+        expectedResourceVersion: sandbox.resourceVersion,
+        requestId: randomUUID(),
+      },
+      context.signal,
+    );
+    const observed = await client.getPolicyStatus(request, context.signal);
+    const { sandbox: after } = await this.readSandboxTarget(context, expected);
+    if (!stopped(after) || !sameOpenShellPolicy(observed.policy, reduced)) {
+      throw new DependencyUnavailableError("The stopped Sandbox policy reduction is unconfirmed.");
+    }
   }
 
   private async withdrawRepositoryDeploymentRoute(
@@ -1351,6 +1409,31 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     );
     assertOpenShellPushedTarget(sandbox, scope.workspace, scope.name, expected);
     return { ...scope, sandbox };
+  }
+}
+
+function requireLoadedRepositoryPolicy(
+  status: OpenShellPolicyStatus,
+  policies: ReturnType<typeof openShellRepositoryDeploymentPolicy>,
+): void {
+  if (
+    ![policies.idle, policies.generic, policies.combined].some((policy) =>
+      sameOpenShellPolicy(status.policy, policy),
+    )
+  ) {
+    throw new OpenShellCredentialDeliveryRefusedError();
+  }
+  if (
+    status.state === "POLICY_STATUS_PENDING" ||
+    (status.state === "POLICY_STATUS_LOADED" && status.activeVersion < status.version)
+  ) {
+    throw new ActivationPendingError(
+      "CREDENTIAL_ACTIVATION_PENDING",
+      "OpenShell is loading the admitted Repository policy.",
+    );
+  }
+  if (status.state !== "POLICY_STATUS_LOADED" || status.activeVersion !== status.version) {
+    throw new OpenShellCredentialDeliveryRefusedError();
   }
 }
 
