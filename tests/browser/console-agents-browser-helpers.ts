@@ -112,7 +112,11 @@ export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 export async function createSlackSourceConsoleFixture(
   t: TestContext,
   name: string,
-  options: { defaultPresets?: unknown[]; filesystemConfiguration?: boolean } = {},
+  options: {
+    defaultPresets?: unknown[];
+    filesystemConfiguration?: boolean;
+    computeImplementation?: string;
+  } = {},
 ) {
   const secretDriver = createTestSecretDriver({ id: `source-${randomUUID()}` });
   let state: PlatformStateStore | undefined;

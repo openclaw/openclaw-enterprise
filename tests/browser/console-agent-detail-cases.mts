@@ -1506,7 +1506,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
         ...(enterpriseOrgInstall ? { enterpriseOrgInstall } : {}),
         ...(dmPolicy === undefined ? {} : { dmPolicy }),
         ...(groupPolicy === undefined ? {} : { groupPolicy }),
-        allowFrom: dmPolicy === "open" ? ["*"] : ["UKEEP123"],
+        allowFrom: ["UKEEP123"],
         channels: { CKEEP123: { requireMention: true, users: ["UKEEP123"] } },
       };
       const agent = await fixture.createAgent(

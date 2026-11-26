@@ -217,7 +217,7 @@ export async function createConsoleRepositoryLaunchFixture(
     ...(gatewaySources && {
       // Admission uses the actual qualified owner/Compute classes. The Kubernetes API below is
       // passive fixture storage; this does not exercise Worker or Gateway delivery.
-      gatewayStartupSourceDelivery: (selectedCompute, owner) =>
+      gatewayStartupSourceDelivery: (selectedCompute: unknown, owner: unknown) =>
         selectedCompute === compute &&
         selectedCompute instanceof KubernetesComputeDriver &&
         owner instanceof OCCTokenServiceDriver &&
