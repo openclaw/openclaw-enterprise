@@ -120,7 +120,10 @@ export async function verifyDedicatedGatewayAssets(
     const configuration = { agents: { defaults: { skills: ["github"] } } };
     const before = await listRepositorySkills(t, configuration);
     assert.equal(before.find((skill) => skill.name === "github")?.modelVisible, true);
-    const after = await listRepositorySkills(t, repositoryRestSkillConfiguration(configuration));
+    const after = await listRepositorySkills(
+      t,
+      repositoryRestSkillConfiguration(configuration, true),
+    );
     const generic = after.find((skill) => skill.name === "github");
     assert.equal(generic?.disabled, true);
     assert.equal(generic.modelVisible, false);

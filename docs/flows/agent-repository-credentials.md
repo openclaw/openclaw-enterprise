@@ -251,9 +251,11 @@ Codex checks the named profile at thread start, resume, fork and turns.
 ### 5. Authenticate native Git and route GitHub CLI commands
 
 For a Dedicated Harness with a TokenService Git Source, `projectGatewayRevision`
-exposes `github-repository-rest` from `/etc/codex/skills` and replaces `github`
-in the Gateway catalog and explicit selections. Codex can read the replacement
-with `skills_read`. The skill uses stock `gh api` with the binding placeholder.
+disables the generic `github` skill. When the frozen repository credential policy
+admits PR creation, Compute exposes `github-repository-rest` from
+`/etc/codex/skills` in the Gateway catalog and replaces explicit `github`
+selections. Codex reads the replacement with `skills_read`. The skill uses stock
+`gh api` with the binding's placeholder.
 
 Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
 host, path, generation and deadline before returning a bearer.

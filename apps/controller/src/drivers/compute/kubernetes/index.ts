@@ -385,6 +385,7 @@ import {
   repositoryNativeConfiguration,
   repositoryRestSkillConfiguration,
 } from "./repository-native-configuration.ts";
+import { githubPullRequestCreationRequest } from "../../repo/github/access/registry.ts";
 import { harnessWorkspacePreparationScript } from "./harness/workspace-preparation.ts";
 import {
   PLUGIN_RUNTIME_STATUS_PATH,
@@ -14311,7 +14312,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
     if (isNativeStagedRepositoryRevision(revision)) {
-      nativeConfiguration = repositoryRestSkillConfiguration(nativeConfiguration);
+      const injection = revision.credentialDeployment?.injectionPolicies.find(
+        ({ bindingRef }) => bindingRef === "repository",
+      );
+      const grants = revision.sandboxPolicy?.repositoryNetworkPolicy?.grants ?? [];
+      const publicationAllowed = grants.some(({ repository }) => {
+        const publication = githubPullRequestCreationRequest(repository);
+        return injection?.allowedRequests.some((request) =>
+          isDeepStrictEqual(request, publication),
+        );
+      });
+      nativeConfiguration = repositoryRestSkillConfiguration(
+        nativeConfiguration,
+        publicationAllowed,
+      );
     }
     const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,

@@ -50,6 +50,8 @@ import {
 import { fixtureRelease, selectFixtureRelease } from "../helpers/inspected-workspace-release.ts";
 import { backendFor } from "../integration/sandbox-driver-openshell-fixture.ts";
 import { buildSandboxInstallation } from "../integration/sandbox-driver-installation-fixture.ts";
+import { githubPullRequestCreationRequest } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
+import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
 import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
 import { inspectOpenShellCodexCommand } from "../fixtures/openshell-codex-command.ts";
 import { createCodexStartup, login, probe } from "../fixtures/codex-native-startup.mjs";
@@ -923,10 +925,10 @@ for (const { name, ...auth } of [
 }
 
 test("staged Repository Compute freezes and revalidates only inspected dedicated Harness releases", async (t) => {
-  for (const [harnessId, mode] of [
-    ["codex", "legacy"],
-    ["codex", "service"],
-    ["openclaw", "service"],
+  for (const [harnessId, mode, publicationAllowed] of [
+    ["codex", "legacy", false],
+    ["codex", "service", true],
+    ["openclaw", "service", true],
   ]) {
     await t.test(`${harnessId} ${mode}`, async (t) => {
       const base = buildSandboxInstallation().drivers.sandbox.configuration;
@@ -1018,15 +1020,13 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
         },
       };
       const grants = [
-        { repository: "octo/project", access: "read" },
+        { repository: "octo/project", access: publicationAllowed ? "write" : "read" },
         { repository: "octo/second", access: "read" },
       ];
-      const repositoryRequests = grants.map(({ repository }) => ({
-        binary: "/usr/bin/git",
-        host: "github.com",
-        ports: [{ from: 443, to: 443 }],
-        requestPolicy: { type: "http", method: "GET", path: `/${repository}.git/info/refs` },
-      }));
+      const repositoryRequests = [
+        ...openShellRepositoryCredentialRequests(grants),
+        ...(publicationAllowed ? [githubPullRequestCreationRequest("octo/project")] : []),
+      ];
       const configuration = createHarnessConfiguration(harnessId, "gpt-5");
       const makeFixture = () =>
         dedicatedFirstDeployFixture({
@@ -1158,12 +1158,17 @@ test("staged Repository Compute freezes and revalidates only inspected dedicated
       const baseConfig = JSON.parse(
         fixture.read("ConfigMap", config.configMap.name).data["openclaw.json"],
       );
-      // The Gateway supplies the model's skill catalog for either Dedicated Harness.
+      // The Gateway replaces generic GitHub instructions only with a skill the Agent can use.
       assert.equal(baseConfig.skills.entries.github.enabled, false);
-      assert.deepEqual(baseConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
-      assert.deepEqual(baseConfig.skills.load.extraDirs, [
-        "/etc/codex/skills/github-repository-rest",
-      ]);
+      if (publicationAllowed) {
+        assert.deepEqual(baseConfig.agents.defaults.skills, ["github-repository-rest", "slack"]);
+        assert.deepEqual(baseConfig.skills.load.extraDirs, [
+          "/etc/codex/skills/github-repository-rest",
+        ]);
+      } else {
+        assert.equal(baseConfig.skills.entries["github-repository-rest"]?.enabled, false);
+        assert.doesNotMatch(JSON.stringify(baseConfig.skills.load ?? {}), /github-repository-rest/);
+      }
       if (browserEnabled) {
         assert.equal(gateway.volumeMounts.find(({ name }) => name === config.name)?.readOnly, true);
         assert.equal(

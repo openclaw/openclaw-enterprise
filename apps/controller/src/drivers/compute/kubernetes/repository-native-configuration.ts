@@ -112,10 +112,28 @@ function replaceGitHubSkillSelection(
 /** Replace the generic GitHub instructions, which recommend commands outside the Repository policy. */
 export function repositoryRestSkillConfiguration(
   configuration: OpenClawConfigurationDocument,
+  publicationAllowed: boolean,
 ): OpenClawConfigurationDocument {
   const skills = object(configuration.skills, "skills");
-  const load = object(skills.load, "skills.load");
   const entries = object(skills.entries, "skills.entries");
+  const github = { ...object(entries.github, "skills.entries.github"), enabled: false };
+  if (!publicationAllowed) {
+    return {
+      ...configuration,
+      skills: {
+        ...skills,
+        entries: {
+          ...entries,
+          github,
+          [REPOSITORY_REST_SKILL]: {
+            ...object(entries[REPOSITORY_REST_SKILL], `skills.entries.${REPOSITORY_REST_SKILL}`),
+            enabled: false,
+          },
+        },
+      },
+    };
+  }
+  const load = object(skills.load, "skills.load");
   const extraDirs = load.extraDirs ?? [];
   if (!Array.isArray(extraDirs) || extraDirs.some((dir) => typeof dir !== "string")) {
     throw new Error(
@@ -128,10 +146,7 @@ export function repositoryRestSkillConfiguration(
     skills: {
       ...skills,
       load: { ...load, extraDirs: [...new Set([...extraDirs, REPOSITORY_REST_SKILL_DIRECTORY])] },
-      entries: {
-        ...entries,
-        github: { ...object(entries.github, "skills.entries.github"), enabled: false },
-      },
+      entries: { ...entries, github },
     },
     agents: {
       ...agents,
