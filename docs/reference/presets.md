@@ -140,7 +140,7 @@ variables. After **Use Preset**, choose an existing service account Secret or
 List the shipped container file as above; `includeDefaults` alone does not add it.
 
 In the Console, choose **SWE Agent**, fill its variables, then use **Edit Slack**
-to configure channels, allowed senders, and Slack app/bot Secrets. No channels or
+to configure channels, allowed senders, and Slack app/bot Credential Sources. No channels or
 credentials are stored in the preset.
 
 The preset includes the supplied instructions in

@@ -447,6 +447,10 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/gateway-credentials",
+                            "label": "Gateway Credentials"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/managed-native-configuration",
                             "label": "Managed Native Configuration"
                           },

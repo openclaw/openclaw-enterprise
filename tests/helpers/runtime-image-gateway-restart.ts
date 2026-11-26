@@ -585,7 +585,8 @@ async function inGatewayContainer<T>(
   );
 }
 
-const unverifiableOwner = /an unverifiable owner will not be reclaimed automatically/;
+const waitingForOwner = /waiting for the previous Gateway to stop/;
+const unverifiableOwner = /cannot verify Gateway ownership/;
 
 // The 3257 sequence on one retained state volume: the Pod stop reaches a
 // Gateway that holds its state lock mid-startup and ends it, then a new Pod
@@ -676,9 +677,8 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
       act: undefined,
     });
     await withStartupProbeEvidence(replacement, async () => {
-      // Before the fix: "Waiting up to 95 seconds for the previous Gateway to
-      // release state; an unverifiable owner will not be reclaimed automatically",
-      // then "Gateway failed to start: cannot verify Gateway ownership".
+      // A verified stopped predecessor lets the replacement serve without an
+      // ownership error. A temporary native wait can still resolve to readiness.
       assert.doesNotMatch(replacement.snapshot.output, unverifiableOwner);
       assert.equal(replacement.snapshot.events.some(observedValue("ready", true)), true);
     });
@@ -690,9 +690,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
 // The contender runs in another Pod (new hostname and PID namespace), so OpenClaw
 // refuses on the namespace match, as it did before this release: this pins that
 // cross-container refusal. The PID check for a holder in the caller's own
-// namespace is covered by the bridge unit tests in OpenClaw's
-// src/infra/gateway-lock-recovery.test.ts
-// (deploy/runtime/openclaw-terminated-gateway-namespace.patch).
+// namespace is covered by OpenClaw's src/infra/gateway-lock-recovery.test.ts.
 export function liveHolderKeepsStateTest(title: string): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
@@ -723,10 +721,11 @@ export function liveHolderKeepsStateTest(title: string): void {
       return { pid: lock.pid, ownerId: lock.ownerId };
     };
     const before = await readLock();
-    const refused = /is not attributable to the terminated namespace/;
+    const refused = /does not belong to the supplied namespace/;
     const contender = await runStartupProbeScenario(t, {
       ...scenario,
-      until: ({ output }: { output: string }) => unverifiableOwner.test(output),
+      until: ({ output, phases }: StartupProbeSnapshot) =>
+        phaseAt(phases, "native-spawn") !== undefined && waitingForOwner.test(output),
       act: async ({
         containerName,
         collect,
@@ -734,13 +733,17 @@ export function liveHolderKeepsStateTest(title: string): void {
         containerName: string;
         collect: () => Promise<{ output: string; running: boolean }>;
       }) => {
-        // The contender holds nothing while it waits; end it uncleanly there.
+        // Tini runs the wrapper, which runs the waiting native Gateway. Match
+        // that process relationship so the test does not depend on the CLI title.
         await runDocker([
           "exec",
           containerName,
           "sh",
           "-ec",
-          "kill -KILL $(pgrep -of '^openclaw-gateway')",
+          String.raw`wrapper=$(pgrep -P 1)
+pid=$(pgrep -P "$wrapper")
+case "$pid" in *[!0-9]*|'') echo "Expected one native Gateway child" >&2; exit 1;; esac
+kill -KILL "$pid"`,
         ]);
         const deadline = Date.now() + budgetMs;
         for (;;) {

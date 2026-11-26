@@ -1,10 +1,10 @@
 import type { PluginFieldsOptions } from "../../../../apps/controller/src/console/agents/plugin-fields.mts";
 import {
   allowEveryoneInSlackChannels,
+  addSlackBotSource,
   click,
   create,
   createModelSecret,
-  createSlackBotSecret,
   modelCredentialSourceTypes,
   form,
   presetSecretsPath,
@@ -301,13 +301,13 @@ const createWorkspaceFields: StoryAction[] = [
   { selector: "#workspace-USER-md", value: "" },
 ];
 
-const createProvisioningSecrets: StoryAction[] = [
+const createProvisioningSources: StoryAction[] = [
   ...provisionableForm,
   { selector: "#agent-name", value: "Slack research assistant" },
   click("Configure Slack"),
   { selector: "#slack-dm-policy", value: "disabled" },
-  { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
-  ...createSlackBotSecret,
+  { selector: "#slack-source-slack-app-token", value: "cs_00000000-0000-4000-8000-000000000041" },
+  { selector: "#slack-source-slack-bot-token", value: "cs_00000000-0000-4000-8000-000000000042" },
   { selector: "#slack-channel-ids-search", value: "CDEMO123", key: "Enter" },
   ...allowEveryoneInSlackChannels,
   click("Apply channel settings"),
@@ -531,7 +531,6 @@ export const createAgentFormScenarios = {
       "The Namespace permission answer denies Secret creation. Create new Secret... is disabled and names Secret create in this Namespace. The field also offers existing Secrets.",
     steps: [
       "Type a name no Secret has in API key Secret. Create new Secret... is listed with the access note under it and opens nothing.",
-      "Open Configure Slack. Its hints say to choose existing Slack token Secrets, with no offer to create them.",
     ],
     gap: "The permission answer is simulated; the API still authorizes Secret creation.",
   },
@@ -539,21 +538,12 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Secret operate not permitted",
     path: create,
-    actions: [
-      ...form,
-      { selector: "#agent-name", value: "Slack launch demo" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-    ],
-    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    actions: [...form, { selector: "#agent-name", value: "Model credential demo" }],
+    secretOperateDenied: ["sec_demo_model_backup"],
     description:
-      "The Namespace Secret answer lists the Slack backup token as readable but not operable for this member. Each Create Agent Secret field lists it disabled with the reason and never stages it, since Agent create would refuse it. Secret operate is then granted per Secret, so a new Secret would have none: each field lists Create new Secret... disabled with the reason, and the drawer hints offer only existing Secrets.",
-    steps: [
-      "Type backup in Slack bot token. Slack backup token (simulated) is listed with the access note under it; choosing it stages nothing.",
-      "Type a name no Secret has in Slack bot token. Create new Secret... is listed with the access note under it and opens nothing; the drawer hints say to choose existing Slack token Secrets.",
-      "Close the drawer and type backup in API key Secret: the same option is listed the same way.",
-    ],
-    gap: "The Secret answer is simulated; the API still authorizes Agent create and the Secrets it binds.",
+      "The model Secret picker lists a readable Secret that this member cannot operate as unavailable; creating a new Secret is also unavailable when exact operate grants cover only existing Secrets.",
+    steps: ["Open the API key Secret picker and inspect the simulated backup model key's denial."],
+    gap: "The Secret permission answer is simulated; this story covers the still-supported model Secret consumer.",
   },
   createAgentSaveRefused: ordinarySaveRefused("Secret operate"),
   createAgentSaveConfigurationReadRefused: ordinarySaveRefused("Configuration read"),
@@ -873,9 +863,9 @@ export const createAgentFormScenarios = {
     ],
     gap: pluginDiscoveryGap,
   },
-  createPluginApproversMissingSecret: {
+  createPluginApproversMissingSource: {
     group: "Pages/Create Agent",
-    name: "Plugin approvers need a Slack bot Secret",
+    name: "Plugin approvers need a Slack bot Source",
     path: create,
     pluginCapabilities,
     actions: [
@@ -883,8 +873,8 @@ export const createAgentFormScenarios = {
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
     ],
     description:
-      "Choose a Slack bot Secret here to search by name, or enter exact IDs. The search choice does not bind the Secret to the Agent.",
-    gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
+      "Choose a Slack bot Source here to search by name, or enter exact IDs. The search choice does not bind the Source to the Agent.",
+    gap: "The fixture does not prove Source permissions or OpenClaw approval enforcement.",
   },
   createPluginApproversLookup: {
     group: "Pages/Create Agent",
@@ -894,13 +884,13 @@ export const createAgentFormScenarios = {
     actions: [
       ...form,
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
-      { selector: "#approver-directory-secret", value: "Slack bot token (simulated)" },
+      { selector: "#approver-directory-source", value: "cs_00000000-0000-4000-8000-000000000042" },
       { selector: '[aria-label="Default plugin approvers people"]', value: "Alex" },
       { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
     ],
     description:
-      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
-    gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
+      "A search-only Credential Source resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
+    gap: "The Credential Source and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
@@ -1067,13 +1057,13 @@ const gitClientPreview = {
 } satisfies Partial<CreateAgentScenario>;
 
 export const createAgentProvisioningScenarios = {
-  createProvisioningSecrets: {
+  createProvisioningSources: {
     group: "Pages/Create Agent",
-    name: "Provisioning with Slack Secret refs",
+    name: "Provisioning with Slack Source refs",
     path: create,
-    actions: createProvisioningSecrets,
+    actions: createProvisioningSources,
     description:
-      "Codex creation submits provisioning with inline Configuration and Secret references prepared through the channel modal.",
+      "Codex creation submits provisioning with inline Configuration and canonical Credential Source references selected in the Channel drawer.",
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
@@ -1258,36 +1248,47 @@ export const createAgentProvisioningScenarios = {
     description:
       "When the runtime does not advertise first-time Agent provisioning, Codex creation saves a draft Configuration and Agent for later deployment.",
   },
-  createSlackSecretMenu: {
+  createSlackSourceMenu: {
     group: "Pages/Create Agent",
-    name: "Slack Secret menu before Agent exists",
+    name: "Create a Slack credential before the Agent exists",
     path: create,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
+      ...addSlackBotSource,
     ],
     description:
-      "A new Agent can choose existing simulated Namespace Secrets by name or create new Slack token Secrets before the Agent resource exists.",
+      "Choose Add new credential to see the selected-owner and Slack delivery requirements, then enter a Source name and masked token. Switching modes clears the token. Create credential enrolls a reusable static Source; Cancel returns to selection.",
+    gap: "Source enrollment and permissions are simulated; no real token or Slack request is used.",
   },
-  createSlackCreateSecretModal: {
+  createSlackSourceRefused: {
     group: "Pages/Create Agent",
-    name: "Create Slack Secret before Agent exists",
+    name: "Slack credential creation refused",
     path: create,
-    actions: [
-      ...form,
-      { selector: "#agent-name", value: "Slack launch demo" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
-    ],
+    rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
     description:
-      "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
-    steps: [
-      "Enter a synthetic value, then click the gray backdrop. Only Create Secret closes; the Slack editor stays open.",
-      "Open Create new Secret again and confirm Value is empty. Press Escape, then cancel the Slack editor without creating an Agent.",
+      "The simulated API refuses Source creation. The Slack editor reports the refusal without selecting an unconfirmed Source.",
+  },
+  createSlackSourceUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "Slack credential creation unconfirmed",
+    path: create,
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The TokenService cannot complete this source operation.",
+      },
     ],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
+    description:
+      "A simulated 409 leaves the Source creation outcome unconfirmed. The editor clears the token and blocks another create until the operator checks Credential Sources and the credential owner, then reloads the page.",
+    gap: "The error response is simulated. This does not establish whether a credential owner stored a value.",
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",
@@ -1296,9 +1297,7 @@ export const createAgentProvisioningScenarios = {
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
-      click("Configure Slack"),
-      { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
+      { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
       click("Create Secret"),
     ],
     description:
@@ -1371,21 +1370,61 @@ export const createAgentProvisioningScenarios = {
     description:
       "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
   },
-  createSlackSecretStaged: {
+  createSlackNativeSigningSource: {
     group: "Pages/Create Agent",
-    name: "Slack Secret bindings staged",
+    name: "Native Slack signing credential Source",
+    path: create,
+    actions: [
+      ...form,
+      { selector: ".launch-advanced summary", click: true },
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            agents: { defaults: { model: "codex/gpt-5" } },
+            channels: {
+              slack: {
+                enabled: true,
+                mode: "http",
+                botToken: "${SLACK_BOT_TOKEN}",
+                signingSecret: "${SLACK_SIGNING_SECRET}",
+              },
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        selector: "#slack-binding-slack-signing-secret",
+        value: "cs_00000000-0000-4000-8000-000000000043",
+      },
+    ],
+    description:
+      "A native Slack signingSecret references SLACK_SIGNING_SECRET. Choose a saved static Credential Source for that key; the form stages only its canonical reference alongside the unsaved Configuration.",
+    gap: "Source metadata and form state are simulated. This does not prove API admission, persistence, or Slack delivery.",
+  },
+  createSlackSourceStaged: {
+    group: "Pages/Create Agent",
+    name: "Slack Source bindings staged",
     path: create,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
-      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_app_token" },
-      ...createSlackBotSecret,
+      {
+        selector: "#slack-source-slack-app-token",
+        value: "cs_00000000-0000-4000-8000-000000000041",
+      },
+      {
+        selector: "#slack-source-slack-bot-token",
+        value: "cs_00000000-0000-4000-8000-000000000042",
+      },
       click("Apply channel settings"),
     ],
     description:
-      "Applying channel settings retains staged Slack Secret bindings for creation. There is no raw Secret bindings JSON editor; token values stay masked.",
+      "Applying Channel settings stages canonical Source references for Agent creation. The form does not receive credential values.",
   },
   createSlackChannelAccessRequired: {
     group: "Pages/Create Agent",
@@ -1831,6 +1870,7 @@ export const createAgentProvisioningScenarios = {
       "Selecting a GitHub repository shows the registered App Client picker and changes the action to Save Agent draft. Application allows only Read-only Git; tooling starts at Read/write Git. Change tooling to Read-only Git, remove it and undo removal to confirm the narrower choice is retained. Saving and deployment require a supporting Installation.",
     steps: [
       "With application and tooling selected, check that the action says Save Agent draft and the deployment warning is absent.",
+      "Switch tooling to Read-only Git and back. Check the hint for public metadata reads and the additional pull request requirements.",
       "Uncheck both repositories. Before Create Agent, read the warning about deployment without a repository policy and the need for a new Agent to add Per-repository access later.",
       "Switch to Access profiles and check its existing warning. Return to Per-repository access and select application again; Save Agent draft returns and the deployment warning disappears.",
     ],
@@ -2342,10 +2382,10 @@ export const createAgentProvisioningScenarios = {
     name: "Standard Codex, Secret operate on some Secrets",
     path: create,
     standardCodexPreset: true,
-    secretOperateDenied: ["sec_demo_slack_backup_token"],
+    secretOperateDenied: ["sec_demo_model_backup"],
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "The Namespace Secret answer lists the Slack backup token as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup token disabled too.",
+      "The Namespace Secret answer lists the backup model key as readable but not operable, so this member's Secret operate is granted per Secret and a new Secret would have none. Secret source lists Create new Secret disabled with the reason and starts on Use existing Secret, which lists the backup model key disabled too.",
     steps: [
       "Open Secret source for Model Secret: Create new Secret is disabled, and the hint under the existing Secret list gives the reason.",
       "Choose another Secret and select Use Preset: the form opens with that Secret bound.",

@@ -9,6 +9,7 @@ import type {
   Configuration,
   HarnessAuthBinding,
   OpenClawConfigurationDocument,
+  SecretBindings,
   SecretMetadata,
   RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
@@ -110,8 +111,8 @@ import {
   namespacePath,
   refusedSave,
   secretOperateRefusal,
-  CHANNEL_BINDING_PLACES,
   channelBindingRefusal,
+  channelMissingBindingRefusal,
   agentSaveDenial,
   agentSaveGap,
   describeFailure,
@@ -138,6 +139,9 @@ import {
   grantWarning,
   harnessGrantSubject,
   createChannelSecretsPanel,
+  createSlackCredentialBindingFields,
+  slackCredentialBindingKeys,
+  slackSourceForBinding,
   CHANNEL_SECRETS_CONFIGURATION_READ_ONLY,
   CHECKING_CREDENTIAL_ACCESS,
   channelBindingsToReplace,
@@ -237,6 +241,8 @@ interface ConfigurationDraft {
   text: string;
   initialText: string;
   baseline: Pick<Configuration, "id" | "generation">;
+  secretBindings?: SecretBindings;
+  initialSecretBindings?: SecretBindings;
   outcomeUnknown?: boolean;
   reloadRequired?: boolean;
   carried?: boolean;
@@ -566,9 +572,9 @@ const CONFIGURATION_SECRETS_READ_ONLY = `Saving this Configuration needs Secret 
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
-// The Configuration JSON saves no Secret bindings; a channel refusal that asks for one gets where
-// the console binds Slack's standard names (finding 2494). The API keeps its secretBindings text.
-const CHANNEL_BINDING_CONSOLE_REMEDY = `This editor does not save Secret bindings: ${CHANNEL_BINDING_PLACES}`;
+// The JSON editor stages missing Slack Source bindings beside the values and saves them together.
+const CHANNEL_BINDING_CONSOLE_REMEDY =
+  "Select a Credential Source for each missing Slack binding below, then save Configuration.";
 
 // Longest wait for Deployment activity's first read before the sections below it show. On a
 // slow link that read lands over a second after the page, and a failed version's banner then
@@ -891,18 +897,46 @@ export async function renderAgentDetail(
   const configurationReadOnly = () =>
     callerPermissions?.configurationUpdate === false ||
     callerPermissions?.configurationSecretsOperate === false;
+  let viewedSnapshot: Snapshot | null = null;
   let configurationDeniedSecretNames: readonly string[] = [];
   let agentDeniedSecretNames: readonly string[] = [];
   let agentNamesGeneration = 0;
   let refreshDeniedSecretNames: (() => void) | undefined;
+  const viewedBindings = () =>
+    viewedSnapshot && "secretBindings" in viewedSnapshot
+      ? viewedSnapshot.secretBindings
+      : undefined;
+  const deniedConfigurationSourceIds = (permissions = callerPermissions) => {
+    const snapshot = viewedSnapshot;
+    if (!snapshot || !("secretBindings" in snapshot)) {
+      return [];
+    }
+    return [
+      ...new Set(
+        (permissions?.configurationSecretsOperateDeniedBindings ?? []).flatMap((name) => {
+          const source = snapshot.secretBindings?.[name]?.source;
+          return source?.kind === "credential_source" && source.namespaceId === namespaceId
+            ? [source.id]
+            : [];
+        }),
+      ),
+    ];
+  };
   const agentSaveReason = (permissions = callerPermissions) => {
-    if (agentSaveGap(permissions, agent) !== "sources" || agentDeniedSecretNames.length === 0) {
+    if (agentSaveGap(permissions, agent) !== "sources") {
       return agentSaveDenial(permissions, agent);
     }
     const names = agentDeniedSecretNames;
+    const sourceIds = deniedConfigurationSourceIds(permissions);
     const listed =
       names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-    return `${agentSaveDenial(permissions, agent)} Missing Secret operate on ${listed}.`;
+    const requirements = [
+      ...(names.length ? [`Secret operate on ${listed}`] : []),
+      ...(sourceIds.length ? [`Credential Source operate on ${sourceIds.join(", ")}`] : []),
+    ];
+    return requirements.length
+      ? `${agentSaveDenial(permissions, agent)} Missing ${requirements.join(" and ")}.`
+      : agentSaveDenial(permissions, agent);
   };
   const configurationReadOnlyReason = () => {
     if (callerPermissions?.configurationUpdate === false) {
@@ -911,6 +945,14 @@ export async function renderAgentDetail(
     const names = configurationDeniedSecretNames;
     const listed =
       names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    const sourceIds = deniedConfigurationSourceIds();
+    if (sourceIds.length) {
+      const requirements = [
+        `Credential Source operate on ${sourceIds.join(", ")}`,
+        ...(names.length ? [`Secret operate on ${listed}`] : []),
+      ];
+      return `Saving this Configuration needs ${requirements.join(" and ")}, which your access does not include. ${askAdministratorTo("grant it")}`;
+    }
     return names.length
       ? `Saving this Configuration needs Secret operate on ${listed}, which your access does not include. ${askAdministratorTo("grant it")}`
       : CONFIGURATION_SECRETS_READ_ONLY;
@@ -920,6 +962,8 @@ export async function renderAgentDetail(
   // replace, leaves Channels and channel Secrets editable: a save must replace each of them
   // (finding 2444). The Configuration editor submits no bindings, so it keeps the rule above.
   const channelBindingsReplace = () => channelBindingsToReplace(callerPermissions);
+  const credentialBindingsReplace = (values: Record<string, unknown>, bindings?: SecretBindings) =>
+    channelBindingsToReplace(callerPermissions, values, bindings);
   const channelsReadOnly = () => configurationReadOnly() && channelBindingsReplace() === null;
   const channelsAccessUnconfirmed = () =>
     selected === "draft" &&
@@ -937,6 +981,7 @@ export async function renderAgentDetail(
       : channelSecretsOperateReadOnly(
           callerPermissions?.configurationSecretsOperateDeniedBindings,
           CONFIGURATION_SECRETS_READ_ONLY,
+          viewedBindings(),
         );
   }
   // Agent-side saves (plugins, authentication source, repository access) would be refused: the
@@ -1690,7 +1735,7 @@ export async function renderAgentDetail(
       return "This page stays open until the authentication save finishes.";
     }
     if (activeCredentials?.isSaving()) {
-      return "This page stays open until the channel Secret bindings save finishes.";
+      return "This page stays open until the channel credential bindings save finishes.";
     }
     return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }
@@ -1786,6 +1831,22 @@ export async function renderAgentDetail(
     role: "tablist",
     "aria-label": "Agent configuration views",
   });
+  function inUseTabStripTop() {
+    if (!detailShown || !tabs.querySelector("button:hover, button:focus-visible")) {
+      return null;
+    }
+    const bounds = tabs.getBoundingClientRect();
+    return bounds.bottom > 0 && bounds.top < window.innerHeight ? bounds.top : null;
+  }
+  function restoreTabStripTop(top: number | null) {
+    if (top === null) {
+      return;
+    }
+    const moved = tabs.getBoundingClientRect().top - top;
+    if (Math.abs(moved) >= 1) {
+      window.scrollBy({ top: moved, left: 0, behavior: "instant" });
+    }
+  }
   content.id = `${tabIds}-panel`;
   content.setAttribute("role", "tabpanel");
   content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
@@ -2251,7 +2312,6 @@ export async function renderAgentDetail(
   let invalidateActivity: ((cause: unknown) => void) | undefined;
   let acceptActivity: ((record: AgentDeploymentStatusWire) => void) | undefined;
   let activityRevisionId: string | null | undefined;
-  let viewedSnapshot: Snapshot | null = null;
   let detailLoadFinished = false;
   let latestRevisionResult: RevisionResult | null = null;
   let latestDeploymentStatus: DeploymentOutcome | null = null;
@@ -2665,6 +2725,8 @@ export async function renderAgentDetail(
     }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
+    const workspaceStripTop =
+      workspaceAvailabilityChanged && mountedTab?.id === "workspace" ? inUseTabStripTop() : null;
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -2699,6 +2761,9 @@ export async function renderAgentDetail(
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
     logsServingChange?.(servingChange());
+    // The panel can grow after a deployment notice shrank the page. Keep the tab in view at
+    // the position it occupied before this synchronous rebuild.
+    restoreTabStripTop(workspaceStripTop);
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2859,6 +2924,45 @@ export async function renderAgentDetail(
   }
 
   function renderLatestDeployment() {
+    // Recovery can change when the outcome arrives, or later when permissions or revision details
+    // arrive. Keep an in-use tab in place while that content above it is rendered.
+    const stripTop =
+      latestDeploymentStatus !== null && !deploymentPending(latestDeploymentStatus)
+        ? inUseTabStripTop()
+        : null;
+    const active = document.activeElement;
+    const shortcut =
+      active instanceof HTMLAnchorElement && deploymentAttention.contains(active) ? active : null;
+    const shortcutBounds = shortcut?.getBoundingClientRect();
+
+    updateLatestDeployment();
+    restoreTabStripTop(stripTop);
+
+    if (
+      !shortcut ||
+      !deploymentAttention.hidden ||
+      selectedTab === "deployment" ||
+      latestDeploymentUnavailable ||
+      !latestDeploymentRecord ||
+      latestDeploymentRecord.deploymentId !== visibleRevisions[0]?.id
+    ) {
+      return;
+    }
+    // Hiding the warning can blur its shortcut during layout or after this render.
+    const focused = document.activeElement;
+    if (focused !== shortcut && focused !== document.body) {
+      return;
+    }
+    const summaryLink = latestDeploymentValue.querySelector<HTMLAnchorElement>(":scope > a");
+    if (summaryLink?.href === shortcut.href) {
+      summaryLink.focus({ preventScroll: true });
+      if (shortcutBounds && shortcutBounds.bottom > 0 && shortcutBounds.top < window.innerHeight) {
+        summaryLink.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+      }
+    }
+  }
+
+  function updateLatestDeployment() {
     markVersionOutcomes();
     // A post-completion overview can change the label of an unreadable selection.
     renderCurrentVersion();
@@ -2869,14 +2973,23 @@ export async function renderAgentDetail(
     }
     const latest = visibleRevisions[0];
     setHidden(deploymentEmpty, Boolean(latest) || latestRevisionResult?.status !== "fulfilled");
+    // Keep an existing notice in place until permissions settle and recovery can render.
+    const awaitingFailureRecovery =
+      latestDeploymentStatus === "failed" &&
+      !callerPermissionsSettled &&
+      !deploymentAttention.hidden &&
+      deploymentAttention.dataset.rendered === latest?.id;
     const needsAttention =
       latest &&
       (deploymentPending(latestDeploymentStatus) ||
+        awaitingFailureRecovery ||
         latestOverviewUnavailable ||
         latestDeploymentRecord?.warnings?.length ||
         (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded"));
     setHidden(deploymentAttention, !needsAttention || selectedTab === "deployment");
-    let attentionText = "A deployment is queued or in progress.";
+    let attentionText = awaitingFailureRecovery
+      ? "The latest visible deployment failed."
+      : "A deployment is queued or in progress.";
     if (latestDeploymentRecord?.warnings?.length) {
       attentionText = "The latest deployment has startup warnings.";
     }
@@ -3816,7 +3929,14 @@ export async function renderAgentDetail(
     let authenticationUnsaved = false;
     const retainedEditor = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     const draftEditorState = {
-      dirty: Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
+      dirty: Boolean(
+        retainedEditor &&
+        (retainedEditor.text !== retainedEditor.initialText ||
+          !sameValue(
+            retainedEditor.secretBindings ?? {},
+            retainedEditor.initialSecretBindings ?? {},
+          )),
+      ),
       saving: false,
       outcomeUnknown: retainedEditor?.outcomeUnknown ?? false,
       reloadRequired: retainedEditor?.reloadRequired ?? false,
@@ -3851,15 +3971,20 @@ export async function renderAgentDetail(
           // Only an Installation administrator may read the IAM policy that shows a grant.
           checkGrants: context.installationAdmin === true,
           canGrant: context.installationAdmin !== false,
+          sourceDiscoveryActive: selectedTab === "credentials",
           // Binding Secrets saves the Configuration (finding 2432).
-          readOnly: channelsReadOnly,
+          readOnly: () =>
+            configurationReadOnly() &&
+            credentialBindingsReplace(values, snapshot.secretBindings) === null,
           readOnlyReason: () =>
             callerPermissions?.configurationUpdate === false
               ? CHANNEL_SECRETS_CONFIGURATION_READ_ONLY
               : channelSecretsOperateReadOnly(
                   callerPermissions?.configurationSecretsOperateDeniedBindings,
+                  undefined,
+                  snapshot.secretBindings,
                 ),
-          bindingsToReplace: channelBindingsReplace,
+          bindingsToReplace: () => credentialBindingsReplace(values, snapshot.secretBindings),
           bindingRefusal: (secrets) => refusedSecretBinding("configuration", secrets),
           onReadDenied: context.onProtectedReadDenied,
           isCurrent: () => panelNumber === channelPanelCount,
@@ -3943,6 +4068,17 @@ export async function renderAgentDetail(
     // without their IDs: Deploy says so too, never naming them (finding D756). A Secret the caller
     // may operate but not read holds nothing: the deployment checks only operate.
     let deploySecretsDenied: DeploySecretsDenied = { names: [], unreadable: 0 };
+    function deployCredentialOperateReason(denied: DeploySecretsDenied) {
+      const sourceIds = deniedConfigurationSourceIds();
+      return [
+        deploySecretsOperateReason(denied),
+        sourceIds.length
+          ? `Deploying needs Credential Source operate on ${sourceIds.join(", ")}, which your access does not include. ${askAdministratorTo("grant it")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
     let deploySecretsRead = 0;
     async function boundSecretsDenied({ fresh = false } = {}): Promise<
       DeploySecretsDenied & { configurationNames: readonly string[] }
@@ -4055,7 +4191,7 @@ export async function renderAgentDetail(
         proxyUnknown ||
         networkProxySaving ||
         callerPermissions?.deploy === false ||
-        Boolean(deploySecretsOperateReason(deploySecretsDenied)) ||
+        Boolean(deployCredentialOperateReason(deploySecretsDenied)) ||
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
@@ -4280,7 +4416,7 @@ export async function renderAgentDetail(
             (credentials?.canDeploy() || credentials?.checkingGrants()) === true);
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
-      const secretReason = deploySecretsOperateReason(deploySecretsDenied);
+      const secretReason = deployCredentialOperateReason(deploySecretsDenied);
       if (deployFeedbackIsSecretRefusal) {
         // This alert follows the current Secret permission answer, including a grant on refocus.
         setText(deployFeedback, secretReason);
@@ -4847,7 +4983,7 @@ export async function renderAgentDetail(
             return;
           }
           deployFeedbackIsSecretRefusal = Boolean(
-            deniedSecrets && deploySecretsOperateReason(deniedSecrets),
+            deniedSecrets && deployCredentialOperateReason(deniedSecrets),
           );
           if (!deployFeedbackIsSecretRefusal) {
             deployFeedback.textContent = deployFailureText(error, submitted);
@@ -5470,6 +5606,8 @@ export async function renderAgentDetail(
   }
 
   async function renderTab({ activated = false } = {}) {
+    const refreshingWorkspace =
+      !activated && selectedTab === "workspace" && mountedTab?.id === selectedTab;
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -5508,6 +5646,10 @@ export async function renderAgentDetail(
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
+    // A Logs visit may have just been denied: the recovery stops offering its Logs link.
+    if (activated && !recovery.section.hidden) {
+      updateLatestDeployment();
+    }
     deploymentPanels.hidden = selectedTab !== "deployment";
     versionRecord?.render();
     content.hidden = selectedTab === "deployment";
@@ -5515,27 +5657,37 @@ export async function renderAgentDetail(
     deploymentAttention.hidden =
       selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
-    if (stripTop !== null) {
-      const moved = tabs.getBoundingClientRect().top - stripTop;
-      if (Math.abs(moved) >= 1) {
-        window.scrollBy({ top: moved, left: 0, behavior: "instant" });
-      }
-    }
+    restoreTabStripTop(stripTop);
     const tab = selectedTab;
-    const focusInStrip = tabs.contains(document.activeElement);
-    for (const [id, control] of tabControls) {
-      control.setAttribute("aria-selected", String(id === tab));
-      control.tabIndex = id === tab ? 0 : -1;
-    }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
     content.toggleAttribute("data-restore-panel-focus", selected === "draft" && tab === "channels");
-    // History can select another tab while focus is in the strip; focus follows the selection,
-    // so the focused tab is the one revealed and the Tab stop.
-    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
-      tabControls.get(tab)?.focus({ preventScroll: true });
+    // A serving change rebuilds Workspace files in place. Keep focus and scroll in the tab
+    // strip while the panel is replaced.
+    if (!refreshingWorkspace) {
+      const focusInStrip = tabs.contains(document.activeElement);
+      for (const [id, control] of tabControls) {
+        control.setAttribute("aria-selected", String(id === tab));
+        control.tabIndex = id === tab ? 0 : -1;
+      }
+      // History can select another tab while focus is in the strip; focus follows the selection,
+      // so the focused tab is the one revealed and the Tab stop.
+      if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+        tabControls.get(tab)?.focus({ preventScroll: true });
+      }
+      revealSelectedTab();
     }
-    revealSelectedTab();
     refreshDeployControls();
+    const currentDetails = details;
+    if (currentDetails) {
+      void currentDetails.then(
+        (data) => {
+          if (currentDetails === details && data && "credentials" in data) {
+            data.credentials?.setSourceDiscoveryActive(selectedTab === "credentials");
+          }
+        },
+        () => {}, // The selected tab owns the details error state.
+      );
+    }
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
     if (retained?.nodes && retained.mutations === context.mutationVersion()) {
@@ -5946,7 +6098,7 @@ export async function renderAgentDetail(
             agent.harnessAuth
               ? ""
               : " Configure model credentials in the Credentials tab before deploying."
-          }${channelReplace ? ` ${channelReplaceHint(channelReplace)}` : ""}`,
+          }${channelReplace ? ` ${channelReplaceHint(channelReplace, snapshot.secretBindings)}` : ""}`,
         },
         // Disable saves no bindings, so a binding it must replace refuses it (finding 2471).
         disableRefusal: channelDisableRefusal(channelReplace, snapshot.secretBindings),
@@ -6106,10 +6258,16 @@ export async function renderAgentDetail(
             if (!configurationSaved) {
               // A refused write names the chosen Secrets the caller may not operate, when a fresh
               // answer says so (finding 2453).
-              const named =
-                mutationStarted && requestFailure(error).status === 403
-                  ? await refusedSecretBinding("configuration", options.changedSecrets ?? [])
-                  : undefined;
+              const sourceBound = Object.values(
+                options.secretBindings ?? snapshot.secretBindings ?? {},
+              ).some(({ source }) => source.kind === "credential_source");
+              let named: string | undefined;
+              if (mutationStarted && requestFailure(error).status === 403) {
+                named = sourceBound
+                  ? (namedDenial(error) ??
+                    "Saving this Configuration needs Configuration update and operate on every bound credential.")
+                  : await refusedSecretBinding("configuration", options.changedSecrets ?? []);
+              }
               if (!context.isCurrent()) {
                 throw error;
               }
@@ -7117,8 +7275,16 @@ export async function renderAgentDetail(
       JSON.parse(retained.text),
       values,
     );
+    const savedBindings = snapshot.secretBindings ?? {};
+    const mergedBindings = carryDocument(
+      retained.initialSecretBindings ?? savedBindings,
+      retained.secretBindings ?? savedBindings,
+      savedBindings,
+      "/secretBindings",
+    );
+    const secretBindings = mergedBindings.value as SecretBindings;
     const text = JSON.stringify(merged.value, null, 2);
-    if (text === initialText) {
+    if (text === initialText && sameValue(secretBindings, savedBindings)) {
       // Nothing left to apply: a plain reload of the saved Configuration.
       context.drafts.forget("configuration");
       return { retained: undefined, note: "" };
@@ -7127,10 +7293,11 @@ export async function renderAgentDetail(
       const json = value === undefined ? "removed" : JSON.stringify(value);
       return json.length > 60 ? `${json.slice(0, 59)}…` : json;
     };
-    const conflicts = merged.conflicts
+    const allConflicts = [...merged.conflicts, ...mergedBindings.conflicts];
+    const conflicts = allConflicts
       .slice(0, 5)
       .map(({ path, saved }) => `${path} (saved: ${shown(saved)})`);
-    const more = merged.conflicts.length > 5 ? ` and ${merged.conflicts.length - 5} more` : "";
+    const more = allConflicts.length > 5 ? ` and ${allConflicts.length - 5} more` : "";
     // Objects where each browser changed other keys are merged, not conflicts, but their keys
     // may belong together, so the note names them (finding 1524).
     const mixed = merged.mixed.slice(0, 5).join(", ");
@@ -7140,6 +7307,8 @@ export async function renderAgentDetail(
         text,
         initialText,
         baseline: { id: snapshot.id, generation: snapshot.generation },
+        secretBindings,
+        initialSecretBindings: savedBindings,
         outcomeUnknown: false,
         reloadRequired: false,
       },
@@ -7197,6 +7366,10 @@ export async function renderAgentDetail(
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
     let reloadRequired = retained?.reloadRequired ?? false;
     let initialText = retained?.initialText ?? JSON.stringify(values, null, 2);
+    let initialSecretBindings = structuredClone(
+      retained?.initialSecretBindings ?? snapshot.secretBindings ?? {},
+    );
+    let stagedSecretBindings = structuredClone(retained?.secretBindings ?? initialSecretBindings);
     const editor = element("textarea", {
       id: "configuration-json",
       name: "configuration",
@@ -7205,6 +7378,20 @@ export async function renderAgentDetail(
       className: "configuration-editor",
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
+    });
+    // Chrome can leave a textarea with selected text offscreen on Tab. Require its
+    // input-device information to preserve scripted preventScroll focus.
+    editor.addEventListener("focus", (event) => {
+      if (!("sourceCapabilities" in event) || !event.sourceCapabilities) {
+        return;
+      }
+      if (document.activeElement !== editor || editor.selectionStart === editor.selectionEnd) {
+        return;
+      }
+      const box = editor.getBoundingClientRect();
+      if (box.top >= window.innerHeight || box.bottom <= 0) {
+        editor.scrollIntoView({ block: "center", inline: "nearest" });
+      }
     });
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
@@ -7215,6 +7402,8 @@ export async function renderAgentDetail(
             text: editor.value,
             initialText,
             baseline,
+            secretBindings: stagedSecretBindings,
+            initialSecretBindings,
             reviewNote,
             outcomeUnknown: outcomeUnknown || pending,
             reloadRequired,
@@ -7224,7 +7413,12 @@ export async function renderAgentDetail(
     // An open but unchanged editor is no unsaved work.
     context.drafts.unsavedWhen("configuration", (value) => {
       const draft = value as ConfigurationDraft | undefined;
-      return !!draft && (draft.text !== draft.initialText || !!draft.outcomeUnknown);
+      return (
+        !!draft &&
+        (draft.text !== draft.initialText ||
+          !sameValue(draft.secretBindings ?? {}, draft.initialSecretBindings ?? {}) ||
+          !!draft.outcomeUnknown)
+      );
     });
     const shownSavedNotice = savedNotice;
     const feedback = element(
@@ -7316,6 +7510,8 @@ export async function renderAgentDetail(
       clearReview();
       baseline = { id: snapshot.id, generation: snapshot.generation };
       initialText = JSON.stringify(values, null, 2);
+      initialSecretBindings = structuredClone(snapshot.secretBindings ?? {});
+      stagedSecretBindings = structuredClone(initialSecretBindings);
       editing = false;
       editor.value = initialText;
       editorError.clear();
@@ -7339,7 +7535,14 @@ export async function renderAgentDetail(
       const carry =
         reloadRequired && !outcomeUnknown && currentDirty() && parseEditor() !== undefined;
       if (carry) {
-        const carried = { carried: true, text: editor.value, initialText, baseline };
+        const carried = {
+          carried: true,
+          text: editor.value,
+          initialText,
+          baseline,
+          secretBindings: stagedSecretBindings,
+          initialSecretBindings,
+        };
         context.drafts.track("configuration", () => carried);
       } else {
         context.drafts.forget("configuration");
@@ -7352,7 +7555,9 @@ export async function renderAgentDetail(
     });
 
     function currentDirty() {
-      return editor.value !== initialText;
+      return (
+        editor.value !== initialText || !sameValue(stagedSecretBindings, initialSecretBindings)
+      );
     }
 
     // The toggles show the document a save would keep: the editor's JSON while it is open.
@@ -7403,6 +7608,72 @@ export async function renderAgentDetail(
       return undefined;
     }
 
+    const bindingFieldsHost = element("div", {});
+    let bindingFields: HTMLFieldSetElement | undefined;
+    let bindingSignature = "";
+    let bindingGeneration = 0;
+    function refreshBindingFields() {
+      const nextValues = parseEditor();
+      const keys = slackCredentialBindingKeys(nextValues);
+      if (nextValues !== undefined) {
+        const retainedBindings = { ...stagedSecretBindings };
+        for (const key of Object.keys(retainedBindings)) {
+          if (
+            !keys.includes(key) &&
+            !sameValue(retainedBindings[key], initialSecretBindings[key])
+          ) {
+            const original = initialSecretBindings[key];
+            if (original) {
+              retainedBindings[key] = original;
+            } else {
+              delete retainedBindings[key];
+            }
+          }
+        }
+        stagedSecretBindings = retainedBindings;
+      }
+      const pickerKeys = slackCredentialBindingKeys(nextValues, stagedSecretBindings);
+      const excluded = pickerKeys.filter(
+        (key) =>
+          slackSourceForBinding(initialSecretBindings[key], namespaceId) &&
+          sameValue(stagedSecretBindings[key], initialSecretBindings[key]),
+      );
+      const signature = JSON.stringify(pickerKeys.filter((key) => !excluded.includes(key)));
+      if (signature === bindingSignature && bindingFields) {
+        return;
+      }
+      bindingSignature = signature;
+      const generation = ++bindingGeneration;
+      bindingFields = createSlackCredentialBindingFields(context, {
+        values: nextValues,
+        bindings: stagedSecretBindings,
+        currentBindings: initialSecretBindings,
+        excludeKeys: excluded,
+        disabled: pending || outcomeUnknown || reloadRequired || configurationReadOnly(),
+        onChange(key, binding) {
+          if (generation !== bindingGeneration || !editing || !context.isCurrent()) {
+            return;
+          }
+          const next = { ...stagedSecretBindings };
+          if (binding) {
+            next[key] = binding;
+          } else {
+            delete next[key];
+          }
+          stagedSecretBindings = next;
+          feedbackLocked = false;
+          updateState();
+        },
+      });
+      bindingFieldsHost.replaceChildren(bindingFields);
+    }
+
+    function missingEditedBindings() {
+      return slackCredentialBindingKeys(parseEditor(), stagedSecretBindings).filter(
+        (key) => !slackSourceForBinding(stagedSecretBindings[key], namespaceId),
+      );
+    }
+
     function updateState() {
       const dirty = editing && currentDirty();
       setDraftEditorState({
@@ -7411,8 +7682,18 @@ export async function renderAgentDetail(
         outcomeUnknown,
         reloadRequired,
       });
+      const missingBindings = missingEditedBindings();
       save.disabled =
-        pending || outcomeUnknown || reloadRequired || !dirty || configurationReadOnly();
+        pending ||
+        outcomeUnknown ||
+        reloadRequired ||
+        !dirty ||
+        configurationReadOnly() ||
+        missingBindings.length > 0;
+      if (bindingFields) {
+        bindingFields.disabled =
+          pending || outcomeUnknown || reloadRequired || configurationReadOnly();
+      }
       // A save in flight is busy, not unavailable: the progress cursor (finding 1927). Written
       // only on a change, so a rerender is no DOM mutation.
       if (save.getAttribute("aria-busy") !== String(pending)) {
@@ -7458,7 +7739,9 @@ export async function renderAgentDetail(
         if (!feedbackLocked) {
           setText(
             feedback,
-            reviewMessage || "Save or cancel these Configuration edits before deploying.",
+            missingBindings.length
+              ? `Choose a ready static Credential Source for ${missingBindings.join(", ")} before saving Configuration.`
+              : reviewMessage || "Save or cancel these Configuration edits before deploying.",
           );
         }
       } else if (!pending && editing) {
@@ -7478,6 +7761,7 @@ export async function renderAgentDetail(
       }
       feedbackLocked = false;
       reloadRequired = false;
+      refreshBindingFields();
       updateState();
     });
     showDraftEditorNavigationBlock = (focusFeedback) => {
@@ -7491,7 +7775,13 @@ export async function renderAgentDetail(
     };
 
     async function saveConfiguration() {
-      if (pending || outcomeUnknown || configurationReadOnly() || !currentDirty()) {
+      if (
+        pending ||
+        outcomeUnknown ||
+        configurationReadOnly() ||
+        !currentDirty() ||
+        missingEditedBindings().length > 0
+      ) {
         return;
       }
       const nextValues = parseEditor(true);
@@ -7536,7 +7826,11 @@ export async function renderAgentDetail(
           return;
         }
         mutationStarted = true;
-        await saveConfigurationEdit(freshConfig, nextValues);
+        await saveConfigurationEdit(
+          freshConfig,
+          nextValues,
+          sameValue(stagedSecretBindings, initialSecretBindings) ? undefined : stagedSecretBindings,
+        );
         configurationSaved = true;
         clearReview();
         if (context.isCurrent()) {
@@ -7569,7 +7863,15 @@ export async function renderAgentDetail(
         // Every refusal below is a danger block: an alert before its text is written.
         feedback.setAttribute("role", "alert");
         if (!configurationSaved) {
-          refusedSave(error, "configuration", mutationStarted);
+          const sourceBound = Object.values(stagedSecretBindings).some(
+            ({ source }) => source.kind === "credential_source",
+          );
+          refusedSave(
+            error,
+            "configuration",
+            mutationStarted,
+            sourceBound ? namedDenial(error) : undefined,
+          );
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           clearReview();
@@ -7581,11 +7883,11 @@ export async function renderAgentDetail(
         }
         // The edited JSON holds the refused channel reference (finding 2319). Like invalid JSON,
         // it gets one message, under the editor, which takes focus (finding 2494). This editor
-        // saves no Secret bindings, so a refusal that asks for one says where the console makes it.
+        // stages any missing Slack Source binding beside the JSON so both can save together.
         const channelRefusal = channelBindingRefusal(error);
         if (channelRefusal !== undefined) {
           editorError.show(
-            channelRefusal.includes(" in secretBindings")
+            channelMissingBindingRefusal(channelRefusal)
               ? `${channelRefusal} ${CHANNEL_BINDING_CONSOLE_REMEDY}`
               : channelRefusal,
           );
@@ -7675,6 +7977,7 @@ export async function renderAgentDetail(
         );
         return;
       }
+      refreshBindingFields();
       updateState();
       body.replaceChildren(
         element(
@@ -7686,9 +7989,10 @@ export async function renderAgentDetail(
           element(
             "p",
             { className: "hint", id: "configuration-json-hint" },
-            "Edit native JSON values for future deployments. Secret bindings are preserved separately.",
+            "Edit native JSON values for future deployments. New Slack credential references need Source bindings below; other saved bindings are preserved.",
           ),
         ),
+        bindingFieldsHost,
         element(
           "div",
           { className: "form-actions" },
@@ -7769,10 +8073,6 @@ export async function renderAgentDetail(
       nextTab === "repositories" && next.searchParams.get("repositoryAccess") === "1";
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
-    // A Logs visit may have just been denied: the recovery stops offering its Logs link.
-    if (!recovery.section.hidden) {
-      renderLatestDeployment();
-    }
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {

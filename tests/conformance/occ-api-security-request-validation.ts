@@ -348,7 +348,7 @@ export function registerDiagnosticLimitCase() {
           ...configuration,
           secretBindings: { [longBinding]: { source: { ...source, kind: "x" } } },
         },
-        '/secretBindings contains a field that has an unsupported value (expected "secret").',
+        "/secretBindings contains a field that has an unsupported value.",
       ],
       [
         agents,

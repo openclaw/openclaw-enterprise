@@ -1,11 +1,13 @@
 import {
   parseRepositoryApiLimits,
+  type DeploymentRequestMatch,
   type RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import {
   repositoryGitRestOperations,
   type RepositoryGitRestAuthority,
 } from "../repo/access/delivery.ts";
+import { githubPullRequestCreationRequest } from "../repo/github/access/registry.ts";
 import {
   openShellProfileEndpoint,
   type OpenShellProviderProfileEndpoint,
@@ -23,6 +25,15 @@ export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
 ]);
+
+export function openShellRepositoryMetadataRequest(repository: string) {
+  return {
+    binary: "/usr/bin/curl",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+  } satisfies DeploymentRequestMatch;
+}
 
 const binaries = Object.freeze([
   ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,
@@ -181,7 +192,8 @@ function scopedApiEndpoints(
   )) {
     const rules = [];
     if (pulls === "write") {
-      rules.push({ allow: { method: "POST", path: `/repos/${repository}/pulls` } });
+      const { method, path } = githubPullRequestCreationRequest(repository).requestPolicy;
+      rules.push({ allow: { method, path } });
     }
     if (issues === "write") {
       rules.push({ allow: { method: "POST", path: `/repos/${repository}/issues` } });

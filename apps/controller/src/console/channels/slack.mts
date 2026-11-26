@@ -1,5 +1,6 @@
-import type { SecretBinding, SecretMetadata } from "@openclaw-enterprise/contracts";
+import type { SecretBinding } from "@openclaw-enterprise/contracts";
 import { element } from "../dom.mjs";
+import { createInlineStaticCredentialSourcePicker } from "../credential-source-picker.mjs";
 import { SLACK_SECRET_BINDINGS } from "../agents/credentials.mjs";
 import { createSlackDirectoryField, isSlackConfigTarget } from "../agents/slack-directory.mjs";
 import {
@@ -7,12 +8,6 @@ import {
   secretInputShorthandName,
   unsubstitutedReference,
 } from "../environment-references.mjs";
-import {
-  createSecretReferenceField,
-  sameNamespaceSecretHref,
-  secretBinding,
-  secretIdForBinding,
-} from "../agents/secret-picker.mjs";
 import {
   type ChannelDrawerContext,
   type ChannelProvider,
@@ -258,128 +253,54 @@ function updatedSecretBindings(context: ChannelDrawerContext) {
   if (context.draftSecretBindings === undefined) {
     return undefined;
   }
-  const seen = new Set<string>();
-  const changedSecrets = [];
-  for (const binding of SLACK_SECRET_BINDINGS) {
-    const secret = context.draftChangedSecrets?.[binding.key];
-    const finalBinding = context.draftSecretBindings[binding.key];
-    if (
-      secret === undefined ||
-      secretIdForBinding(finalBinding) !== secret.id ||
-      sameNamespaceEnvSecretHref(finalBinding, context.namespaceId) ===
-        sameNamespaceEnvSecretHref(context.secretBindings?.[binding.key], context.namespaceId) ||
-      seen.has(secret.id)
-    ) {
-      continue;
-    }
-    seen.add(secret.id);
-    changedSecrets.push(secret);
-  }
   return {
     secretBindings: context.draftSecretBindings,
-    changedSecrets,
   };
 }
 
-function sameNamespaceEnvSecretHref(binding: SecretBinding | undefined, namespaceId: string) {
-  if (binding?.source?.namespaceId !== namespaceId || binding?.delivery?.type !== "env") {
-    return null;
-  }
-  return sameNamespaceSecretHref(binding.source, namespaceId);
+function bindingSource(binding: SecretBinding | undefined, namespaceId: string) {
+  const source = binding?.source;
+  return source?.kind === "credential_source" &&
+    source.namespaceId === namespaceId &&
+    (binding?.delivery === undefined || binding.delivery.type === "env")
+    ? source
+    : null;
 }
 
 function activeSecretBindings(context: ChannelDrawerContext) {
   return context.draftSecretBindings ?? context.secretBindings ?? {};
 }
 
-function activeSecretBinding(binding: BindingField, context: ChannelDrawerContext) {
-  return activeSecretBindings(context)[binding.key];
-}
-
-function modalSecretName(binding: BindingField, context: ChannelDrawerContext) {
-  const agentName =
-    typeof context.agentName === "function" ? context.agentName() : context.agentName;
-  const trimmedAgentName =
-    typeof agentName === "string" && agentName.trim().length ? agentName.trim() : "Slack";
-  return `${trimmedAgentName} ${binding.secretName}`;
-}
-
-function bindSecret(binding: BindingField, context: ChannelDrawerContext, secret: SecretMetadata) {
-  context.draftSecretBindings = {
-    ...activeSecretBindings(context),
-    [binding.key]: secretBinding(secret),
-  };
-  context.draftChangedSecrets = {
-    ...(context.draftChangedSecrets ?? {}),
-    [binding.key]: secret,
-  };
-}
-
 function credentialReferenceField(
   binding: BindingField,
   context: ChannelDrawerContext,
+  body: HTMLFormElement,
   onSelected: (key: string) => void,
+  onEnrollmentPending: (value: boolean) => void,
 ) {
-  const picker = createSecretReferenceField({
-    context,
-    id: `slack-secret-${binding.key.toLowerCase().replaceAll("_", "-")}`,
+  const picker = createInlineStaticCredentialSourcePicker(context, body, {
+    id: `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`,
     label: binding.label,
-    getCurrentSource: () => activeSecretBinding(binding, context)?.source,
-    onSecretSelected: (secret) => {
-      bindSecret(binding, context, secret);
+    initial: bindingSource(activeSecretBindings(context)[binding.key], context.namespaceId),
+    inputClassName: "channel-field",
+    deliveryHint: "Slack delivery currently requires OCC TokenService and Kubernetes Compute.",
+    onChange(source) {
+      const next = { ...activeSecretBindings(context) };
+      if (source) {
+        next[binding.key] = { source, delivery: { type: "env" } };
+      } else {
+        delete next[binding.key];
+      }
+      context.draftSecretBindings = next;
       onSelected(binding.key);
     },
-    createSecretName: () => modalSecretName(binding, context),
-    createDialogTitle: `Create ${binding.label} Secret`,
-    createFixedKey: {
-      label: "Binding key",
-      value: binding.key,
-      hint: "This environment key is fixed for Slack Socket Mode.",
-    },
-    metadataLabel: `View ${binding.label.replace("Slack ", "")} Secret metadata`,
-    ...(context.creating
-      ? { stagedHint: "Secret selected. Apply channel settings, then Create Agent binds it." }
-      : {}),
-    fieldClassName: "channel-field channel-reference",
-    selectClassName: "channel-select",
+    onPending: onEnrollmentPending,
   });
+  picker.field.classList.add("channel-field", "channel-reference");
+  picker.control.classList.add("channel-select");
+  picker.control.dataset.channelBinding = "";
+  picker.setActive(true);
   return picker;
-}
-
-// A hint that offers Secret create, worded choose-only when the token fields disable their create
-// action: the Namespace permission answer denies Secret create (finding 2483), or the Secret
-// operate answer denies a readable Secret, so a new one could not be chosen (finding 2500). An
-// unknown answer keeps the create wording, as the fields keep their create action.
-function secretHint(context: ChannelDrawerContext, withCreate: string, chooseOnly: string) {
-  const hint = element("p", { className: "hint" }, withCreate);
-  const chooseOnlyWhen = (denied: boolean) => {
-    if (denied) {
-      hint.textContent = chooseOnly;
-    }
-  };
-  void context.secretsCreateAllowed?.().then(
-    (allowed) => chooseOnlyWhen(allowed === false),
-    () => {},
-  );
-  void context.secretsOperateDenied?.().then(
-    (denied) => chooseOnlyWhen(Boolean(denied?.size)),
-    () => {},
-  );
-  return hint;
-}
-
-function credentialNavigation(context: ChannelDrawerContext) {
-  return context.creating
-    ? secretHint(
-        context,
-        "Choose existing Slack token Secrets or create them here before creating the Agent.",
-        "Choose existing Slack token Secrets before creating the Agent.",
-      )
-    : secretHint(
-        context,
-        "Choose existing Slack token Secrets or create them here. Secret menu changes are saved with these channel settings.",
-        "Choose existing Slack token Secrets. Secret menu changes are saved with these channel settings.",
-      );
 }
 
 function appendFields(body: HTMLFormElement, config: SlackConfig, context: ChannelDrawerContext) {
@@ -393,12 +314,8 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   });
   const mention = firstChannel?.requireMention ?? config.requireMention ?? true;
   const allowedUsers = input("slack-allowed-user-ids", users.join(", "));
-  const getSecretId = () => {
-    const source = activeSecretBindings(context).SLACK_BOT_TOKEN?.source;
-    return source?.kind === "secret" && source.namespaceId === context.namespaceId
-      ? source.id
-      : null;
-  };
+  const getSourceId = () =>
+    bindingSource(activeSecretBindings(context).SLACK_BOT_TOKEN, context.namespaceId)?.id ?? null;
   const workspace = element("p", { className: "hint slack-directory-workspace" });
   const channelInput = input("slack-channel-ids", channelIds.join(", "));
   const picker = (kind: "users" | "channels", control: HTMLInputElement, label: string) =>
@@ -407,7 +324,7 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
       kind,
       control,
       label,
-      getSecretId,
+      getSourceId,
       configurationId: context.configurationId,
       onWorkspace: (page) => {
         workspace.textContent = page
@@ -467,17 +384,28 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   });
   updateDmControls();
   const tokenPickers = [...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
-    credentialReferenceField(binding, context, (key) => {
-      // A chosen Secret fires no field event; the editor rechecks whether Save has a change.
-      body.dispatchEvent(new Event("change"));
-      if (key === "SLACK_BOT_TOKEN") {
-        for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
-          picker.refreshNames();
+    credentialReferenceField(
+      binding,
+      context,
+      body,
+      (key) => {
+        // The binding is staged separately from ordinary fields.
+        body.dispatchEvent(new Event("change"));
+        if (key === "SLACK_BOT_TOKEN") {
+          for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
+            picker.refreshNames();
+          }
         }
-      }
-    }),
+      },
+      (pending) => {
+        context.onEnrollmentPending?.(pending);
+        for (const picker of tokenPickers) {
+          picker.setDisabled(pending);
+        }
+      },
+    ),
   );
-  // Configuration save refuses an enabled channel whose token references have no Secret
+  // Configuration save refuses an enabled channel whose token references have no Source
   // binding (finding 2319), so a drawer that saves names the missing token under its picker
   // first. Create Agent's drawer only stages settings, which may take several visits; its
   // preflight refuses an unbound token before anything is saved.
@@ -491,13 +419,12 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   requireTokens();
   body.append(
     element("h2", {}, "Slack credentials"),
-    secretHint(
-      context,
-      "First, select or create a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
-      "First, select a Slack bot token Secret to search channels and people by name. Then choose an app token for Socket Mode and configure access below. An enabled Slack channel saves only with both tokens.",
+    element(
+      "p",
+      { className: "hint" },
+      "Choose ready static Credential Sources or add new credentials for the Slack bot and app tokens. An enabled Slack channel requires both tokens.",
     ),
     ...tokenPickers.map((picker) => picker.field),
-    credentialNavigation(context),
     element("h2", {}, "Channel access"),
     element(
       "p",
@@ -560,13 +487,19 @@ export const slack = {
   id: "slack",
   name: "Slack",
   description: "Socket Mode with channel and user settings.",
-  setup: "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.",
+  setup:
+    "Bind ready static Credential Sources to SLACK_APP_TOKEN and SLACK_BOT_TOKEN before deployment.",
   plugin: "slack",
   secretBindings: SLACK_SECRET_BINDINGS,
+  acceptsBinding: (source, namespaceId) =>
+    source?.kind === "credential_source" && source.namespaceId === namespaceId,
   // Comma lists: a save conflict carries the entries the reader added and removed.
   listFields: ["slack-channel-ids", "slack-allowed-user-ids", "slack-dm-user-ids"],
   support: supportSlack,
   validate(body) {
+    if (body.querySelector(".credential-enrollment:not([hidden])")) {
+      return "Create the new credential or Cancel before saving channel settings.";
+    }
     const existing = originalTargets.get(body);
     const ids = uniqueList(
       body.querySelector<HTMLInputElement>("#slack-channel-ids")!.value.split(","),

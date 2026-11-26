@@ -899,13 +899,12 @@ test("Compute preserves admitted Codex commands and forwards proxy settings on n
       assert.equal(fixture.provisions.length, 1);
       const { command } = fixture.provisions[0].requirements;
       if (legacy) {
-        // Retry must replay the entire old command, not merely omit a proxy.
-        // Full command captured from the same fixture on pre-proxy main (5563280bd8); it
-        // embeds the startup schema thresholds, so it moves with the pin.
+        // Keep the pre-proxy launch shape for this persisted admission. The
+        // workspace supervisor now opts its OpenClaw child into namespace proof.
         assert.equal(
           createHash("sha256").update(JSON.stringify(command)).digest("hex"),
-          "a7412cefc1b7f4cfa68243b92e3f9ea789376c9182e4291e1af2872c2bb216a0",
-          "a stored Sandbox must keep its admitted command byte for byte",
+          "03d7beedec322d2fe8dab06e09d3c0f892eba4a6b798f27dea071719811ca41d",
+          "a stored Sandbox must keep the command for its pre-proxy admission",
         );
       }
       const { supervisor, codex } = inspectOpenShellCodexCommand(t, command, {

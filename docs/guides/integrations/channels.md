@@ -15,8 +15,8 @@ show simulated Console data from Storybook.
   workspace routing alone does not provide Slack access.
 - Prepare one Slack app for this Agent. Follow the
   [Slack app and permission requirements](slack.md#before-you-start) for Socket
-  Mode, token scopes, event subscriptions, and Console permissions. Keep its app
-  and bot tokens available for Secret creation. Do not run another Agent or
+  Mode, token scopes, event subscriptions, and Console permissions. In **Credentials**, create
+  a separate **Static credential** Source for each app and bot token. Do not run another Agent or
   local process with the same app's Socket Mode token.
 - In Slack, invite the app to the channel where you will test it. Use a channel
   and sender that you are authorized to connect to this Agent.
@@ -35,18 +35,12 @@ show simulated Console data from Storybook.
    _Start in the draft. The running version stays unchanged while you edit._
 
 2. Select **Enable Slack** if it’s unchecked. Under **Slack credentials**,
-   select the bot token Secret first, then the app token Secret. To create one,
-   choose **Create new Secret...**, enter a name, and keep the prefilled key.
-   Paste the token into **Value** and choose **Create Secret**.
-
-   ![Slack bot token and Slack app token each have a Secret selected](../../assets/slack-channel/token-secrets.png)
-
-   _Both bindings are staged. Creating a Secret stores it immediately.
-   Cancelling the drawer discards your selections and keeps the Secret._
+   select the ready static bot Credential Source first, then the app Credential Source.
+   The selections are staged until you save the Configuration.
 
 3. Under **Channels**, search for the channel you invited the bot to and select
    it. Use **Next page** for more results, or paste an exact channel ID and
-   press Enter. The bot Secret enables name lookup. If a token is missing or
+   press Enter. The bot Source enables name lookup. If a token is missing or
    lookup is denied, [resolve the setup error](#resolve-setup-errors).
 4. Under **Who can use the agent in these channels?**, keep **Specific people**
    and select the people the Agent should respond to, including your test sender.
@@ -62,10 +56,7 @@ show simulated Console data from Storybook.
 6. Choose **Save configuration**. If other Agents share this Configuration,
    their next deployments will use the saved settings.
 
-   ![Saved Slack card shows Configured (enabled), one channel and both token bindings](../../assets/slack-channel/saved-slack.png)
-
-   _Configured (enabled) confirms the saved settings. It does not verify the
-   tokens or a connection to Slack._
+   **Configured (enabled)** confirms the saved settings. It does not verify a connection to Slack.
 
 7. Above the tabs, find **Prepare this version** and choose **Deploy new version**.
    Check that **Selected for service** shows your new version and **Latest visible
@@ -98,20 +89,11 @@ unless you intend to [allow channel messages without mentions](slack.md#enable-c
 
 ### Missing tokens
 
-To save with Slack enabled, select or create both token Secrets. If a Secret is
-disabled in the picker, ask your Installation administrator for `operate` on it.
-
-![Slack bot token and Slack app token both show required-field errors](../../assets/slack-channel/missing-token-secrets.png)
-
-_Each empty picker identifies the binding you need to supply._
+To save with Slack enabled, select both ready static Sources. If a Source is
+unavailable, check its state and ask your Installation administrator for `operate` on it.
 
 ### Directory access denied
 
-Check the selected bot Secret and the permission named in the message. To skip
+Check the selected bot Source and the permission named in the message. To skip
 name lookup, paste an exact channel or user ID and press Enter. Entering an ID
-doesn’t grant access to the Secret.
-
-![Channel search explains the missing Secret permission and offers exact-ID entry](../../assets/slack-channel/directory-denied.png)
-
-_To search by name in this example, ask an Installation administrator for
-`operate` on the selected bot Secret._
+doesn’t grant access to the Source.

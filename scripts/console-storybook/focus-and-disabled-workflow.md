@@ -62,22 +62,24 @@ follows `:focus-visible`. No part of any ring may be cut off.
    status line, and Enter or Space does nothing. Its label, fill and edge fade,
    not the whole button, so its focus ring keeps full contrast. **Deploy new
    version**, **Save plugin selections**, **Discard changes**, **Save channel
-   Secrets**, **Strict mode** and the Gateway toggles do the same (finding
+   credentials**, **Strict mode** and the Gateway toggles do the same (finding
    2878); an unavailable checkbox's label draws its ring. So do the list's
    **Create Agent**, Stop and Delete icons, **Create Secret**, **Run
    diagnostics**, the Logs controls, the plugin dialog's **Load plugins** and
-   pager, and the read-only authentication and Slack token fields (finding
-   2899): a select or text field fades its text, and ignores arrow keys and
-   typing too. So do the Secret dialog's **Replace value** and **Delete
-   Secret** (**Pages / Credentials / Secrets / Read only for this caller**) and the issued
-   account select (**Components / Credentials / Issued service accounts
-   unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
+   pager, and the read-only authentication fields (finding 2899): a select or
+   text field fades its text and ignores arrow keys and typing. Open
+   **Components / Credentials / Slack Sources, viewer can only read**. Tab to
+   each Slack Source selector. It receives focus, names the Configuration
+   read-only reason, and keeps its saved selection when you press an arrow key.
+   The Secret dialog's **Replace value** and **Delete Secret** (**Pages /
+   Credentials / Secrets / Read only for this caller**) and the issued account
+   select (**Components / Credentials / Issued service accounts unavailable**)
+   also stay keyboard-reachable (finding 2925). On **Pages / Agents / Stop from the list**,
    confirm Stop: the Stop icon becomes unavailable and keeps focus, described
    by its Stop requested badge (finding 2926). So do a refused **Create
    Namespace** (**Pages / Namespaces / Create refused, then closed**), **Create
    Agent** waiting for a Namespace (**Pages / Create Agent / Form, Namespace
-   still provisioning**), **Disable Slack** (**Components / Channels / Slack
-   Disable, editor must replace the bot token Secret**), Configure Slack on an
+   still provisioning**), **Disable Slack**, Configure Slack on an
    Embedded Agent, the Share Agent form after a failed change (**Pages / Agent
    detail / Sharing outcome uncertain**) and the Logs controls of a version
    with no running Pod (**Pages / Agent detail / Logs of a version with no
@@ -141,11 +143,7 @@ follows `:focus-visible`. No part of any ring may be cut off.
     once a deployment completes**, focus the unavailable **Open Agent UI**
     before the poll lands: the live link that replaces it keeps focus.
 
-16. Open **Components / Credentials / Scrolling Secret list**. Click **API key
-    Secret**: the list scrolls. Press Tab: the list closes and focus moves to
-    the metadata link, not the page. The list is never a Tab stop; Up and Down
-    move through its options from the field (finding 1919).
-17. Open **Pages / Create Agent / OpenAI with Codex harness** at 1280 x 800.
+16. Open **Pages / Create Agent / OpenAI with Codex harness** at 1280 x 800.
     The form is taller than the window. **Cancel**, **Start over** and
     **Create Agent** stay in a row at the foot of the window while you scroll,
     and **Create Agent** is the only filled button. At the end of the page the

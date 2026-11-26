@@ -21,9 +21,9 @@ export const CreateWorkspaceFilesFlow = {
   ...story("createWorkspaceFlow"),
   name: "Create with workspace files",
 };
-export const CreateSlackSecretsFlow = {
-  ...story("createSlackSecretsFlow"),
-  name: "Create with Slack Secrets",
+export const CreateSlackSourcesFlow = {
+  ...story("createSlackSourcesFlow"),
+  name: "Create with Slack Credential Sources",
 };
 export const DevdayCreateFlow = {
   ...story("devdayCreateFlow"),

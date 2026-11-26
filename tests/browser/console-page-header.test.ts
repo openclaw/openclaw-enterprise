@@ -283,6 +283,32 @@ test("Copy Agent ID gives manual copy instructions when clipboard writes are una
       });
     }, mode);
 
+  // Keep the pointer over Namespace while Enter triggers the clipboard fallback.
+  await page.setViewportSize({ width: 920, height: 900 });
+  await page.locator(settledView).waitFor();
+  const selector = header.getByRole("combobox", { name: "Namespace", exact: true });
+  const isOpen = () => selector.evaluate((node) => node.matches(":open"));
+  await useClipboard("missing");
+  await copy.focus();
+  await selector.hover();
+  await page.keyboard.press("Enter");
+  await status.filter({ hasText: guidance }).waitFor();
+
+  await page.mouse.down();
+  await page.mouse.up();
+  const openedWithoutMoving = await isOpen();
+  await page.keyboard.press("Escape");
+  assert.equal(await isOpen(), false);
+
+  // A fresh click distinguishes a missed target from an unavailable menu.
+  await selector.click();
+  assert.equal(await isOpen(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await isOpen(), false);
+  assert.equal(await selector.inputValue(), namespace.id);
+  assert.equal(openedWithoutMoving, true, "the click still opens Namespace after copy fallback");
+  await page.setViewportSize({ width: 390, height: 844 });
+
   await useClipboard("write");
   await clickCopy();
   await status.filter({ hasText: "Copied" }).waitFor();

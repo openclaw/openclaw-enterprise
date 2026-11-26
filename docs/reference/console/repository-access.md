@@ -71,7 +71,7 @@ disable creation and show the Configuration ID. Expiry returns to sign-in.
 ## Use repositories and Slack on the same Agent
 
 Select **Codex**, **Dedicated**, the approved repositories and an explicit access level.
-Configure Slack and select its saved token Secrets in the creation form, then
+Configure Slack and select its saved token Credential Sources in the creation form, then
 choose a compatible model-authentication source. **Per-repository access** saves
 the Agent and its access as a draft for review before deployment. With **Access
 profiles**, supported provisioning, and successful discovery, **Create Agent**

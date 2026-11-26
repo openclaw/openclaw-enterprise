@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { GatewayClient, GatewayClientRequestError } from "@openclaw/gateway-client";
+import {
+  GatewayClient,
+  GatewayClientRequestError,
+  isGatewayProtocolResponseError,
+} from "@openclaw/gateway-client";
 import {
   createHash,
   createPublicKey,
@@ -114,12 +118,32 @@ async function modelTurn({ url, apiKey, expectedMarker, timeoutMs = 240_000 }) {
       { sessionKey, idempotencyKey: randomUUID(), message: prompt },
       { signal, timeoutMs: 30_000 },
     );
+    const pollIntervalMs = 300;
     while (!signal.aborted) {
-      const history = await client.request(
-        "chat.history",
-        { sessionKey, limit: 20 },
-        { signal, timeoutMs: 10_000 },
-      );
+      let history;
+      try {
+        history = await client.request(
+          "chat.history",
+          { sessionKey, limit: 20 },
+          { signal, timeoutMs: 10_000 },
+        );
+      } catch (error) {
+        if (
+          !(error instanceof GatewayClientRequestError) ||
+          !isGatewayProtocolResponseError(error) ||
+          error.code !== "UNAVAILABLE" ||
+          error.retryable !== true ||
+          error.details?.method !== "chat.history"
+        ) {
+          throw error;
+        }
+        // Keep the sent turn and bound the timer so a large hint cannot turn into a 1 ms delay.
+        const retryAfterMs = Number.isInteger(error.retryAfterMs)
+          ? Math.min(error.retryAfterMs, 2_147_483_647)
+          : 0;
+        await delay(Math.max(pollIntervalMs, retryAfterMs), undefined, { signal });
+        continue;
+      }
       for (const message of history.messages ?? []) {
         if (message.role !== "assistant") {
           continue;
@@ -138,7 +162,7 @@ async function modelTurn({ url, apiKey, expectedMarker, timeoutMs = 240_000 }) {
           return { sessionKey, content, deviceTokenIssued: false };
         }
       }
-      await delay(300, undefined, { signal });
+      await delay(pollIntervalMs, undefined, { signal });
     }
     throw new Error("the fresh native session did not consume the workspace instruction");
   } finally {

@@ -1,4 +1,5 @@
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createBackendWorkerDrivers } from "../helpers/postgres-backend-state.mjs";
 import pg from "pg";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -976,17 +977,31 @@ export async function verifyScopedDeploymentTransition(
 }
 
 async function createScopedDeployment(fixture: PolicyApp) {
-  const { inject, state } = fixture;
+  const { controller, inject, state } = fixture;
   const starter = await fixture.deployAgent("setup");
   const { namespace, secretRef } = starter;
   const root = "/namespaces/" + namespace.id;
   const config = await inject("GET", root + "/configurations/" + starter.agent.configurationId);
   assert.equal(config.statusCode, 200);
-  const credential = await inject("POST", root + "/secrets", {
+  const store = controller.selectedDriver("secret").privateSecrets;
+  assert.ok(store);
+  const ownerId = "policy-source-owner";
+  const instanceId = await controller.activateTokenServiceInstance(ownerId, "policy-fixture-store");
+  const owner = new OCCTokenServiceDriver(
+    ownerId,
+    controller.installation.id,
+    store,
+    instanceId,
+    state,
+  );
+  controller.registerDriver(owner);
+  controller.selectDriver("token_service", owner.id);
+  const credential = await inject("POST", root + "/credential-sources", {
     name: "synthetic-channel",
-    value: "synthetic",
+    type: "static",
+    secret: "xoxb-synthetic-channel",
   });
-  assert.equal(credential.statusCode, 201);
+  assert.equal(credential.statusCode, 201, credential.body);
   const source = credential.json().data.ref;
   const bound = await inject("POST", root + "/configurations", {
     kind: "agent",
@@ -1035,7 +1050,7 @@ export async function verifyChannelPolicyHandoff(
       await writer.query("SET LOCAL lock_timeout = '10s'");
       await writer.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespace.id]);
       await writer.query(
-        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','secret',$3,'deny')",
+        "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'operate','credential_source',$3,'deny')",
         ["restriction-" + randomUUID(), namespace.id, source.id],
       );
       await writer.query("COMMIT");
@@ -1155,7 +1170,9 @@ export async function verifyDeploymentAuthorityAfterWait(
       return rowCount === 1 || undefined;
     });
     const [action, kind, id] =
-      boundary === "channel" ? ["operate", "secret", source.id] : ["deploy", "agent", agent.id];
+      boundary === "channel"
+        ? ["operate", "credential_source", source.id]
+        : ["deploy", "agent", agent.id];
     await writer.query(
       `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
        VALUES ($1, $2, $3, $4, $5, 'deny')`,

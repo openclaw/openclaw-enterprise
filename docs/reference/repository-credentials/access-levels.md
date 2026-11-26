@@ -1,9 +1,11 @@
 # GitHub access levels
 
-For Credential Design 1.0, choose repository **Read** or **Read/write**. These
-Source-backed grants admit Git operations only; GitHub enforces branch rules.
-They do not authorize GitHub REST or pull request creation. The separate prepared
-broker and deprecated protected profiles documented below are outside 1.0.
+For Credential Design 1.0, choose repository **Read** or **Read/write**.
+TokenService supplies credentials for admitted Git operations. Either access
+level can permit [public repository metadata](#public-repository-metadata).
+Read/write can also authorize [pull request creation](#pull-request-creation)
+when the additional conditions are met. The prepared broker and deprecated
+protected profiles documented below are outside 1.0.
 
 ## Registry profiles
 
@@ -21,18 +23,16 @@ whose profile is not allowed by the Namespace policy.
 
 For `github-repository`, `profiles` must contain only that value and the Namespace
 policy must include the GitHub App token `permissions`, such as `contents: write`
-and `metadata: read`. These issuer permissions do not admit API routes; Source-backed
-Git remains Git-only. The profile has no OCE branch allowlist. GitHub applies its
-repository and branch rules.
+and `metadata: read`. These permissions set the scope of the App's installation
+token. OCE admits Agent requests within that scope. GitHub enforces repository
+and branch rules.
 
 For a legacy session with one `github-repository` binding, the Installation and Namespace can opt into
 [standing approval](../../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 The approved scope includes the exact repository identity and permission map.
 Legacy sessions for multiple selected repositories remain finite.
 
-With TokenService Git, the revision records its Agent Repository grants
-independently of the installation token's expiry. The legacy session duration
-does not set a deadline on those grants.
+A TokenService Git Source can cover several repositories in one Namespace. Deploy can reuse it when the caller can operate the Source and it covers every selected repository. The revision records only the Agent's approved repositories and access levels. Token renewal preserves those grants.
 
 The other profiles do not accept a custom registry `permissions` map. Their
 effective permissions and supported operations depend on the selected delivery,
@@ -84,13 +84,14 @@ repositoryNetworkPolicyCeiling:
 
 ### Native Git delivery
 
-Use a dedicated Codex Agent with a supported TokenService model Source,
-Kubernetes Compute, and the paired OpenShell Sandbox and Credential Proxy.
+Use a Dedicated Agent with a supported TokenService model Source, Kubernetes
+Compute, and the paired OpenShell Sandbox and Credential Proxy.
 [Installation and Agent setup](../../guides/repository-credentials.md#set-github-app-access-for-an-openshell-agent)
 
-Dedicated OpenClaw with native Git is unsupported. Compute contains a guarded
-placement path, but OCC refuses that recipient at deployment and no qualified
-OpenClaw image pin is supplied. A live combined run remains unverified.
+Dedicated Codex requires inspected Gateway and Agent images. Dedicated OpenClaw
+requires service mode and an inspected Gateway image qualified for model turns
+and scoped Git in the worker role. An unset image pin disables that placement.
+[Controller image qualification](../../guides/deploy/production-installation-preparation.md#build-a-controller-for-native-git)
 
 In the Namespace registry, select `nativeGit: "v1"` with the
 `github-repository` profile for each selected repository. Register the GitHub
@@ -102,24 +103,61 @@ list, conflicts with the selection and blocks deployment. Use an Agent draft
 without that list. [Repository network policy](../sandbox-policies.md#repository-network-policy)
 
 TokenService holds the installation token. Credential Proxy injects it only
-on each Agent's admitted Git requests. Read-only permits Git discovery, clone,
-and fetch. Read/write also permits push. These grants are Git-only. They do
-not authorize GitHub REST, GraphQL, issue or pull request operations. GitHub
-repository and branch rules still apply.
+on the Agent's admitted Git and pull request creation requests. Read-only permits
+Git discovery, clone, and fetch. Read/write also permits push.
 
 Stop a running Agent before deploying changed grants. Removing repositories
 can [withdraw running Git access](../../guides/credential-proxy.md#withdraw-repository-access) without
 replacing its model credential. [Git token renewal](../../guides/repository-credentials/openshell-git-renewal.md)
 does not change the Agent's grants.
 
+### Public repository metadata
+
+For either access level, OpenShell adds a public metadata rule for each admitted
+repository when the Installation's `sandboxNetworkPolicyCeiling` permits
+`/usr/bin/curl` to reach `api.github.com:443`. Without this ceiling entry, the
+Agent can still deploy with its Git grants.
+
+The derived rule allows `/usr/bin/curl` to send `GET` to the exact
+`/repos/{owner}/{repository}` path. It grants no `HEAD`, other methods,
+subpaths, or routes for other repositories. OpenClaw Enterprise supplies no
+credential and leaves request headers intact. GitHub returns its full response
+and decides whether the repository is public for an unauthenticated request.
+
+If an existing Sandbox rule overlaps this request, OpenShell refuses to prepare
+the deployment. Remove the overlapping rule and keep the Installation ceiling
+entry to use the derived rule.
+
+The rule uses the Repository grants saved with the Agent revision. Withdrawing
+the Git Source leaves this public rule in place. Deploy a revision without the
+grant to remove the rule.
+
 <a id="api-limits"></a>
 <a id="preview-namespace-limits"></a>
 <a id="issue-creation"></a>
 <a id="cut-over-existing-registrations"></a>
-<a id="pull-request-creation"></a>
 <a id="known-limits"></a>
 
-Earlier OpenShell REST routes, API limits, and issue and pull request behavior
+### Pull request creation
+
+The GitHub App and Namespace registration must allow `pull_requests: write`.
+Namespace `apiLimits` can withhold creation while Git Write remains available.
+`pull_requests: read` or `none` withholds creation. `default: none` also
+withholds it unless `pull_requests: write` overrides the default.
+The Agent needs Write on the target and at least Read on every repository
+covered by the Source token. GitHub can read a fork head named in the request
+body, so a missing Read grant withholds publication for the entire Source.
+
+The Proxy rule covers `/usr/local/bin/gh` and one operation at
+`api.github.com:443`, `POST /repos/{owner}/{repo}/pulls`. Use `gh api` with
+an authorized head and base. The GitHub endpoint also accepts an `issue` field
+to create a pull request from an issue in the target repository.
+
+Stock OpenShell can inject the token on matching plaintext HTTP port 443 and
+match descendants of `gh`. These temporary exceptions apply to the exact
+publication route. Stock `gh` uses verified TLS. [RFC](https://github.com/openclaw/openclaw-enterprise/pull/7447)
+
+Earlier OpenShell REST routes, Agent-level API limits, and issue and pull request behavior
 are documented in the [historical REST reference](https://github.com/openclaw/openclaw-enterprise/blob/a0d583bb7bdb4c2dd5ae43897926c037acfbf0be/docs/reference/repository-credentials/access-levels.md#native-git-delivery).
 The separate [prepared native Git broker](prepared-native-git.md) is outside 1.0;
 its draft-PR feature is not equivalent to a Source-backed Git grant.
