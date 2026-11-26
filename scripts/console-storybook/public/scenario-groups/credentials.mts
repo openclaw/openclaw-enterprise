@@ -430,7 +430,7 @@ export function credentialsScenarios({
         click("Reload draft"),
       ],
       description:
-        "Another browser saved this Configuration first. The chosen app token stays shown, and Reload draft applies it over the reread bindings for Save channel credentials.",
+        "Another browser saved this Configuration first. Reload draft reapplies the chosen app Source over the reread bindings. The notice remains after Source discovery confirms the selection and clears when you change it.",
     },
     credentialsSlackSigningSecretMissing: {
       group: "Components/Credentials",

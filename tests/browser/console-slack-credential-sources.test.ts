@@ -7,8 +7,10 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   apiRequests,
+  authorizationDenials,
   createSlackSourceConsoleFixture as sourceConsole,
   detailUrl,
+  holdRequests,
   login,
   newPage,
   revokeAdministratorGrant,
@@ -76,6 +78,11 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
             ok: true,
             channel: { id: url.searchParams.get("channel"), name: "platform" },
           });
+        case "/api/users.info":
+          return Response.json({
+            ok: true,
+            user: { id: url.searchParams.get("user"), name: "alex" },
+          });
         default:
           throw new Error(`Unexpected controlled provider method ${url.pathname}`);
       }
@@ -87,7 +94,8 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
   const botEnrollment = await enroll("Bot credential");
   const bot = botEnrollment.source;
   botCredential = botEnrollment.secret;
-  const replacement = (await enroll("Replacement bot credential")).source;
+  const replacementEnrollment = await enroll("Replacement bot credential");
+  const replacement = replacementEnrollment.source;
   const signing = (await enroll("Signing credential", "synthetic")).source;
   const agent = await fixture.createAgent(
     namespace.id,
@@ -99,7 +107,7 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
           enabled: true,
           dmPolicy: "disabled",
           groupPolicy: "allowlist",
-          channels: { C12345678: { requireMention: true, users: ["*"] } },
+          channels: { C12345678: { requireMention: true, users: ["U12345678"] } },
           appToken: "${SLACK_APP_TOKEN}",
           botToken: "${SLACK_BOT_TOKEN}",
         },
@@ -173,7 +181,7 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
   );
   await t.test(
     "denied saved binding blocks Disable and unchanged edits but permits replacement",
-    async () => {
+    async (scenario) => {
       // Give the administrator exact Source operate on app and the replacement, but not the saved bot.
       // The real permission advice must make Disable unavailable and allow replacing only that denied binding.
       grantExactSourceOperate(fixture, namespace.id, [app.id, replacement.id]);
@@ -189,8 +197,21 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
         )
         .waitFor();
       assert.equal(await disable.isDisabled(), true);
+      const auditBefore = authorizationDenials(
+        fixture.auditSink,
+        "openclaw.channel_directory.lookup",
+      ).length;
+      const requestsBefore = requests.length;
+      // Hold the first real refusal while the saved channel and person name lookups queue.
+      // Replacing the denied bot must not let its refusal answer the replacement's lookups.
+      const held = await holdRequests(scenario, page, fixture.origin + directoryPath, {
+        once: true,
+        method: "POST",
+        afterServer: true,
+      });
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
       const drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+      assert.equal((await held.requested)?.status(), 403);
       await drawer.getByLabel("Require a mention").setChecked(false);
       const writesBefore = requests.filter(
         ({ method, path }: { method: string; path: string }) =>
@@ -213,7 +234,29 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
         writesBefore,
         "unchanged denied Source is refused locally with no PATCH",
       );
+      const replacementLookup = directoryResponse(
+        (body) => body.sourceId === replacement.id && Array.isArray(body.ids),
+      );
+      botCredential = replacementEnrollment.secret;
       await drawer.getByLabel("Slack bot token", { exact: true }).selectOption(replacement.id);
+      held.release();
+      assert.equal((await replacementLookup).status(), 200);
+      const deniedLookups = requests.slice(requestsBefore).filter(({ method, path, body }) => {
+        const lookup = body as { sourceId?: string; ids?: unknown } | null;
+        return (
+          method === "POST" &&
+          path === directoryPath &&
+          lookup?.sourceId === bot.id &&
+          Array.isArray(lookup.ids)
+        );
+      });
+      assert.equal(deniedLookups.length, 1, "queued saved names share the first Source refusal");
+      assert.equal(
+        authorizationDenials(fixture.auditSink, "openclaw.channel_directory.lookup").length -
+          auditBefore,
+        1,
+        "the denied Source lookup is audited once",
+      );
       const reboundResponse = page.waitForResponse(
         (result) =>
           result.url() === fixture.origin + configurationPath &&

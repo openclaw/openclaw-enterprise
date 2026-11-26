@@ -1209,10 +1209,7 @@ test("a kept Slack edit reopened over a changed Configuration cannot be saved", 
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   const mention = dialog.getByLabel("Require a mention", { exact: true });
   const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
-  await waitForInputValue(
-    dialog.getByLabel("Slack bot token", { exact: true }),
-    "Channels Stale bot token",
-  );
+  await waitForInputValue(dialog.getByLabel("Slack bot token", { exact: true }), context.bot.id);
   await mention.uncheck();
   await waitForEnabled(save);
   await page.goBack();
@@ -1256,10 +1253,7 @@ test("a kept Slack edit from a save with an unknown outcome cannot be saved agai
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   const mention = dialog.getByLabel("Require a mention", { exact: true });
   const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
-  await waitForInputValue(
-    dialog.getByLabel("Slack bot token", { exact: true }),
-    "Channels Unknown bot token",
-  );
+  await waitForInputValue(dialog.getByLabel("Slack bot token", { exact: true }), context.bot.id);
   await mention.uncheck();
   await save.click();
   await dialog.waitFor({ state: "detached" });

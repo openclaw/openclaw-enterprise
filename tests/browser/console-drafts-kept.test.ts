@@ -1034,6 +1034,10 @@ test("Source choices carried through Reload draft do not ask before a reload", a
   // The carried choices name stored Sources: a reload would lose nothing (finding 1938).
   assert.equal(await asksBeforeUnload(page), false);
   reread.release();
+  // Check after asynchronous Source discovery confirms the carried selection; that
+  // confirmation must not erase the notice or the other browser's saved app binding.
+  await waitForInputValue(page.getByLabel("Slack bot token", { exact: true }), secondBot.id);
+  await waitForInputValue(page.getByLabel("Slack app token", { exact: true }), otherApp.id);
   await page
     .getByRole("status")
     .filter({

@@ -3164,6 +3164,14 @@ test("deploy checks repository policy authority and freezes the selected Sandbox
       const first = await deployBound(true);
       assert.equal(first.status, 202);
       assert.equal(provider.mock.callCount(), 1);
+      // Both inputs must survive admission in the same immutable revision; the public
+      // revision projection does not expose the protected Repository policy snapshot.
+      const admitted = await controller.transact((unit) =>
+        unit.revisions.findRevision(namespace.id, bound.id, first.data.revisionId),
+      );
+      assert.ok(admitted);
+      assert.deepEqual(admitted.sandboxPolicy?.repositoryNetworkPolicy?.grants, requested);
+      assert.deepEqual(admitted.secretBindings?.CHANNEL_TOKEN?.source, token.ref);
       // Receipt replay must bypass a later Channel outage and return the original result.
       const refuseUse = restrict(fixture.policy, "operate", "credential_source", {
         namespaceId: namespace.id,

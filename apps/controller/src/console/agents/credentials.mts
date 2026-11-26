@@ -1149,17 +1149,23 @@ export function createChannelSecretsPanel({
         ...(currentId === undefined ? {} : { currentId }),
         ...staticCredentialSourceSelection,
         onChange(source) {
-          if (source) {
-            draft.secretBindings[binding.key] = { source, delivery: { type: "env" } };
-          } else {
-            delete draft.secretBindings[binding.key];
+          const previous = slackSourceForBinding(
+            draft.secretBindings[binding.key],
+            context.namespaceId,
+          );
+          if (previous?.id !== source?.id) {
+            if (source) {
+              draft.secretBindings[binding.key] = { source, delivery: { type: "env" } };
+            } else {
+              delete draft.secretBindings[binding.key];
+            }
+            state.saveError = null;
+            state.saveMessage = "";
+            state.carriedNote = "";
+            setStatusTone(error, "warning");
+            error.textContent = state.saveGrantWarning;
+            status.textContent = "";
           }
-          state.saveError = null;
-          state.saveMessage = "";
-          state.carriedNote = "";
-          setStatusTone(error, "warning");
-          error.textContent = state.saveGrantWarning;
-          status.textContent = "";
           updateControls();
           onChange();
         },
