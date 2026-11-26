@@ -1,6 +1,5 @@
 import type {
   AdmittedRepositoryBinding,
-  DeploymentRequestMatch,
   GitHubAppInstallationCredentialSource,
   RepositoryNetworkGrant,
   RepositoryNetworkPolicyCeiling,
@@ -14,6 +13,7 @@ import { OpenShellCredentialProxyDriver } from "../drivers/credential-proxy/open
 import { OpenShellSandboxDriver } from "../drivers/sandbox/openshell.ts";
 import { compileOpenShellCredentialPolicy } from "../drivers/sandbox/openshell-credential-policy.ts";
 
+import { openShellRepositoryMetadataRequest } from "../drivers/sandbox/openshell-git-network-policy.ts";
 import { openShellRepositoryCredentialRequests } from "../drivers/credential-proxy/openshell-repository-policy.ts";
 import {
   matchesConfiguredGitHubRepository,
@@ -169,7 +169,7 @@ export function admitOpenShellRepositoryCredentials(
   input: OpenShellRepositorySourceSelection & {
     readonly grants: readonly RepositoryNetworkGrant[];
   },
-): readonly DeploymentRequestMatch[] | undefined {
+): ReturnType<NonNullable<ControllerOptions["repositoryCredentialAdmission"]>> {
   if (!registry || !input.grants.length) {
     return undefined;
   }
@@ -185,7 +185,12 @@ export function admitOpenShellRepositoryCredentials(
     ) {
       return undefined;
     }
-    return openShellRepositoryCredentialRequests(input.grants);
+    return {
+      credentialRequests: openShellRepositoryCredentialRequests(input.grants),
+      publicNetworkRequests: input.grants.map(({ repository }) =>
+        openShellRepositoryMetadataRequest(repository),
+      ),
+    };
   } catch {
     return undefined;
   }

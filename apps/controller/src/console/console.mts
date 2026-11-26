@@ -2586,7 +2586,8 @@ async function loadPage({
       const restoredShell = mountRetainedView(current, retainedView, privatePage);
       // The shell already restores Namespace focus. Keep that control in view too.
       const keptNamespaceFocus =
-        switchingVersion && restoredShell.scopeSelector?.contains(document.activeElement);
+        (switchingVersion || (fromNavigation && listRoute !== null)) &&
+        restoredShell.scopeSelector?.contains(document.activeElement);
       if (!headerFocus && !keptNamespaceFocus) {
         window.scrollTo({ top: retainedView.scrollY, left: 0 });
       }

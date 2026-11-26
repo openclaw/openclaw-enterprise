@@ -19,6 +19,7 @@ import { installSelectedSandboxDrivers } from "../../apps/controller/src/composi
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { inspectedWorkspaceBuild } from "../../apps/controller/src/drivers/sandbox/inspected-workspace-release.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
+import { stagedCredentialPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-staged-credential-policy.ts";
 import { refreshCodexOAuthGrant } from "../../apps/controller/src/drivers/token-service/codex-device-authorization.ts";
 import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -29,6 +30,7 @@ import {
   type CredentialSource,
 } from "../../packages/contracts/src/index.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import { asRecord } from "../../packages/utils/src/index.ts";
 import { repositoryRemovalWorkKey } from "../../packages/occ/src/repository-withdrawal.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.ts";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.ts";
@@ -181,11 +183,18 @@ test(
       host: "chatgpt.com",
       ports: [{ from: 443, to: 443 }],
     };
+    const metadataGrant = {
+      id: "repository-metadata",
+      binary: "/usr/bin/curl",
+      host: "api.github.com",
+      ports: [{ from: 443, to: 443 }],
+    };
     const installation = {
       ...buildSandboxInstallation(),
       iam: defaultUsersIAM(),
       sandboxNetworkPolicyCeiling: [
         modelGrant,
+        metadataGrant,
         {
           ...modelGrant,
           id: "openclaw-model",
@@ -713,6 +722,19 @@ test(
     const agents = [];
     let gitSourceId: string | undefined;
     for (const access of ["write", "read"] as const) {
+      const metadataAllowed = access === "write";
+      if (!metadataAllowed) {
+        // Remove saved delegation while the startup seed still includes metadata.
+        // The next admission must omit public routes without losing Git access.
+        const currentCeiling = await nativeController.getInstallationSandboxNetworkPolicyCeiling(
+          principal.id,
+        );
+        await nativeController.updateInstallationSandboxNetworkPolicyCeiling(
+          principal.id,
+          currentCeiling.version,
+          currentCeiling.rules.filter(({ id }) => id !== metadataGrant.id),
+        );
+      }
       const grants = [
         { repository: repositories[0]!.repository, access: "read" as const },
         { repository: repositories[1]!.repository, access },
@@ -912,6 +934,49 @@ test(
             host: "chatgpt.com",
             ports: [{ from: 443, to: 443 }],
             requestPolicy: { type: "http", method, path },
+          })),
+        );
+      }
+      // The real deploy admission freezes only the selected repositories as network-only requests.
+      assert.deepEqual(
+        revision.credentialDeployment?.networkAccessPolicy.allowed.filter(
+          ({ host }) => host === metadataGrant.host,
+        ),
+        (metadataAllowed ? grants : []).map(({ repository }) => ({
+          binary: metadataGrant.binary,
+          host: metadataGrant.host,
+          ports: metadataGrant.ports,
+          requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+        })),
+      );
+      assert.ok(
+        revision.credentialDeployment?.injectionPolicies.every(({ allowedRequests }) =>
+          allowedRequests.every(({ host }) => host !== metadataGrant.host),
+        ),
+      );
+      // The public policy must already be present on the held Sandbox if it receives a Source withdrawal.
+      assert.ok(revision.sandboxPolicy);
+      const { idle, admitted: active } = stagedCredentialPolicies(
+        { network_policies: revision.sandboxPolicy.defaults },
+        revision,
+        revision.sandboxPolicy,
+      );
+      for (const policy of [idle, active]) {
+        const metadataEndpoints = Object.values(asRecord(policy.network_policies) ?? {})
+          .flatMap(
+            (rule) => (asRecord(rule)?.endpoints as Record<string, unknown>[] | undefined) ?? [],
+          )
+          .filter((endpoint) => endpoint.host === metadataGrant.host);
+        assert.deepEqual(
+          metadataEndpoints,
+          (metadataAllowed ? grants : []).map(({ repository }) => ({
+            host: metadataGrant.host,
+            ports: [443],
+            path: `/repos/${repository}`,
+            protocol: "rest",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [{ allow: { method: "GET", path: `/repos/${repository}` } }],
+            deny_rules: [{ method: "HEAD", path: `/repos/${repository}` }],
           })),
         );
       }
