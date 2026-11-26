@@ -3634,6 +3634,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   font-weight: var(--weight-semibold);
 }
 .secret-row {
+  scroll-margin-block: var(--space-1);
   padding: var(--space-3) var(--space-10) var(--space-3) var(--space-4);
 }
 .secret-row::after {
