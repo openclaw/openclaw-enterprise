@@ -403,7 +403,7 @@ async function evaluatePreflight(
 
 const scheduleSkipReasons = {
   "active-full": "Another run is still active and may be using the full suite.",
-  cooldown: "The scheduler is waiting between full runs.",
+  cooldown: "The scheduler is waiting before it can start another full run.",
   "stale-event": "The scheduled commit is no longer the tip of main.",
   "unchanged-main": "An earlier run exercised this commit. Check its results before relying on it.",
 } satisfies Record<ScheduleSkipReason, string>;
@@ -427,7 +427,7 @@ function appendScheduleSkipSummary(reason: ScheduleSkipReason, cooldownEligibleA
     if (cooldownEligibleAt !== undefined) {
       lines.push(
         "",
-        `The next full run can start no earlier than ${new Date(cooldownEligibleAt).toISOString()}.`,
+        `The next scheduled full run can start no earlier than ${new Date(cooldownEligibleAt).toISOString()}.`,
       );
     }
     lines.push(

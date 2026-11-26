@@ -651,7 +651,10 @@ test("scheduled preflight admits the exact main SHA and fails closed on uncertai
           assert.match(markdown, /actions\/workflows\/full-integration\.yml/);
           assert.doesNotMatch(markdown, /success|passed/i);
           if (reason === "cooldown") {
-            assert.match(markdown, /2026-06-15T12:10:00\.000Z/);
+            assert.match(
+              markdown,
+              /The next scheduled full run can start no earlier than 2026-06-15T12:10:00\.000Z/,
+            );
           } else {
             assert.doesNotMatch(markdown, /can start no earlier/);
           }
