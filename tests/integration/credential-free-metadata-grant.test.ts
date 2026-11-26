@@ -13,6 +13,7 @@ import { assertApiError } from "../helpers/api-error.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { parseJson } from "../helpers/egress-observation-values.ts";
 import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
+import { metadataSourceFields } from "../helpers/static-egress-metadata.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 const digest = (grant: unknown) => createHash("sha256").update(JSON.stringify(grant)).digest("hex");
@@ -77,14 +78,7 @@ async function metadataFixture(t: TestContext, reordered: boolean) {
       const source = await app.controller.createCredentialSource(app.principal.id, {
         namespaceId: namespace.id,
         name: "metadata-order",
-        type: "credential-free-repository-metadata",
-        config: {
-          origin,
-          repository_id: "7311",
-          repository: "fixture/credential-free",
-          agent_id: agent.id,
-          authority: "execution",
-        },
+        ...metadataSourceFields({ origin, agentId: agent.id }),
       });
       driverGrant = provider.normalizeGrant([], source.config);
       if (reordered) {

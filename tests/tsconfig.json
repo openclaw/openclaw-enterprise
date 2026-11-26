@@ -42,6 +42,7 @@
     "helpers/qa-http-chat.ts",
     "helpers/kubernetes-two-cluster-inputs.ts",
     "helpers/loaded-proxy-installation.ts",
+    "helpers/protected-source-refusals.ts",
     "conformance/openshell-harness-codex-readiness-cases.ts",
     "conformance/openshell-harness-service-transport-cases.ts",
     "conformance/platform-state-access-binding-contract.ts",
