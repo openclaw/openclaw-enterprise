@@ -70,10 +70,14 @@ store separate network and injection policies. [Source status](../reference/cred
 
 `packages/occ/src/sandbox-policy.ts:updateAgentSandboxPolicy` requires Agent
 `manage_policy` and SandboxPolicy `update` and locks Namespace and Agent.
-Managed credential revisions block live policy application. Unreadable scoped
-revisions report `protectedExecution: null`. When the Proxy builds policy for
-native Git, it rejects general network grants that overlap an admitted Repository
-credential route.
+When a managed credential revision is active, the controller refuses saves
+with nonempty additions and allows authorized callers to clear additions. It
+also refuses live application to that revision. Unreadable scoped revisions
+report `protectedExecution: null`.
+
+Deployment admits saved additions against the Installation ceiling and the
+Sandbox Driver's policy. When the Proxy builds policy for native Git, it rejects
+general network grants that overlap an admitted Repository credential route.
 
 `packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` refuses
 a separate repository network policy before Source enrollment. OCC derives

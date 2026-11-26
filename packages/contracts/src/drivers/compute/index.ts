@@ -448,8 +448,8 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
   ): Promise<SandboxNamespaceContext>;
   /**
-   * The Namespace as the paired Sandbox and Credential Gateway see it: `name` is this
-   * Compute Driver's runtime placement. Required to register Credential Gateway sources.
+   * Resolves the runtime Namespace name used by the paired Sandbox and native
+   * credential delivery.
    */
   resolveSandboxNamespace?(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>>;
   /**

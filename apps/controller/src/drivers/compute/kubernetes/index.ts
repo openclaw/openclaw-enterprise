@@ -1183,8 +1183,6 @@ interface RuntimeCredentialContext {
 interface PreparedHarnessAuth {
   readonly loginMode: HarnessWorkloadRequirements["loginMode"];
   readonly environment: readonly V1EnvVar[];
-  /** Present when the Credential Gateway, not a Secret projection, supplies the credential. */
-  readonly credentialSource?: Readonly<CredentialSource>;
 }
 
 interface NativeRuntimeSnapshot {

@@ -5,6 +5,7 @@ import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createBackendWorkerDrivers } from "./postgres-backend-state.mjs";
+import { createInstallationDriverConfiguration } from "./installation-driver-configuration.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { composePostgresDevelopment, createPostgresControllerAuth } from "./password-hasher.ts";
@@ -42,13 +43,14 @@ export async function repositoryRestartInventory(
     },
   }));
   const drivers = createBackendWorkerDrivers(compute, []);
-  // Normalize the same startup document as the real API. The raw fixture contains
-  // selections only; composition also needs resolved definitions and logging defaults.
+  // Exercise the API's raw startup loader before injecting the controlled discovery client.
+  const startupConfiguration = createInstallationDriverConfiguration();
+  startupConfiguration.drivers.compute.id = compute.id;
   const configured = await loadInstallationConfiguration({
     mode: "development",
     environment: {},
     startupConfiguration: {
-      configuration: drivers.installation,
+      configuration: startupConfiguration,
       logging: { level: "info" },
     },
   });
