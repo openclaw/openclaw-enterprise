@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: "2026-11-24 23:19"
-last_updated_session: "authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76"
+updated: "2026-11-26 09:22"
+last_updated_session: "authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc"
 ---
 
 # GitHub Actions testing flow
@@ -104,12 +104,16 @@ cadence and receipts under lock. Cooldown skips coverage lookup.
 Scheduled GETs share one 502/503/504 retry. `Retry-After` or zero quota suppresses it.
 “Scheduled preflight diagnostic” shows stage and allowlisted HTTP codes.
 Reruns require [fresh approved dispatch](../testing/ci/configuration.md#environments)
-(dispatcher, team, environment). Slack serializes per channel/app. Installation
-and Skipper Git serialize per branch.
+(dispatcher, team, environment). Slack Live runs one job at a time across the repository.
+Local Kubernetes Installation and Skipper Git each run one job at a time per branch.
 
 First-attempt `all` reuses results accepted by `scripts/ci/full-integration-reuse.ts:validateResults`.
 Otherwise lanes run fresh.
-QA awaits Slack despite failure, stops on cancellation, and requires selected results.
+
+After preflight succeeds, installation QA and Slack Live can run in parallel on `main`.
+When Release OCE selects a commit with `source_sha`, both jobs use the Slack Live
+queue. Either can run first. Neither starts if the run is already cancelled.
+The aggregate requires [both results when both jobs are selected](../testing/ci/full-integration.md#scenarios).
 
 Migration and application suites own separate PostgreSQL servers. Kubernetes
 fixture lanes each own a cluster and PostgreSQL server. The shared action
@@ -288,6 +292,8 @@ awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 09:22: Correct QA and Slack job ordering after preflight. (authoring-run/c0252158-2b99-4167-b929-2fb7bb342dbc - c388219bf7ca532d031a8c49c83029c135cc6a55)
 
 - 2026-11-24 23:19: Label the CI result by the lanes selected. (authoring-run/1f0b6c73-ecfe-4be5-9871-4efc67a2ff76 - 59e36d118540fd64ed43d8feddbcd9599604afd7)
 
