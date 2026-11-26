@@ -792,7 +792,10 @@ export async function proveControlledChannelProxy(
       enableSlack(stack, b, "b", https),
     ]);
     const [aRevision, bRevision] = await smokeStep("channel-proxy-initial-deploy", () =>
-      Promise.all([deployAgent(stack, a.agent), deployAgent(stack, b.agent)]),
+      Promise.all([
+        deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-initial-deploy-a" }),
+        deployAgent(stack, b.agent, { smokeStep, context: "channel-proxy-initial-deploy-b" }),
+      ]),
     );
     await Promise.all([waitSocket("A"), waitSocket("B")]);
     const admissionEvents = await modelEvents();
@@ -935,7 +938,7 @@ export async function proveControlledChannelProxy(
       "editing the Agent replaced its running Gateway before redeploy",
     );
     const movedRevision = await smokeStep("channel-proxy-move-deploy", () =>
-      deployAgent(stack, a.agent),
+      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-move-deploy-a" }),
     );
     assert.notEqual(movedRevision, aRevision, "proxy edit did not create a new revision");
     await waitFor(
@@ -950,7 +953,7 @@ export async function proveControlledChannelProxy(
     const aSocketsBeforeClear = await socketCount("A");
     const proxiesBeforeClear = proxyCounts(proxies);
     const directRevision = await smokeStep("channel-proxy-clear-deploy", () =>
-      deployAgent(stack, a.agent),
+      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-clear-deploy-a" }),
     );
     await waitSocket("A", aSocketsBeforeClear);
     assert.deepEqual(
@@ -975,7 +978,7 @@ export async function proveControlledChannelProxy(
       networkProxy: { url: bad.url, credentialSecretId: badCredential.id },
     });
     const badRevision = await smokeStep("channel-proxy-tls-control-deploy", () =>
-      deployAgent(stack, a.agent),
+      deployAgent(stack, a.agent, { smokeStep, context: "channel-proxy-tls-control-deploy-a" }),
     );
     const badGateway = await readyGateway(stack, a.agent.id, badRevision);
     assert.equal(
