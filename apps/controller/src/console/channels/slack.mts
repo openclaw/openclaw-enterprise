@@ -1,5 +1,7 @@
 import type { SecretBinding } from "@openclaw-enterprise/contracts";
-import { element } from "../dom.mjs";
+import { button, element } from "../dom.mjs";
+import { namedDenial, requestFailure } from "../api-client.mjs";
+import { readCredentialSourceMetadata } from "../credential-source-metadata.mjs";
 import {
   createCredentialSourcePicker,
   staticCredentialSourceSelection,
@@ -78,6 +80,7 @@ const originalTargets = new WeakMap<
     dmUsers: Set<string>;
   }
 >();
+const unresolvedSourceCreates = new WeakMap<object, Set<string>>();
 
 function channelUsers(channel: SlackChannel | undefined) {
   const users = uniqueList(channel?.users ?? []);
@@ -281,14 +284,26 @@ function activeSecretBinding(binding: BindingField, context: ChannelDrawerContex
 function credentialReferenceField(
   binding: BindingField,
   context: ChannelDrawerContext,
+  body: HTMLFormElement,
   onSelected: (key: string) => void,
+  onEnrollmentPending: (value: boolean) => void,
 ) {
   const initial = bindingSource(activeSecretBinding(binding, context), context.namespaceId);
-  const currentId = bindingSource(context.secretBindings?.[binding.key], context.namespaceId)?.id;
+  const currentId = initial?.id;
+  const enrollmentKey = `${context.namespaceId}:${binding.key}`;
+  const enrollmentOwner = context.drafts ?? context;
+  const unresolved = unresolvedSourceCreates.get(enrollmentOwner) ?? new Set<string>();
+  unresolvedSourceCreates.set(enrollmentOwner, unresolved);
+  const id = `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`;
   const picker = createCredentialSourcePicker(context, {
     ...staticCredentialSourceSelection,
-    id: `slack-source-${binding.key.toLowerCase().replaceAll("_", "-")}`,
+    listStatus: (hasEligible) =>
+      hasEligible
+        ? staticCredentialSourceSelection.listStatus(true)
+        : "No ready static Credential Sources are readable in this Namespace. Select Add new credential… to create one here.",
+    id,
     label: binding.label,
+    addNew: { label: "Add new credential…" },
     initial,
     ...(currentId ? { currentId } : {}),
     onChange: (source) => {
@@ -300,8 +315,137 @@ function credentialReferenceField(
       }
       context.draftSecretBindings = next;
       onSelected(binding.key);
+      feedback.textContent = "";
+      renderEnrollment();
     },
   });
+  const sourceName = element("input", {
+    id: `${id}-name`,
+    autocomplete: "off",
+    maxlength: "200",
+    "data-channel-enrollment": "",
+  });
+  const token = element("input", {
+    id: `${id}-value`,
+    type: "password",
+    autocomplete: "new-password",
+  });
+  const feedback = element("p", { className: "hint", role: "status" });
+  const create = button("Create credential", () => void enroll(), { tone: "secondary" });
+  const cancel = button("Cancel", () => {
+    token.value = "";
+    sourceName.value = "";
+    picker.cancelCreating();
+  });
+  const enrollment = element(
+    "div",
+    { className: "credential-enrollment", hidden: true },
+    field(`${binding.label} Source name`, sourceName),
+    field(`${binding.label} value`, token),
+    element("div", { className: "dialog-actions" }, cancel, create),
+  );
+  picker.field.append(enrollment, feedback);
+  function renderEnrollment() {
+    const blocked = unresolved.has(enrollmentKey);
+    enrollment.hidden = !picker.creating;
+    sourceName.required = picker.creating;
+    token.required = picker.creating;
+    create.disabled = blocked;
+    picker.setAddNewDisabled(blocked);
+    if (blocked) {
+      feedback.textContent =
+        "The credential save could not be confirmed. Check Credential Sources and the credential owner, then reload this page before creating another Source.";
+    }
+  }
+  async function enroll() {
+    if (unresolved.has(enrollmentKey) || !sourceName.reportValidity() || !token.reportValidity()) {
+      return;
+    }
+    const requestedName = sourceName.value.trim();
+    if (!requestedName) {
+      sourceName.setCustomValidity("Enter a Source name.");
+      sourceName.reportValidity();
+      return;
+    }
+    sourceName.setCustomValidity("");
+    const controls = [
+      ...body.querySelectorAll<
+        HTMLInputElement | HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement
+      >("input, button, select, textarea"),
+    ];
+    const disabled = controls.map((control) => control.disabled);
+    for (const control of controls) {
+      control.disabled = true;
+    }
+    onEnrollmentPending(true);
+    const dialog = body.closest("dialog");
+    const preventCancel = (event: Event) => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    dialog?.addEventListener("cancel", preventCancel, true);
+    feedback.textContent = "Creating credential…";
+    try {
+      const request = context.request(
+        `/namespaces/${encodeURIComponent(context.namespaceId)}/credential-sources`,
+        {
+          method: "POST",
+          expectedStatus: 201,
+          body: { name: requestedName, type: "static", secret: token.value },
+        },
+      );
+      token.value = "";
+      const response = await request;
+      const source = readCredentialSourceMetadata(response, context.namespaceId);
+      if (
+        !source ||
+        source.name !== requestedName ||
+        source.type !== "static" ||
+        source.state !== "ready"
+      ) {
+        throw new Error("The create response did not confirm the requested Source.");
+      }
+      picker.selectCreated(source);
+      sourceName.value = "";
+      feedback.textContent = `Credential Source created: ${source.id}. Using it requires exact Source operate permission.`;
+    } catch (cause) {
+      token.value = "";
+      const { status } = requestFailure(cause);
+      if (status === 401) {
+        context.onExpired();
+      } else if (status === 403) {
+        feedback.textContent =
+          namedDenial(cause) ?? "You need Credential Source create on this Namespace.";
+      } else if (status === 400 || status === 404) {
+        feedback.textContent = "The Source was refused. Check its name and value.";
+      } else if (status === 429) {
+        feedback.textContent = "The request was rate limited. Try again later.";
+      } else if (status === 501) {
+        feedback.textContent = "The selected credential owner does not support this operation.";
+      } else if (status === 409) {
+        feedback.textContent =
+          "Credential Source creation conflicted. Check Credential Sources and the owner before retrying with a different name.";
+      } else {
+        unresolved.add(enrollmentKey);
+      }
+    } finally {
+      dialog?.removeEventListener("cancel", preventCancel, true);
+      controls.forEach((control, index) => {
+        control.disabled = disabled[index]!;
+      });
+      onEnrollmentPending(false);
+      renderEnrollment();
+      body.dispatchEvent(new Event("change"));
+    }
+  }
+  sourceName.addEventListener("input", () => sourceName.setCustomValidity(""));
+  enrollment.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.target === sourceName || event.target === token)) {
+      event.preventDefault();
+      create.click();
+    }
+  });
+  renderEnrollment();
   picker.field.classList.add("channel-field", "channel-reference");
   picker.control.classList.add("channel-select");
   picker.control.dataset.channelBinding = "";
@@ -390,15 +534,25 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
   });
   updateDmControls();
   const tokenPickers = [...SLACK_SECRET_BINDINGS].reverse().map((binding) =>
-    credentialReferenceField(binding, context, (key) => {
-      // The binding is staged separately from ordinary fields.
-      body.dispatchEvent(new Event("change"));
-      if (key === "SLACK_BOT_TOKEN") {
-        for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
-          picker.refreshNames();
+    credentialReferenceField(
+      binding,
+      context,
+      body,
+      (key) => {
+        // The binding is staged separately from ordinary fields.
+        body.dispatchEvent(new Event("change"));
+        if (key === "SLACK_BOT_TOKEN") {
+          for (const picker of [channelPicker, allowedUsersPicker, dmUsersPicker]) {
+            picker.refreshNames();
+          }
         }
-      }
-    }),
+      },
+      (pending) => {
+        for (const picker of tokenPickers) {
+          picker.setDisabled(pending);
+        }
+      },
+    ),
   );
   // Configuration save refuses an enabled channel whose token references have no Source
   // binding (finding 2319), so a drawer that saves names the missing token under its picker
@@ -417,7 +571,7 @@ function appendFields(body: HTMLFormElement, config: SlackConfig, context: Chann
     element(
       "p",
       { className: "hint" },
-      "Choose existing ready static Credential Sources for the Slack bot and app tokens. Create Sources in Credentials before returning here. An enabled Slack channel requires both tokens.",
+      "Choose ready static Credential Sources or add new credentials for the Slack bot and app tokens. An enabled Slack channel requires both tokens.",
     ),
     ...tokenPickers.map((picker) => picker.field),
     element("h2", {}, "Channel access"),
@@ -492,6 +646,9 @@ export const slack = {
   listFields: ["slack-channel-ids", "slack-allowed-user-ids", "slack-dm-user-ids"],
   support: supportSlack,
   validate(body) {
+    if (body.querySelector(".credential-enrollment:not([hidden])")) {
+      return "Create the new credential or Cancel before saving channel settings.";
+    }
     const existing = originalTargets.get(body);
     const ids = uniqueList(
       body.querySelector<HTMLInputElement>("#slack-channel-ids")!.value.split(","),

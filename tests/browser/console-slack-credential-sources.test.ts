@@ -419,6 +419,50 @@ test("Edit Slack Channel credentials and Configuration with Credential Sources",
       );
     },
   );
+  await t.test("an inline Source enables saving an unchanged disabled Channel", async () => {
+    const disabledAgent = await fixture.createAgent(
+      namespace.id,
+      "Disabled Slack Channel",
+      {
+        ...createHarnessConfiguration("openclaw", "gpt-5"),
+        channels: { slack: { enabled: false, mode: "socket", channels: {}, dmPolicy: "disabled" } },
+      },
+      { executionMode: "dedicated" },
+    );
+    await page.goto(detailUrl(fixture, namespace.id, disabledAgent.id, "draft", "channels").href);
+    await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+    const drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+    const save = drawer.getByRole("button", { name: "Save configuration", exact: true });
+    const bot = drawer.getByLabel("Slack bot token", { exact: true });
+    const field = bot.locator("..");
+    assert.equal(await save.isDisabled(), true);
+    await bot.selectOption("new");
+    await field.getByLabel("Slack bot token Source name").fill("Disabled Channel bot");
+    await field.getByLabel("Slack bot token value").fill(`xoxb-${randomUUID()}`);
+    const created = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/credential-sources"),
+    );
+    await field.getByRole("button", { name: "Create credential", exact: true }).click();
+    const response = await created;
+    assert.equal(response.status(), 201);
+    const source = (await response.json()).data;
+    await field.getByText("Credential Source created:", { exact: false }).waitFor();
+    assert.equal(await bot.inputValue(), source.id);
+    assert.equal(await save.isDisabled(), false, "a new binding makes the Channel draft saveable");
+    const saved = page.waitForResponse(
+      (result) =>
+        result.request().method() === "PATCH" &&
+        result.url().endsWith(`/configurations/${disabledAgent.configurationId}`),
+    );
+    await save.click();
+    assert.equal((await saved).status(), 200);
+    const persisted = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${disabledAgent.configurationId}`,
+    );
+    assert.deepEqual(persisted.data.secretBindings.SLACK_BOT_TOKEN.source, source.ref);
+  });
 });
 
 // The Create steps share one unsaved form to verify approver follow and native binding admission.
@@ -433,8 +477,9 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
   fixture.controller.registerDriver(plugin);
   fixture.controller.selectDriver("plugin", plugin.id);
   const app = await enroll("App credential", "xapp");
+  const inlineBotValue = `xoxb-${randomUUID()}`;
   const first = await enroll("First bot credential");
-  const second = await enroll("Second bot credential");
+  let second: Awaited<ReturnType<typeof enroll>>;
   const signing = await enroll("Signing credential", "synthetic");
   const slack = new SlackChannelDriver(
     async (input: URL | Request | string, options?: RequestInit) => {
@@ -455,6 +500,13 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
               profile: { display_name: "Fixture person" },
             },
           ],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+      if (url.pathname === "/api/conversations.list") {
+        return Response.json({
+          ok: true,
+          channels: [{ id: "C12345678", name: "platform" }],
           response_metadata: { next_cursor: "" },
         });
       }
@@ -487,13 +539,13 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
     let drawer = page.getByRole("dialog", { name: "Configure Slack", exact: true });
     await drawer.getByLabel("Direct-message policy").selectOption("disabled");
+    await drawer.getByLabel("Slack app token", { exact: true }).selectOption(app.source.id);
+    await drawer.getByLabel("Slack bot token", { exact: true }).selectOption(first.source.id);
     await setSlackSelection(
       drawer.getByRole("combobox", { name: "Channels", exact: true }),
       "C12345678",
     );
     await drawer.getByLabel("Who can use the agent in these channels?").selectOption("everyone");
-    await drawer.getByLabel("Slack app token", { exact: true }).selectOption(app.source.id);
-    await drawer.getByLabel("Slack bot token", { exact: true }).selectOption(first.source.id);
     await drawer.getByRole("button", { name: "Apply channel settings", exact: true }).click();
     await openAdvancedSettings(page);
     await page.getByLabel("Default plugin approvers mode", { exact: true }).selectOption("chosen");
@@ -512,9 +564,97 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
     await people.fill("alpha");
     assert.equal((await response).status(), 200, await (await response).text());
     assert.equal((await response).request().postDataJSON().sourceId, first.source.id);
+    const sourcePath = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+    const listing = await holdRequests(t, page, sourcePath, {
+      method: "GET",
+      once: true,
+      afterServer: true,
+      timeout: 0,
+    });
     await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
     drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
-    await drawer.getByLabel("Slack bot token", { exact: true }).selectOption(second.source.id);
+    const bot = drawer.getByLabel("Slack bot token", { exact: true });
+    const botField = bot.locator("..");
+    assert.equal((await listing.requested)?.status(), 200);
+    const sourceResponse = () =>
+      page.waitForResponse(
+        (result) => result.url() === sourcePath && result.request().method() === "POST",
+      );
+    // Inline enrollment has its own Namespace create permission. A refusal cannot create a
+    // Configuration or reveal the submitted value, and Cancel discards the unsaved input.
+    await bot.selectOption("new");
+    await botField.getByLabel("Slack bot token Source name").fill("Second bot credential");
+    const value = botField.getByLabel("Slack bot token value");
+    assert.equal(await value.getAttribute("type"), "password");
+    await value.fill(inlineBotValue);
+    const restoreCreate = revokeAdministratorGrant(fixture, ["create", "credential_source"]);
+    try {
+      const refused = sourceResponse();
+      await botField.getByRole("button", { name: "Create credential", exact: true }).click();
+      const denial = await refused;
+      assert.equal(denial.status(), 403);
+      assert.equal((await denial.text()).includes(inlineBotValue), false);
+    } finally {
+      restoreCreate();
+    }
+    await botField.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await bot.inputValue(), first.source.id);
+    assert.equal(await botField.locator("p[role=status]").last().textContent(), "");
+    await bot.selectOption("new");
+    await botField.getByLabel("Slack bot token Source name").fill("App credential");
+    await botField.getByLabel("Slack bot token value").fill(inlineBotValue);
+    const duplicate = sourceResponse();
+    await botField.getByRole("button", { name: "Create credential", exact: true }).click();
+    assert.equal((await duplicate).status(), 409);
+    await botField.getByText(/creation conflicted/i).waitFor();
+    assert.equal(
+      await botField.getByRole("button", { name: "Create credential" }).isDisabled(),
+      false,
+    );
+    await botField.getByLabel("Slack bot token Source name").fill("Second bot credential");
+    await botField.getByLabel("Slack bot token value").fill(inlineBotValue);
+    await drawer.getByRole("button", { name: "Apply channel settings", exact: true }).click();
+    await drawer
+      .getByText("Create the new credential or Cancel before saving channel settings.")
+      .waitFor();
+    assert.equal(await drawer.isVisible(), true, "Apply cannot discard an unconfirmed credential");
+    const write = await holdRequests(t, page, sourcePath, {
+      method: "POST",
+      once: true,
+      afterServer: true,
+    });
+    const created = sourceResponse();
+    await botField.getByLabel("Slack bot token value").press("Enter");
+    assert.equal((await write.requested)?.status(), 201);
+    const listResponse = page.waitForResponse(
+      (result) => result.url() === sourcePath && result.request().method() === "GET",
+    );
+    listing.release();
+    assert.equal((await listResponse).status(), 200);
+    assert.equal(await bot.isDisabled(), true, "a late list cannot reopen a pending picker");
+    assert.equal(await drawer.getByLabel("Slack app token", { exact: true }).isDisabled(), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await drawer.isVisible(), true, "a pending enrollment keeps its draft open");
+    write.release();
+    const enrolled = await created;
+    assert.equal(enrolled.status(), 201);
+    assert.deepEqual(enrolled.request().postDataJSON(), {
+      name: "Second bot credential",
+      type: "static",
+      secret: inlineBotValue,
+    });
+    const enrollment = await enrolled.json();
+    assert.equal(JSON.stringify(enrollment).includes(inlineBotValue), false);
+    const source = enrollment.data as Awaited<ReturnType<typeof enroll>>["source"];
+    second = { source, secret: inlineBotValue };
+    assert.equal(await bot.inputValue(), source.id);
+    const channels = drawer.getByRole("combobox", { name: "Channels", exact: true });
+    const directory = responseFor("platform");
+    await channels.fill("platform");
+    const lookup = await directory;
+    assert.equal(lookup.status(), 200);
+    assert.equal(lookup.request().postDataJSON().sourceId, source.id);
+    assert.equal(JSON.stringify(lookup.request().postDataJSON()).includes(inlineBotValue), false);
     await drawer.getByRole("button", { name: "Apply channel settings", exact: true }).click();
     directorySource = page.getByLabel("Slack bot Credential Source for people search", {
       exact: true,
@@ -647,10 +787,17 @@ test("Create an Agent with Slack Credential Sources and approvers", async (t) =>
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
       const createdConfiguration = await configurationCreated;
       assert.equal(createdConfiguration.status(), 201);
-      assert.equal((await agentCreated).status(), 201);
-      const sourceBinding = (await createdConfiguration.json()).data.secretBindings
-        .SLACK_SIGNING_SECRET.source;
-      assert.deepEqual(sourceBinding, signing.source.ref);
+      const createdAgent = await agentCreated;
+      assert.equal(createdAgent.status(), 201);
+      const saved = (await createdConfiguration.json()).data;
+      assert.deepEqual(saved.secretBindings.SLACK_SIGNING_SECRET.source, signing.source.ref);
+      assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN.source, app.source.ref);
+      assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN.source, second.source.ref);
+      assert.equal(JSON.stringify(saved).includes(inlineBotValue), false);
+      assert.equal(
+        JSON.stringify(createdAgent.request().postDataJSON()).includes(inlineBotValue),
+        false,
+      );
     },
   );
 });

@@ -27,6 +27,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  revokeAdministratorGrant,
   settlePageRequests,
   settledView,
   waitForCondition,
@@ -1045,6 +1046,69 @@ test("Source choices carried through Reload draft do not ask before a reload", a
         "Your Credential Source choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
     })
     .waitFor();
+});
+
+test("Reload draft retains an inline Slack Source without discovery access", async (t) => {
+  const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Inline Source reload");
+  const { source: otherApp } = await enroll("Concurrent app token", "xapp");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "channels"));
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  let drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+  let bot = drawer.getByLabel("Slack bot token", { exact: true });
+  await bot.selectOption("new");
+  const field = bot.locator("..");
+  await field.getByLabel("Slack bot token Source name").fill("Inline bot token");
+  await field.getByLabel("Slack bot token value").fill("xoxb-inline-reload-token");
+  const sourcePath = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+  const created = page.waitForResponse(
+    (response) => response.url() === sourcePath && response.request().method() === "POST",
+  );
+  await field.getByRole("button", { name: "Create credential", exact: true }).click();
+  const enrollment = await created;
+  assert.equal(enrollment.status(), 201);
+  const source = record(record(await enrollment.json()).data);
+  const sourceId = text(source.id);
+  await waitForInputValue(bot, sourceId);
+
+  // A different editor moves the saved Configuration. The Source remains an unsaved Channel
+  // choice, so Reload must carry it without requiring discovery read on that known exact ID.
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const current = record((await fixture.request("GET", configurationPath)).data);
+  const changed = await fixture.request("PATCH", configurationPath, {
+    body: {
+      values: current.values,
+      secretBindings: { ...record(current.secretBindings), SLACK_APP_TOKEN: envBinding(otherApp) },
+    },
+  });
+  assert.equal(changed.status, 200);
+  await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  await reload.waitFor();
+  const restoreRead = revokeAdministratorGrant(fixture, ["read", "credential_source"]);
+  try {
+    const discovery = page.waitForResponse(
+      (response) => response.url() === sourcePath && response.request().method() === "GET",
+    );
+    await reload.click();
+    const listed = await discovery;
+    assert.equal(listed.status(), 200);
+    assert.deepEqual(record(await listed.json()).data, []);
+    drawer = page.getByRole("dialog", { name: "Edit Slack", exact: true });
+    bot = drawer.getByLabel("Slack bot token", { exact: true });
+    await waitForInputValue(bot, sourceId);
+    const write = page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + configurationPath &&
+        response.request().method() === "PATCH",
+    );
+    await drawer.getByRole("button", { name: "Save configuration", exact: true }).click();
+    assert.equal((await write).status(), 200);
+    const saved = record((await fixture.request("GET", configurationPath)).data);
+    assert.deepEqual(record(record(saved.secretBindings).SLACK_BOT_TOKEN).source, source.ref);
+  } finally {
+    restoreRead();
+  }
 });
 
 // A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an

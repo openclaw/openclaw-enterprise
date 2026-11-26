@@ -36,9 +36,9 @@ import {
 } from "./scenario-groups/create-agent.mts";
 import {
   allowEveryoneInSlackChannels,
+  addSlackBotSource,
   click,
   create,
-  selectSlackBotSource,
   presetSecretsPath,
   provisionableForm,
 } from "./create-agent-form-data.mts";
@@ -2275,14 +2275,15 @@ const authoredScenarios = {
         selector: "#slack-source-slack-app-token",
         value: "cs_00000000-0000-4000-8000-000000000041",
       },
-      ...selectSlackBotSource,
+      ...addSlackBotSource,
+      click("Create credential"),
       click("Apply channel settings"),
     ],
     description:
-      "Guided create-form state with two existing static Credential Source references staged into the Agent Configuration.",
+      "Guided create-form state with an existing app Source and a newly enrolled bot Source staged into the Agent Configuration.",
     steps: [
       "Start with default Preset and enter the Agent name.",
-      "Open Configure Slack, choose saved app and bot Credential Sources, and allow everyone in the selected channel.",
+      "Open Configure Slack, select a saved app Source, and add a new bot credential. Confirm the bot token stays masked, create it, and allow everyone in the selected channel.",
       "Apply channel settings. The form receives Channel JSON and Source references while credential values stay private.",
       "Create the Agent to persist the Configuration. Deployment admission handles the Agent principal’s Source grant.",
     ],

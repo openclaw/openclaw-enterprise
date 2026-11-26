@@ -66,6 +66,8 @@ export function createCredentialSourcePicker<Criteria>(
 ) {
   const addNewValue = "new";
   let selected = options.initial ?? null;
+  let selectionBeforeCreate: CredentialSourceReference | null = null;
+  let confirmedCreated: CredentialSourceSummary | null = null;
   let creating = Boolean(options.addNew?.initial && !selected);
   let addNewLabel = options.addNew?.label;
   let addNewDisabled = false;
@@ -91,9 +93,20 @@ export function createCredentialSourcePicker<Criteria>(
     retry,
   );
   const eligibleSource = (source: CredentialSourceSummary) => options.eligible(source, criteria);
+  const knownSelection = () =>
+    selected && (selected.id === options.currentId || selected.id === confirmedCreated?.id);
+  const availableSources = () => {
+    const eligible = sources.filter(eligibleSource);
+    const created = confirmedCreated;
+    return created &&
+      eligibleSource(created) &&
+      !eligible.some((source) => source.id === created.id)
+      ? [...eligible, created]
+      : eligible;
+  };
   function acceptedSelection() {
     return selected &&
-      (selected.id === options.currentId ||
+      (knownSelection() ||
         (loaded && sources.some((source) => source.id === selected!.id && eligibleSource(source))))
       ? selected
       : null;
@@ -102,7 +115,7 @@ export function createCredentialSourcePicker<Criteria>(
     hint.textContent = options.listStatus(sources.some(eligibleSource), criteria);
   }
   function renderOptions() {
-    const eligible = sources.filter(eligibleSource);
+    const eligible = availableSources();
     const choices = [
       element(
         "option",
@@ -162,7 +175,7 @@ export function createCredentialSourcePicker<Criteria>(
         return source ? [source] : [];
       });
       loaded = true;
-      if (selected && selected.id !== options.currentId) {
+      if (selected && !knownSelection()) {
         const accepted = acceptedSelection();
         if (!wasLoaded || accepted?.id !== selected.id) {
           selected = accepted;
@@ -184,7 +197,7 @@ export function createCredentialSourcePicker<Criteria>(
       if (status === 400 || status === 403 || status === 404) {
         sources = [];
         loaded = false;
-        if (selected && selected.id !== options.currentId) {
+        if (selected && !knownSelection()) {
           selected = null;
           options.onChange(null);
         }
@@ -202,9 +215,12 @@ export function createCredentialSourcePicker<Criteria>(
   }
   select.addEventListener("change", () => {
     creating = addNewLabel !== undefined && select.value === addNewValue;
+    if (creating) {
+      selectionBeforeCreate = selected;
+    }
     selected = creating
       ? null
-      : (sources.find((source) => source.id === select.value && eligibleSource(source))?.ref ??
+      : (availableSources().find((source) => source.id === select.value)?.ref ??
         (selected?.id === select.value ? selected : null));
     select.required = active && required && !creating;
     options.onChange(selected);
@@ -248,6 +264,24 @@ export function createCredentialSourcePicker<Criteria>(
       selected = null;
       creating = false;
       renderOptions();
+    },
+    cancelCreating() {
+      selected = selectionBeforeCreate;
+      selectionBeforeCreate = null;
+      creating = false;
+      renderOptions();
+      options.onChange(selected);
+    },
+    selectCreated(source: CredentialSourceSummary) {
+      if (source.namespaceId !== context.namespaceId || !eligibleSource(source)) {
+        throw new Error("The created Credential Source is not eligible for this field.");
+      }
+      confirmedCreated = source;
+      selected = source.ref;
+      selectionBeforeCreate = null;
+      creating = false;
+      renderOptions();
+      options.onChange(selected);
     },
     setAddNewLabel(label: string) {
       if (options.addNew && label !== addNewLabel) {

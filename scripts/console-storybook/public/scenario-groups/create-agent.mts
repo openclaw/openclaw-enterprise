@@ -1,6 +1,7 @@
 import type { PluginFieldsOptions } from "../../../../apps/controller/src/console/agents/plugin-fields.mts";
 import {
   allowEveryoneInSlackChannels,
+  addSlackBotSource,
   click,
   create,
   createModelSecret,
@@ -1249,16 +1250,27 @@ export const createAgentProvisioningScenarios = {
   },
   createSlackSourceMenu: {
     group: "Pages/Create Agent",
-    name: "Slack Source menu before Agent exists",
+    name: "Create a Slack credential before the Agent exists",
     path: create,
     actions: [
       ...form,
       { selector: "#agent-name", value: "Slack launch demo" },
       click("Configure Slack"),
       { selector: "#slack-dm-policy", value: "disabled" },
+      ...addSlackBotSource,
     ],
     description:
-      "A new Agent chooses existing ready static Credential Sources for Slack before the Agent resource exists.",
+      "Choose Add new credential to enter a Source name and masked Slack token. Create credential enrolls a static Source in this Namespace; Cancel returns to the Source picker.",
+    gap: "Source enrollment and permissions are simulated; no real token or Slack request is used.",
+  },
+  createSlackSourceRefused: {
+    group: "Pages/Create Agent",
+    name: "Slack credential creation refused",
+    path: create,
+    rules: [{ suffix: "/credential-sources", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [...form, click("Configure Slack"), ...addSlackBotSource, click("Create credential")],
+    description:
+      "The simulated API refuses Source creation. The Slack editor reports the refusal without selecting an unconfirmed Source.",
   },
   createSecretRequiredFields: {
     group: "Pages/Create Agent",

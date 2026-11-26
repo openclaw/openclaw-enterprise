@@ -33,8 +33,7 @@ go to the Agent's gateway; model credentials are configured separately.
   Embedded OpenClaw execution cannot isolate channel credentials from the
   Harness, and Kubernetes Compute rejects embedded versions with external
   channels enabled. The Standard OpenClaw preset must leave channels disabled.
-- Select OCC TokenService and the qualified Kubernetes Compute Driver. In **Credentials**, create
-  ready **Static credential** Sources for the app token and bot token.
+- Select OCC TokenService and the qualified Kubernetes Compute Driver. Select ready static app and bot Sources, or create them in the Slack editor with **Add new credential…**.
 - First deployment generates required connection credentials. It requires Agent
   `deploy`, plus Agent `read` and `operate` when generation is needed.
   Selecting a Source from the picker requires readable Source metadata. Saving token

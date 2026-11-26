@@ -77,7 +77,14 @@ export const PluginsLoading = story("createPluginsLoading");
 export const PluginsRejected = story("createPluginsRejected");
 export const PluginsError = story("createPluginsError");
 export const PluginsDetailsError = story("createPluginsDetailsError");
-export const CreateSlackSourceMenu = story("createSlackSourceMenu");
+export const CreateSlackSourceMenu = {
+  ...story("createSlackSourceMenu"),
+  name: "Create a Slack credential before the Agent exists",
+};
+export const CreateSlackSourceRefused = {
+  ...story("createSlackSourceRefused"),
+  name: "Slack credential creation refused",
+};
 export const CreateSecretRequiredFields = {
   ...story("createSecretRequiredFields"),
   name: "Create Secret required fields",

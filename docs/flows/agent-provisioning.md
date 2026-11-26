@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-11-26
-last_updated_session: authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5
+last_updated_session: authoring-run/b01217a9-df42-4b2b-9110-e266330732d6
 ---
 
 # Agent provisioning flow
@@ -21,7 +21,7 @@ See [worker reconciliation](controller-worker.md) and [Harness topology](harness
 
 ```mermaid
 graph TD
-  Console["<b>Console</b><br/>Select stored credentials"] --> API["<b>Provision API</b><br/>Inline config and references"]
+  Console["<b>Console</b><br/>Select or create credentials"] --> API["<b>Provision API</b><br/>Inline config and references"]
   API -->|Supported request| Queue["<b>Existing work queue</b><br/>Return job handle"]
   API -->|Managed model Source| Gap["<b>Implementation gap</b><br/>Return 409 before queueing"]
   Queue --> Claim["<b>Worker</b><br/>Claim and authorize"]
@@ -59,11 +59,11 @@ OpenClaw uses the same provisioning, retry, and deployment navigation as
 dedicated Codex. Preset restoration and Credentials read native model runtime
 policy through `apps/controller/src/console/agents/harness-auth.mts:configuredHarnessId`.
 
-The Slack editor selects ready static Credential Sources created in Credentials. Apply stages their references in `Configuration.secretBindings` for the dedicated Gateway.
+The Slack editor selects a ready static Credential Source or creates one through `POST /namespaces/:namespaceId/credential-sources`. Creation requires Source `create` in the Namespace. Apply stages the confirmed Source reference in `Configuration.secretBindings`; saving requires exact Source `operate`.
 
-When the Installation offers the selected model preset through TokenService, Console enrolls the credential as a Source and saves an Agent draft bound to that Source. Codex PAT enrollment can also happen before hosted Apps discovery. Retries reuse a confirmed Source. If Console cannot confirm enrollment, it asks the caller to check Credential Sources before retrying. For a model that uses direct authentication on the Installation, preflight precedes the Namespace Secret write and subsequent provisioning.
+For supported model presets, Console enrolls a TokenService Source and binds the Agent draft. Codex PAT enrollment can precede hosted Apps discovery. Retries reuse confirmed Sources; an unknown outcome requires checking Credentials before retrying. Direct model authentication runs preflight before writing a Namespace Secret and provisioning.
 
-Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. After uncertain admission, Retry sends the same ID and inputs without enrolling credentials again.
+Create Agent sends a stable request ID, inline Configuration, credential and model-auth references, Agent options, and repository bindings with an explicit access profile. Retry reuses the ID and inputs after uncertain admission.
 
 Draft creation saves the Configuration and Agent. At deployment, admission checks Source access. OCC-managed transactional Native IAM can create missing exact Agent grants; otherwise, selected IAM must authorize the Agent. Credential-access retry retains the Agent but cannot grant Slack Source access.
 
@@ -229,6 +229,7 @@ remain; for migration `0049` blockers, see [legacy bindings](../reference/settin
 
 ## Changelog
 
+- 2026-11-26 15:03: Trace inline Slack Source enrollment. (authoring-run/b01217a9-df42-4b2b-9110-e266330732d6 - 95d045c383baa1eb4bac2677ff4f5067e361ee45)
 - 2026-11-26 10:14: Replace Slack Namespace Secret selection and Channel validation with Source bindings. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - a4ca743d6a6be2bdeb50bad94cd6718e91a4239d)
 - 2026-11-26 08:44: Trace Slack Channel validation through qualified OCC-owned Gateway Sources and the existing Secret path. (authoring-run/289d45aa-7fc1-43db-bc12-472d3ac827c5 - 5ce532c9533b8f14aabb245f4dd979c2449ec23f)
 - 2026-11-22 10:05: Clarify the current guided managed-credential provisioning gap. (authoring-run/826943be-2c00-410c-8d78-b6eff00ea692 - 591f2311aa59379852d9ad57547ad00ba9b9091d)

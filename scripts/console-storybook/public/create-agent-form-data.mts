@@ -48,8 +48,10 @@ export const modelCredentialSourceTypes: CredentialSourceType[] = [
 
 export const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 
-export const selectSlackBotSource: StoryAction[] = [
-  { selector: "#slack-source-slack-bot-token", value: "cs_00000000-0000-4000-8000-000000000042" },
+export const addSlackBotSource: StoryAction[] = [
+  { selector: "#slack-source-slack-bot-token", value: "new" },
+  { selector: "#slack-source-slack-bot-token-name", value: "New Slack bot token (simulated)" },
+  { selector: "#slack-source-slack-bot-token-value", value: "xoxb-storybook-demo" },
 ];
 
 export const allowEveryoneInSlackChannels: StoryAction[] = [
