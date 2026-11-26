@@ -195,7 +195,7 @@ export function createDeploymentChannelChecks(dependencies: DeploymentChannelDep
       configuration.values,
       async (binding, path, validate) => {
         const source = bindings[binding]?.source;
-        if (source === undefined) {
+        if (source === undefined || source.kind !== "secret") {
           throw new ChannelCredentialError("binding_required", path);
         }
         if (source.namespaceId !== namespaceId) {

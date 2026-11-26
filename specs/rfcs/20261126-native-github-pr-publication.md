@@ -17,7 +17,7 @@ Use stock `gh api` to create a pull request through one explicit GitHub REST all
 
 ## Motivation
 
-[The earlier GitHub App delivery path](https://github.com/openclaw/openclaw-enterprise/pull/7135) let a Dedicated Agent publish a pull request with the bundled `gh` executable. The current GitHub Repo policy for shared TokenService Sources admits Git transport. An Agent can push a branch, but the current policy does not let it publish a pull request with the bundled GitHub CLI. The existing Credential Proxy policy already supports matches by executable, destination, method, and path.
+[The earlier GitHub App delivery path](https://github.com/openclaw/openclaw-enterprise/pull/7135) let a Dedicated Agent publish a pull request with the bundled `gh` executable. The shared TokenService Source currently supplies credentials for Git transport. Repository policy can separately allow credential-free public metadata reads for selected repositories. An Agent can push a branch, but the current policy does not let it publish a pull request with the bundled GitHub CLI. The existing Credential Proxy policy already supports matches by executable, destination, method, and path.
 
 GitHub accepts a head repository in the [create pull request body](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request). An exact target URL cannot prevent a request from naming another private repository that the shared token can read. A Source covering repositories A and B must therefore provide no publication authority to an Agent granted only A, even when the Agent can push to A.
 
@@ -31,7 +31,7 @@ We considered three ways to authorize GitHub API requests:
 
 ## Proposal
 
-At Agent deployment, compose publication with the existing repository policy. For each target eligible for publication, the Repo Driver compiles one HTTPS rule for the inspected `/usr/local/bin/gh` executable and exact `POST api.github.com:443/repos/{owner}/{repo}/pulls` path. Eligibility requires all of the following:
+At Agent deployment, compose publication with the existing repository policy. For each eligible target, the Repo Driver compiles one rule for the inspected `/usr/local/bin/gh` executable and exact `POST api.github.com:443/repos/{owner}/{repo}/pulls` path. Eligibility requires all of the following:
 
 - The Agent has a Write grant for the target in the admitted revision.
 - The selected GitHub App Source has verified `pull_requests:write` permission. The Namespace repository policy must also allow creation on the target after applying its API limits. When `apiLimits` is absent, that policy uses the registered permission.

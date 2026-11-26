@@ -154,7 +154,7 @@ RUN echo 'a2f5fcb96f56a58c5e39d44d3597640d3d0780746ab3ddcb66762630851806d7  /tmp
 # Keep the reviewed Codex 0.164.0 (seccomp profile and artifact rules) until OCE moves to the
 # Codex the pinned OpenClaw bundles. Remove this pin with that upgrade.
 COPY deploy/runtime/stock-codex-0.164.0-dependency-pin.patch /tmp/stock-codex-0.164.0-dependency-pin.patch
-RUN echo 'cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
+RUN echo 'c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602  /tmp/stock-codex-0.164.0-dependency-pin.patch' | sha256sum --check --strict \
     && git apply /tmp/stock-codex-0.164.0-dependency-pin.patch
 COPY scripts/build-runtime-assets.ts /tmp/build-runtime-assets.ts
 RUN node /tmp/build-runtime-assets.ts inputs /source /inputs \
@@ -225,12 +225,12 @@ RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo '0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
 COPY deploy/runtime/openclaw-planned-completion.patch /tmp/openclaw-planned-completion.patch
-RUN echo '402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
+RUN echo '600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe  /tmp/openclaw-planned-completion.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-planned-completion.patch
 
 # Link a single chat-completions input to its server-assigned completion ID.
@@ -480,6 +480,8 @@ COPY deploy/runtime/managed-mcp-policy/ /usr/local/lib/oce/platform-plugins/oce-
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --chmod=0444 deploy/runtime/openshell-bootstrap.cjs /opt/oce/runtime/openshell-bootstrap.cjs
+COPY --chmod=0444 deploy/runtime/openshell-worker.gitconfig /usr/local/lib/oce/openshell-worker.gitconfig
+COPY --chmod=0555 deploy/runtime/openshell-git-credential.cjs /usr/local/lib/oce/openshell-git-credential.cjs
 # OpenShell selects the workload UID. Its private child directory stays on the workload filesystem.
 RUN install -d -m 1777 -o root -g root /opt/oce/managed
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
@@ -536,7 +538,10 @@ RUN node -e 'const fs = require("node:fs"); const provenance = JSON.parse(fs.rea
 LABEL org.opencontainers.image.revision=${OCC_BUILD_REVISION}
 RUN node -e 'const fs = require("node:fs"); const revision = process.argv[1]; if (revision && !/^[a-f0-9]{40}$/.test(revision)) throw new Error("Invalid OCE build revision"); fs.writeFileSync("/opt/oce/runtime/build.json", JSON.stringify({commit: revision || null}));' "$OCC_BUILD_REVISION"
 
+USER node
+RUN cd /usr/local/lib/oce && test ! -w . \
+    && test -r openshell-worker.gitconfig && test ! -w openshell-worker.gitconfig \
+    && test -x openshell-git-credential.cjs && test ! -w openshell-git-credential.cjs
+
 # Keep this last: a client change then rebuilds only this layer (see repository-client-build).
 COPY --from=repository-client-build /build/.build/runtime-client/ /
-
-USER node

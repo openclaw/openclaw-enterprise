@@ -680,6 +680,13 @@
       "when": 1787000000097,
       "tag": "0097_oauth_endpoint_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1787000000098,
+      "tag": "0098_shared_git_source_repository_grants",
+      "breakpoints": true
     }
   ]
 }

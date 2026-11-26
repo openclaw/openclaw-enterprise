@@ -11,7 +11,7 @@ import { asRecord } from "@openclaw-enterprise/utils";
 // deploy/runtime/openclaw-source.json changes, compare those files and src/infra/env.ts and
 // src/infra/host-env-security.ts between the two commits, update this module, then the commit
 // below; a conformance test fails until then.
-export const OPENCLAW_CONFIG_ENVIRONMENT_COMMIT = "cf0b3bb0f8efd6e8f230f9e1879b9fb871db96ef";
+export const OPENCLAW_CONFIG_ENVIRONMENT_COMMIT = "9a838501b1e4471401fef588a1b73c61a2965056";
 
 // `normalizeEnvVarKey(key, { portable: true })` in src/infra/host-env-security.ts.
 const PORTABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -147,6 +147,8 @@ const BLOCKED_EVERYWHERE_KEYS: readonly string[] = [
 ];
 
 const BLOCKED_OVERRIDE_ONLY_KEYS: readonly string[] = [
+  "OPENCLAW_NODE_WORKER_EXECUTION",
+  "OPENCLAW_WORKER_TOOL_DATA",
   "HOME",
   "GRADLE_USER_HOME",
   "ZDOTDIR",

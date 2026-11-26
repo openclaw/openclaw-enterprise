@@ -1404,6 +1404,37 @@ test("Returning from Plugins preserves the reading position of a Configuration s
     await editor.inputValue(),
     draft.slice(0, start) + "X" + draft.slice(start + marker.length),
   );
+
+  // Select at the end, then wheel away without changing the selection.
+  const edited = await editor.inputValue();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Shift+ArrowLeft");
+  await editor.hover();
+  assert.ok((await position()).scroll > 0);
+  await page.mouse.wheel(0, -2000);
+  await page.waitForFunction(
+    () => document.querySelector<HTMLTextAreaElement>("#configuration-json")?.scrollTop === 0,
+  );
+  await page.keyboard.press("Shift+Tab");
+  await configuration.hover();
+  await page.mouse.wheel(0, -20000);
+  await page.waitForFunction(() => window.scrollY === 0);
+  await nextFrames(page);
+  assert.ok(!(await hasFocus(editor)));
+  assert.equal((await position()).scroll, 0);
+  assert.ok(await editor.evaluate((node) => node.getBoundingClientRect().top >= innerHeight));
+
+  await page.keyboard.press("Tab");
+  await nextFrames(page);
+  assert.ok(await hasFocus(editor));
+  assert.equal(await editor.inputValue(), edited);
+  assert.deepEqual((await position()).selection, [edited.length - 1, edited.length, "backward"]);
+  assert.ok(
+    await inViewport(editor),
+    "Tab should reveal the focused Configuration JSON editor before typing",
+  );
+  await page.keyboard.type("Y");
+  assert.equal(await editor.inputValue(), edited.slice(0, -1) + "Y");
 });
 
 for (const [focus, refocus] of [

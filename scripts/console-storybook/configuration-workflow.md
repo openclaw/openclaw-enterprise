@@ -67,6 +67,19 @@ and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and conf
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
 
+## Return to an offscreen Configuration selection
+
+Open **Pages → Agent detail → Edit Configuration** in its own preview tab.
+Replace **Configuration JSON** with a long unsaved JSON draft whose last
+setting, just above the closing brace, is `"review": "Review A"`. Press
+Ctrl+End, Up, End, and Left, then Shift+Left to select just the final A.
+
+Wheel to the top inside **Configuration JSON**. Press Shift+Tab, then wheel
+the page up until the editor is below the window. Press Tab. The editor and
+its focus outline should come into view, while the selected line may still
+be below the editor's visible text. Type B and check that the draft now says
+`"review": "Review B"` with the rest unchanged. Leave the draft unsaved.
+
 ## Correct an offscreen Configuration syntax error
 
 In **Pages → Agent detail → Invalid Configuration JSON** (`invalidConfiguration`),
