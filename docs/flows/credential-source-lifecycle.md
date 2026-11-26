@@ -135,7 +135,11 @@ OCC checks permission on the exact Source and dispatches static credential repla
 
 `apps/controller/src/composition/token-service.ts:installTokenServiceDriver`, `apps/controller/src/drivers/token-service/occ.ts:updateSource`, `apps/controller/src/drivers/credential-proxy/openshell.ts:notifyCredentialUpdated`
 
-API composition binds Proxy to trusted Namespace placement for OCC custody. After committing a replacement or renewal, TokenService sends the Source, version, and instance-bound resolver. If delivery Providers exist, Proxy resolves the credential once. When a Provider holds a different Source version, Proxy conditionally updates it and checks the update receipts for activated Sandboxes. If the committed version is already present, Proxy checks current serving readiness without rewriting the Provider or restarting policy activation.
+For OCC custody, Proxy uses trusted Namespace placement. TokenService sends the
+Source, committed version, and instance-bound resolver. Proxy resolves the
+credential once for existing Providers, updates copies as needed, and checks
+active Sandbox receipts. A versioned retry checks serving readiness for matching copies
+without rewriting them.
 
 With OpenShell custody, TokenService updates the authoritative Workspace Provider. Proxy checks its resource version after the update. OpenShell propagates the change to attached Sandboxes.
 

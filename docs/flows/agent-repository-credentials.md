@@ -115,15 +115,14 @@ graph TD
 
 `listRepositoryOptions` checks Namespace Agent `create` or exact Agent `update`
 and reads the catalog if Compute supports it. Installation admins see limits.
-Missing selection adds `meta.notConfigured`. Discovery failure returns
+`meta.notConfigured` signals no selection. Discovery failure returns
 `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
-The catalog accepts 1,000 repositories plus the Installation option. Overflow
-returns `503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
-`repositorySettings` resolves explicit and inherited selections. PostgreSQL
-checks bindings. Outages allow empty drafts.
-
-Read both resources after an uncertain save.
+Catalog overflow above 1,000 repositories plus Installation returns
+`503 DEPENDENCY_UNAVAILABLE`. The editor allows 16 selections.
+`repositorySettings` resolves explicit and inherited grants. PostgreSQL checks
+bindings. Outages allow empty drafts. After an uncertain save, read the Agent
+and Configuration.
 
 Requests carry Repository references and optional profiles. TokenService Git saves
 a Client and access per Repository. Legacy GitHub defaults to `git-write`.
@@ -148,14 +147,14 @@ identity and grants. Legacy sessions include the configured deadline.
 `validateRepositoryBrokerNetworkProxy` rejects Codex settings that block the broker.
 
 `apps/controller/src/composition/openshell-credential-admission.ts:admitOpenShellRepositoryCredentials`
-adds stock `gh` PR access for eligible Write targets when Agent grants cover the
-Source's repositories. OCC freezes the Source and matching network and
-injection rules. Worker `authorizedCredentialDeployment` rechecks authority.
-Proxy `narrowOpenShellRepositoryRoutes` validates the match and binds the Git
-Provider. Renewal preserves rules. Withdrawal removes Git and PR access.
+adds `gh` PR access for [eligible Write targets](../reference/repository-credentials/access-levels.md#pull-request-creation)
+when the Agent can read every Source repository. OCC freezes the Source,
+network rules, and injection rules. The Worker rechecks authority. Proxy
+verifies the rules and binds the Git Provider. Renewal preserves Git and PR
+access until withdrawal.
 
-After approval lookup, ownership changes return 503 before invocation. Unbound
-deploys recheck their Driver. Denial or changed bindings or scope block creation.
+Ownership changes after approval lookup return 503. Unbound deploys recheck
+their Driver. Denial or changed bindings or scope block admission.
 
 The installed Sandbox and Credential Proxy serve finite `repository.preparedGitHub`
 sessions without a native sender, control socket, broker CA or files.
@@ -250,16 +249,12 @@ Codex checks the named profile at thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-For a Dedicated Harness with a TokenService Git Source, `projectGatewayRevision`
-disables the generic `github` skill. When the frozen repository credential policy
-admits PR creation, Compute exposes `github-repository-rest` from
-`/usr/local/lib/oce/skills` in the Gateway catalog and replaces explicit `github`
-selections. Both Harnesses use that catalog. Codex reads the skill with
-`skills_read`. The skill uses stock `gh api` with the binding's placeholder.
-Compute also includes the skill in the Gateway catalog for Dedicated Codex
-revisions with a legacy Repository grant and maps their explicit `github`
-selections to it. These sessions use their designated client and existing route
-limits.
+`projectGatewayRevision` disables bundled `github` for Dedicated TokenService Git.
+With PR authority, Compute loads `github-repository-rest` from
+`/usr/local/lib/oce/skills` and remaps `github` selections. Both Harnesses use the
+catalog. Codex calls `skills_read`. The binding supplies the placeholder.
+Dedicated Codex with a legacy Repository grant uses this skill with existing
+client and route limits.
 
 Configuration routes canonical HTTPS hosts to the Gateway. The helper checks
 host, path, generation and deadline before returning a bearer.
