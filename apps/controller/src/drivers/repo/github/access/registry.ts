@@ -6,6 +6,7 @@ import {
 } from "./repository-grant.ts";
 import {
   limitRepositoryApi,
+  restrictRepositoryPullRequestCreation,
   type RepositoryGitDeliveryResolver,
   type RepositoryGitRestAuthority,
 } from "../../access/delivery.ts";
@@ -733,12 +734,6 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
-      // The credential covers every bound repository, and a pull request can name any of them
-      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
-      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
-      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
-        ? scope.scopedRest
-        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
@@ -747,7 +742,14 @@ export function createGitHubRepositoryDeliveryResolver(
           repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
-          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
+          ...(nativeGit &&
+            scope.scopedRest.length > 0 && {
+              scopedRest: restrictRepositoryPullRequestCreation(
+                scope.scopedRest,
+                repositories,
+                savedPolicy.grants,
+              ),
+            }),
         }),
       });
     }
