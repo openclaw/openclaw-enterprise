@@ -241,7 +241,8 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
 
 test("Copy Agent ID gives manual copy instructions when clipboard writes are unavailable", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header clipboard");
-  const agent = await fixture.createAgent(namespace.id, "Copy test", nativeValues("copy"));
+  const agentName = "Clipboard";
+  const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("copy"));
   const { page } = await newPage(t, fixture, {
     browser,
     context: { viewport: { width: 390, height: 844 } },
@@ -250,6 +251,7 @@ test("Copy Agent ID gives manual copy instructions when clipboard writes are una
   await page.getByRole("button", { name: "Deploy new version" }).waitFor();
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   const header = page.locator(".content .page-header");
+  const heading = header.getByRole("heading", { name: agentName, level: 1, exact: true });
   const copy = header.getByRole("button", { name: "Copy Agent ID" });
   const status = header.locator(".page-meta-id").getByRole("status", { includeHidden: true });
   const guidance = "Copy selection";
@@ -258,11 +260,9 @@ test("Copy Agent ID gives manual copy instructions when clipboard writes are una
     await page.evaluate(() => globalThis.document.getSelection()?.removeAllRanges());
     await copy.click();
   };
+  const selectedText = () => page.evaluate(() => globalThis.document.getSelection()?.toString());
   const assertManualCopy = async () => {
-    assert.equal(
-      await page.evaluate(() => globalThis.document.getSelection()?.toString()),
-      agent.id,
-    );
+    assert.equal(await selectedText(), agent.id);
     assert.equal(await status.textContent(), guidance);
     assert.ok(await status.isVisible(), "manual copy guidance is visible in the header");
   };
@@ -304,21 +304,59 @@ test("Copy Agent ID gives manual copy instructions when clipboard writes are una
   assert.equal(copyWidth(fallback), copyWidth(before));
 
   // An older write can finish after the next click. It must leave the latest feedback alone.
-  const olderWrite = await page.evaluateHandle(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    Object.defineProperty(globalThis.navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: () => promise },
+  const deferWrite = () =>
+    page.evaluateHandle(() => {
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      let written: string | undefined;
+      Object.defineProperty(globalThis.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText(text: string) {
+            written = text;
+            return promise;
+          },
+        },
+      });
+      return {
+        resolve,
+        reject: () => reject(new DOMException("", "NotAllowedError")),
+        written: () => written,
+      };
     });
-    return resolve;
-  });
+  const olderWrite = await deferWrite();
   await clickCopy();
   assert.equal(await status.textContent(), "", "the pending copy clears previous feedback");
   await useClipboard("deny");
   await clickCopy();
   await assertManualCopy();
-  await olderWrite.evaluate((resolve) => resolve());
+  await olderWrite.evaluate((write) => write.resolve());
   await olderWrite.dispose();
+  await assertManualCopy();
+
+  const startKeyboardCopy = async () => {
+    const write = await deferWrite();
+    await copy.press("Enter");
+    assert.equal(await write.evaluate((write) => write.written()), agent.id);
+    assert.equal(await status.textContent(), "", "the pending copy clears previous feedback");
+    return write;
+  };
+
+  // A late denial must leave text selected after the copy starts.
+  const delayed = await startKeyboardCopy();
+  await heading.dblclick();
+  assert.equal(await selectedText(), agentName);
+  await delayed.evaluate((write) => write.reject());
+  await delayed.dispose();
+  await status.filter({ hasText: /\S/ }).waitFor();
+  assert.equal(await selectedText(), agentName, "denial preserves the newer selection");
+  assert.equal(await status.textContent(), "Copy the ID manually");
+
+  // The ID can still be selected when the selection present at activation hasn't changed.
+  const unchanged = await startKeyboardCopy();
+  assert.equal(await selectedText(), agentName);
+  await unchanged.evaluate((write) => write.reject());
+  await unchanged.dispose();
+  await status.filter({ hasText: guidance }).waitFor();
   await assertManualCopy();
 });
 

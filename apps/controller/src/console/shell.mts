@@ -475,8 +475,7 @@ export function createShell({
     return svg;
   }
 
-  // The Agent's ID under its name, with a copy button. Copying falls back to selecting the ID
-  // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
+  // If the clipboard is unavailable, select the ID when the reader is still at the copy action.
   function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
     const feedback = element("span", { className: "page-meta-copied" });
@@ -490,6 +489,10 @@ export function createShell({
         clearTimeout(clearFeedback);
         feedback.textContent = "";
 
+        // The Selection is live; remember its positions before waiting for the clipboard.
+        const focus = document.activeElement;
+        const { anchorNode, anchorOffset, focusNode, focusOffset, rangeCount } =
+          document.getSelection() ?? {};
         let copied = false;
         try {
           if (typeof navigator.clipboard?.writeText === "function") {
@@ -507,10 +510,37 @@ export function createShell({
           clearFeedback = window.setTimeout(() => {
             feedback.textContent = "";
           }, 2000);
-        } else {
-          document.getSelection()?.selectAllChildren(id);
-          feedback.textContent = "Copy selection";
+          return;
         }
+
+        const selection = document.getSelection();
+        // Text controls can keep a selection outside the document Selection, including on click.
+        const focusIsEditable =
+          focus instanceof HTMLInputElement ||
+          focus instanceof HTMLTextAreaElement ||
+          (focus instanceof HTMLElement && focus.isContentEditable);
+        if (
+          selection &&
+          document.activeElement === focus &&
+          !focusIsEditable &&
+          selection.rangeCount <= 1 &&
+          selection.rangeCount === rangeCount &&
+          selection.anchorNode === anchorNode &&
+          selection.anchorOffset === anchorOffset &&
+          selection.focusNode === focusNode &&
+          selection.focusOffset === focusOffset
+        ) {
+          selection.selectAllChildren(id);
+          if (
+            id.contains(selection.anchorNode) &&
+            id.contains(selection.focusNode) &&
+            selection.toString() === agentId
+          ) {
+            feedback.textContent = "Copy selection";
+            return;
+          }
+        }
+        feedback.textContent = "Copy the ID manually";
       },
       {
         tone: "ghost",
