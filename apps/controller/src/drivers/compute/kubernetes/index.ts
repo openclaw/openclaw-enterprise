@@ -382,9 +382,12 @@ import {
   withoutNetworkProfile,
 } from "./resources/network.ts";
 import {
+  includeRepositoryRestSkill,
   REPOSITORY_CLIENT_BIN,
   repositoryNativeConfiguration,
+  repositoryRestSkillConfiguration,
 } from "./repository-native-configuration.ts";
+import { githubPullRequestCreationRequest } from "../../repo/github/access/registry.ts";
 import { harnessWorkspacePreparationScript } from "./harness/workspace-preparation.ts";
 import {
   PLUGIN_RUNTIME_STATUS_PATH,
@@ -14373,10 +14376,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryRole: "gateway" | "agent" | undefined,
   ): { nativeConfiguration: OpenClawConfigurationDocument; admittedRevision: AgentRevision } {
-    const nativeConfiguration =
+    let nativeConfiguration =
       repositoryRole !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
+    if (isNativeStagedRepositoryRevision(revision)) {
+      const injection = revision.credentialDeployment?.injectionPolicies.find(
+        ({ bindingRef }) => bindingRef === "repository",
+      );
+      const grants = revision.sandboxPolicy?.repositoryNetworkPolicy?.grants ?? [];
+      const publicationAllowed = grants.some(({ repository }) => {
+        const publication = githubPullRequestCreationRequest(repository);
+        return injection?.allowedRequests.some((request) =>
+          isDeepStrictEqual(request, publication),
+        );
+      });
+      nativeConfiguration = repositoryRestSkillConfiguration(
+        nativeConfiguration,
+        publicationAllowed,
+      );
+    } else if (
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.repositoryCredentials !== undefined &&
+      revision.repositoryCredentials.authorization === undefined
+    ) {
+      nativeConfiguration = includeRepositoryRestSkill(nativeConfiguration);
+    }
     const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,
       this.gatewaySandboxConfiguration(
@@ -18508,6 +18534,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         }
         variables.push(
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
+          { name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" },
           { name: "OPENCLAW_GATEWAY_PORT", value: String(this.options.network.gatewayPort) },
         );
         if (enabledChannels !== undefined) {
@@ -18551,6 +18578,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         env: [
           { name: "HOME", value: "/home/node" },
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
+          { name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" },
           { name: "OPENCLAW_WORKSPACE_SETUP_PATH", value: "/run/workspace-setup/setup.json" },
           { name: "OPENCLAW_WORKSPACE_DIR", value: workspace },
           { name: "OPENCLAW_EXECUTABLE", value: "/app/openclaw.mjs" },

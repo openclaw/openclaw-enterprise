@@ -393,7 +393,7 @@ export async function updateOccTokenServiceProviderCopy(input: {
 }): Promise<
   | {
       readonly provider: OpenShellPushedProvider;
-      readonly update: OpenShellProviderResponse;
+      readonly update?: OpenShellProviderResponse;
     }
   | undefined
 > {
@@ -429,9 +429,6 @@ export async function updateOccTokenServiceProviderCopy(input: {
   }
   const profileVersion = checkProfile(stored, profileForSource(sourceRef, environment, name));
   const current = checkProvider(existing, sourceRef, name, workspace, owner.id, profileVersion);
-  if (!client.updateProviderCredentialsConditionally) {
-    refuse();
-  }
   const resolved = await input.resolveCredential();
   signal.throwIfAborted();
   if (
@@ -441,8 +438,14 @@ export async function updateOccTokenServiceProviderCopy(input: {
   ) {
     refuse();
   }
-  // A prior update may have persisted this Source version before its targets were ready.
-  // Reissuing the conditional delivery obtains fresh receipts for their serving state.
+  // A versioned retry can observe the persisted copy without invalidating its serving generation.
+  // A versionless notification is an explicit delivery repair and still writes the credential.
+  if (input.version === current.sourceVersion) {
+    return { provider: current };
+  }
+  if (!client.updateProviderCredentialsConditionally) {
+    refuse();
+  }
   const updated = await client.updateProviderCredentialsConditionally(
     {
       workspace,

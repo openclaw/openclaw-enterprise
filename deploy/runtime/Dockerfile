@@ -212,11 +212,6 @@ RUN --mount=type=secret,id=build-ca,required=false \
       --config.supportedArchitectures.libc=glibc; \
     rm -rf /tmp/pnpm-store
 COPY --from=openclaw-source /source/ ./
-# The runtime needs supervised recovery across private PID namespaces. Native
-# lock reinspection and custody still guard every destructive operation.
-COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
@@ -225,7 +220,7 @@ RUN echo 'cfd027b90c833f0a0266c94e01dc9387143a265c711868d168fb01864468bb38  /tmp
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.
 COPY deploy/runtime/openclaw-node-setup-renewal.patch /tmp/openclaw-node-setup-renewal.patch
-RUN echo '0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
+RUN echo 'f74c60e4fb562e5528fad7fed32a77d26639dbfed4ab97f5d115bc0a822764b1  /tmp/openclaw-node-setup-renewal.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-setup-renewal.patch
 
 # Remove after the pinned core includes upstream #196972 and its final-write handoff prerequisite.
@@ -235,7 +230,7 @@ RUN echo '600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe  /tmp
 
 # Link a single chat-completions input to its server-assigned completion ID.
 COPY deploy/runtime/openclaw-http-chat-input.patch /tmp/openclaw-http-chat-input.patch
-RUN echo 'bad12711e8452c1d6045530d99ed76b8e86e408bdf85d3b6f1771c5a841320f8  /tmp/openclaw-http-chat-input.patch' | sha256sum --check --strict \
+RUN echo '5a90575bfe5c44b76dab5c68d2ab21f219c2e66dc2b3d3d7660da2f70b1b2087  /tmp/openclaw-http-chat-input.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-http-chat-input.patch
 
 # Broad source verification is an explicit target, separate from image assembly.
@@ -527,7 +522,7 @@ RUN --mount=type=bind,source=scripts/lib/runtime-download-clients.ts,target=/tmp
 
 RUN --mount=type=bind,source=deploy/runtime/repository-credentials/github-repository-rest/SKILL.md,target=/tmp/github-repository-rest.md \
     /usr/bin/git config --system --add include.path /run/oce/repository-credentials/gitconfig \
-    && skill=/etc/codex/skills/github-repository-rest \
+    && skill=/usr/local/lib/oce/skills/github-repository-rest \
     && install -D -m 0444 /tmp/github-repository-rest.md "$skill/SKILL.md" \
     && touch -d @0 "$skill/SKILL.md" "$skill"
 
