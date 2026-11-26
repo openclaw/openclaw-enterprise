@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp } from "node:fs/promises";
+import { cp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
@@ -84,17 +84,22 @@ const createConsoleAppFixture = (
 // policy and end no session. Every other test keeps an app of its own.
 const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
-test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
-  const directory = await temporaryDirectory(t, "occ-browser-theme-");
-  await cp(new URL("../../deploy/examples/console-theme/", import.meta.url), directory, {
-    recursive: true,
-  });
+async function createThemeFixture(t: TestContext, directory: string) {
   const fixture = await createConsoleAppFixture(t, {
     consoleTheme: await loadConsoleTheme(directory),
   });
   await fixture.bootstrap();
   const namespace = namedResource(await fixture.createNamespace("Theme workflow", { ready: true }));
-  await fixture.createAgent(namespace.id, "Theme assistant");
+  const agent = namedResource(await fixture.createAgent(namespace.id, "Theme assistant"));
+  return { fixture, namespace, agent };
+}
+
+test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-browser-theme-");
+  await cp(new URL("../../deploy/examples/console-theme/", import.meta.url), directory, {
+    recursive: true,
+  });
+  const { fixture, namespace } = await createThemeFixture(t, directory);
   const { page } = await newPage(t, fixture);
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
@@ -150,6 +155,9 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1280, height: 900 });
+
+  await checkSelectedNavigation(page, "desktop");
+
   await page.locator(".sidebar .account-toggle").click();
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).first().click();
   await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
@@ -160,6 +168,113 @@ const routeHoldTimeoutMs = 30_000;
 const mobile = {
   context: { hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } },
 };
+
+// Match the accent to the surface so an accent-colored label or underline disappears.
+for (const { name, accent, text, canvas } of [
+  { name: "pale", accent: "#F7F5F0", text: "#17212B", canvas: "rgb(247, 245, 240)" },
+  { name: "dark", accent: "#101820", text: "#F1F5F9", canvas: "rgb(16, 24, 32)" },
+]) {
+  test(`mounted ${name} accent keeps keyboard selection readable at phone width`, async (t) => {
+    const directory = await temporaryDirectory(t, "occ-browser-theme-");
+    const colors = {
+      bg: accent,
+      surface: accent,
+      surface2: accent,
+      surfaceHover: accent,
+      accent,
+      onAccent: text,
+      text,
+      focus: text,
+    };
+    await writeFile(join(directory, "theme.json"), JSON.stringify({ schemaVersion: 1, colors }));
+    const { fixture, namespace, agent } = await createThemeFixture(t, directory);
+    const { page } = await newPage(t, fixture, mobile);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`,
+    );
+    assert.deepEqual(
+      await page.locator("html").evaluate((node) => {
+        const style = globalThis.getComputedStyle(node);
+        return {
+          accent: style.getPropertyValue("--color-accent").trim(),
+          canvas: style.backgroundColor,
+        };
+      }),
+      { accent, canvas },
+    );
+    await checkSelectedNavigation(page, "phone");
+  });
+}
+
+async function checkSelectedNavigation(page: Page, layout: "desktop" | "phone") {
+  const textColor = await page
+    .locator("html")
+    .evaluate((node) => globalThis.getComputedStyle(node).color);
+  const readTab = (tab: Locator) =>
+    tab.evaluate((node) => {
+      const { color, borderBottomColor, borderBottomWidth, borderBottomStyle } =
+        globalThis.getComputedStyle(node);
+      const indicator =
+        borderBottomWidth === "0px"
+          ? null
+          : { color: borderBottomColor, width: borderBottomWidth, style: borderBottomStyle };
+      return { color, indicator };
+    });
+  const expected = [
+    { color: textColor, indicator: { color: textColor, width: "2px", style: "solid" } },
+    { color: textColor, indicator: null },
+  ];
+  const select = async (from: Locator, to: Locator, key: "ArrowRight" | "Tab") => {
+    await page.locator(settledView).waitFor();
+    assert.deepEqual(await readTab(from), expected[0]);
+    if (layout === "desktop") {
+      await to.click();
+      return;
+    }
+    await from.press(key);
+    assert.deepEqual(
+      await to.evaluate((node) => {
+        const { outlineWidth, outlineColor } = globalThis.getComputedStyle(node);
+        return {
+          focused: node.matches(":focus-visible"),
+          outlined: Number.parseFloat(outlineWidth) > 0,
+          outlineColor,
+        };
+      }),
+      { focused: true, outlined: true, outlineColor: textColor },
+    );
+    await page.keyboard.press("Enter");
+  };
+  const tabs = page.getByRole("tablist", { name: "Agent configuration views" });
+  const configuration = (selected: boolean) =>
+    tabs.getByRole("tab", { name: "Configuration", exact: true, selected });
+  const plugins = (selected: boolean) =>
+    tabs.getByRole("tab", { name: "Plugins", exact: true, selected });
+  await select(configuration(true), plugins(false), "ArrowRight");
+  const agentTabs = await Promise.all([readTab(plugins(true)), readTab(configuration(false))]);
+  assert.deepEqual(agentTabs, expected);
+
+  if (layout === "phone") {
+    await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  }
+  await page
+    .locator(".sidebar nav")
+    .getByRole("link", { name: "Credentials", exact: true })
+    .click();
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  const current = page.locator('[aria-current="page"]');
+  const inactive = page.locator(':not([aria-current="page"])');
+  const credentials = sections.getByRole("link", { name: "Credentials", exact: true });
+  const templates = sections.getByRole("link", { name: "Connection templates", exact: true });
+  await select(credentials.and(current), templates.and(inactive), "Tab");
+  const links = await Promise.all([
+    readTab(templates.and(current)),
+    readTab(credentials.and(inactive)),
+  ]);
+  assert.deepEqual(links, expected);
+}
 
 test("a collection body disconnected after headers shows interruption and Retry reloads real data", async (t) => {
   let interruptNextRead = false;
