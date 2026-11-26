@@ -13,6 +13,7 @@ import {
   createConnectionAdministration,
   type OAuthIssuerOperations,
 } from "./connection-administration.ts";
+import { createCredentialClientAdministration } from "./credential-client-administration.ts";
 import { CONNECTION_OPERATION_TIMEOUT_MS, createOAuthConsent } from "./oauth-consent.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import {
@@ -247,7 +248,6 @@ interface ControllerDispatch
     Pick<NamespaceOperations, "getNamespace">,
     Pick<ReturnType<typeof createAgentQueries>, "getRevision">,
     Pick<ReturnType<typeof createSandboxPolicyOperations>, "getAgentSandboxPolicy">,
-    Pick<ReturnType<typeof createConnectionAdministration>, "withOAuthClientSecret">,
     Pick<CredentialSourceOperations, "createCredentialSource">,
     Pick<ManagedCredentialSources, "deleteCredentialSource">,
     Pick<ReturnType<typeof createConfigurationOperations>, "updateConfiguration"> {
@@ -507,7 +507,6 @@ function createCredentialServices({
     | "transact"
     | "createCredentialSource"
     | "deleteCredentialSource"
-    | "withOAuthClientSecret"
     | "refreshTokenServiceSource"
   >;
   preparedTokens: TokenService | undefined;
@@ -625,10 +624,17 @@ function createCredentialServices({
     installationId,
     transactions,
     authority,
+    tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
+    oauthIssuer,
+    timestamp: resourceValues.timestamp,
+  });
+  const credentialClientAdministration = createCredentialClientAdministration({
+    installationId,
+    transactions,
+    authority,
     tokenServiceDriver: managedCredentialSources.ownedTokenServiceDriver,
     tokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
     tokenServiceTimeoutMs: CONNECTION_OPERATION_TIMEOUT_MS,
-    oauthIssuer,
     now: resourceValues.now,
     timestamp: resourceValues.timestamp,
   });
@@ -639,7 +645,7 @@ function createCredentialServices({
     iamPolicyDriver: iamPolicy.iamPolicyDriver,
     selectedTokenServiceDriver: () => managedCredentialSources.ownedTokenServiceDriver(),
     currentTokenServiceInstanceId: managedCredentialSources.currentTokenServiceInstanceId,
-    withOAuthClientSecret: (client, use) => publicController.withOAuthClientSecret(client, use),
+    withOAuthClientSecret: credentialClientAdministration.withOAuthClientSecret,
     oauthIssuer,
     timestamp: resourceValues.timestamp,
   });
@@ -676,6 +682,7 @@ function createCredentialServices({
   return {
     agentCredentialAccess,
     connectionAdministration,
+    credentialClientAdministration,
     createProxyAuthority,
     credentialSourceDrivers,
     credentialSourceOperations,
