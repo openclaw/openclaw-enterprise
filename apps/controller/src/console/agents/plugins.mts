@@ -126,6 +126,7 @@ interface PluginEditorOptions {
   onSaved(savedAgent: Readonly<Record<string, unknown>>): void;
   onReload(): void;
   savedNotice?: string;
+  cancelAnnouncement(status: Element): void;
   /** Why the permission answer refuses a save (Agent update, or its source grants). */
   saveDenied?: Promise<string | undefined> | null;
   /** Updates only the explanation while the save remains refused. */
@@ -207,6 +208,7 @@ export function renderAgentPlugins(
     onSaved,
     onReload,
     savedNotice = "",
+    cancelAnnouncement,
     saveDenied = null,
     followSaveReason,
   }: PluginEditorOptions,
@@ -485,9 +487,7 @@ export function renderAgentPlugins(
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
-      feedback.textContent = "";
-      saveError.textContent = "";
-      updateState();
+      onEdit();
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     allowInherit: true,
@@ -597,11 +597,16 @@ export function renderAgentPlugins(
     setUnavailable(discard, discardUnavailable, feedback);
   }
 
-  input.addEventListener("input", () => {
-    input.setCustomValidity("");
+  function onEdit() {
+    cancelAnnouncement(feedback);
     feedback.textContent = "";
     saveError.textContent = "";
     updateState();
+  }
+
+  input.addEventListener("input", () => {
+    input.setCustomValidity("");
+    onEdit();
   });
 
   async function savePlugins() {
