@@ -29,7 +29,10 @@ This removes a duplicate credential management model. It does not remove the Sec
 | Credential Proxy  | Admitted data-plane credential delivery and any copies it owns, such as an OpenShell Provider created for an OCC-owned Source. An OpenShell-owned Source can instead use its authoritative Provider directly. |
 | Platform operator | Bootstrap and infrastructure credentials such as database URLs, OCC signing keys, and TLS keys. Kubernetes stores these separately; Deployments refer to them across Pod restarts.                            |
 
-A **public Namespace Secret** is a top-level OCC resource with its own ID, IAM permissions, and CRUD API. Authorized users can list or read its metadata, but not its plaintext value. A **private Secret** is storage owned by another object: OCC TokenService stores Source and Client values through `SecretDriver.privateSecrets`, without creating a separate Namespace Secret resource or list entry. Both can be stored as Kubernetes Secrets.
+- **Public Namespace Secret:** A top-level OCC resource with its own ID, IAM, and CRUD API. Reads return metadata only.
+- **Private Secret:** Storage that OCC TokenService uses for Sources and Clients through `SecretDriver.privateSecrets`. It has no separate Namespace Secret resource or listing.
+
+Both can use Kubernetes Secrets.
 
 A delivery copy is not an independently user-managed credential. Some copies can be shared or retained until cleanup succeeds. Removing the Namespace Secret resource must not remove private Source or Client material, platform secrets, or Compute and Proxy copies that are still needed.
 
