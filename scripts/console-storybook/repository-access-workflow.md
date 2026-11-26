@@ -102,7 +102,10 @@ Agent, or grant runtime repository access.
 
 Open **GitHub repository access** under **Pages / Create Agent**
 (`createGitHubRepositoryGrants`). The story starts with two repositories
-selected. Choose a registered **GitHub App Client** before saving the draft. The
+selected. Change one from **Read/write Git** to **Read-only Git** and back.
+Check that the hint describes public metadata reads without credentials and
+the additional requirements for opening pull requests. Choose a registered
+**GitHub App Client** before saving the draft. The
 Client and selected repository access are saved on the Agent; the Console does
 not create a GitHub credential Source. Uncheck both. Before **Create Agent**,
 check the warning about deployment without a repository policy. Select a repository

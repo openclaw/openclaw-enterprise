@@ -699,6 +699,8 @@ const recentHistories = [
   [95, "preNamespaceGitHubAppClients"],
   [96, "preOAuthEndpointAuthority"],
   [97, "preSharedGitSourceRepositoryGrants"],
+  [98, "preGatewayStartupCredentials"],
+  [99, "preNativeGitHubPullRequestPublication"],
 ];
 
 // From contiguousFrom onward, every count needs a case that upgrades its next migration.

@@ -295,17 +295,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const { client, workspace, signal } = input;
     const repositoryProvider =
       input.name === openShellProjectedCredentialProviderName(input.sourceRef.id, "GITHUB_TOKEN");
-    if (repositoryProvider) {
+    const listRecipients = async () => {
       if (!client.listSandboxes) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      const recipients = await client.listSandboxes(workspace, signal);
+      const sandboxes = await client.listSandboxes(workspace, signal);
       const ids = new Set<string>();
-      for (const sandbox of recipients) {
+      const recipients: { sandbox: OpenShellSandboxResponse; sandboxId: string }[] = [];
+      for (const sandbox of sandboxes) {
+        const sandboxId = sandbox.id;
         const providers = sandbox.spec?.providers ?? [];
         if (
-          !sandbox.id ||
-          ids.has(sandbox.id) ||
+          !sandboxId ||
+          ids.has(sandboxId) ||
           sandbox.workspace !== workspace ||
           !sandbox.spec ||
           !Array.isArray(providers) ||
@@ -313,40 +315,63 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         ) {
           throw new OpenShellCredentialDeliveryRefusedError();
         }
-        ids.add(sandbox.id);
-        if (providers.includes(input.name) && sandbox.configurationActivated !== false) {
-          await this.authorizedRepositoryTarget(input.namespace, input.sourceRef, sandbox, signal);
+        ids.add(sandboxId);
+        if (providers.includes(input.name)) {
+          recipients.push({ sandbox, sandboxId });
         }
       }
+      return recipients;
+    };
+    const recipients = repositoryProvider ? await listRecipients() : undefined;
+    for (const { sandbox } of recipients ?? []) {
+      if (sandbox.configurationActivated !== false) {
+        await this.authorizedRepositoryTarget(input.namespace, input.sourceRef, sandbox, signal);
+      }
     }
+
     const result = await updateOccTokenServiceProviderCopy(input);
     if (!result) {
       return;
     }
     const { provider, update } = result;
-    if (!update.mutationId || !Array.isArray(update.targetReceipts)) {
-      throw new OpenShellCredentialDeliveryRefusedError();
-    }
-    for (const receipt of update.targetReceipts) {
-      const target = asRecord(receipt.desired);
-      if (
-        receipt.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
-        receipt.mutation_id !== update.mutationId ||
-        receipt.provider !== provider.name ||
-        receipt.workspace !== workspace ||
-        typeof receipt.receipt_id !== "string" ||
-        !receipt.receipt_id ||
-        typeof target?.sandbox_id !== "string" ||
-        !target.sandbox_id ||
-        typeof target.sandbox !== "string" ||
-        !target.sandbox ||
-        target.provider_id !== provider.id ||
-        String(target.provider_resource_version) !== provider.resourceVersion
-      ) {
+    const targets: { sandboxId: string; sandboxName: string; receiptId?: string }[] = [];
+    if (update) {
+      if (!update.mutationId || !Array.isArray(update.targetReceipts)) {
         throw new OpenShellCredentialDeliveryRefusedError();
       }
-      const sandboxId = target.sandbox_id;
-      const sandboxName = target.sandbox;
+      for (const receipt of update.targetReceipts) {
+        const target = asRecord(receipt.desired);
+        if (
+          receipt.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+          receipt.mutation_id !== update.mutationId ||
+          receipt.provider !== provider.name ||
+          receipt.workspace !== workspace ||
+          typeof receipt.receipt_id !== "string" ||
+          !receipt.receipt_id ||
+          typeof target?.sandbox_id !== "string" ||
+          !target.sandbox_id ||
+          typeof target.sandbox !== "string" ||
+          !target.sandbox ||
+          target.provider_id !== provider.id ||
+          String(target.provider_resource_version) !== provider.resourceVersion
+        ) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+        targets.push({
+          sandboxId: target.sandbox_id,
+          sandboxName: target.sandbox,
+          receiptId: receipt.receipt_id,
+        });
+      }
+    } else {
+      for (const { sandbox, sandboxId } of recipients ?? (await listRecipients())) {
+        targets.push({ sandboxId, sandboxName: sandbox.name });
+      }
+    }
+    const expectedKind = update
+      ? "PROVIDER_MUTATION_KIND_UPDATE"
+      : "PROVIDER_MUTATION_KIND_OBSERVE";
+    for (const { sandboxId, sandboxName, receiptId: mutationReceiptId } of targets) {
       const readTarget = async () => {
         const sandbox = await client.getSandbox({ workspace, name: sandboxName }, signal);
         if (
@@ -365,15 +390,16 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       if (sandbox.configurationActivated === false) {
         continue;
       }
+      let receiptId = mutationReceiptId;
       const readStatus = () =>
-        client.getSandboxProviderStatus(
-          workspace,
-          sandboxName,
-          provider.name,
-          signal,
-          receipt.receipt_id,
-        );
+        client.getSandboxProviderStatus(workspace, sandboxName, provider.name, signal, receiptId);
       let status = await readStatus();
+      if (!receiptId) {
+        receiptId = status.receipt?.receiptId;
+        if (!receiptId || status.receipt?.kind !== expectedKind) {
+          throw new OpenShellCredentialDeliveryRefusedError();
+        }
+      }
       while (
         status.state === "PROVIDER_READINESS_STATE_PENDING" ||
         status.state === "PROVIDER_READINESS_STATE_PERSISTED"
@@ -389,11 +415,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         status.state !== "PROVIDER_READINESS_STATE_READY" ||
         (status.reason !== undefined &&
           status.reason !== "PROVIDER_READINESS_REASON_UNSPECIFIED") ||
-        status.receipt?.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+        status.receipt?.kind !== expectedKind ||
         status.receipt.workspace !== workspace ||
         status.receipt.provider !== provider.name ||
-        status.receipt.receiptId !== receipt.receipt_id ||
-        status.completedOperationId !== receipt.receipt_id ||
+        status.receipt.receiptId !== receiptId ||
+        status.completedOperationId !== receiptId ||
         !desired ||
         desired.sandboxId !== sandbox.id ||
         desired.sandbox !== sandbox.name ||
@@ -460,6 +486,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         ) {
           throw new OpenShellCredentialDeliveryRefusedError();
         }
+      }
+    }
+    if (!update) {
+      const current = await client.getProvider(workspace, provider.name, signal);
+      if (current?.id !== provider.id || current.resourceVersion !== provider.resourceVersion) {
+        throw new OpenShellCredentialDeliveryRefusedError();
       }
     }
   }

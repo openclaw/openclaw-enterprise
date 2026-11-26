@@ -99,15 +99,19 @@ const previewCodexOAuthSource: OAuthSource = {
     issuer: "https://auth.openai.com",
     tokenUrl: "https://auth.openai.com/oauth/token",
     clientId: "storybook-codex-client",
-    account: { accountId: "storybook-account", planType: "demo", isFedramp: false },
+    account: {
+      accountId: "storybook-account",
+      planType: "demo",
+      isFedramp: false,
+    },
   },
 };
 
 const path = `/console/secrets?namespace=${namespaceId}`;
 const createInventorySource = [
-  click("Create Source"),
+  click("Create Credential Source"),
+  { selector: "#credential-source-choice", value: "model:openai" },
   { selector: "#credential-source-name", value: "Inventory model" },
-  { selector: "#credential-source-purpose", value: "model:openai" },
   { selector: "#credential-source-value", value: "dummy-story-credential" },
   { selector: 'button[form="credential-source-form"]', click: true },
 ] as const;
@@ -119,7 +123,7 @@ export const credentialSourceScenarios = {
     oauthCatalog: "ready",
     initialCredentialSources: previewInventory,
     description:
-      "Inspect the single Credentials tab with readable static, OAuth and protected Proxy Source metadata alongside Namespace Secrets. The fixture contains no credential values, and the page does not show OAuth consent or Proxy configuration.",
+      "Inspect readable static, OAuth, and protected Proxy Source metadata. This preview uses the interim combined Credentials route while Channel consumers move off Namespace Secrets; the fixture contains no credential values or Proxy configuration.",
   },
   credentialsSourceEmpty: {
     group: "Pages/Credentials",
@@ -127,7 +131,7 @@ export const credentialSourceScenarios = {
     path,
     initialCredentialSources: [],
     description:
-      "The simulated inventory is empty. Create Source remains available when the Namespace is ready.",
+      "The simulated inventory is empty. Create Credential Source remains available when the Namespace is ready.",
   },
   credentialsSourceLoading: {
     group: "Pages/Credentials",
@@ -135,7 +139,7 @@ export const credentialSourceScenarios = {
     path,
     rules: [{ suffix: "/credential-sources", method: "GET", hold: true }],
     description:
-      "The Source collection is still loading. Namespace Secrets remain available in the same Credentials tab.",
+      "The Credential Source collection is still loading. No stale Source metadata is shown.",
   },
   credentialsSourceReadDenied: {
     group: "Pages/Credentials",
@@ -151,7 +155,7 @@ export const credentialSourceScenarios = {
       },
     ],
     description:
-      "The simulated Source read is denied because Namespace access was revoked. The entire Credentials page clears, including Secret metadata.",
+      "The simulated Source read is denied because Namespace access was revoked. Source metadata is cleared.",
   },
   credentialsSourceCreate: {
     group: "Pages/Credentials",
@@ -159,9 +163,135 @@ export const credentialSourceScenarios = {
     path,
     oauthCatalog: "ready",
     initialCredentialSources: previewInventory,
-    actions: [click("Create Source")],
+    actions: [click("Create Credential Source")],
     description:
-      "Choose an approved model preset or static Bearer Template and enter a dummy credential. The simulated API saves only public metadata in the list.",
+      "Choose a built-in preset or approved Connection Template. Static choices reveal a write-only value; OAuth choices reveal the relevant sign-in or compatible Client controls.",
+  },
+  credentialsSourceStatic: {
+    group: "Pages/Credentials",
+    name: "Create a static credential",
+    path,
+    oauthCatalog: "ready",
+    actions: [
+      click("Create Credential Source"),
+      { selector: "#credential-source-choice", value: "plain" },
+    ],
+    description:
+      "The Static credential preset asks for a Source name and a write-only credential value. Enter a dummy value, select Show value, then switch presets and return. The value is empty and masked again.",
+  },
+  credentialsSourceCodexOAuth: {
+    group: "Pages/Credentials",
+    name: "Create with Codex OAuth",
+    path,
+    oauthCatalog: "ready",
+    deviceAuthorization: true,
+    actions: [
+      click("Create Credential Source"),
+      { selector: "#credential-source-choice", value: "builtin:codex-oauth" },
+    ],
+    description:
+      "Codex OAuth offers the existing device sign-in control without asking for a static value. The preview does not complete a provider login.",
+  },
+  credentialsSourceOAuthTemplate: {
+    group: "Pages/Credentials",
+    name: "Create with an OAuth Template",
+    path,
+    oauthCatalog: "ready",
+    actions: [
+      click("Create Credential Source"),
+      {
+        selector: "#credential-source-choice",
+        value: "template:ctp_00000000-0000-4000-8000-000000000004",
+      },
+      {
+        selector: "#credential-source-client",
+        value: "ccr_00000000-0000-4000-8000-000000000006",
+      },
+    ],
+    description:
+      "An approved OAuth Template offers only issuer-compatible available Credential Clients and Continue to sign in. No Source exists until the verified callback succeeds.",
+  },
+  credentialsSourceOAuthNoClient: {
+    group: "Pages/Credentials",
+    name: "OAuth Template without a compatible Client",
+    path,
+    oauthCatalog: "ready",
+    rules: [{ suffix: "/connections/oauth-clients", method: "GET", data: [] }],
+    actions: [
+      click("Create Credential Source"),
+      {
+        selector: "#credential-source-choice",
+        value: "template:ctp_00000000-0000-4000-8000-000000000004",
+      },
+    ],
+    description:
+      "The simulated eligible-client list is empty. The form explains that a compatible available Client is required and cannot start consent.",
+  },
+  credentialsSourceReplaceValue: {
+    group: "Pages/Credentials",
+    name: "Replace a static Source value",
+    path,
+    initialCredentialSources: [previewModelSources[0]],
+    actions: [
+      click("Replace value"),
+      { selector: "#credential-source-replacement-value", value: "dummy-story-replacement" },
+    ],
+    description:
+      "Replace value opens a masked write-only field for a ready static Source. Submit the dummy value to simulate a successful update; no replacement material is retained or returned.",
+  },
+  credentialsSourceDeleteReferenced: {
+    group: "Pages/Credentials",
+    name: "Delete blocked by a reference",
+    path,
+    initialCredentialSources: [previewTemplateSource],
+    rules: [
+      {
+        suffix: `/credential-sources/${templateSourceId}`,
+        method: "DELETE",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The Credential Source is still referenced by an Agent or Plugin.",
+      },
+    ],
+    actions: [
+      click("Delete Source"),
+      { selector: 'button[form="credential-source-action-form"]', click: true },
+    ],
+    description:
+      "A simulated 409 refuses deletion while the Source has a blocking reference. The error remains visible and the inventory retains the Source.",
+  },
+  credentialsSourceDisconnectDenied: {
+    group: "Pages/Credentials",
+    name: "OAuth disconnect denied",
+    path,
+    initialCredentialSources: [previewOAuthSource],
+    rules: [
+      {
+        suffix: `/credential-sources/${oauthSourceId}`,
+        method: "DELETE",
+        status: 403,
+        code: "FORBIDDEN",
+        message: `Not authorized: this needs CredentialSource delete on CredentialSource ${oauthSourceId}. Ask an Installation administrator to grant it.`,
+      },
+    ],
+    actions: [
+      click("Disconnect"),
+      { selector: 'button[form="credential-source-action-form"]', click: true },
+    ],
+    description:
+      "A simulated exact delete denial keeps the OAuth Source. The Console also explains that the account owner can disconnect with exact Source read and operate access.",
+  },
+  credentialsSourceOwnerDisconnect: {
+    group: "Pages/Credentials",
+    name: "OAuth account owner disconnect",
+    path,
+    initialCredentialSources: [previewOAuthSource],
+    actions: [
+      click("Disconnect"),
+      { selector: 'button[form="credential-source-action-form"]', click: true },
+    ],
+    description:
+      "The simulated authorized account-owner disconnect removes the OAuth Source from the inventory. Storybook does not verify real IAM, revocation, or TokenService custody.",
   },
   credentialsSourceCreatedUnreadable: {
     group: "Pages/Credentials",
@@ -191,7 +321,7 @@ export const credentialSourceScenarios = {
     ],
     actions: createInventorySource,
     description:
-      "The simulated create succeeds, then Namespace access is denied on the inventory read. The page states that creation succeeded, clears both inventories, and shows the exact denial.",
+      "The simulated create succeeds, then Namespace access is denied on the inventory read. The page confirms creation, clears stale Source rows, and shows the exact denial.",
   },
   createExistingSourceLoading: {
     group: "Pages/Create Agent",
@@ -443,7 +573,7 @@ export const credentialSourceScenarios = {
         message: "Template discovery unavailable.",
       },
     ],
-    actions: [click("Create Source")],
+    actions: [click("Create Credential Source")],
     description:
       "Template discovery fails in the simulated API. The form still offers model presets and leaves Source authorization and owner support to the actual registration request.",
   },
@@ -452,16 +582,23 @@ export const credentialSourceScenarios = {
     name: "Credential Source create outcome unknown",
     path,
     oauthCatalog: "ready",
-    rules: [{ suffix: "/credential-sources", method: "POST", lostAnswer: true, once: true }],
+    rules: [
+      {
+        suffix: "/credential-sources",
+        method: "POST",
+        lostAnswer: true,
+        once: true,
+      },
+    ],
     actions: [
-      click("Create Source"),
+      click("Create Credential Source"),
+      { selector: "#credential-source-choice", value: "model:openai" },
       { selector: "#credential-source-name", value: "Uncertain model" },
-      { selector: "#credential-source-purpose", value: "model:openai" },
       { selector: "#credential-source-value", value: "dummy-story-credential" },
       { selector: 'button[form="credential-source-form"]', click: true },
     ],
     description:
-      "The simulated API saves a Source and loses its reply. The cleared form and Create Source action remain blocked until Refresh checks the inventory.",
+      "The simulated API saves a Source and loses its reply. The cleared form and Create Credential Source action remain blocked until Refresh checks the inventory.",
     steps: [
       "Close the dialog, select Refresh, and confirm Uncertain model appears in the inventory.",
     ],
@@ -503,9 +640,9 @@ export const credentialSourceScenarios = {
       },
     ],
     actions: [
-      click("Create Source"),
+      click("Create Credential Source"),
+      { selector: "#credential-source-choice", value: "model:openai" },
       { selector: "#credential-source-name", value: "Denied model" },
-      { selector: "#credential-source-purpose", value: "model:openai" },
       { selector: "#credential-source-value", value: "dummy-story-credential" },
       { selector: 'button[form="credential-source-form"]', click: true },
     ],

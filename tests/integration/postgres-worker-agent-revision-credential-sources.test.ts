@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { after, type TestContext } from "node:test";
+import test, { after, type TestContext } from "node:test";
 import { revisionCredentialSourceSnapshot } from "../../packages/contracts/src/index.ts";
 import type {
   AgentRevision,
@@ -14,11 +14,17 @@ import {
   ActivationPendingError,
   OpenClawController,
   CredentialDeploymentFailedError,
+  PersistedStateInvalidError,
+  PostgresPlatformState,
   ResourceStateConflictError,
+  type PlatformReadView,
 } from "../../packages/occ/src/index.ts";
 import { installationControllerOptions } from "../../apps/controller/src/composition/installation-config.ts";
 import { installSelectedSandboxDrivers } from "../../apps/controller/src/composition/sandbox-drivers.ts";
-import { installTokenServiceDriver } from "../../apps/controller/src/composition/token-service.ts";
+import {
+  gatewayStartupSourceDelivery,
+  installTokenServiceDriver,
+} from "../../apps/controller/src/composition/token-service.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import {
   MANAGED_BY,
@@ -26,6 +32,8 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { BUILTIN_CODEX_OAUTH_PRESET } from "../../apps/controller/src/backends/token-service/codex-oauth-preset.ts";
+import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
 import { prepareOccTokenServiceProviderCopy } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { OPEN_SHELL_CODEX_BINARIES } from "../../apps/controller/src/drivers/sandbox/openshell-codex-artifacts.ts";
@@ -36,6 +44,7 @@ import type {
   OpenShellSandboxProviderStatus,
   OpenShellStoredProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
@@ -43,9 +52,15 @@ import { completeOpenShellGatewayClient } from "../helpers/openshell-gateway-cli
 import { createPostgresControllerAuth } from "../helpers/password-hasher.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import type { RevisionFixture } from "../helpers/postgres-worker-refused-candidate.ts";
+import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.ts";
 import { jsonLineDestination } from "../helpers/json-lines.ts";
 import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.ts";
+import type { FixtureDriver } from "../helpers/kubernetes-workspace-setup.ts";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.ts";
+import { createDedicatedDeployKubernetesFixture } from "../conformance/kubernetes-dedicated-deploy-fixture.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { waitFor } from "../helpers/wait-for.ts";
 import { auditEvent } from "./postgres-namespace-iam-fixture.ts";
 import { buildSandboxInstallation } from "./sandbox-driver-installation-fixture.ts";
@@ -58,6 +73,1325 @@ import {
 // through the shared fixture and the process owns its teardown backstop.
 const cases = createCredentialSourceRevisionCases(import.meta.url);
 after(cases.cleanup);
+
+async function gatewaySourceWorkerFixture(
+  fixture: RevisionFixture,
+  context: TestContext,
+  options: { channelRuntime?: boolean } = {},
+) {
+  const compute = createTestKubernetesComputeDriver(fixture.compute.id, {
+    gatewayRuntime: true,
+    ...(options.channelRuntime === undefined ? {} : { channelRuntime: options.channelRuntime }),
+    privateStatus: true,
+  });
+  const installation = createInstallationDriverConfiguration();
+  installation.drivers.compute.id = compute.id;
+  Object.assign(installation.drivers, {
+    token_service: { id: "occ", configuration: {} },
+  });
+  const loaded = await loadInstallationFile(context, installation);
+  assert.ok(loaded);
+  const { core, driver: secretDriver } = useInstallationSecretDriver(fixture.controller);
+  core.secretUid = randomUUID();
+  const runtime = {
+    ...loaded,
+    computeDriver: compute,
+    secretDriver,
+    installation: {
+      ...loaded.installation,
+      drivers: {
+        ...loaded.installation.drivers,
+        secret: { ...loaded.installation.drivers.secret, id: secretDriver.id },
+      },
+    },
+  };
+  const controller = new OpenClawController(fixture.installation, {
+    state: fixture.state,
+    ...installationControllerOptions(runtime.installation),
+    gatewayStartupSourceDelivery: gatewayStartupSourceDelivery(runtime),
+    recordOperations: true,
+  });
+  for (const capability of ["iam", "configuration"] as const) {
+    const driver = fixture.controller.selectedDriver(capability);
+    controller.registerDriver(driver);
+    controller.selectDriver(capability, driver.id);
+  }
+  for (const driver of [compute, secretDriver]) {
+    controller.registerDriver(driver);
+    controller.selectDriver(driver.capability, driver.id);
+  }
+  await installTokenServiceDriver(controller, runtime, fixture.state);
+  assert.ok(controller.selectedDriver("token_service") instanceof OCCTokenServiceDriver);
+
+  const namespaceId = fixture.namespace.id;
+  const namespace = core.addNamespace(namespaceId);
+  const namespaceObject = core.namespaces.get(namespace);
+  assert.ok(namespaceObject);
+  const placeholder = { id: "pending" };
+  const transport = createDedicatedDeployKubernetesFixture(
+    {
+      namespace,
+      gatewayName: "pending",
+      state: { gatewayAppliesBinding: false },
+      revision: placeholder,
+      sandboxDriver: undefined,
+      clock: undefined,
+    },
+    (save) => {
+      save({ apiVersion: "v1", kind: "Namespace", ...namespaceObject });
+      for (const policy of (compute as unknown as FixtureDriver).networkPolicies(
+        { namespaceId },
+        { name: namespace, plane: "control" },
+      )) {
+        save(policy);
+      }
+    },
+  );
+  const stagedWrites: string[] = [];
+  const createSecret = transport.clients.core.createNamespacedSecret!;
+  Reflect.set(
+    compute,
+    "apiClients",
+    Promise.resolve({
+      ...transport.clients,
+      core: {
+        ...transport.clients.core,
+        listNamespace: core.listNamespace.bind(core),
+        async createNamespacedSecret(request: Parameters<typeof createSecret>[0]) {
+          if (request.body.metadata.name.startsWith("gateway-secrets-")) {
+            stagedWrites.push(request.body.metadata.name);
+          }
+          return createSecret(request);
+        },
+        async listNamespacedPod() {
+          return { items: [] };
+        },
+      },
+      apps: {
+        ...transport.clients.apps,
+        async listNamespacedDeployment() {
+          return { items: [] };
+        },
+      },
+      version: {
+        async getCode() {
+          return { gitVersion: "v1.35.0" };
+        },
+      },
+    }),
+  );
+
+  const beforeEnrollment = new Set(core.secrets.keys());
+  const enroll = (secret: string = randomUUID()) =>
+    controller.createManagedCredentialSource(
+      fixture.actor.id,
+      namespaceId,
+      {
+        type: "static",
+        name: `Gateway startup ${randomUUID()}`,
+        lifecycleConfig: { settings: {} },
+        providerPreset: "openai",
+        secret,
+      },
+      (ref, phase) => ({
+        ...auditEvent(
+          fixture.installation.id,
+          namespaceId,
+          fixture.actor.id,
+          "openclaw.credential_sources.create",
+          ref,
+        ),
+        ...(phase ? { details: { phase } } : {}),
+      }),
+    );
+  return {
+    compute,
+    controller,
+    core,
+    runtime,
+    transport,
+    namespaceId,
+    namespace,
+    placeholder,
+    stagedWrites,
+    enroll,
+    beforeEnrollment,
+  };
+}
+
+async function slackChannelSourceFixture(fixture: RevisionFixture, context: TestContext) {
+  const { controller, compute, core, enroll, namespaceId, beforeEnrollment } =
+    await gatewaySourceWorkerFixture(fixture, context, { channelRuntime: true });
+  const configurationDriver = createTestConfigurationDriver({
+    id: `slack-configuration-${randomUUID()}`,
+    exact: true,
+  });
+  controller.registerDriver(configurationDriver);
+  controller.selectDriver("configuration", configurationDriver.id);
+  const effects = { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 };
+  const channel = new SlackChannelDriver((async (url, init) => {
+    assert.equal(String(url), "https://slack.com/api/auth.test");
+    assert.match((init?.headers as Record<string, string>).authorization!, /^Bearer xoxb-/);
+    effects.providerCalls += 1;
+    return Response.json({ ok: true, bot_id: "B0123456789", team_id: "T0123456789" });
+  }) satisfies typeof fetch);
+  controller.registerDriver(channel);
+  controller.selectDriver("channel", channel.id);
+
+  const bot = await enroll(`xoxb-${randomUUID()}`);
+  const app = await enroll(`xapp-${randomUUID()}`);
+  const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+  assert.equal(custodyKeys.length, 2);
+  const model = await controller.createSecret(fixture.actor.id, {
+    namespaceId,
+    name: `Harness PAT ${randomUUID()}`,
+    value: randomUUID(),
+  });
+  const configuration = {
+    kind: "agent" as const,
+    values: {
+      ...createHarnessConfiguration("codex", "gpt-5"),
+      channels: {
+        slack: {
+          enabled: true,
+          appToken: "${SLACK_APP_TOKEN}",
+          botToken: "${SLACK_BOT_TOKEN}",
+        },
+      },
+    },
+    secretBindings: {
+      SLACK_APP_TOKEN: { source: app.ref },
+      SLACK_BOT_TOKEN: { source: bot.ref },
+    },
+  };
+  const harnessAuth = { method: "codex_pat" as const, source: model.ref };
+  const callerId = `slack-source-caller-${randomUUID()}`;
+  await fixture.copyActorGrants(callerId, { withoutActions: ["operate", "create"] });
+  const targetGrants = {} as Record<"agent" | "configuration", { id: string; roleId: string }>;
+  for (const resourceKind of ["agent", "configuration"] as const) {
+    // Collection create grants are Installation policy, not Namespace AccessBindings.
+    const roleId = `role-slack-target-${randomUUID()}`;
+    const bindingId = `binding-slack-target-${randomUUID()}`;
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
+      [
+        roleId,
+        `Slack target ${randomUUID()}`,
+        JSON.stringify([{ action: "create", resourceKind }]),
+      ],
+    );
+    await fixture.observerPool.query(
+      "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+      [bindingId, callerId, roleId],
+    );
+    targetGrants[resourceKind] = { id: bindingId, roleId };
+  }
+  const credentialRole = await controller.createIAMRole(fixture.actor.id, {
+    namespaceId,
+    permissions: [
+      { action: "operate", resourceKind: "secret" },
+      { action: "operate", resourceKind: "credential_source" },
+    ],
+  });
+  const grant = (resourceKind: "secret" | "credential_source", resourceId: string) =>
+    controller.createIAMAccessBinding(fixture.actor.id, {
+      namespaceId,
+      subjectKind: "identity",
+      subjectId: callerId,
+      roleId: credentialRole.id,
+      resourceKind,
+      resourceId,
+    });
+  await grant("secret", model.id);
+  await grant("credential_source", app.id);
+  const botGrant = await grant("credential_source", bot.id);
+  const request = () => ({
+    namespaceId,
+    requestId: `req_${randomUUID()}`,
+    name: `Slack Gateway Source ${randomUUID()}`,
+    configuration,
+    executionMode: "dedicated" as const,
+    harnessAuth,
+  });
+
+  let paused:
+    { entered: PromiseWithResolvers<void>; release: PromiseWithResolvers<void> } | undefined;
+  const pauseBot = () => {
+    paused = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    return paused;
+  };
+  const read = core.readNamespacedSecret.bind(core);
+  context.mock.method(
+    core,
+    "readNamespacedSecret",
+    async (input: { namespace: string; name: string }) => {
+      const value = await read(input);
+      const key = `${input.namespace}/${input.name}`;
+      if (key === custodyKeys[1]) {
+        effects.appCustodyReads += 1;
+      }
+      if (key === custodyKeys[0]) {
+        effects.botCustodyReads += 1;
+        if (paused !== undefined) {
+          const gate = paused;
+          paused = undefined;
+          gate.entered.resolve();
+          await gate.release.promise;
+        }
+      }
+      return value;
+    },
+  );
+  return {
+    controller,
+    compute,
+    namespaceId,
+    bot,
+    model,
+    configuration,
+    harnessAuth,
+    callerId,
+    botGrant,
+    targetGrants,
+    configurationDriver,
+    request,
+    effects,
+    pauseBot,
+  };
+}
+
+cases.revisionTest(
+  "Slack Sources validate app and bot and bind Gateway-only fields during provisioning and deployment",
+  async (fixture, context) => {
+    const { controller, namespaceId, bot, configuration, harnessAuth, callerId, request, effects } =
+      await slackChannelSourceFixture(fixture, context);
+    // Gateway-only Slack fields use the same binding contract as app/bot. Explicit Source reuse
+    // is allowed by IAM; this fixture proves admission and delivery metadata, not Slack semantics.
+    const allFields = {
+      ...configuration,
+      values: {
+        ...configuration.values,
+        channels: {
+          slack: {
+            ...configuration.values.channels.slack,
+            signingSecret: "${SLACK_SIGNING_SECRET}",
+            userToken: "${SLACK_USER_TOKEN}",
+            relay: { authToken: "${SLACK_RELAY_AUTH_TOKEN}" },
+          },
+        },
+      },
+      secretBindings: {
+        ...configuration.secretBindings,
+        SLACK_SIGNING_SECRET: { source: bot.ref },
+        SLACK_USER_TOKEN: { source: bot.ref },
+        SLACK_RELAY_AUTH_TOKEN: { source: bot.ref },
+      },
+    };
+    // Preflight and Configuration save check structure and exact bindings without provider IO.
+    await controller.validateAgentCreate(
+      fixture.actor.id,
+      { namespaceId, configuration: allFields, executionMode: "dedicated", harnessAuth },
+      resolveApprovedHarness,
+    );
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...allFields,
+    });
+    assert.equal(effects.providerCalls, 0);
+    const provisioningRequest = {
+      ...request(),
+      configuration: allFields,
+    };
+    const accepted = await controller.provisionAgent(callerId, provisioningRequest);
+    assert.ok(accepted.provisioning.workId);
+    assert.equal(effects.providerCalls, 1);
+    assert.ok(effects.appCustodyReads > 0, "the xapp Source is resolved and validated locally");
+    // An accepted replay reuses the original work rather than authenticating with Slack again.
+    const replay = await controller.provisionAgent(callerId, provisioningRequest);
+    assert.equal(replay.provisioning.workId, accepted.provisioning.workId);
+    assert.equal(effects.providerCalls, 1, "accepted replay does not repeat Slack provider I/O");
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Slack Source deploy ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    assert.equal(revision.secretBindings?.SLACK_BOT_TOKEN?.source.id, bot.id);
+    for (const key of ["SLACK_SIGNING_SECRET", "SLACK_USER_TOKEN", "SLACK_RELAY_AUTH_TOKEN"]) {
+      assert.equal(revision.secretBindings?.[key]?.source.id, bot.id);
+    }
+    assert.equal(effects.providerCalls, 2, "ordinary deployment runs Slack bot authentication");
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning refuses unsupported Harness topology and delivery before custody",
+  async (fixture, context) => {
+    const {
+      controller,
+      compute,
+      namespaceId,
+      bot,
+      model,
+      configuration,
+      callerId,
+      request,
+      effects,
+    } = await slackChannelSourceFixture(fixture, context);
+    // The authenticated HTTP caller receives the existing 409 before either Slack Source is read.
+    const {
+      app: api,
+      principalId: apiCallerId,
+      headers,
+    } = await authenticatedSourceOperator(fixture, controller);
+    try {
+      await fixture.observerPool.query(
+        `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+         SELECT 'binding-' || gen_random_uuid(), namespace_id, $1, role_id,
+                resource_kind, resource_id
+         FROM occ.iam_access_bindings WHERE identity_subject_id = $2`,
+        [apiCallerId, fixture.actor.id],
+      );
+      // Old public Secret bindings must fail at provisioning admission before custody or Slack.
+      const legacyBinding = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Legacy Slack binding ${randomUUID()}`,
+          executionMode: "dedicated",
+          harnessAuth: { method: "codex_pat", source: model.ref },
+          configuration: {
+            ...configuration,
+            secretBindings: {
+              ...configuration.secretBindings,
+              SLACK_BOT_TOKEN: { source: model.ref },
+            },
+          },
+        },
+      });
+      assert.equal(legacyBinding.statusCode, 400, legacyBinding.body);
+      assert.equal(
+        legacyBinding.json().error.message,
+        "Configuration setting channels.slack.botToken references SLACK_BOT_TOKEN without a Credential Source binding: bind SLACK_BOT_TOKEN to a Credential Source in secretBindings, or remove the reference.",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      const refused = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Unsupported managed Harness ${randomUUID()}`,
+          configuration,
+          executionMode: "dedicated",
+          harnessAuth: { method: "credential_source", sourceId: bot.id },
+        },
+      });
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(refused.json().error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.json().error.message,
+        "Guided Agent provisioning does not support managed credential sources. Create the Agent directly instead.",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      // Dedicated OpenClaw without a provisioning Sandbox is already known to be impossible.
+      // Refuse it before resolving either Slack Source or contacting Slack.
+      const unsupportedNative = await api.inject({
+        method: "POST",
+        url: `/namespaces/${namespaceId}/agents/provision`,
+        headers,
+        payload: {
+          requestId: `req_${randomUUID()}`,
+          name: `Unsupported native Harness ${randomUUID()}`,
+          configuration: {
+            ...configuration,
+            values: {
+              ...createHarnessConfiguration("openclaw", "gpt-4.1"),
+              channels: configuration.values.channels,
+            },
+          },
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: model.ref },
+        },
+      });
+      assert.equal(unsupportedNative.statusCode, 409, unsupportedNative.body);
+      assert.equal(unsupportedNative.json().error.code, "RESOURCE_CONFLICT");
+      assert.match(
+        unsupportedNative.json().error.message,
+        /^Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment\./,
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+    } finally {
+      await api.close();
+    }
+    const otherCompute = createTestKubernetesComputeDriver(`other-${randomUUID()}`, {
+      gatewayRuntime: true,
+      channelRuntime: true,
+      privateStatus: true,
+    });
+    controller.registerDriver(otherCompute);
+    controller.selectDriver("compute", otherCompute.id);
+    try {
+      await assert.rejects(controller.provisionAgent(callerId, request()), {
+        message: "The selected Compute and TokenService do not support Gateway Source delivery.",
+      });
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+    } finally {
+      controller.selectDriver("compute", compute.id);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning rechecks exact grants after custody",
+  async (fixture, context) => {
+    const { controller, namespaceId, botGrant, callerId, request, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    const gate = pauseBot();
+    const denied = controller.provisionAgent(callerId, request());
+    try {
+      await Promise.race([
+        gate.entered.promise,
+        denied.then(
+          () => assert.fail("provisioning completed before custody read"),
+          (error: unknown) => Promise.reject(error),
+        ),
+      ]);
+      // Revocation commits while TokenService awaits the actual Kubernetes custody read.
+      await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, botGrant.id);
+      gate.release.resolve();
+      await assert.rejects(denied, (error: Error) => error.name === "AuthorizationDeniedError");
+      assert.equal(effects.providerCalls, 0);
+      await assert.rejects(
+        controller.provisionAgent(callerId, request()),
+        (error: Error) => error.name === "AuthorizationDeniedError",
+      );
+      assert.equal(
+        effects.botCustodyReads,
+        1,
+        "a denied Source must not reach TokenService custody",
+      );
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      gate.release.resolve();
+      await denied.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning rechecks target authority before custody and provider use",
+  async (fixture, context) => {
+    const {
+      controller,
+      namespaceId,
+      callerId,
+      targetGrants,
+      configurationDriver,
+      request,
+      effects,
+      pauseBot,
+    } = await slackChannelSourceFixture(fixture, context);
+    const configurationEntered = Promise.withResolvers<void>();
+    const configurationRelease = Promise.withResolvers<void>();
+    const validate = configurationDriver.validate.bind(configurationDriver);
+    let holdConfiguration = true;
+    context.mock.method(
+      configurationDriver,
+      "validate",
+      async (configuration: Parameters<typeof configurationDriver.validate>[0]) => {
+        await validate(configuration);
+        if (holdConfiguration) {
+          holdConfiguration = false;
+          configurationEntered.resolve();
+          await configurationRelease.promise;
+        }
+      },
+    );
+
+    // The Agent create grant can disappear while Configuration validation is outside the transaction.
+    const beforeCustody = controller.provisionAgent(callerId, request());
+    try {
+      await Promise.race([configurationEntered.promise, beforeCustody]);
+      const revokedAgent = await fixture.observerPool.query(
+        "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+        [targetGrants.agent.id],
+      );
+      assert.equal(revokedAgent.rowCount, 1);
+      configurationRelease.resolve();
+      await assert.rejects(
+        beforeCustody,
+        (error: Error) => error.name === "AuthorizationDeniedError",
+      );
+      assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+      await fixture.observerPool.query(
+        "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, role_id) VALUES ($1, NULL, $2, $3)",
+        [targetGrants.agent.id, callerId, targetGrants.agent.roleId],
+      );
+
+      // A Configuration create grant revoked during the actual custody read must fence Slack dispatch.
+      const gate = pauseBot();
+      const beforeProvider = controller.provisionAgent(callerId, request());
+      try {
+        await Promise.race([gate.entered.promise, beforeProvider]);
+        const revokedConfiguration = await fixture.observerPool.query(
+          "DELETE FROM occ.iam_access_bindings WHERE id=$1",
+          [targetGrants.configuration.id],
+        );
+        assert.equal(revokedConfiguration.rowCount, 1);
+        gate.release.resolve();
+        await assert.rejects(
+          beforeProvider,
+          (error: Error) => error.name === "AuthorizationDeniedError",
+        );
+        assert.equal(effects.providerCalls, 0);
+      } finally {
+        gate.release.resolve();
+        await beforeProvider.catch(() => undefined);
+      }
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      configurationRelease.resolve();
+      await beforeCustody.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source provisioning refuses a Source deleted during custody before provider use",
+  async (fixture, context) => {
+    const { controller, namespaceId, bot, request, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    const gate = pauseBot();
+    // The administrator keeps broad Source authority after deletion, so this checks Source
+    // currentness itself rather than the removal of the caller's exact Source grant.
+    const pending = controller.provisionAgent(fixture.actor.id, request());
+    try {
+      await Promise.race([gate.entered.promise, pending]);
+      await controller.deleteCredentialSource(
+        fixture.actor.id,
+        namespaceId,
+        bot.id,
+        (_removed, phase) => ({
+          ...auditEvent(
+            fixture.installation.id,
+            namespaceId,
+            fixture.actor.id,
+            "openclaw.credential_sources.delete",
+            bot.ref,
+          ),
+          ...(phase === undefined ? {} : { details: { phase } }),
+        }),
+      );
+      gate.release.resolve();
+      await assert.rejects(pending, {
+        message: "Channel credentials require a ready static TokenService Credential Source.",
+      });
+      assert.equal(effects.providerCalls, 0);
+      const work = await fixture.observerPool.query(
+        "SELECT count(*)::int AS count FROM occ.agent_provisioning_work WHERE namespace_id=$1",
+        [namespaceId],
+      );
+      assert.equal(work.rows[0].count, 0);
+    } finally {
+      gate.release.resolve();
+      await pending.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "Slack Source deployment fences embedded topology and changed Configuration",
+  async (fixture, context) => {
+    const { controller, namespaceId, model, configuration, harnessAuth, effects, pauseBot } =
+      await slackChannelSourceFixture(fixture, context);
+    // This Agent exists before its Configuration gains Slack Source bindings; deployment must
+    // refuse the unsupported embedded topology before Source custody or Slack HTTP.
+    const embeddedValues = createHarnessConfiguration("openclaw", "gpt-4.1");
+    const embeddedConfiguration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: embeddedValues,
+    });
+    const embeddedAgent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Embedded OpenClaw ${randomUUID()}`,
+        configurationId: embeddedConfiguration.id,
+        executionMode: "embedded",
+        harnessAuth: { method: "api_key", source: model.ref },
+      },
+      resolveApprovedHarness,
+    );
+    await controller.updateConfiguration(fixture.actor.id, {
+      namespaceId,
+      configurationId: embeddedConfiguration.id,
+      values: { ...embeddedValues, channels: configuration.values.channels },
+      secretBindings: configuration.secretBindings,
+    });
+    await assert.rejects(
+      controller.deployAgent(
+        fixture.actor.id,
+        { namespaceId, agentId: embeddedAgent.id },
+        resolveApprovedHarness,
+      ),
+      { message: "Gateway Credential Source bindings require dedicated execution." },
+    );
+    assert.deepEqual(effects, { providerCalls: 0, botCustodyReads: 0, appCustodyReads: 0 });
+
+    const saved = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      ...configuration,
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Slack Source deploy ${randomUUID()}`,
+        configurationId: saved.id,
+        executionMode: "dedicated",
+        harnessAuth,
+      },
+      resolveApprovedHarness,
+    );
+    const gate = pauseBot();
+    const changedDeploy = controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    try {
+      await Promise.race([
+        gate.entered.promise,
+        changedDeploy.then(
+          () => assert.fail("deployment completed before custody read"),
+          (error: unknown) => Promise.reject(error),
+        ),
+      ]);
+      // Configuration update commits while owner I/O waits. The stale prepared binding must not reach Slack.
+      await controller.updateConfiguration(fixture.actor.id, {
+        namespaceId,
+        configurationId: saved.id,
+        values: createHarnessConfiguration("codex", "gpt-5"),
+        secretBindings: {},
+      });
+      gate.release.resolve();
+      await assert.rejects(changedDeploy, {
+        message: "The Agent or Configuration changed after Channel validation was prepared.",
+      });
+      assert.equal(effects.providerCalls, 0);
+    } finally {
+      gate.release.resolve();
+      await changedDeploy.catch(() => undefined);
+    }
+  },
+);
+
+cases.revisionTest(
+  "the Worker rechecks the exact Source grant after OCC TokenService reads custody and before Gateway launch",
+  async (fixture, context) => {
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      namespaceId,
+      namespace,
+      placeholder,
+      stagedWrites,
+      enroll,
+      beforeEnrollment,
+    } = await gatewaySourceWorkerFixture(fixture, context);
+    const source = await enroll();
+    const secondSource = await enroll();
+    const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+    assert.equal(custodyKeys.length, 2);
+    const modelSecret = await controller.createSecret(fixture.actor.id, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    const configuration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: {
+        ...createHarnessConfiguration("codex", "gpt-5"),
+        cron: { webhookToken: "${GW_HOOK_TOKEN}" },
+      },
+      secretBindings: {
+        GW_HOOK_ALIAS: { source: source.ref },
+        GW_HOOK_TOKEN: { source: source.ref },
+        GW_SECOND_TOKEN: { source: secondSource.ref },
+      },
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Gateway grant race ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    const grant = await fixture.observerPool.query<{ id: string }>(
+      `SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2`,
+      [agent.servicePrincipalId, secondSource.id],
+    );
+    assert.equal(grant.rowCount, 1);
+
+    // Pause the real Kubernetes Secret Driver's custody read after the API supplied bytes.
+    // PostgreSQL IAM remains live, so revocation can commit during owner I/O.
+    let reached = false;
+    let firstSourceReads = 0;
+    const release = Promise.withResolvers<void>();
+    const read = core.readNamespacedSecret.bind(core);
+    context.mock.method(
+      core,
+      "readNamespacedSecret",
+      async (request: { namespace: string; name: string }) => {
+        const secret = await read(request);
+        const key = `${request.namespace}/${request.name}`;
+        if (key === custodyKeys[0]) {
+          firstSourceReads += 1;
+        }
+        if (key === custodyKeys[1]) {
+          reached = true;
+          await release.promise;
+        }
+        return secret;
+      },
+    );
+    const events: unknown[] = [];
+    try {
+      await fixture.start(compute, {
+        transformDrivers: () => runtime,
+        emit: (event) => events.push(event),
+      });
+      await waitFor("the OCC TokenService custody read", async () => {
+        if (reached) {
+          return true;
+        }
+        const result = await fixture.workResult({
+          id: revision.id,
+          idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+        });
+        assert.equal(
+          result.rows[0]?.reason_code,
+          null,
+          `Worker failed before reading custody: ${JSON.stringify(events.slice(-2))}`,
+        );
+        return undefined;
+      });
+      await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, grant.rows[0]!.id);
+    } finally {
+      release.resolve();
+    }
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "AUTHORIZATION_DENIED");
+    const audit = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->'authorization' AS authorization,
+              details - '__occAuditMetadata' AS details
+       FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_id=$2 AND kind='authorization_denial'`,
+      [namespaceId, agent.id],
+    );
+    assert.deepEqual(audit.rows, [
+      {
+        actor_id: fixture.actor.id,
+        authorization: {
+          principalId: agent.servicePrincipalId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: secondSource.id },
+        },
+        details: { revisionId: revision.id },
+      },
+    ]);
+    assert.equal(firstSourceReads, 1, "the first Source's alias must not cause another owner read");
+    assert.deepEqual(
+      stagedWrites,
+      [],
+      "revoked material must never be written, even if cleanup runs",
+    );
+    assert.equal(
+      transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+  },
+);
+
+cases.revisionTest(
+  "the Worker permanently refuses Gateway credentials that exceed one Kubernetes Secret",
+  async (fixture, context) => {
+    const {
+      compute,
+      controller,
+      core,
+      runtime,
+      transport,
+      namespaceId,
+      namespace,
+      placeholder,
+      stagedWrites,
+      enroll,
+      beforeEnrollment,
+    } = await gatewaySourceWorkerFixture(fixture, context);
+    const source = await enroll("x".repeat(65_000));
+    const custodyKeys = [...core.secrets.keys()].filter((key) => !beforeEnrollment.has(key));
+    assert.equal(custodyKeys.length, 1);
+    const modelSecret = await controller.createSecret(fixture.actor.id, {
+      namespaceId,
+      name: `Harness PAT ${randomUUID()}`,
+      value: randomUUID(),
+    });
+    for (const secret of core.secrets.values()) {
+      if (secret.metadata.namespace === namespace) {
+        transport.save({ kind: "Secret", ...secret });
+      }
+    }
+    // Each alias is legal; their combined decoded values exceed the one-Secret limit.
+    const secretBindings = Object.fromEntries(
+      Array.from({ length: 17 }, (_, index) => [`GW_LARGE_${index}`, { source: source.ref }]),
+    );
+    const configuration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId,
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5"),
+      secretBindings,
+    });
+    const agent = await controller.createAgent(
+      fixture.actor.id,
+      {
+        namespaceId,
+        name: `Gateway size refusal ${randomUUID()}`,
+        configurationId: configuration.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+      },
+      resolveApprovedHarness,
+    );
+    const revision = await controller.deployAgent(
+      fixture.actor.id,
+      { namespaceId, agentId: agent.id },
+      resolveApprovedHarness,
+    );
+    placeholder.id = revision.id;
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
+    assert.equal(
+      (await fixture.workResult(work)).rows[0]?.reason_code,
+      "GATEWAY_CREDENTIAL_DELIVERY_REFUSED",
+    );
+    assert.deepEqual(stagedWrites, [], "oversized values must never be staged");
+    assert.equal(
+      transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+    assert.ok(core.secrets.has(custodyKeys[0]!), "refusal must preserve owner custody");
+  },
+);
+
+async function gatewaySourceCandidate(
+  fixture: RevisionFixture,
+  scenario: Awaited<ReturnType<typeof gatewaySourceWorkerFixture>>,
+) {
+  const { controller, core, namespaceId, namespace, transport } = scenario;
+  const source = await scenario.enroll();
+  const custodyKey = [...core.secrets.keys()].find((key) => !scenario.beforeEnrollment.has(key));
+  assert.ok(custodyKey);
+  const custody = structuredClone(core.secrets.get(custodyKey));
+  const modelSecret = await controller.createSecret(fixture.actor.id, {
+    namespaceId,
+    name: `Harness PAT ${randomUUID()}`,
+    value: randomUUID(),
+  });
+  for (const secret of core.secrets.values()) {
+    if (secret.metadata.namespace === namespace) {
+      transport.save({ kind: "Secret", ...secret });
+    }
+  }
+  const configuration = await controller.createConfiguration(fixture.actor.id, {
+    namespaceId,
+    kind: "agent",
+    values: createHarnessConfiguration("codex", "gpt-5"),
+    secretBindings: { GW_HOOK_TOKEN: { source: source.ref } },
+  });
+  const agent = await controller.createAgent(
+    fixture.actor.id,
+    {
+      namespaceId,
+      name: `Gateway abandonment ${randomUUID()}`,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "codex_pat", source: modelSecret.ref },
+    },
+    resolveApprovedHarness,
+  );
+  const revision = await controller.deployAgent(
+    fixture.actor.id,
+    { namespaceId, agentId: agent.id },
+    resolveApprovedHarness,
+  );
+  scenario.placeholder.id = revision.id;
+  return { source, custodyKey, custody, agent, revision };
+}
+
+cases.revisionTest(
+  "the Worker denies reuse of a staged Gateway credential after Source authority is revoked",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, controller, core, runtime, transport, namespaceId, namespace, stagedWrites } =
+      scenario;
+    const { source, custodyKey, custody, agent, revision } = await gatewaySourceCandidate(
+      fixture,
+      scenario,
+    );
+    const grant = await fixture.observerPool.query<{ id: string }>(
+      `SELECT id FROM occ.iam_access_bindings WHERE identity_subject_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2`,
+      [agent.servicePrincipalId, source.id],
+    );
+    assert.equal(grant.rowCount, 1);
+
+    const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+    const patchDeployment = clients.apps.patchNamespacedDeployment!;
+    const readSecret = clients.core.readNamespacedSecret!;
+    let applies = 0;
+    let gatewayDeploymentName: string | undefined;
+    let reuseReads = 0;
+    clients.apps.patchNamespacedDeployment = async (request) => {
+      if (!request.body.metadata.name.startsWith("gateway-")) {
+        return patchDeployment(request);
+      }
+      applies += 1;
+      gatewayDeploymentName = request.body.metadata.name;
+      const applied = await patchDeployment(request);
+      if (applies === 1) {
+        assert.ok(
+          transport.objects.has(transport.key("Deployment", gatewayDeploymentName, namespace)),
+        );
+        // An uncertain apply creates the real candidate Deployment and stage, then causes a retry.
+        throw new Error("controlled Gateway Deployment apply failure");
+      }
+      return applied;
+    };
+    clients.core.readNamespacedSecret = async (request) => {
+      const secret = await readSecret(request);
+      if (applies === 1 && request.name === stagedWrites[0] && reuseReads === 0) {
+        reuseReads += 1;
+        assert.ok(transport.objects.has(transport.key("Secret", request.name, namespace)));
+        // The retry passed earlier IAM checks. Revoke only after Compute finds the existing stage,
+        // so denial now depends on the authorization callback immediately before Deployment apply.
+        await controller.deleteIAMAccessBinding(fixture.actor.id, namespaceId, grant.rows[0]!.id);
+      }
+      return secret;
+    };
+
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "AUTHORIZATION_DENIED");
+    assert.equal(reuseReads, 1, "the denial must follow the existing stage read");
+    assert.equal(applies, 1, "revocation must prevent the retry's Gateway Deployment mutation");
+    assert.equal(stagedWrites.length, 1, "the retry must reuse the already staged revision copy");
+    assert.ok(gatewayDeploymentName);
+    assert.equal(
+      transport.objects.has(transport.key("Deployment", gatewayDeploymentName, namespace)),
+      false,
+      "the refused candidate Gateway Deployment must be removed",
+    );
+    assert.equal(
+      transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+      false,
+      "the refused candidate's staged credential must be removed",
+    );
+    assert.deepEqual(core.secrets.get(custodyKey), custody, "the Source owner retains custody");
+    const denial = await fixture.observerPool.query(
+      `SELECT actor_id, details->'__occAuditMetadata'->'authorization' AS authorization,
+              details - '__occAuditMetadata' AS details
+       FROM occ.audit_events
+       WHERE namespace_id=$1 AND resource_id=$2 AND kind='authorization_denial'`,
+      [namespaceId, agent.id],
+    );
+    assert.deepEqual(denial.rows, [
+      {
+        actor_id: fixture.actor.id,
+        authorization: {
+          principalId: agent.servicePrincipalId,
+          action: "operate",
+          resource: { kind: "credential_source", namespaceId, id: source.id },
+        },
+        details: { revisionId: revision.id },
+      },
+    ]);
+  },
+);
+
+cases.revisionTest(
+  "the Worker reports a withdrawn Gateway Source before resolving or staging credentials",
+  async (fixture, context) => {
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { source, revision } = await gatewaySourceCandidate(fixture, scenario);
+    // A concurrent withdrawal can be recorded for an admitted queued companion revision
+    // before its reconcile work is claimed. Use the production PostgreSQL repository.
+    await fixture.state.transact(async (unit) => {
+      await unit.credentialSources.requestCredentialWithdrawal({
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        credentialSourceId: source.id,
+        state: "pending",
+        requestedBy: fixture.actor.id,
+        requestedAt: new Date().toISOString(),
+      });
+    });
+    await fixture.start(scenario.compute, { transformDrivers: () => scenario.runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    assert.equal((await fixture.work(work, "failed_permanent")).attempt_count, 1);
+    assert.equal(
+      (await fixture.workResult(work)).rows[0]?.reason_code,
+      "CREDENTIAL_SOURCE_UNAVAILABLE",
+    );
+    assert.deepEqual(scenario.stagedWrites, [], "a withdrawn Source must never be staged");
+    assert.equal(
+      scenario.transport.templates.some(({ name }) => name.startsWith("gateway-")),
+      false,
+    );
+  },
+);
+
+test(
+  "the Worker removes an abandoned Gateway Source copy after Deployment retries and Pod termination",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 2 });
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, core, runtime, transport, namespaceId, namespace, stagedWrites } = scenario;
+    const { custodyKey, custody, agent, revision } = await gatewaySourceCandidate(
+      fixture,
+      scenario,
+    );
+    const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+    const patchDeployment = clients.apps.patchNamespacedDeployment!;
+    const deleteDeployment = clients.apps.deleteNamespacedDeployment!;
+    const deleteSecret = clients.core.deleteNamespacedSecret!;
+    const order: string[] = [];
+    let applies = 0;
+    let gatewayDeleted = false;
+    let podObserved = false;
+    clients.apps.patchNamespacedDeployment = async (request) => {
+      if (!request.body.metadata.name.startsWith("gateway-")) {
+        return patchDeployment(request);
+      }
+      applies += 1;
+      // An uncertain apply can create the Deployment even though the client receives an error.
+      await patchDeployment(request);
+      throw new Error("controlled Gateway Deployment apply failure");
+    };
+    clients.apps.deleteNamespacedDeployment = async (request) => {
+      if (request.name.startsWith("gateway-")) {
+        gatewayDeleted = true;
+        order.push("deployment-deleted");
+      }
+      await deleteDeployment(request);
+    };
+    clients.core.listNamespacedPod = async (request) => {
+      if (
+        gatewayDeleted &&
+        request.labelSelector?.includes(`openclaw.dev/revision=${revision.id}`) &&
+        request.labelSelector.includes("openclaw.dev/workload-role=gateway")
+      ) {
+        if (!podObserved) {
+          podObserved = true;
+          assert.ok(transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)));
+          order.push("pod-present");
+          return {
+            items: [
+              {
+                apiVersion: "v1" as const,
+                kind: "Pod" as const,
+                metadata: {
+                  name: "terminating-gateway",
+                  namespace,
+                  labels: {
+                    "openclaw.dev/namespace": namespaceId,
+                    "openclaw.dev/agent": agent.id,
+                    "openclaw.dev/revision": revision.id,
+                    "openclaw.dev/workload-role": "gateway",
+                  },
+                },
+                status: {},
+              },
+            ],
+          };
+        }
+        order.push("pods-absent");
+      }
+      return { items: [] };
+    };
+    clients.core.deleteNamespacedSecret = async (request) => {
+      if (request.name.startsWith("gateway-secrets-")) {
+        order.push("staged-secret-deleted");
+      }
+      await deleteSecret(request);
+    };
+    await fixture.start(compute, { transformDrivers: () => runtime });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal((await fixture.workResult(work)).rows[0]?.reason_code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(applies, 2);
+    assert.equal(stagedWrites.length, 1);
+    assert.equal(
+      transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+      false,
+    );
+    assert.deepEqual(order, [
+      "deployment-deleted",
+      "pod-present",
+      "pods-absent",
+      "staged-secret-deleted",
+    ]);
+    assert.deepEqual(core.secrets.get(custodyKey), custody, "owner custody survives abandonment");
+  },
+);
+
+test(
+  "the Worker retains failed-preparation cleanup while an abandoned Gateway Source revision cannot be read",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await cases.setup(context, { maxAttempts: 1 });
+    const scenario = await gatewaySourceWorkerFixture(fixture, context);
+    const { compute, core, runtime, transport, namespace, stagedWrites } = scenario;
+    const { custodyKey, custody, revision } = await gatewaySourceCandidate(fixture, scenario);
+
+    // Admitted revisions are immutable. Inject the established reader refusal only after
+    // staging and uncertain apply, rather than manufacturing invalid persisted state.
+    let invalid = false;
+    const read = PostgresPlatformState.prototype.read;
+    PostgresPlatformState.prototype.read = function <T>(
+      work: (view: PlatformReadView) => Promise<T>,
+    ): Promise<T> {
+      return (read<T>).call(this, (view) =>
+        work({
+          ...view,
+          revisions: {
+            ...view.revisions,
+            async findRevision(ns, owner, id) {
+              if (invalid && id === revision.id) {
+                throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
+              }
+              return view.revisions.findRevision(ns, owner, id);
+            },
+          },
+        }),
+      );
+    };
+    try {
+      const clients = (await Reflect.get(compute, "apiClients")) as typeof transport.clients;
+      const patchDeployment = clients.apps.patchNamespacedDeployment!;
+      let gatewayName: string | undefined;
+      clients.apps.patchNamespacedDeployment = async (request) => {
+        if (!request.body.metadata.name.startsWith("gateway-")) {
+          return patchDeployment(request);
+        }
+        gatewayName = request.body.metadata.name;
+        await patchDeployment(request);
+        invalid = true;
+        throw new Error("controlled Gateway Deployment apply failure");
+      };
+      await fixture.start(compute, { transformDrivers: () => runtime });
+      const deployment = {
+        id: revision.id,
+        idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+      };
+      await fixture.work(deployment, "failed_permanent");
+      assert.equal(
+        (await fixture.workResult(deployment)).rows[0]?.reason_code,
+        "DEPENDENCY_UNAVAILABLE",
+      );
+
+      // The terminal deployment and cleanup ownership are committed together. The cleanup
+      // must defer, preserving the staged copy, until the exact immutable revision is readable.
+      const cleanupKey = await waitFor("failed-preparation cleanup deferral", async () => {
+        const result = await fixture.observerPool.query<{ idempotency_key: string; state: string }>(
+          `SELECT idempotency_key, state FROM occ.controller_work
+           WHERE revision_id = $1 AND idempotency_key <> $2`,
+          [revision.id, deployment.idempotencyKey],
+        );
+        const cleanup = result.rows[0];
+        if (result.rows.length !== 1 || cleanup?.state !== "queued") {
+          return undefined;
+        }
+        const attempt = await fixture.state.read((view) =>
+          view.operations.findWorkAttempt(cleanup.idempotency_key),
+        );
+        return attempt?.code === "REPOSITORY_CLEANUP_PENDING" ? cleanup.idempotency_key : undefined;
+      });
+      assert.equal(stagedWrites.length, 1);
+      assert.ok(transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)));
+      assert.ok(gatewayName);
+      assert.ok(transport.objects.has(transport.key("Deployment", gatewayName, namespace)));
+
+      invalid = false;
+      // Advance only this deferred cleanup; do not wait on the production backoff clock.
+      await fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = clock_timestamp()
+         WHERE idempotency_key = $1 AND state = 'queued'`,
+        [cleanupKey],
+      );
+      await fixture.work({ id: revision.id, idempotencyKey: cleanupKey }, "succeeded");
+      assert.equal(
+        transport.objects.has(transport.key("Deployment", gatewayName, namespace)),
+        false,
+      );
+      assert.equal(
+        transport.objects.has(transport.key("Secret", stagedWrites[0]!, namespace)),
+        false,
+      );
+      assert.deepEqual(core.secrets.get(custodyKey), custody, "owner custody survives cleanup");
+    } finally {
+      PostgresPlatformState.prototype.read = read;
+    }
+  },
+);
 
 function recordingActiveGateway(
   namespaceId: string,
@@ -72,7 +1406,7 @@ function recordingActiveGateway(
   const networkInstanceId = randomUUID();
   const policyHash = "a".repeat(64);
   const updates: OpenShellProviderCreateRequest[] = [];
-  const receiptReads: string[] = [];
+  const receiptReads: (string | undefined)[] = [];
   let profile: OpenShellStoredProviderProfile | undefined;
   let provider: OpenShellProviderResponse | undefined;
   let status: OpenShellSandboxProviderStatus | undefined;
@@ -227,6 +1561,10 @@ function recordingActiveGateway(
       assert.equal(request.name, sandboxName);
       return sandbox;
     },
+    async listSandboxes(requestWorkspace) {
+      assert.equal(requestWorkspace, workspace);
+      return [sandbox];
+    },
     async getSandboxProviderStatus(
       requestWorkspace,
       requestedSandbox,
@@ -237,9 +1575,22 @@ function recordingActiveGateway(
       assert.equal(requestWorkspace, workspace);
       assert.equal(requestedSandbox, sandboxName);
       assert.equal(requestedProvider, providerName);
-      assert.ok(receiptId && status);
+      assert.ok(status?.receipt);
       receiptReads.push(receiptId);
-      assert.equal(receiptId, status.receipt?.receiptId);
+      if (receiptId === undefined) {
+        const observationId = randomUUID();
+        status = {
+          ...status,
+          completedOperationId: observationId,
+          receipt: {
+            ...status.receipt,
+            receiptId: observationId,
+            kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+          },
+        };
+      } else {
+        assert.equal(receiptId, status.receipt.receiptId);
+      }
       return status;
     },
   } satisfies Partial<OpenShellGatewayClient>;
@@ -252,6 +1603,16 @@ function recordingActiveGateway(
     status: () => status,
     setStale: (value: boolean) => {
       stale = value;
+    },
+    observeCurrentEnvironment: () => {
+      assert.ok(status?.observed);
+      status = {
+        ...status,
+        observed: {
+          ...status.observed,
+          providerEnvRevision: sandbox.configurationAdmission.provider_env_revision,
+        },
+      };
     },
   };
 }
@@ -825,26 +2186,31 @@ cases.revisionTest(
   "manual Agent push fully preflights deployed Source authority and recovers a stale serving copy",
   async (fixture, context) => {
     const sandboxId = randomUUID();
-    const scenario = await stagedCredentialScenario(fixture, context, (compute) => ({
-      ...compute,
-      async prepareRevision(revision, revisionContext) {
-        assert.ok(revisionContext?.configureCredentialDeployment);
-        await revisionContext.configureCredentialDeployment(
-          {
-            targetRef: {
-              namespaceId: revision.namespaceId,
-              agentId: revision.agentId,
-              revisionId: revision.id,
-              sandboxId,
+    const scenario = await stagedCredentialScenario(
+      fixture,
+      context,
+      (compute) => ({
+        ...compute,
+        async prepareRevision(revision, revisionContext) {
+          assert.ok(revisionContext?.configureCredentialDeployment);
+          await revisionContext.configureCredentialDeployment(
+            {
+              targetRef: {
+                namespaceId: revision.namespaceId,
+                agentId: revision.agentId,
+                revisionId: revision.id,
+                sandboxId,
+              },
+              configurationId: revision.configurationId,
             },
-            configurationId: revision.configurationId,
-          },
-          context.signal,
-        );
-        return compute.prepareRevision(revision, revisionContext);
-      },
-      async activateRevision() {},
-    }));
+            context.signal,
+          );
+          return compute.prepareRevision(revision, revisionContext);
+        },
+        async activateRevision() {},
+      }),
+      "builtin_codex",
+    );
     const { controller, owner, source, namespaceId, actorId } = scenario;
     const revision = await controller.deployAgent(
       actorId,
@@ -859,6 +2225,7 @@ cases.revisionTest(
     await fixture.stop();
     const { nativeProxy, tokenService, sourceInstance, gateway, preparedProvider } =
       await attachActiveSource(scenario, revision, sandboxId, context.signal);
+    assert.ok(tokenService instanceof OCCTokenServiceDriver);
     const initial = await tokenService.resolveCredential(sourceInstance, context.signal);
     const unbound = await controller.createManagedCredentialSource(
       actorId,
@@ -975,27 +2342,54 @@ cases.revisionTest(
       resolutionFailure = undefined;
       assert.equal(gateway.updates.length, 0);
 
-      // The native Proxy has persisted the replacement Provider version, but a controlled
-      // serving observation is stale. PATCH cannot roll custody back after this refusal.
-      const replacement = randomUUID();
+      // The API maintenance pass commits the replacement grant before Proxy delivery.
+      // The controlled issuer and supervisor let it persist without a live readiness receipt.
+      const expiry = { exp: Math.floor(Date.now() / 1_000) + 3_600 };
+      const replacement = `e30.${Buffer.from(JSON.stringify(expiry)).toString("base64url")}.${randomUUID()}`;
+      const issuer = context.mock.method(
+        globalThis,
+        "fetch",
+        async (...[url, request]: Parameters<typeof fetch>) => {
+          assert.equal(String(url), BUILTIN_CODEX_OAUTH_PRESET.tokenUrl);
+          assert.equal(request?.method, "POST");
+          return Response.json({ access_token: replacement, refresh_token: randomUUID() });
+        },
+      );
+      const schedule = () =>
+        fixture.state.read((view) =>
+          view.oauthCredentials.findTokenCustody(namespaceId, source.id),
+        );
+      await fixture.state.transact((unit) =>
+        unit.oauthCredentials.recordTokenSchedule(namespaceId, source.id, "due"),
+      );
       gateway.setStale(true);
-      const patched = await app.inject({
-        method: "PATCH",
-        url: `/namespaces/${namespaceId}/credential-sources/${source.id}`,
-        headers,
-        payload: { secret: replacement },
-      });
-      assert.equal(patched.statusCode, 503, patched.body);
+      const failedRenewal = await tokenService.maintainOAuthSources(4);
+      assert.equal(failedRenewal.deliveryFailed, true);
       const committed = await resolve(sourceInstance, context.signal);
       assert.equal(committed.credential, replacement);
       assert.notEqual(committed.version, initial.version);
       assert.equal(gateway.provider()?.id, preparedProvider.id);
       assert.equal(gateway.provider()?.config.oce_source_version, committed.version);
+      const providerVersion = gateway.provider()?.resourceVersion;
       assert.notEqual(
         gateway.status()?.observed?.providerEnvRevision,
         gateway.status()?.receipt?.desired?.providerEnvRevision,
       );
       assert.equal(gateway.updates.length, 1);
+
+      // The next pass must keep stale delivery due without rewriting the already-current Provider.
+      assert.deepEqual(await tokenService.maintainOAuthSources(4), failedRenewal);
+      assert.equal((await schedule())?.due, true);
+      assert.equal(gateway.updates.length, 1);
+      gateway.observeCurrentEnvironment();
+      assert.equal((await tokenService.maintainOAuthSources(4)).deliveryFailed, false);
+      const observedSchedule = await schedule();
+      assert.equal(observedSchedule?.due, false);
+      assert.equal(observedSchedule?.scheduledVersion, committed.version);
+      assert.equal(issuer.mock.callCount(), 1);
+      assert.equal(gateway.updates.length, 1);
+      assert.equal(gateway.provider()?.resourceVersion, providerVersion);
+      assert.equal(gateway.status()?.receipt?.kind, "PROVIDER_MUTATION_KIND_OBSERVE");
 
       const failedDelivery = await push([source.id]);
       expectResult(failedDelivery, "delivery_failed");

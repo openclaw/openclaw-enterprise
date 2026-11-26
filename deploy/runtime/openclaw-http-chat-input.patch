@@ -38,18 +38,19 @@ index 0930cb34d1d998dfce3e5bc98f1517b4a352bb85..4be82fa9f0af2dfe3a434cf190c66657
    extraSystemPromptTurnContext: undefined,
    replyExpectation: undefined,
 diff --git a/src/gateway/openai-compatible-agent-run.ts b/src/gateway/openai-compatible-agent-run.ts
-index bf548e171554d25903498c7ade80b5c30bc67d96..eed783f27fabc3ee4d1354acecee52bc4b677580 100644
+index d87ec391c2308fa27fa7a84e5b9853b83cc408bc..3c2e7deac1e364ce075f1953ac6fc804f36abdf2 100644
 --- a/src/gateway/openai-compatible-agent-run.ts
 +++ b/src/gateway/openai-compatible-agent-run.ts
-@@ -1,6 +1,6 @@
+@@ -1,7 +1,7 @@
  import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
  import type { AgentStreamParams, ClientToolDefinition } from "../agents/command/shared-types.js";
 -import type { ImageContent } from "../agents/command/types.js";
 +import type { AgentCommandOpts, ImageContent } from "../agents/command/types.js";
  import { isClientToolNameConflictError } from "../agents/embedded-agent-runner/tool-name-allowlist.js";
  import { isFailoverError, isSignalTimeoutReason } from "../agents/failover/error.js";
  import { ToolAuthorizationError } from "../agents/tool-input-error.js";
-@@ -106,6 +106,7 @@
+@@ -107,6 +107,7 @@ export function readOpenAiHttpRunTerminal(result: unknown): {
 
  export async function runOpenAiCompatibleAgentCommand(params: {
    message: string;
@@ -57,7 +58,7 @@ index bf548e171554d25903498c7ade80b5c30bc67d96..eed783f27fabc3ee4d1354acecee52bc
    images?: ImageContent[];
    clientTools?: ClientToolDefinition[];
    extraSystemPrompt?: string;
-@@ -171,6 +172,7 @@
+@@ -177,6 +178,7 @@ export async function runOpenAiCompatibleAgentCommand(params: {
      const result = await agentCommandFromGatewayIngress(
        {
          message: params.message,

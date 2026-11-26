@@ -19,11 +19,13 @@ import type {
 import { type CreateNamespaceInput } from "./namespace-operations.ts";
 import {
   type CreateConnectionTemplateInput,
-  type CreateCredentialClientInput,
-  type RotateCredentialClientInput,
   type DiscoverMcp,
   type UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";
+import type {
+  CreateCredentialClientInput,
+  RotateCredentialClientInput,
+} from "./credential-client-administration.ts";
 import {
   type CompleteNamespaceConnectionInput,
   type StartNamespaceConnectionInput,
@@ -824,7 +826,9 @@ export class OpenClawController {
   }
 
   async listCredentialClients(principalId: string) {
-    return this.composition.credentials.connectionAdministration.listCredentialClients(principalId);
+    return this.composition.credentials.credentialClientAdministration.listCredentialClients(
+      principalId,
+    );
   }
 
   async createCredentialClient(
@@ -833,7 +837,7 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.createCredentialClient(
+    return this.composition.credentials.credentialClientAdministration.createCredentialClient(
       principalId,
       input,
       audit,
@@ -848,7 +852,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.rotateCredentialClient(
+    return this.composition.credentials.credentialClientAdministration.rotateCredentialClient(
       principalId,
       id,
       input,
@@ -863,7 +867,7 @@ export class OpenClawController {
     audit?: AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    return this.composition.credentials.connectionAdministration.deleteCredentialClient(
+    return this.composition.credentials.credentialClientAdministration.deleteCredentialClient(
       principalId,
       id,
       audit,
@@ -872,7 +876,7 @@ export class OpenClawController {
   }
 
   async cleanupCredentialClients(): Promise<void> {
-    return this.composition.credentials.connectionAdministration.cleanupCredentialClients();
+    return this.composition.credentials.credentialClientAdministration.cleanupCredentialClients();
   }
 
   /** Trusted, server-side OAuth operations resolve the current value at each use. */
@@ -880,7 +884,10 @@ export class OpenClawController {
     client: Readonly<OAuthClient>,
     use: (secret: string | undefined) => Promise<T>,
   ): Promise<T> {
-    return this.composition.credentials.connectionAdministration.withOAuthClientSecret(client, use);
+    return this.composition.credentials.credentialClientAdministration.withOAuthClientSecret(
+      client,
+      use,
+    );
   }
 
   async listServiceAccounts(

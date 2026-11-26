@@ -1,4 +1,4 @@
-import type { Namespace } from "@openclaw-enterprise/contracts";
+import type { ConnectionTemplate, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
 import { namedDenial, requestFailure, responseFields } from "./api-client.mjs";
 import {
   readCredentialSourceMetadata,
@@ -13,9 +13,19 @@ import {
   statusBlock,
   validateFields,
 } from "./dom.mjs";
+import { createDeviceLogin, type DeviceLogin } from "./agents/device-login.mjs";
+import {
+  authorizeInNewTab,
+  consentFailureMessage,
+  scopeChoices,
+  type ConsentStart,
+  type OAuthTemplate,
+  isOAuthTemplate,
+} from "./credential-consent.mjs";
 import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
-import { secretValueControl } from "./secrets.mjs";
+import { credentialValueControl } from "./credential-value.mjs";
+import { createCredentialSourceActions } from "./credential-source-actions.mjs";
 
 type Context = NamespacePageContext &
   Pick<ConsolePageContext, "drafts"> & {
@@ -25,13 +35,21 @@ type Context = NamespacePageContext &
     onInventoryAccessRefused(cause: unknown): void;
   };
 
-type StaticTemplate = { id: string; displayName: string };
-type InventorySource = {
-  id: string;
-  name: string;
-  type: string;
-  state: "registering" | "ready" | "deleting";
-} & Pick<CredentialSourceSummary, "connectionTemplateId" | "modelPreset">;
+type UsableTemplate = ConnectionTemplate & {
+  current: Extract<
+    ConnectionTemplate["current"],
+    { mode: "static_bearer" | "manual" | "mcp_discovery" }
+  >;
+};
+type InventorySource =
+  | CredentialSourceSummary
+  | {
+      id: string;
+      name: string;
+      type: string;
+      state: "registering" | "ready" | "deleting";
+      ownerCapability: "credential_proxy";
+    };
 const sourceTypeLabel = new Map<string, string>([
   ["static", "Static"],
   ["oauth2-refresh-token", "OAuth refresh token"],
@@ -45,29 +63,28 @@ const sourceStateLabel: Record<InventorySource["state"], string> = {
 const CREATE_DENIED =
   "Creating a Credential Source needs Credential Source create in this Namespace. Ask an Installation administrator for access.";
 const CONFLICT_RECOVERY = "source-create-conflict";
+const DEVICE_LOGIN_RECOVERY = "source-device-login";
 
-function sourcePurpose(source: InventorySource) {
+function sourceOrigin(source: InventorySource) {
+  if ("ownerCapability" in source) {
+    return "—";
+  }
   if (source.modelPreset) {
-    return `Model preset: ${source.modelPreset}`;
+    return source.modelPreset === "openai" ? "OpenAI API key" : "Codex PAT";
+  }
+  if (source.oauthConsentKind === "builtin_codex") {
+    return "Codex OAuth";
   }
   if (source.connectionTemplateId) {
     return `Template: ${source.connectionTemplateId}`;
   }
-  return "—";
+  return source.type === "static" ? "Static credential" : "—";
 }
 
 function readInventorySource(value: unknown, namespaceId: string): InventorySource | null {
   const managed = readCredentialSourceMetadata(value, namespaceId);
   if (managed) {
-    const { id, name, type, state, connectionTemplateId, modelPreset } = managed;
-    return {
-      id,
-      name,
-      type,
-      state,
-      ...(connectionTemplateId ? { connectionTemplateId } : {}),
-      ...(modelPreset ? { modelPreset } : {}),
-    };
+    return managed;
   }
   const data = responseFields(value);
   const ref = responseFields(data.ref);
@@ -88,7 +105,13 @@ function readInventorySource(value: unknown, namespaceId: string): InventorySour
   ) {
     return null;
   }
-  return { id: data.id, name: data.name, type: data.type, state: data.state };
+  return {
+    id: data.id,
+    name: data.name,
+    type: data.type,
+    state: data.state,
+    ownerCapability: "credential_proxy",
+  };
 }
 
 function sourceList(value: unknown, namespaceId: string) {
@@ -108,16 +131,15 @@ function sourceList(value: unknown, namespaceId: string) {
   return { items, unavailable };
 }
 
-function staticTemplates(value: unknown, namespaceId: string): StaticTemplate[] {
+function usableTemplates(value: unknown, namespaceId: string): UsableTemplate[] {
   if (!Array.isArray(value)) {
     throw new Error("Invalid connection template list");
   }
-  const result: StaticTemplate[] = [];
-  for (const entry of value) {
+  return value.flatMap((entry) => {
     const template = responseFields(entry);
     const current = responseFields(template.current);
-    if (current.mode !== "static_bearer") {
-      continue;
+    if (!["static_bearer", "manual", "mcp_discovery"].includes(String(current.mode))) {
+      return [];
     }
     if (
       typeof template.id !== "string" ||
@@ -126,11 +148,10 @@ function staticTemplates(value: unknown, namespaceId: string): StaticTemplate[] 
       !template.displayName ||
       (template.namespaceId !== undefined && template.namespaceId !== namespaceId)
     ) {
-      throw new Error("Invalid static connection template metadata");
+      throw new Error("Invalid connection template metadata");
     }
-    result.push({ id: template.id, displayName: template.displayName });
-  }
-  return result;
+    return [entry as UsableTemplate];
+  });
 }
 
 function createFailure(cause: unknown): string {
@@ -142,13 +163,13 @@ function createFailure(cause: unknown): string {
     return "The selected credential owner does not support this operation.";
   }
   if (status === 503) {
-    return "The credential owner is unavailable and the request outcome is unknown. Close this dialog and select Refresh to check the Source inventory before submitting again.";
+    return "A required dependency is unavailable and the request outcome is unknown. Close this dialog and select Refresh to check the Source inventory before submitting again.";
   }
   if (status === 429) {
     return "The request was rate limited. Try again later.";
   }
   if (status === 400 || status === 404) {
-    return "The Source was refused. Check the name, value, and selected purpose.";
+    return "The Source was refused. Check the name, value, and selected preset or Template.";
   }
   if (status === 409) {
     return "The request outcome is unknown. The credential owner may already hold the value. Close this dialog and select Refresh to check the Source inventory. If the Source is absent, ask an operator to check the credential owner before trying again.";
@@ -162,9 +183,60 @@ export function renderCredentialSources(context: Context) {
   const sources = sourceList(context.items, context.namespaceId);
   let dialog: HTMLDialogElement | null = null;
   let pending = false;
+  let consentAttempt: AbortController | null = null;
+  let device: ReturnType<typeof createDeviceLogin> | null = null;
+  let deviceBusy = false;
+  let deviceState = (context.drafts.get(DEVICE_LOGIN_RECOVERY) as DeviceLogin | undefined) ?? null;
+  const captureDevice = () => deviceState ?? undefined;
+  context.drafts.track(DEVICE_LOGIN_RECOVERY, captureDevice);
   let notice: HTMLElement | null = null;
   const list = element("div");
-  const feedback = element("div", { role: "status" });
+  const feedback = element("div", { role: "status", tabindex: "-1" });
+  let deviceNotice: HTMLElement | null = null;
+  function updateDeviceNotice() {
+    deviceNotice?.remove();
+    deviceNotice = null;
+    if (!deviceState || deviceState.status === "ready") {
+      return;
+    }
+    deviceNotice = statusBlock(
+      "warning",
+      "Codex sign-in pending",
+      deviceState.status === "start_unconfirmed"
+        ? "The sign-in start could not be confirmed. Ask an Installation administrator to investigate before starting another sign-in."
+        : "Select Create Credential Source to resume or cancel the pending sign-in.",
+    );
+    feedback.append(deviceNotice);
+  }
+  const sourceActions = createCredentialSourceActions({
+    context,
+    onChanged: async (message) => {
+      try {
+        const inventory = sourceList(await context.request(path), context.namespaceId);
+        sources.items = inventory.items;
+        sources.unavailable = inventory.unavailable;
+        renderList();
+        feedback.replaceChildren(statusBlock("success", null, message));
+        feedback.focus();
+      } catch (cause) {
+        const { status } = requestFailure(cause);
+        if (status === 401) {
+          context.onExpired();
+        } else if (status === 400 || status === 403 || status === 404) {
+          context.onInventoryAccessRefused(cause);
+        } else {
+          feedback.replaceChildren(
+            statusBlock(
+              "warning",
+              null,
+              `${message} The inventory could not be refreshed. Select Refresh to check it.`,
+            ),
+          );
+        }
+      }
+    },
+  });
+  updateDeviceNotice();
   const conflictName = context.drafts.get(CONFLICT_RECOVERY);
   if (typeof conflictName === "string") {
     if (sources.items.some((source) => source.name === conflictName)) {
@@ -179,7 +251,7 @@ export function renderCredentialSources(context: Context) {
       );
     }
   }
-  const create = button("Create Source", () => void openCreate(), { tone: "primary" });
+  const create = button("Create Credential Source", () => void openCreate(), { tone: "primary" });
   const toolbar = element("div", { className: "collection-toolbar" }, create);
   if (context.namespace?.status !== "ready") {
     notice = element(
@@ -190,12 +262,10 @@ export function renderCredentialSources(context: Context) {
     setUnavailable(create, true, notice);
   }
   context.view.replaceChildren(
-    statusBlock(
-      "info",
-      "Credential values stay private",
-      "Only readable Source metadata appears here. Creating a Source does not grant an Agent access or deploy it. After an unconfirmed creation, ask an operator to check the credential owner before retrying if the Source you tried to create is absent from your readable inventory.",
-      [],
-      { role: null },
+    element(
+      "p",
+      { className: "hint" },
+      "Credential values are private. Agent access and deployment are separate steps.",
     ),
     toolbar,
     ...(notice ? [notice] : []),
@@ -203,17 +273,29 @@ export function renderCredentialSources(context: Context) {
     list,
   );
   context.holdWhileWriting({
-    writing: () => pending,
+    writing: () => pending || deviceBusy || sourceActions.writing(),
     held: () => {
       feedback.replaceChildren(
         statusBlock("info", null, "Wait for the current request to finish before leaving."),
       );
     },
-    released: closeDialog,
+    released: () => {
+      closeDialog();
+      sourceActions.close();
+    },
   });
 
   function renderList() {
     const rows = sources.items;
+    const actions = new Map(
+      rows.flatMap((source) => {
+        if ("ownerCapability" in source) {
+          return [];
+        }
+        const controls = sourceActions.forSource(source);
+        return controls ? [[source.id, controls] as const] : [];
+      }),
+    );
     if (!rows.length) {
       list.replaceChildren(
         element(
@@ -241,7 +323,7 @@ export function renderCredentialSources(context: Context) {
           element(
             "h2",
             { className: "resource-list-header secret-list-heading" },
-            "Source library ",
+            "Credential Sources ",
             element("span", { className: "badge" }, String(rows.length)),
           ),
           element(
@@ -253,9 +335,14 @@ export function renderCredentialSources(context: Context) {
               element(
                 "tr",
                 {},
-                ...["Name", "Source ID", "Type", "Purpose", "State"].map((label) =>
-                  element("th", { scope: "col" }, label),
-                ),
+                ...[
+                  "Name",
+                  "Source ID",
+                  "Type",
+                  "Preset or Template",
+                  "State",
+                  ...(actions.size ? ["Actions"] : []),
+                ].map((label) => element("th", { scope: "col" }, label)),
               ),
             ),
             element(
@@ -276,12 +363,21 @@ export function renderCredentialSources(context: Context) {
                     { "data-label": "Type" },
                     sourceTypeLabel.get(source.type) ?? source.type,
                   ),
-                  element("td", { "data-label": "Purpose" }, sourcePurpose(source)),
+                  element("td", { "data-label": "Preset or Template" }, sourceOrigin(source)),
                   element(
                     "td",
                     {},
                     element("span", { className: "badge" }, sourceStateLabel[source.state]),
                   ),
+                  ...(actions.size
+                    ? [
+                        element(
+                          "td",
+                          { "data-label": "Actions" },
+                          ...(actions.get(source.id) ? [actions.get(source.id)!] : []),
+                        ),
+                      ]
+                    : []),
                 ),
               ),
             ),
@@ -301,9 +397,15 @@ export function renderCredentialSources(context: Context) {
   }
 
   function closeDialog() {
-    if (pending || !dialog) {
+    if (consentAttempt) {
+      consentAttempt.abort();
       return;
     }
+    if (pending || deviceBusy || !dialog) {
+      return;
+    }
+    deviceState = device?.capture() ?? deviceState;
+    device?.setActive(false);
     dialog.close();
   }
 
@@ -364,7 +466,7 @@ export function renderCredentialSources(context: Context) {
       element("p", { role: "status" }, "Checking Source creation access and available templates…"),
     );
     try {
-      const templates = staticTemplates(await context.request(templatePath), context.namespaceId);
+      const templates = usableTemplates(await context.request(templatePath), context.namespaceId);
       if (dialog !== current || !current.open || !context.isCurrent()) {
         return;
       }
@@ -395,15 +497,74 @@ export function renderCredentialSources(context: Context) {
     }
   }
 
+  async function refreshCreated(sourceId: string, description: string) {
+    let listed = false;
+    let refreshed = false;
+    try {
+      const inventory = sourceList(await context.request(path), context.namespaceId);
+      sources.items = inventory.items;
+      sources.unavailable = inventory.unavailable;
+      listed = inventory.items.some((item) => item.id === sourceId);
+      refreshed = true;
+      renderList();
+    } catch (cause) {
+      const { status } = requestFailure(cause);
+      if (status === 401) {
+        context.onExpired();
+        return;
+      }
+      if (status === 400 || status === 403 || status === 404) {
+        context.onInventoryAccessRefused(cause);
+        return;
+      }
+    }
+    feedback.replaceChildren(statusBlock("success", "Credential Source created", description));
+    if (!listed) {
+      feedback.append(
+        statusBlock(
+          "warning",
+          null,
+          refreshed
+            ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
+            : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it.",
+        ),
+      );
+    }
+  }
+
   function renderForm(
     current: HTMLDialogElement,
     heading: HTMLHeadingElement,
     body: HTMLElement,
     actions: HTMLElement,
     cancel: HTMLButtonElement,
-    templates: StaticTemplate[],
+    templates: UsableTemplate[],
     templateDiscoveryFailed = false,
   ) {
+    const choice = element(
+      "select",
+      { id: "credential-source-choice", required: true },
+      element("option", { value: "" }, "Choose a preset or Template"),
+      element(
+        "optgroup",
+        { label: "Built-in presets" },
+        element("option", { value: "model:openai" }, "OpenAI API key"),
+        element("option", { value: "model:codex-pat" }, "Codex PAT"),
+        element("option", { value: "builtin:codex-oauth" }, "Codex OAuth"),
+        element("option", { value: "plain" }, "Static credential"),
+      ),
+      ...(templates.length
+        ? [
+            element(
+              "optgroup",
+              { label: "Connection Templates" },
+              ...templates.map((template) =>
+                element("option", { value: `template:${template.id}` }, template.displayName),
+              ),
+            ),
+          ]
+        : []),
+    );
     const name = element("input", {
       id: "credential-source-name",
       required: true,
@@ -411,21 +572,7 @@ export function renderCredentialSources(context: Context) {
       "data-trim": "",
     });
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
-    const purpose = element(
-      "select",
-      { id: "credential-source-purpose", required: true },
-      element("option", { value: "" }, "Choose a purpose"),
-      element("option", { value: "model:openai" }, "OpenAI model credential"),
-      element("option", { value: "model:codex-pat" }, "Codex PAT model credential"),
-      ...templates.map((template) =>
-        element(
-          "option",
-          { value: `template:${template.id}` },
-          `Static Bearer · ${template.displayName}`,
-        ),
-      ),
-    );
-    const { value, reveal, multiline } = secretValueControl("credential-source-value");
+    const { value, reveal, multiline, reset } = credentialValueControl("credential-source-value");
     const valueField = field({
       label: "Credential value",
       control: value,
@@ -433,40 +580,35 @@ export function renderCredentialSources(context: Context) {
       help: multiline ? "Spaces kept; line breaks normalized." : "Enter a single-line value.",
     });
     value.before(reveal);
+    const staticFields = element(
+      "div",
+      { className: "stack" },
+      field({ label: "Source name", control: name }),
+      valueField,
+      element("p", { className: "hint" }, "The value is write-only and cannot be read back."),
+    );
+    const details = element("div", { className: "stack" });
+    const result = element("div", { role: "status" });
     const form = element(
       "form",
       { id: "credential-source-form", novalidate: "" },
-      field({ label: "Source name", control: name }),
-      field({
-        label: "Credential purpose",
-        control: purpose,
-        help: "The selected owner checks support when you submit. Static Bearer templates are approved for this Namespace.",
-      }),
-      valueField,
-      element(
-        "p",
-        { className: "muted" },
-        "A static Bearer Template Source cannot be used for model authentication or admitted directly to an Agent.",
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        "The value is write-only and cannot be read back. Agent access and deployment are separate steps.",
-      ),
+      field({ label: "Preset or Connection Template", control: choice }),
+      details,
     );
-    const result = element("div", { role: "status" });
     const submit = element(
       "button",
       { type: "submit", form: form.id, className: "button button--primary" },
       "Create Source",
     );
+    submit.hidden = true;
+    actions.append(submit);
     body.replaceChildren(
       ...(templateDiscoveryFailed
         ? [
             statusBlock(
               "warning",
               "Templates unavailable",
-              "Unable to discover usable Templates. You can still attempt model Source creation; the Source API checks authorization and owner support when submitted.",
+              "Unable to discover Templates. You can still try a built-in preset; the API checks authorization and support.",
               [],
               { role: null },
             ),
@@ -475,32 +617,272 @@ export function renderCredentialSources(context: Context) {
       form,
       result,
     );
-    actions.append(submit);
     if (document.activeElement === heading) {
-      name.focus();
+      choice.focus();
     }
+    let client: HTMLSelectElement | null = null;
+    let selectedScopes: string[] | null | undefined;
+    let selectionNumber = 0;
     let submissionBlocked = false;
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (
+    const selectedTemplate = () =>
+      templates.find((template) => `template:${template.id}` === choice.value);
+    const updateSubmit = () => {
+      const template = selectedTemplate();
+      submit.disabled =
         pending ||
         submissionBlocked ||
-        dialog !== current ||
-        !validateFields([name, purpose, value])
-      ) {
+        (template && isOAuthTemplate(template) ? !client?.value || selectedScopes === null : false);
+    };
+    function renderCodexLogin() {
+      const hint =
+        "This sign-in needs Agent create and Credential Source create in this Namespace.";
+      const control = createDeviceLogin({
+        context,
+        initial: deviceState,
+        hint,
+        onStateChange(login, busy) {
+          deviceState = login;
+          updateDeviceNotice();
+          deviceBusy = busy;
+          choice.disabled = busy || (login !== null && login.status !== "start_unconfirmed");
+          cancel.disabled = busy;
+          context.drafts.record(DEVICE_LOGIN_RECOVERY, captureDevice);
+        },
+        onChange(source) {
+          if (source && !pending) {
+            pending = true;
+            void refreshCreated(
+              source.id,
+              "Codex OAuth sign-in completed. Agent access and deployment are separate steps.",
+            ).finally(() => {
+              pending = false;
+              control.setActive(false);
+              if (device === control) {
+                device = null;
+              }
+              deviceState = null;
+              context.drafts.record(DEVICE_LOGIN_RECOVERY, captureDevice);
+              closeDialog();
+            });
+          }
+        },
+      });
+      device = control;
+      details.append(device.section);
+    }
+
+    async function renderOAuthTemplate(template: OAuthTemplate, number: number) {
+      submit.textContent = "Continue to sign in";
+      submit.disabled = true;
+      if (!template.current.issuerVerification) {
+        details.append(
+          element(
+            "p",
+            { role: "status" },
+            "This Template is not verified. Ask an administrator to verify it before signing in.",
+          ),
+        );
         return;
       }
-      const selection = purpose.value;
+      const clientArea = element("div");
+      const scopes = scopeChoices(template, (selection) => {
+        selectedScopes = selection;
+        updateSubmit();
+      });
+      details.append(clientArea, scopes);
+      clientArea.append(element("p", { role: "status" }, "Loading compatible Credential Clients…"));
+      try {
+        const answer = await context.request(
+          `/namespaces/${encodeURIComponent(context.namespaceId)}/connections/oauth-clients?connectionTemplateId=${encodeURIComponent(template.id)}`,
+        );
+        if (number !== selectionNumber || !current.open || !context.isCurrent()) {
+          return;
+        }
+        if (
+          !Array.isArray(answer) ||
+          !answer.every(
+            (entry) =>
+              typeof responseFields(entry).id === "string" &&
+              typeof responseFields(entry).displayName === "string",
+          )
+        ) {
+          throw new Error("Invalid Credential Client list");
+        }
+        const clients = answer as OAuthClient[];
+        if (!clients.length) {
+          clientArea.replaceChildren(
+            element(
+              "p",
+              { role: "status" },
+              "No compatible Credential Client is available. Ask an administrator to register one for this Template’s issuer.",
+            ),
+          );
+          return;
+        }
+        client = element(
+          "select",
+          { id: "credential-source-client", required: true },
+          element("option", { value: "" }, "Choose a Credential Client"),
+          ...clients.map((item) => element("option", { value: item.id }, item.displayName)),
+        );
+        client.addEventListener("change", updateSubmit);
+        clientArea.replaceChildren(field({ label: "Credential Client", control: client }));
+        updateSubmit();
+      } catch (cause) {
+        if (number !== selectionNumber || !current.open || !context.isCurrent()) {
+          return;
+        }
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          clientArea.replaceChildren(
+            statusBlock(
+              "danger",
+              null,
+              requestFailure(cause).status === 403
+                ? createFailure(cause)
+                : "Could not load compatible Credential Clients. Choose the Template again to retry.",
+            ),
+          );
+        }
+      }
+    }
+
+    async function selectionChanged() {
+      const number = ++selectionNumber;
+      reset();
+      client = null;
+      selectedScopes = undefined;
+      device?.setActive(false);
+      device = null;
+      details.replaceChildren();
+      result.replaceChildren();
+      submit.hidden = !choice.value || choice.value === "builtin:codex-oauth";
+      submit.textContent = "Create Source";
+      const template = selectedTemplate();
+      if (!choice.value) {
+        return;
+      }
+      if (choice.value === "builtin:codex-oauth") {
+        renderCodexLogin();
+        return;
+      }
+      if (!template || template.current.mode === "static_bearer") {
+        details.append(staticFields);
+        if (template) {
+          details.append(
+            element(
+              "p",
+              { className: "hint" },
+              "This Source uses the selected Connection Template.",
+            ),
+          );
+        }
+        updateSubmit();
+        return;
+      }
+      if (!isOAuthTemplate(template)) {
+        return;
+      }
+      await renderOAuthTemplate(template, number);
+    }
+    choice.addEventListener("change", () => void selectionChanged());
+    if (deviceState) {
+      choice.value = "builtin:codex-oauth";
+      void selectionChanged();
+    }
+    async function startOAuthConsent(template: OAuthTemplate) {
+      if (!client || !client.value || selectedScopes === null || !validateFields([client])) {
+        return;
+      }
+      const active = new AbortController();
+      consentAttempt = active;
+      pending = true;
+      choice.disabled = true;
+      submit.disabled = true;
+      result.replaceChildren(element("p", {}, "Opening sign-in…"));
+      try {
+        const response = await authorizeInNewTab(
+          () =>
+            context.request(`/namespaces/${encodeURIComponent(context.namespaceId)}/connections`, {
+              method: "POST",
+              signal: active.signal,
+              body: {
+                connectionTemplateId: template.id,
+                oauthClientId: client!.value,
+                ...(selectedScopes === undefined ? {} : { selectedScopes }),
+              },
+            }) as Promise<ConsentStart>,
+          active.signal,
+          () =>
+            result.replaceChildren(
+              element(
+                "p",
+                {},
+                "Finish sign-in in the new tab. A Source is created only after the callback succeeds.",
+              ),
+            ),
+        );
+        if (active.signal.aborted || !context.isCurrent()) {
+          return;
+        }
+        if (response.outcome === "failed") {
+          result.replaceChildren(
+            statusBlock(
+              "danger",
+              "Sign-in did not finish",
+              consentFailureMessage(response.reason) ?? "Try signing in again.",
+            ),
+          );
+        } else {
+          await refreshCreated(
+            response.sourceId,
+            "Sign-in completed and the Credential Source was created.",
+          );
+          consentAttempt = null;
+          pending = false;
+          closeDialog();
+        }
+      } catch (cause) {
+        if (!active.signal.aborted && context.isCurrent()) {
+          const failure = requestFailure(cause);
+          if (failure.status === 401) {
+            context.onExpired();
+          } else {
+            result.replaceChildren(
+              statusBlock(
+                "danger",
+                "Sign-in did not finish",
+                failure.status === 403
+                  ? createFailure(cause)
+                  : (failure.serverMessage ??
+                      (cause instanceof Error
+                        ? cause.message
+                        : "Could not start or finish sign-in.")),
+              ),
+            );
+          }
+        }
+      } finally {
+        consentAttempt = null;
+        pending = false;
+        choice.disabled = false;
+        updateSubmit();
+        if (active.signal.aborted) {
+          closeDialog();
+        }
+      }
+    }
+
+    async function createStaticSource(template: UsableTemplate | undefined) {
       const preset =
-        selection === "model:openai"
+        choice.value === "model:openai"
           ? "openai"
-          : selection === "model:codex-pat"
+          : choice.value === "model:codex-pat"
             ? "codex-pat"
             : undefined;
-      const templateId = selection.startsWith("template:")
-        ? selection.slice("template:".length)
-        : undefined;
-      if (!preset && (!templateId || !templates.some((template) => template.id === templateId))) {
+      const templateId = template?.current.mode === "static_bearer" ? template.id : undefined;
+      if ((!preset && !templateId && choice.value !== "plain") || !validateFields([name, value])) {
         return;
       }
       const sourceName = name.value.trim();
@@ -508,13 +890,11 @@ export function renderCredentialSources(context: Context) {
       cancel.disabled = true;
       submit.disabled = true;
       name.disabled = true;
-      purpose.disabled = true;
+      choice.disabled = true;
       value.disabled = true;
       reveal.disabled = true;
       result.replaceChildren(element("p", {}, "Creating Source…"));
       let created = false;
-      let outcomeUnknown = false;
-      let denied = false;
       try {
         const request = context.request(path, {
           method: "POST",
@@ -524,7 +904,9 @@ export function renderCredentialSources(context: Context) {
             type: "static",
             ...(preset
               ? { config: { provider_preset: preset } }
-              : { connectionTemplateId: templateId }),
+              : templateId
+                ? { connectionTemplateId: templateId }
+                : {}),
             secret: value.value,
           },
         });
@@ -544,94 +926,69 @@ export function renderCredentialSources(context: Context) {
           throw new Error("Unconfirmed Credential Source creation");
         }
         created = true;
-        let listed = false;
-        let refreshed = false;
-        try {
-          const inventory = sourceList(await context.request(path), context.namespaceId);
-          sources.items = inventory.items;
-          sources.unavailable = inventory.unavailable;
-          listed = inventory.items.some((item) => item.id === source.id);
-          refreshed = true;
-          renderList();
-        } catch (cause) {
-          const { status } = requestFailure(cause);
-          if (status === 401) {
-            context.onExpired();
-            return;
-          }
-          if (status === 400 || status === 403 || status === 404) {
-            context.onInventoryAccessRefused(cause);
-            return;
-          }
-        }
-        feedback.replaceChildren(
-          statusBlock(
-            "success",
-            "Credential Source created",
-            templateId
-              ? `${source.name} is ready. This Template Source cannot be used for model authentication or admitted directly to an Agent.`
-              : `${source.name} is ready. Agent access and deployment are separate steps.`,
-          ),
+        await refreshCreated(
+          source.id,
+          `${source.name} is ready. Agent access and deployment are separate steps.`,
         );
-        if (!listed) {
-          feedback.append(
-            statusBlock(
-              "warning",
-              null,
-              refreshed
-                ? "The created Source is not in your readable inventory. Ask an administrator for exact Source read access before reusing it."
-                : "The Source was created, but the readable inventory could not be refreshed. Select Refresh to check it.",
-            ),
-          );
-        }
       } catch (cause) {
         value.value = "";
-        if (requestFailure(cause).status === 401) {
+        const failure = requestFailure(cause);
+        if (failure.status === 401) {
           context.onExpired();
-        } else if (dialog === current && current.open && context.isCurrent()) {
+        } else if (current.open && context.isCurrent()) {
           result.replaceChildren(
             statusBlock("danger", "Source not confirmed", createFailure(cause)),
           );
-          outcomeUnknown = ![400, 403, 404, 429, 501].includes(requestFailure(cause).status ?? 0);
-          if (requestFailure(cause).status === 409) {
+          const outcomeUnknown = ![400, 403, 404, 429, 501].includes(failure.status ?? 0);
+          const denied = failure.status === 403;
+          submissionBlocked = outcomeUnknown || denied;
+          if (failure.status === 409) {
             const capture = () => sourceName;
             context.drafts.track(CONFLICT_RECOVERY, capture);
             context.drafts.unsavedWhen(CONFLICT_RECOVERY, () => false);
             context.drafts.record(CONFLICT_RECOVERY, capture);
           }
-          denied = requestFailure(cause).status === 403;
-          submissionBlocked = outcomeUnknown || denied;
-          if (outcomeUnknown) {
-            const checkInventory = element(
+          if (outcomeUnknown || denied) {
+            const notice = element(
               "p",
-              { className: "muted", role: "status", id: "source-create-unknown" },
-              "Refresh Credential Sources to check the inventory before creating another Source.",
+              {
+                className: "muted",
+                role: "status",
+                id: denied ? "source-create-denied" : "source-create-unknown",
+              },
+              denied
+                ? createFailure(cause)
+                : "Refresh Credential Sources to check the inventory before creating another Source.",
             );
-            toolbar.after(checkInventory);
-            setUnavailable(create, true, checkInventory);
-          }
-          if (denied) {
-            const denial = element(
-              "p",
-              { className: "muted", role: "status", id: "source-create-denied" },
-              createFailure(cause),
-            );
-            toolbar.after(denial);
-            setUnavailable(create, true, denial);
+            toolbar.after(notice);
+            setUnavailable(create, true, notice);
           }
         }
       } finally {
         pending = false;
         cancel.disabled = false;
         name.disabled = false;
-        purpose.disabled = false;
+        choice.disabled = false;
         value.disabled = false;
         reveal.disabled = false;
         if (created) {
           closeDialog();
         } else {
-          submit.disabled = outcomeUnknown || denied;
+          updateSubmit();
         }
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (pending || submissionBlocked || dialog !== current || !validateFields([choice])) {
+        return;
+      }
+      const template = selectedTemplate();
+      if (template && isOAuthTemplate(template)) {
+        await startOAuthConsent(template);
+      } else {
+        await createStaticSource(template);
       }
     });
   }

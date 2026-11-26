@@ -6,6 +6,7 @@ import {
 } from "./repository-grant.ts";
 import {
   limitRepositoryApi,
+  restrictRepositoryPullRequestCreation,
   type RepositoryGitDeliveryResolver,
   type RepositoryGitRestAuthority,
 } from "../../access/delivery.ts";
@@ -13,6 +14,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
+  DeploymentRequestMatch,
   githubInstallationProfile as installationProfile,
   RepositoryApiLevel,
   RepositoryApiLimits,
@@ -504,6 +506,16 @@ function scopedRestPermissions(policy: GitHubRepositoryRegistration["namespaces"
   };
 }
 
+/** The exact request used by stock gh for publication in an authorized repository. */
+export function githubPullRequestCreationRequest(repository: string) {
+  return {
+    binary: "/usr/local/bin/gh",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "POST", path: `/repos/${repository}/pulls` },
+  } satisfies DeploymentRequestMatch;
+}
+
 function registryGrantId(
   registry: GitHubRepositoryRegistry,
   fields: Readonly<Record<string, unknown>>,
@@ -733,12 +745,6 @@ export function createGitHubRepositoryDeliveryResolver(
           "Native Git requires finite repository access with a nonempty network policy.",
         );
       }
-      // The credential covers every bound repository, and a pull request can name any of them
-      // in the target's fork network as its head. Creation therefore needs a saved grant on each.
-      const granted = new Set(savedPolicy?.grants.map(({ repository }) => repository));
-      const scopedRest = scope.repositories.every(({ repository }) => granted.has(repository))
-        ? scope.scopedRest
-        : scope.scopedRest.map(({ createPullRequests, ...rest }) => Object.freeze(rest));
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
@@ -747,7 +753,14 @@ export function createGitHubRepositoryDeliveryResolver(
           repositories,
           permissions: scope.permissions,
           ...(nativeGit && { nativeGit: "v1" as const }),
-          ...(nativeGit && scopedRest.length > 0 && { scopedRest: Object.freeze(scopedRest) }),
+          ...(nativeGit &&
+            scope.scopedRest.length > 0 && {
+              scopedRest: restrictRepositoryPullRequestCreation(
+                scope.scopedRest,
+                repositories,
+                savedPolicy.grants,
+              ),
+            }),
         }),
       });
     }

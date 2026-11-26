@@ -1,14 +1,9 @@
-import type {
-  ConnectionTemplate,
-  CredentialClient,
-  Namespace,
-  OAuthClient,
-  OAuthConnectionTemplateVersion,
-} from "@openclaw-enterprise/contracts";
+import type { CredentialClient, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
+import type { OAuthTemplate } from "./credential-consent.mjs";
 import { requestFailure } from "./api-client.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
-import { secretValueProblem } from "./secrets.mjs";
+import { credentialValueProblem } from "./credential-value.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 type ClientKind = CredentialClient["kind"];
@@ -19,14 +14,6 @@ const methods: readonly OAuthClient["tokenEndpointAuthMethod"][] = [
   "client_secret_post",
   "none",
 ];
-
-export type OAuthTemplate = ConnectionTemplate & {
-  readonly current: OAuthConnectionTemplateVersion;
-};
-
-export function isOAuthTemplate(template: ConnectionTemplate): template is OAuthTemplate {
-  return template.current.mode === "manual" || template.current.mode === "mcp_discovery";
-}
 
 export function availableInNamespace(value: { namespaceId?: string }, namespaceId: string | null) {
   return !value.namespaceId || value.namespaceId === namespaceId;
@@ -77,7 +64,7 @@ export async function readPrivateKey(control: HTMLInputElement) {
   if (!problem) {
     try {
       value = await file.text();
-      problem = secretValueProblem(value) || (!value ? "Choose a nonempty key file." : "");
+      problem = credentialValueProblem(value) || (!value ? "Choose a nonempty key file." : "");
     } catch {
       problem = "Could not read this key file. Choose it again.";
     }

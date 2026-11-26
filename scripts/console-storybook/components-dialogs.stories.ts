@@ -23,9 +23,9 @@ export const PluginsTablet = {
 };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor (drawer)" };
 export const SlackDrawerPhone = { ...phone("slackDrawer"), name: "Slack editor (phone)" };
-export const CreateSecret = { ...story("slackCreateSecretModal"), name: "Create Secret" };
+export const CreateSecret = { ...story("secretsCreate"), name: "Create Secret" };
 export const CreateSecretPhone = {
-  ...phone("slackCreateSecretModal"),
+  ...phone("secretsCreate"),
   name: "Create Secret (phone)",
 };
 export const DesktopBackdrop = story("secretsCreate", {

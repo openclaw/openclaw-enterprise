@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: "2026-11-23"
-last_updated_session: "authoring-run/33927adf-1105-42ee-be57-c37d2132a624"
+updated: "2026-11-26"
+last_updated_session: "authoring-run/7d89351c-291e-4e5a-828d-3c7c81cdb253"
 ---
 
 # Agent sandbox policy flow
@@ -84,15 +84,15 @@ immutable `SandboxResourceRef.proxyWiring`. Proxy checks the map, auxiliary rule
 policy. Binding, deploy and provisioning reject general network grants targeting
 `github.com`, its subdomains or IP addresses when protected Git owns the route.
 
-For Source-backed Git,
 `packages/occ/src/agent-deployment-admission.ts:prepareGitHubRepository` refuses
-a separately saved repository network policy before Source enrollment. OCC
-derives the revision's grants from the saved GitHub App and repository access,
-the registry and ceiling, and the Source's verified GitHub identities.
-`openshell-repository-policy.ts` compiles those frozen grants into exact Git
-service requests. These Git-only grants do not admit GitHub REST calls. A
-credential-free metadata GET requires its own admitted network rule and returns
-the upstream response without injection or filtering. [Native Git access levels](../reference/repository-credentials/access-levels.md#native-git-delivery)
+a separate repository network policy before Source enrollment. OCC derives
+Repository grants from Agent selections, the registry, the repository ceiling,
+and verified Source identities. `admitCredentialPolicy` saves public requests
+separately from credential injection when the Sandbox ceiling permits
+`/usr/bin/curl` to reach `api.github.com:443`. `openshell-staged-credential-policy.ts:stagedCredentialPolicies`
+enforces `GET /repos/{owner}/{repository}` for each covered grant. The Worker
+retains this public rule during Git Source withdrawal.
+[Public repository metadata](../reference/repository-credentials/access-levels.md#public-repository-metadata)
 
 `apps/controller/src/http/sandbox-policy.ts` audits the approved additions
 and version in the save transaction. The only facet is `networking`.
@@ -262,6 +262,8 @@ counters, controls and empty rows.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-26 04:30: Trace public metadata routes derived from Repository grants. (authoring-run/7d89351c-291e-4e5a-828d-3c7c81cdb253 - 28b1973112c415befd20b168336bbfaa6cbc09fb)
 
 - 2026-11-23 20:32: Trace Console API limits. (authoring-run/33927adf-1105-42ee-be57-c37d2132a624 - 7402e100f1)
 

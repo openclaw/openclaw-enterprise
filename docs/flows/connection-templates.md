@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: 2026-11-24
-last_updated_session: authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090
+updated: 2026-11-25
+last_updated_session: authoring-run/2ae72e91-8611-461a-b01f-65bf8fc3e7a1
 ---
 
 # How OCC saves a connection template
@@ -59,7 +59,7 @@ For manual OAuth, OCC authorizes Installation administration and verifies the en
 
 ### 2. Register and maintain a credential client
 
-`packages/occ/src/connection-administration.ts:createCredentialClient` and `packages/occ/src/state/postgres-credential-clients.ts:postgresCredentialClients`
+`packages/occ/src/credential-client-administration.ts:createCredentialClient` and `packages/occ/src/state/postgres-credential-clients.ts:postgresCredentialClients`
 
 `createCredentialClient` and `rotateCredentialClient` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteCredentialClient` only stages database work for worker cleanup and remains composable.
 
@@ -114,6 +114,8 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-25 14:46: Point Credential Client administration to its own module. (authoring-run/2ae72e91-8611-461a-b01f-65bf8fc3e7a1 - 407247469c435c400c2bf7af763ec69cfebb6b53)
 
 - 2026-11-24 11:56: Record the OAuth maintenance interval and on-demand renewal. (authoring-run/12723449-2a3d-4726-9b6e-1901a7a00090 - b49a9c6cface9c77134d4e83674c003138169c68)
 

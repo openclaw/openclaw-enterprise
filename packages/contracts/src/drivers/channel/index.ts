@@ -21,7 +21,7 @@ export interface ChannelDirectoryResult {
   readonly complete: boolean;
 }
 
-/** Values stay inside the Secret Driver callback; adapters own native field semantics. */
+/** OCC supplies a value only to the validation callback; adapters own native field semantics. */
 export type ChannelCredentialReader = (
   binding: string,
   path: string,
