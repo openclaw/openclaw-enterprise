@@ -135,6 +135,11 @@ export async function verifyDedicatedGatewayAssets(
     const [publication] = publicationSkills;
     assert.equal(publication?.source, "openclaw-extra");
     assert.equal(publication.modelVisible, true);
+    // The catalog description must guide a draft request before the Agent reads the skill.
+    assert.match(
+      String(publication.description),
+      /read this skill first.*pull request or draft PR.*use gh api for publication/iu,
+    );
     const gitOnly = await listRepositorySkills(
       t,
       repositoryRestSkillConfiguration(configuration, false),

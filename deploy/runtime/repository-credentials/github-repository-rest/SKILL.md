@@ -1,6 +1,6 @@
 ---
 name: github-repository-rest
-description: Use gh api for the GitHub pull request and issue operations your repository grant allows.
+description: Read this skill first to open a GitHub pull request or draft PR. Use gh api for publication. Also covers authorized legacy issue reads.
 ---
 
 ## Open a pull request with a managed GitHub App Source
