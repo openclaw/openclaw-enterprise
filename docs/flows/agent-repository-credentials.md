@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-26"
-last_updated_session: "authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd"
+last_updated_session: "authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6"
 ---
 
 # Agent repository credential flow
@@ -263,6 +263,15 @@ resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
+The runtime image installs the `github-repository-rest` skill in Codex's admin
+skill directory. For Dedicated OpenClaw with a TokenService Repository binding,
+`apps/controller/src/drivers/compute/kubernetes/index.ts:projectGatewayRevision`
+adds that directory to the Gateway's skill discovery and disables the `github`
+skill by key. The Gateway includes the selected skill in the worker's catalog.
+An explicit skill list that selected `github` selects the managed skill instead.
+The skill explains how to publish with stock `gh api` and the binding placeholder.
+The frozen network and injection rules authorize the request.
+
 Configuration routes canonical HTTPS hosts to the gateway. Before returning a
 bearer, the helper checks host, path, generation and deadline.
 `OCE_REPOSITORY_REF` selects bindings.
@@ -389,6 +398,8 @@ exclude CNI.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 12:46: Trace discovery of the GitHub REST skill for Dedicated Harnesses. (authoring-run/5833b956-d69b-4c7f-9d9b-ad44b61052c6 - 8e891c9a583e1412aff1b7b1d0a603a55039748f)
 
 - 2026-11-26 12:32: Trace GitHub pull request admission and delivery from the shared Source. (authoring-run/dec7b2c1-c11c-4d88-b5d3-975fea2fe1fd - 4866499d13714a97fc5cade0f0d1cb915d1adbfc)
 

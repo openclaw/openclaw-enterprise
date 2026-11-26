@@ -5,6 +5,9 @@ import type {
 
 export const REPOSITORY_CLIENT_BIN = "/opt/oce/repository-credentials/bin";
 
+const REPOSITORY_REST_SKILL = "github-repository-rest";
+const REPOSITORY_REST_SKILL_DIRECTORY = `/etc/codex/skills/${REPOSITORY_REST_SKILL}`;
+
 function object(
   value: OpenClawConfigurationValue | undefined,
   path: string,
@@ -84,5 +87,67 @@ export function repositoryNativeConfiguration(
     ...configuration,
     tools: { ...tools, exec },
     ...(entries === undefined ? {} : { agents: { ...agents, entries } }),
+  };
+}
+
+function replaceGitHubSkillSelection(
+  configuration: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const skills = configuration.skills;
+  if (!Array.isArray(skills)) {
+    return configuration;
+  }
+  return {
+    ...configuration,
+    skills: [
+      ...new Set(
+        skills.map((name) =>
+          typeof name === "string" && name.trim() === "github" ? REPOSITORY_REST_SKILL : name,
+        ),
+      ),
+    ],
+  };
+}
+
+/** Replace the generic GitHub instructions, which recommend commands outside the Repository policy. */
+export function repositoryRestSkillConfiguration(
+  configuration: OpenClawConfigurationDocument,
+): OpenClawConfigurationDocument {
+  const skills = object(configuration.skills, "skills");
+  const load = object(skills.load, "skills.load");
+  const entries = object(skills.entries, "skills.entries");
+  const extraDirs = load.extraDirs ?? [];
+  if (!Array.isArray(extraDirs) || extraDirs.some((dir) => typeof dir !== "string")) {
+    throw new Error(
+      "Repository credentials require skills.load.extraDirs to be an array of strings.",
+    );
+  }
+  const agents = object(configuration.agents, "agents");
+  return {
+    ...configuration,
+    skills: {
+      ...skills,
+      load: { ...load, extraDirs: [...new Set([...extraDirs, REPOSITORY_REST_SKILL_DIRECTORY])] },
+      entries: {
+        ...entries,
+        github: { ...object(entries.github, "skills.entries.github"), enabled: false },
+      },
+    },
+    agents: {
+      ...agents,
+      ...(agents.defaults === undefined
+        ? {}
+        : { defaults: replaceGitHubSkillSelection(object(agents.defaults, "agents.defaults")) }),
+      ...(agents.entries === undefined
+        ? {}
+        : {
+            entries: Object.fromEntries(
+              Object.entries(object(agents.entries, "agents.entries")).map(([id, agent]) => [
+                id,
+                replaceGitHubSkillSelection(object(agent, "agents.entries entry")),
+              ]),
+            ),
+          }),
+    },
   };
 }

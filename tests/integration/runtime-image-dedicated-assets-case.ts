@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
+import { repositoryRestSkillConfiguration } from "../../apps/controller/src/drivers/compute/kubernetes/repository-native-configuration.ts";
+import type { OpenClawConfigurationDocument } from "../../packages/contracts/src/index.ts";
+import { list, parseJson, record } from "../fixtures/runtime-image-startup/wire.ts";
 import { runDocker } from "../helpers/runtime-image-docker.ts";
 import { gatewayLogsThroughReady } from "../helpers/runtime-image-gateway-observations.ts";
 import {
+  image,
   runGatewaySmoke,
   runtimeImageModel,
   temporaryGatewayConfiguration,
@@ -15,6 +19,35 @@ type GatewayAssetAssertions = {
   assertGatewayModelLog: (entries: unknown[], modelReference: string) => void;
   assertNoPackagingFailure: (logs: string) => void;
 };
+
+async function listRepositorySkills(t: TestContext, configuration: OpenClawConfigurationDocument) {
+  const path = await temporaryGatewayConfiguration(t, "openclaw", configuration);
+  // The CLI queries a running Gateway first. An isolated container makes it load this config.
+  const { stdout } = await runDocker([
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--user=1000:1000",
+    "--tmpfs=/tmp:uid=1000,gid=1000,mode=1777",
+    "--env=HOME=/tmp",
+    "--env=OPENCLAW_STATE_DIR=/tmp/state",
+    "--env=OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json",
+    "--volume",
+    `${path}:/etc/openclaw/openclaw.json:ro`,
+    "--entrypoint=node",
+    image,
+    "/app/openclaw.mjs",
+    "skills",
+    "list",
+    "--agent",
+    "main",
+    "--json",
+  ]);
+  return list(record(parseJson(stdout)).skills).map(record);
+}
 
 async function assertGatewayRuntimeAssets(containerName: string): Promise<void> {
   const { stdout } = await runDocker([
@@ -81,6 +114,20 @@ export async function verifyDedicatedGatewayAssets(
   assertGatewayReadyLog(entries);
   assertGatewayModelLog(entries, `codex/${runtimeImageModel}`);
   await assertGatewayRuntimeAssets(containerName);
+  // Staging verifies a previously published image. The current image must show the REST
+  // publication instructions to an Agent that inherited a selection of the bundled GitHub skill.
+  if (process.env.OCC_TEST_STAGING_CODEX_VERSION === undefined) {
+    const configuration = { agents: { defaults: { skills: ["github"] } } };
+    const before = await listRepositorySkills(t, configuration);
+    assert.equal(before.find((skill) => skill.name === "github")?.modelVisible, true);
+    const after = await listRepositorySkills(t, repositoryRestSkillConfiguration(configuration));
+    const generic = after.find((skill) => skill.name === "github");
+    assert.equal(generic?.disabled, true);
+    assert.equal(generic.modelVisible, false);
+    const publication = after.find((skill) => skill.name === "github-repository-rest");
+    assert.equal(publication?.source, "openclaw-extra");
+    assert.equal(publication.modelVisible, true);
+  }
   const { stdout } = await runDocker([
     "exec",
     containerName,

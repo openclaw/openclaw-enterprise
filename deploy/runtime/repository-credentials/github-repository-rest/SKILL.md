@@ -1,11 +1,43 @@
 ---
 name: github-repository-rest
-description: Use gh api for issues and pull requests in configured GitHub repositories, including reading, creating, updating, commenting, and reviewing.
+description: Open pull requests and use approved GitHub REST operations in configured repositories with gh api.
 ---
 
 Use `gh api` with the configured repository’s `OWNER/REPO`. Choose the method,
 relative path and fields from the [GitHub REST reference](https://docs.github.com/en/rest).
 OCE supplies authentication. The deployed grant determines which operations you can perform.
+
+## Open a pull request with a managed GitHub App Source
+
+Use the approved target, head, and base for the request. Save `title`, `head`,
+and `base` in a private JSON file outside the checkout and set `payload` to
+its path. The supported publication request is `POST repos/OWNER/REPO/pulls`.
+`gh pr create` uses GraphQL, which this binding does not admit.
+
+Use only the binding's inert placeholder. Dedicated Codex supplies it as
+`GITHUB_TOKEN`. In a Dedicated OpenClaw worker, read `gitPlaceholder` from
+`OPENCLAW_WORKER_TOOL_DATA` and pass it to `gh` as `GH_TOKEN` for this command.
+
+```sh
+marker=${GITHUB_TOKEN:-}
+if [ -n "${OPENCLAW_WORKER_TOOL_DATA:-}" ]; then
+  marker=$(node -p 'JSON.parse(process.env.OPENCLAW_WORKER_TOOL_DATA).gitPlaceholder ?? ""') || exit 1
+fi
+case "$marker" in
+  openshell:resolve:env:*) ;;
+  *) printf '%s\n' 'Managed GitHub credential placeholder is unavailable.' >&2; exit 1 ;;
+esac
+GH_TOKEN="$marker" /usr/local/bin/gh api --hostname github.com --method POST \
+  repos/OWNER/REPO/pulls --input "$payload" --jq .html_url
+```
+
+Confirm the returned link. On denial or missing authentication, report the
+result and stop. Interactive login and alternate credentials are outside this
+managed flow. Check the remote state before retrying an uncertain write.
+
+## Other approved REST grants
+
+Use the following operations only when the deployed grant admits them.
 
 For example, replace `OWNER/REPO` and `123` to inspect an issue or a PR:
 

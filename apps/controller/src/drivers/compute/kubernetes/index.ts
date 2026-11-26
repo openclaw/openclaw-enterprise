@@ -383,6 +383,7 @@ import {
 import {
   REPOSITORY_CLIENT_BIN,
   repositoryNativeConfiguration,
+  repositoryRestSkillConfiguration,
 } from "./repository-native-configuration.ts";
 import { harnessWorkspacePreparationScript } from "./harness/workspace-preparation.ts";
 import {
@@ -14305,10 +14306,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     repositoryRole: "gateway" | "agent" | undefined,
   ): { nativeConfiguration: OpenClawConfigurationDocument; admittedRevision: AgentRevision } {
-    const nativeConfiguration =
+    let nativeConfiguration =
       repositoryRole !== "gateway"
         ? revision.configuration
         : repositoryNativeConfiguration(revision.configuration);
+    if (revision.harness.id === "openclaw" && isNativeStagedRepositoryRevision(revision)) {
+      nativeConfiguration = repositoryRestSkillConfiguration(nativeConfiguration);
+    }
     const admittedNativeConfiguration = this.gatewayNativeHookRelayConfiguration(
       revision,
       this.gatewaySandboxConfiguration(
