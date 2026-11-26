@@ -55,7 +55,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
-import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.mjs";
+import { selectOpenShellGitWithdrawalDenials } from "../../scripts/ci/openshell-git-retention.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.ts";
 import { deferred } from "../helpers/deferred.ts";
 import {

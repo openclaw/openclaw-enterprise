@@ -11,6 +11,7 @@ import {
   launch,
   maintenanceDiagnostics,
   project,
+  type ProjectionFields,
   record,
   runtime,
   stages,
@@ -26,7 +27,7 @@ export {
 
 export const openShellGitRetentionKind = "openshell-git-retention";
 
-const withdrawalDiagnostics = {
+const withdrawalDiagnostics: Record<string, ProjectionFields[string]> = {
   mode: ["mode", choice("live", "replacement")],
   workerReady: ["workerReady", boolean],
   workerComparison: ["workerComparison", choice("unchecked", "same", "different")],
@@ -48,6 +49,14 @@ for (const name of [
 ]) {
   withdrawalDiagnostics[name] = [name, count];
 }
+const retainedExecution = {
+  ...runtime,
+  nonGit: ["nonGit", choice("succeeded")],
+  freshGit: ["freshGit", choice("transparent-policy-denied")],
+  connections: ["connections", count],
+  requests: ["requests", count],
+} satisfies ProjectionFields;
+
 const events = {
   "withdrawal-decision-unconfirmed": withdrawalDiagnostics,
   "finite-removal-live-denial": {
@@ -123,7 +132,10 @@ const events = {
     ],
     count: [
       "count",
-      (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
+      (value) =>
+        typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 2000
+          ? value
+          : undefined,
     ],
     startedAt: ["startedAt", count],
     endedAt: ["endedAt", count],
@@ -237,67 +249,70 @@ const events = {
     stderrBytes: ["stderrBytes", integer(2 * 1024 * 1024)],
   },
   cleanup: { outcome: ["outcome", choice("passed")] },
-};
-for (const stage of ["after-expiry", "after-worker-restart"]) {
-  events[stage] = {
-    ...runtime,
-    nonGit: ["nonGit", choice("succeeded")],
-    freshGit: ["freshGit", choice("transparent-policy-denied")],
-    connections: ["connections", count],
-    requests: ["requests", count],
-  };
+  "after-expiry": retainedExecution,
+  "after-worker-restart": retainedExecution,
+} satisfies Record<string, ProjectionFields>;
+
+type RetentionEvent = keyof typeof events;
+
+function isRetentionEvent(event: unknown): event is RetentionEvent {
+  return typeof event === "string" && Object.hasOwn(events, event);
+}
+
+// Project each constrained receipt with its own field types before comparing fields.
+function projectRetentionFields(value: unknown, event: RetentionEvent) {
+  switch (event) {
+    case "withdrawal-origin-witness": {
+      const selected = project(value, events[event]);
+      if (!selected) {
+        return undefined;
+      }
+      const { outcome, status } = selected;
+      return (outcome === "accepted" && status === 200) ||
+        (outcome === "refused" && (status === 401 || status === 403)) ||
+        (outcome === "unconfirmed" && status === null)
+        ? selected
+        : undefined;
+    }
+    case "finite-removal-live-denial": {
+      const selected = project(value, events[event]);
+      if (!selected) {
+        return undefined;
+      }
+      const { boundary, signer, requestIdHash } = selected;
+      return (boundary === "signed-access-withdrawn" &&
+        signer === "exercised" &&
+        requestIdHash !== null) ||
+        (boundary === "supervisor-policy" && signer === "unexercised" && requestIdHash === null)
+        ? selected
+        : undefined;
+    }
+    case "finite-removal-conversation": {
+      const selected = project(value, events[event]);
+      return selected && selected.assistantSeq > selected.userSeq ? selected : undefined;
+    }
+    case "finite-removal-retired": {
+      const selected = project(value, events[event]);
+      return selected && selected.observedAt < selected.deadlineWallMs ? selected : undefined;
+    }
+    default: {
+      return project(value, events[event]);
+    }
+  }
 }
 
 /** Closed receipt projection; unknown fields, command output and credentials never pass through. */
-export function projectOpenShellGitRetention(value) {
+export function projectOpenShellGitRetention(value: unknown) {
   if (
     !record(value) ||
     value.kind !== openShellGitRetentionKind ||
-    typeof value.event !== "string" ||
-    !Object.hasOwn(events, value.event)
+    !isRetentionEvent(value.event)
   ) {
     return undefined;
   }
-  const selected = project(value, events[value.event]);
-  if (
-    selected !== undefined &&
-    value.event === "withdrawal-origin-witness" &&
-    !(
-      (selected.outcome === "accepted" && selected.status === 200) ||
-      (selected.outcome === "refused" && [401, 403].includes(selected.status)) ||
-      (selected.outcome === "unconfirmed" && selected.status === null)
-    )
-  ) {
-    return undefined;
-  }
-  if (selected !== undefined) {
-    if (
-      value.event === "finite-removal-live-denial" &&
-      !(
-        (selected.boundary === "signed-access-withdrawn" &&
-          selected.signer === "exercised" &&
-          selected.requestIdHash !== null) ||
-        (selected.boundary === "supervisor-policy" &&
-          selected.signer === "unexercised" &&
-          selected.requestIdHash === null)
-      )
-    ) {
-      return undefined;
-    }
-    if (
-      value.event === "finite-removal-conversation" &&
-      selected.assistantSeq <= selected.userSeq
-    ) {
-      return undefined;
-    }
-    if (
-      value.event === "finite-removal-retired" &&
-      selected.observedAt >= selected.deadlineWallMs
-    ) {
-      return undefined;
-    }
-  }
+  const { event } = value;
+  const selected = projectRetentionFields(value, event);
   return selected === undefined
     ? undefined
-    : { kind: openShellGitRetentionKind, event: value.event, ...selected };
+    : { kind: openShellGitRetentionKind, event, ...selected };
 }

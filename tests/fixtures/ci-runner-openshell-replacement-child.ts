@@ -6,7 +6,7 @@ import {
   emitOpenShellProgress,
   emitOpenShellReplacementCheckpoint,
   openShellProgressPrefix,
-} from "../../scripts/ci/openshell-progress.mjs";
+} from "../../scripts/ci/openshell-progress.ts";
 import { redeployOpenShellReplacement } from "../helpers/openshell-replacement-activation.ts";
 import { runOpenShellStage } from "../helpers/openshell-stage.ts";
 

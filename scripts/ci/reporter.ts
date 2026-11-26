@@ -8,7 +8,7 @@ import {
   openShellProgress,
   openShellProgressPrefix,
   upstreamOutageCase,
-} from "./openshell-progress.mjs";
+} from "./openshell-progress.ts";
 import { failureInputLimit } from "./failure-redaction.ts";
 import { recordsCoverage } from "./full-integration-coverage.ts";
 import { parseMeasurementDiagnostic } from "./reporter-measurements.ts";

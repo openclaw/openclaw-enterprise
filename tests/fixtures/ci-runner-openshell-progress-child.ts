@@ -5,8 +5,8 @@ const repositoryUrl = readFileSync(new URL("repository-url", import.meta.url), "
 const {
   emitOpenShellProgress,
   openShellProgressPrefix,
-}: typeof import("../../scripts/ci/openshell-progress.mjs") = await import(
-  new URL("scripts/ci/openshell-progress.mjs", repositoryUrl).href
+}: typeof import("../../scripts/ci/openshell-progress.ts") = await import(
+  new URL("scripts/ci/openshell-progress.ts", repositoryUrl).href
 );
 
 function write(text: string) {

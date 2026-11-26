@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   openShellProgressPrefix,
   upstreamOutageCase,
-} from "../../scripts/ci/openshell-progress.mjs";
+} from "../../scripts/ci/openshell-progress.ts";
 import { isRecord } from "../../scripts/ci/records.ts";
 import reporter from "../../scripts/ci/reporter.ts";
 import { runNode as runNative } from "../../scripts/ci/runner-process.ts";

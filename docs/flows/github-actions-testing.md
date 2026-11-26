@@ -206,7 +206,7 @@ HTTP diagnostics retain numeric actual/expected statuses, allowlisted OCC codes 
 `skipper-release.ts:runSkipperOperation` projects captured errors. After failed installed proof, `skipper-failure-receipt.ts` publishes wrapper
 [checkpoints](../testing/ci/full-integration.md#results-and-limits).
 
-`openshell-progress.mjs:emitOpenShellProgress` emits fixed lifecycle categories.
+`openshell-progress.ts:emitOpenShellProgress` emits fixed lifecycle categories.
 `runFile` adds lane/file labels. [File receipts](../testing/ci/openshell-execution.md#interpret-timing-and-proof)
 retain installation ordinals and millisecond offsets outside live logs. Parent
 byte limits precede partial-record bounds. Failure tails omit markers and

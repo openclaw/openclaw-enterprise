@@ -179,7 +179,7 @@ async function checkGitExpiryObservations(uuid: string, opaque: string, forbidde
 
   // The live observer must strip private fields before retaining records.
   const { projectOpenShellGitExpiryObservation, projectOpenShellGitMaintenanceCompletion } =
-    await import("../../scripts/ci/openshell-git-retention.mjs");
+    await import("../../scripts/ci/openshell-git-retention.ts");
   assert.deepEqual(
     projectOpenShellGitMaintenanceCompletion({
       outcome: forbidden,

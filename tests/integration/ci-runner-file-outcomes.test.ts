@@ -27,7 +27,7 @@ import {
 } from "../helpers/ci-runner-fixture.ts";
 
 const runnerPath = fileURLToPath(new URL("../../scripts/ci/run-tests.ts", import.meta.url));
-const progressUrl = new URL("../../scripts/ci/openshell-progress.mjs", import.meta.url);
+const progressUrl = new URL("../../scripts/ci/openshell-progress.ts", import.meta.url);
 
 interface RunSummary {
   status: string;

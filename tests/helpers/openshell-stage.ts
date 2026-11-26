@@ -6,7 +6,7 @@ import {
   credentialReplacementDiagnostic,
   emitOpenShellProgress,
   emitOpenShellStageFailure,
-} from "../../scripts/ci/openshell-progress.mjs";
+} from "../../scripts/ci/openshell-progress.ts";
 
 export async function runOpenShellStage<Result>(
   context: Pick<TestContext, "diagnostic"> & Partial<Pick<TestContext, "name">>,

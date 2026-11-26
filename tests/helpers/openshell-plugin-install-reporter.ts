@@ -6,7 +6,7 @@ import {
   boundedProgressLines,
   openShellProgress,
   openShellProgressPrefix,
-} from "../../scripts/ci/openshell-progress.mjs";
+} from "../../scripts/ci/openshell-progress.ts";
 import { DEPLOYMENT_FAILURE_STEPS } from "../../packages/occ/src/deployment-failure-steps.ts";
 
 const pluginInstallCase = "OpenShell installs selected Codex plugins before WebSocket startup";

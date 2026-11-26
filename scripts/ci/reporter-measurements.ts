@@ -1,8 +1,8 @@
 import {
   openShellGitRetentionKind,
   projectOpenShellGitRetention,
-} from "./openshell-git-retention.mjs";
-import { openShellProgress } from "./openshell-progress.mjs";
+} from "./openshell-git-retention.ts";
+import { openShellProgress } from "./openshell-progress.ts";
 import { isRecord } from "./records.ts";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
