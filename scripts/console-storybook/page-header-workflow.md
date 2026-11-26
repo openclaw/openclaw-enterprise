@@ -14,7 +14,12 @@ Namespace control. Check each story at 1440, 1101, 1100, 1024 and 390 px.
 2. Open **Pages / Agent detail / Page header with a long name**. At 1100 and 1024 px,
    Refresh and Open draft share the back-link row above the name. At 1101 px,
    they move beside the name. Nothing overlaps at either side of the breakpoint.
-   Select **Copy Agent ID**: "Copied" shows beside it. Enter on the focused button copies the same ID.
+   At 390 px, select **Copy Agent ID**. Check that “Copied” is readable and
+   Namespace stays in place. At 920 px, Tab to **Copy Agent ID**, move the pointer
+   over **Namespace**, and press Enter to copy the same ID. When “Copied” appears,
+   click without moving the pointer. The Namespace menu should open. Press Escape
+   and check that the selected Namespace is unchanged. Repeat this pointer check
+   in step 6 when “Copy selection” appears instead.
    In the Controller-backed Console, also hold the button on one Agent, go Back
    to a different Agent, and release over its copy button. No copy should occur
    until you press that Agent’s button yourself.
