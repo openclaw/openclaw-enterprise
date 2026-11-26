@@ -902,7 +902,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     if (revision.namespaceId !== context.namespace.id || revision.sandboxDriverId !== this.id) {
       throw new Error("Refusing managed cleanup outside its Namespace and Sandbox Driver.");
     }
-    if (revision.repositoryCredentials) {
+    if (
+      revision.repositoryCredentials &&
+      revision.repositoryCredentials.authorization !== "credential_source"
+    ) {
       await this.openShellGit!.withdrawConfirmed(revision.id);
     }
     const selector = { workspace, name: this.agentSandboxName(revision.agentId) };
@@ -949,7 +952,10 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     sandbox: OpenShellSandboxResponse | undefined,
   ): Promise<void> {
     const revision = context.revision!;
-    if (!revision.repositoryCredentials) {
+    if (
+      !revision.repositoryCredentials ||
+      revision.repositoryCredentials.authorization === "credential_source"
+    ) {
       return;
     }
     const workspace = workspaceName(context.namespace);
