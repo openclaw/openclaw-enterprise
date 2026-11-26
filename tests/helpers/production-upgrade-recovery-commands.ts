@@ -1108,10 +1108,15 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
         }
       } else if (args.includes("scale") || args.includes("patch")) {
         const component = servingComponent(args);
+        const preview = args.includes("--dry-run=server");
+        if (preview) {
+          assert.ok(args.includes("patch"));
+          assert.equal(fileArg("--output"), "jsonpath={.spec.replicas}");
+        }
         if (args.includes("patch") && component === "worker" && state.denyWorkerPatch) {
           return fail(1, "Forbidden: cannot patch the worker Deployment");
         }
-        if (take("fail-scale-" + component)) {
+        if (!preview && take("fail-scale-" + component)) {
           if (take("block-failure-receipt")) {
             mkdirSync(join(root, "evidence", "native-command-failures.tsv"));
           }
@@ -1124,15 +1129,17 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
           (identities[component] ??= { uid: component + "-deployment-uid", resourceVersion: "1" }),
           "selected Deployment identity",
         );
-        if (component === "worker" && take("replace-worker-before-scale")) {
-          identity.uid = "replacement-worker-uid";
-          identity.resourceVersion = "2";
-          state.worker = 1;
+        if (!preview) {
+          if (component === "worker" && take("replace-worker-before-scale")) {
+            identity.uid = "replacement-worker-uid";
+            identity.resourceVersion = "2";
+            state.worker = 1;
+          }
+          if (component === "worker" && take("edit-worker-before-scale")) {
+            identity.resourceVersion = "2";
+          }
+          save();
         }
-        if (component === "worker" && take("edit-worker-before-scale")) {
-          identity.resourceVersion = "2";
-        }
-        save();
         if (args.includes("patch")) {
           assert.equal(fileArg("--type"), "json");
           const patch: unknown = JSON.parse(readFileSync(requiredArg("--patch-file"), "utf8"));
@@ -1162,6 +1169,14 @@ export function createRecoveryCommandHandler(tools: RecoveryTools) {
             typeof replicas === "number" && Number.isSafeInteger(replicas) && replicas >= 0,
             "expected a nonnegative replica count",
           );
+          if (component === "worker" && replicas === 0 && state.denyWorkerAdmission) {
+            return fail(1, 'admission webhook "writer-policy.test" denied the Worker stop');
+          }
+          if (preview) {
+            const nonzero = component === "worker" && take("nonzero-worker-patch-preview");
+            out(String(nonzero ? state.worker : replicas));
+            return io.exit(0);
+          }
           Object.assign(identity, document.metadata);
           state[component] = replicas;
         } else {

@@ -3115,6 +3115,30 @@ if ((helm_complete == 0)); then
     ]' "$evidence_dir/current-$component-deployment.json" >"$evidence_dir/quiescence-$component-patch.json"
   done
   }
+  require_worker_patch_access() {
+    local recovery_note="${1:-}" decision
+    quiescence_remaining
+    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
+      [[ "$decision" == true ]] ||
+        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming.${recovery_note:+ $recovery_note}"
+    else
+      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
+    fi
+  }
+  preview_writer_stop() {
+    local component="$1" label="$2" recovery_note="${3:-}" preview
+    local deployment="openclaw-enterprise-$component"
+    local preview_error="quiescence-$component-preview.err"
+    quiescence_remaining
+    preview=$(
+      "${kube[@]}" --request-timeout="${remaining_seconds}s" --namespace "$namespace" patch "deployment/$deployment" \
+        --type json --patch-file "$evidence_dir/quiescence-$component-patch.json" \
+        --dry-run=server --output 'jsonpath={.spec.replicas}' 2>>"$evidence_dir/$preview_error"
+    ) || die "Server-side dry-run of the $label stop failed for $namespace/$deployment. No OCC writer was stopped by this attempt. Inspect $preview_error in the evidence directory.${recovery_note:+ $recovery_note}" "$?"
+    [[ "$preview" == 0 ]] ||
+      die "Server-side dry-run did not confirm zero replicas for $namespace/$deployment. No OCC writer was stopped by this attempt.${recovery_note:+ $recovery_note}"
+  }
+  stop_recovery_note=""
   observe_quiescence_writers
   if [[ "$channel_egress_enabled" == true ]]; then
     if jq -e '.spec.replicas == 0' "$evidence_dir/current-api-deployment.json" >/dev/null; then
@@ -3124,9 +3148,16 @@ if ((helm_complete == 0)); then
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "The quiesced upgrade lacks confirmed Agent Stop evidence; inspect the original journal and inventory."
     else
+      if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+        require_worker_patch_access
+        preview_writer_stop worker Worker
+      fi
+      preview_writer_stop api API
+      quiescence_remaining
       python3 scripts/upgrade-channel-egress stop --evidence-dir "$evidence_dir" \
         --occ "$occ" --timeout-seconds "$timeout_seconds" ||
         die "Agent Stop is incomplete; preserve the original journal and inspect the recorded operations."
+      stop_recovery_note="Agent Stop was confirmed. Preserve the original Stop journal and reconcile before resuming."
       deadline=$((SECONDS + timeout_seconds))
       observe_quiescence_writers
     fi
@@ -3134,13 +3165,7 @@ if ((helm_complete == 0)); then
   # Refresh before the first stop, including resume when the worker still runs.
   # This detects changed selections; exclusive maintenance ownership is still required.
   if jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
-    quiescence_remaining
-    if decision=$(named_access_review patch apps deployments openclaw-enterprise-worker "$((remaining_seconds < 15 ? remaining_seconds : 15))"); then
-      [[ "$decision" == true ]] ||
-        die "Kubernetes denied patch on worker Deployment $namespace/openclaw-enterprise-worker. Obtain patch access before resuming."
-    else
-      warn "Could not verify patch access to the worker Deployment. The upgrade requires patch permission to stop it."
-    fi
+    require_worker_patch_access "$stop_recovery_note"
     read_restart_inventory "$evidence_dir/inventory/before-stop.json"
     normalize_restart_inventory "$evidence_dir/inventory/before-stop.json" >"$evidence_dir/inventory/before-stop-selection.json"
     if [[ "$channel_egress_enabled" == true ]]; then
@@ -3153,6 +3178,10 @@ if ((helm_complete == 0)); then
     fi
   fi
   recheck_prepared_migration_secrets
+  if jq -e '.spec.replicas == 1' "$evidence_dir/current-api-deployment.json" >/dev/null &&
+    jq -e '.spec.replicas == 1' "$evidence_dir/current-worker-deployment.json" >/dev/null; then
+    preview_writer_stop worker Worker "$stop_recovery_note"
+  fi
   # These writes are sequential; a later conflict can leave the API stopped.
   for component in api worker; do
     # A stopped worker cannot receive a prospective assessment. Reconcile its

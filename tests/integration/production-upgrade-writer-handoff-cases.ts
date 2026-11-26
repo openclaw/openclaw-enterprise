@@ -293,7 +293,39 @@ export function registerWriterHandoffCases({
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
-  test("a mismatched worker review leaves the live patch authoritative", async (t) => {
+  test("worker admission can refuse a stop despite named patch access", async (t) => {
+    const f = await fixture(t);
+    const state = await f.state();
+    state.denyWorkerAdmission = true;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(state));
+    const failure = await expectUpgradeFailure(f.run(), "admission must stop quiescence");
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker, refused.version], [1, 1, 1]);
+    assert.deepEqual(await f.events(), []);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+    assert.match(failure.stderr, /Server-side dry-run of the Worker stop failed/);
+    assert.doesNotMatch(failure.stderr, /Could not verify patch access/);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /admission webhook "writer-policy\.test" denied the Worker stop/,
+    );
+
+    // The original upgrade can resume once the admission policy permits quiescence.
+    delete refused.denyWorkerAdmission;
+    await writeFile(join(f.directory, "state.json"), JSON.stringify(refused));
+    await f.run("--resume");
+    assert.deepEqual(await f.events(), [
+      "scale-api",
+      "scale-worker",
+      "secret-replaced",
+      "migration",
+    ]);
+    const completed = await f.state();
+    assert.deepEqual([completed.api, completed.worker, completed.version], [1, 1, 2]);
+    assert.equal(completed.helmSubmissions, 1);
+  });
+
+  test("a mismatched worker access review cannot bypass the stop preview", async (t) => {
     const f = await fixture(t);
     const state = await f.state();
     state.denyWorkerPatch = true;
@@ -302,11 +334,26 @@ export function registerWriterHandoffCases({
     await assert.rejects(f.run(), (error: unknown) => {
       const { stderr } = readUpgradeFailure(error);
       assert.match(stderr, /Could not verify patch access to the worker Deployment/);
-      assert.match(stderr, /Forbidden: cannot patch the worker Deployment/);
+      assert.match(stderr, /Server-side dry-run of the Worker stop failed/);
       return true;
     });
-    assert.deepEqual(await f.events(), ["scale-api"]);
-    assert.equal((await f.state()).worker, 1);
+    assert.match(
+      await f.readEvidence("quiescence-worker-preview.err"),
+      /Forbidden: cannot patch the worker Deployment/,
+    );
+    assert.deepEqual(await f.events(), []);
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker], [1, 1]);
+    assert.equal(existsSync(join(f.evidence, "helm-started")), false);
+  });
+
+  test("quiescence requires the Worker stop preview to confirm zero replicas", async (t) => {
+    const f = await fixture(t);
+    await f.failNext("nonzero-worker-patch-preview");
+    await assert.rejects(f.run(), /Server-side dry-run did not confirm zero replicas/);
+    assert.deepEqual(await f.events(), []);
+    const refused = await f.state();
+    assert.deepEqual([refused.api, refused.worker, refused.version], [1, 1, 1]);
     assert.equal(existsSync(join(f.evidence, "helm-started")), false);
   });
 
