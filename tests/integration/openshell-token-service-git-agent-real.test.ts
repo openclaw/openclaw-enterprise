@@ -12,3 +12,11 @@ test(
   },
   (t) => verifyNativeGitAgent(t, "codex"),
 );
+
+if (process.env.OCC_TEST_OPENSHELL_TOKEN_SERVICE_GIT_AGENT_PUBLIC_METADATA_REAL === "1") {
+  test(
+    "Dedicated Codex Agent reads public metadata only for its selected Repository",
+    { timeout: 20 * 60_000 },
+    (t) => verifyNativeGitAgent(t, "codex", { publicMetadata: true }),
+  );
+}

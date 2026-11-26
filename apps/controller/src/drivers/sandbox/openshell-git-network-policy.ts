@@ -1,5 +1,6 @@
 import {
   parseRepositoryApiLimits,
+  type DeploymentRequestMatch,
   type RepositoryNetworkGrant,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -23,6 +24,15 @@ export const OPEN_SHELL_GIT_CREDENTIAL_BINARIES = Object.freeze([
   "/usr/libexec/git-core/git-remote-https",
   "/usr/libexec/git-core/git-remote-http",
 ]);
+
+export function openShellRepositoryMetadataRequest(repository: string) {
+  return {
+    binary: "/usr/bin/curl",
+    host: "api.github.com",
+    ports: [{ from: 443, to: 443 }],
+    requestPolicy: { type: "http", method: "GET", path: `/repos/${repository}` },
+  } satisfies DeploymentRequestMatch;
+}
 
 const binaries = Object.freeze([
   ...OPEN_SHELL_GIT_CREDENTIAL_BINARIES,

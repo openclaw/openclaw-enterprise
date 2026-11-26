@@ -46,3 +46,9 @@ deployment or clipboard permissions in a real browser profile.
 1. Open **Pages / Agents / Latest deployment failed** at 1440 px. Read the Agent name, full ID, current version, and failed deployment. Tab to the deployment link and press Enter. Return to the list and check the focused link and its row.
 2. Open **Latest deployment failed on mobile**. Execution mode and current version share a line. The failure and row actions have the full width. Open navigation and check the selected page and each link label.
 3. Open **Pages / Credentials / OAuth connection templates**, **Pages / Credentials / Secrets / Populated**, and **Pages / Namespaces / Ready and provisioning**. Tab through the rows. Check the shared heading colors and the focus indicator for each action.
+
+## Return to Agents while the list refreshes
+
+1. Open **Pages / Agents / Row navigation** in its own tab. Open an Agent and return with **← Agents** or browser Back. Without moving focus during the return, check that focus returns to the Agent name and its row is visible.
+2. To check a late response, use a signed-in Controller with enough Agents to scroll and a controlled delay on the return list read, or a synthetic Storybook fixture with extra rows and that delay. The stock Row navigation story has two rows and no built-in return delay. Open an Agent below the fold, then return to Agents.
+3. While the list read is pending, press Tab until **Namespace** has focus. Let the unchanged list load. Namespace must remain focused and visible, and the next Tab must continue from it. Repeat with browser Back and **← Agents** at desktop and phone widths.
