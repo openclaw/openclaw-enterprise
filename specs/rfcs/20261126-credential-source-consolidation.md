@@ -14,6 +14,8 @@ Use TokenService Credential Sources as the single credential resource that an op
 
 This removes a duplicate credential management model. It does not remove the Secret Driver, private credential storage, Compute's delivery copies, or operator-managed platform secrets.
 
+**Breaking change:** The pre-1.0 cutover discards old user-facing Namespace Secrets and their stored values. Users must recreate needed credentials as Sources and update their bindings. There is no automatic import or compatibility path.
+
 **Tradeoff:** An explicit Gateway binding creates a usable copy outside Credential Proxy's request restrictions. Gateway namespace workload managers can mount it elsewhere, and the Gateway keeps its startup value until managed redeploy. Revocation blocks subsequent managed starts; it does not erase an existing environment. An upstream proxy needs its own delivery and withdrawal decision.
 
 ## What each component owns
@@ -64,13 +66,13 @@ Reuse Source IAM and existing target operations. Remove the public Secret IAM ca
 
 ### Database entities
 
-Remove `occ.secrets`, Agent Secret columns, `credential_source_secrets`, and obsolete validators after runtime cutover. Preserve Source deletion, withdrawal, and Namespace teardown protections. No conversion of existing Secrets, grants, revisions, or queued work is included; refuse unsupported nonempty legacy state rather than deleting data.
+After consumer replacement, discard obsolete public Namespace Secret material through each record's original owning Driver, with exact backend identity and ownership checks. Keep its record and Driver methods, and block schema removal, until deletion is confirmed; retry failed or uncertain cleanup. Then remove dependent foreign keys, Secret columns, `credential_source_secrets`, `occ.secrets`, and obsolete validators in a coherent schema change. Existing configurations with Secret references require new Source bindings; do not import or convert legacy Secrets, grants, revisions, or queued work. Preserve Source deletion, withdrawal, and Namespace teardown protections, private Source/Client custody, and Compute delivery Secrets.
 
 ### Driver contracts
 
 - **Channel:** Change `ChannelCredentialReader` from a Secret Driver callback to transient, authorized TokenService Source use. Keep provider checks and target/Source/owner rechecks outside the write transaction. Bot validation uses `auth.test`; app validation does not open a socket.
 - **Compute:** Keep the Gateway startup contract and replace the Secret-backed proxy context as described above. Remove `secretEnvironment` only after its remaining callers have replacements.
-- **Secret:** Keep `SecretDriver.privateSecrets` for TokenService's internal storage. Once all public Namespace Secret consumers use Sources, verify the selected Driver still supports private credential storage and cleanup, then remove its Namespace Secret methods.
+- **Secret:** Keep `SecretDriver.privateSecrets` for TokenService's internal storage. Once consumers use Sources and obsolete public material is discarded, verify the selected Driver still supports private credential storage and cleanup, then remove its Namespace Secret methods.
 
 ## Delivery order and open decisions
 
@@ -88,4 +90,4 @@ Keeping the public Secret API, even without a Console page, retains two credenti
 
 - Exercise the real Configuration, deployment, Channel directory, and proxy callers with exact Source and target IAM. Admission denial creates no revision or unauthorized provider request. If a later Worker recheck fails, discard resolved values, stop further delivery, and clean any abandoned revision copy through Compute.
 - Register regular Agent workflow integration for PostgreSQL Worker/Compute, Gateway Slack startup, model Proxy admission, authenticated channel egress, redeploy, revocation, repair, Stop, retirement, abandonment, and Namespace teardown. Distinguish fixtures and process-environment checks from native provider use. Live Slack messages require separate authorization.
-- Before public Secret removal, verify that supported runtime callers and newly created work no longer depend on Secret CRUD, references, IAM, or persistence. Verify that private TokenService/Client custody and delivery-copy cleanup still work.
+- Before public Secret removal, verify that supported runtime callers and newly created work no longer depend on Secret CRUD, references, IAM, or persistence. A backend identity mismatch must prevent deletion; failed or uncertain cleanup must retain the record and block schema removal. Private TokenService/Client custody and Compute copies must remain intact.
