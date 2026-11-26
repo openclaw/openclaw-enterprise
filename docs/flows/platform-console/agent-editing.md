@@ -149,6 +149,9 @@ Channels can replace bindings if all denied Secrets have Slack token names.
 Read-only drafts say so and omit the checklist without `deploy`.
 
 `agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
+For a saved Agent, show **Checking plugin catalog availability…** while the check
+runs. Wait for the result before showing an unsupported-policy warning or directions
+to edit JSON. Show access failures when they occur.
 An **Available** search typed while capabilities are pending waits for the catalog.
 Closing retains the text and defers the search until the user returns to **Available**.
 Discovery can still prefetch an empty query.

@@ -40,6 +40,7 @@ interface PluginDiscoveryOptions extends Pick<
   context: PluginDiscoveryContext;
   canDiscover(): boolean;
   canPrefetch?(): boolean;
+  isCheckingCapabilities?(): boolean;
   isPending(): boolean;
   unavailableMessage: Message;
   catalogPath?: string;
@@ -98,6 +99,7 @@ export function createPluginDiscovery({
   input,
   canDiscover,
   canPrefetch = () => false,
+  isCheckingCapabilities = () => false,
   isPending,
   unavailableMessage,
   saveHint,
@@ -135,6 +137,7 @@ export function createPluginDiscovery({
   let pageIndex = 0;
   const fields = createPluginFields({
     input,
+    catalog: catalogSnapshot(),
     ...(saveHint !== undefined ? { saveHint } : {}),
     ...(createApproverField ? { createApproverField } : {}),
     ...(renderAccountConnection ? { renderAccountConnection } : {}),
@@ -151,26 +154,28 @@ export function createPluginDiscovery({
     onLoadTools: (id, connection) => void loadTools(id, connection),
   });
 
-  function render(transition?: "refusal") {
+  function catalogSnapshot(): PluginFieldCatalog {
     const available = canLoad();
     const statusMessage = available ? availableMessage : unavailableMessage;
-    fields.setCatalog(
-      {
-        ...catalog,
-        entries: pageIds.map((id) => entries.get(id)).filter((entry) => entry !== undefined),
-        knownEntries: [...entries.values()],
-        pageNumber: pageIndex + 1,
-        hasPrevious: pageIndex > 0,
-        canLoad: available,
-        canRecheck:
-          managedRecovery &&
-          (available || catalog.access === "denied" || catalog.access === "checking"),
-        message:
-          catalog.message ??
-          (typeof statusMessage === "function" ? statusMessage() : statusMessage),
-      },
-      transition,
-    );
+    return {
+      ...catalog,
+      entries: pageIds.map((id) => entries.get(id)).filter((entry) => entry !== undefined),
+      knownEntries: [...entries.values()],
+      pageNumber: pageIndex + 1,
+      hasPrevious: pageIndex > 0,
+      canLoad: available,
+      // Keep the check with its availability result during a policy-only redraw.
+      checkingCapabilities: isCheckingCapabilities(),
+      canRecheck:
+        managedRecovery &&
+        (available || catalog.access === "denied" || catalog.access === "checking"),
+      message:
+        catalog.message ?? (typeof statusMessage === "function" ? statusMessage() : statusMessage),
+    };
+  }
+
+  function render(transition?: "refusal") {
+    fields.setCatalog(catalogSnapshot(), transition);
   }
 
   function update() {
@@ -570,6 +575,5 @@ export function createPluginDiscovery({
     }
   }
 
-  render();
   return { fields, reset, update, refreshCatalog: () => loadCatalog("refresh") };
 }
