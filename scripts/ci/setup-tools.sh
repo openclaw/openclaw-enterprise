@@ -371,7 +371,8 @@ try {
     executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE,
     headless: true,
     chromiumSandbox: true,
-    env: { HOME: directory, PATH: process.env.PATH, TMPDIR: directory },
+    // Use the system temporary directory so Chromium's Unix socket path stays short.
+    env: { HOME: directory, PATH: process.env.PATH },
   });
   const page = await browser.newPage();
   assert.equal(await page.evaluate(() => 1 + 1), 2);
