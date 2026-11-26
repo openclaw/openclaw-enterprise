@@ -5551,6 +5551,10 @@ export async function renderAgentDetail(
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
+    // A Logs visit may have just been denied: the recovery stops offering its Logs link.
+    if (activated && !recovery.section.hidden) {
+      updateLatestDeployment();
+    }
     deploymentPanels.hidden = selectedTab !== "deployment";
     versionRecord?.render();
     content.hidden = selectedTab === "deployment";
@@ -7825,10 +7829,6 @@ export async function renderAgentDetail(
       nextTab === "repositories" && next.searchParams.get("repositoryAccess") === "1";
     selectedTab = nextTab;
     showTabNotice(unavailableTabNotice(requestedTab));
-    // A Logs visit may have just been denied: the recovery stops offering its Logs link.
-    if (!recovery.section.hidden) {
-      updateLatestDeployment();
-    }
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {
