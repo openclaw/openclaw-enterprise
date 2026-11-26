@@ -13,10 +13,12 @@ export type {
 } from "./oauth-consent.ts";
 export type {
   CreateConnectionTemplateInput,
-  CreateCredentialClientInput,
-  RotateCredentialClientInput,
   UpdateConnectionTemplateInput,
 } from "./connection-administration.ts";
+export type {
+  CreateCredentialClientInput,
+  RotateCredentialClientInput,
+} from "./credential-client-administration.ts";
 export type {
   CreateIAMAccessBindingInput,
   CreateIAMRoleInput,

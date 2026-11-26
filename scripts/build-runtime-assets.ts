@@ -40,7 +40,7 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "stock-codex-0.164.0-dependency-pin.patch",
-    sha256: "cb1ff6b003dbe385fc2938b6cc46ba7fc0f91d4954eaad5b591ff29384df0197",
+    sha256: "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
   },
   {
     file: "openclaw-terminated-gateway-namespace.patch",
@@ -52,11 +52,11 @@ const appliedPatches: readonly AppliedPatch[] = [
   },
   {
     file: "openclaw-node-setup-renewal.patch",
-    sha256: "1cba704e3888ff7764d62613b0bbb4918ceccb66352a1fc2baf31d72ec8d0df6",
+    sha256: "0d2bcd7eb41b6ff248404bfdce817dba7d85b534e10bd62314733a01d92b11ea",
   },
   {
     file: "openclaw-planned-completion.patch",
-    sha256: "402c51bf4d3f815aea7be1116af08b9170214040d0c66599f0713963fdff8c15",
+    sha256: "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
   },
   {
     file: "openclaw-http-chat-input.patch",
@@ -90,6 +90,7 @@ const runtimePaths = [
   "node-compile-cache.mjs",
   "worker-heap-flag.mjs",
   "openclaw.mjs",
+  "release-launcher-forward.mjs",
   "extensions",
   "skills",
   "docs",

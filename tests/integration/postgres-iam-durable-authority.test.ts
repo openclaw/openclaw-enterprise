@@ -25,6 +25,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
+import { fixtureOAuthIssuer } from "../helpers/oauth-issuer.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-locks.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -210,12 +211,17 @@ async function withdrawalFirst<T>(
 
 async function createFixture(t: TestContext) {
   const secretDriver = createTestSecretDriver();
+  const oauthIssuer = fixtureOAuthIssuer(
+    { issuer, authorizationUrl: issuer + "/authorize", tokenUrl },
+    ["none"],
+    (url, init) => globalThis.fetch(url, init),
+  );
   const fixture = await createPostgresAgentApp(t, {
     label: "durable-authority",
     authSecret: "durable-authority-fixture-session-secret",
     poolOptions: { max: 10, connectionTimeoutMillis: 5000 },
     secretDriver,
-    controllerOptions: { iamConfiguration: policy(true) },
+    controllerOptions: { iamConfiguration: policy(true), oauthIssuer },
     appOptions: {
       publicOrigin,
       provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
@@ -320,6 +326,7 @@ async function createFixture(t: TestContext) {
       {
         state,
         iamConfiguration,
+        oauthIssuer,
         recordOperations: false,
         ...extra,
       },
@@ -467,7 +474,6 @@ test(
           kind: "oauth2",
           namespaceId,
           issuer,
-          tokenUrl,
           displayName: "Durable public fixture",
           clientId: "durable-" + randomUUID(),
           tokenEndpointAuthMethod: "none",

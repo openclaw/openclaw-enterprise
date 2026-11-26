@@ -580,8 +580,7 @@ function matchesGitHubRepositoryGrants(
   if (
     (contents !== "read" && contents !== "write") ||
     repositoryBindings?.length !== selections.length ||
-    grants?.length !== selections.length ||
-    source.scope.repositories.length !== selections.length
+    grants?.length !== selections.length
   ) {
     return false;
   }
@@ -1921,13 +1920,9 @@ function repositories(
               client.namespaceId === undefined ||
               client.namespaceId === template.namespaceId) &&
             client.issuer === version.issuer &&
-            client.tokenUrl === version.tokenUrl &&
-            (version.revocationUrl === undefined ||
-              client.revocationUrl === version.revocationUrl) &&
-            (version.observed === undefined ||
-              (version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
-                client.tokenEndpointAuthMethod,
-              )),
+            version.issuerVerification?.tokenEndpointAuthMethods.includes(
+              client.tokenEndpointAuthMethod,
+            ) === true,
         );
       });
       return (
@@ -2041,12 +2036,9 @@ function repositories(
       client.kind !== "oauth2" ||
       (client.namespaceId !== undefined && client.namespaceId !== record.namespaceId) ||
       client.issuer !== version.issuer ||
-      client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
-      (version.observed !== undefined &&
-        !(version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
-          client.tokenEndpointAuthMethod,
-        ))
+      version.issuerVerification?.tokenEndpointAuthMethods.includes(
+        client.tokenEndpointAuthMethod,
+      ) !== true
     ) {
       throw new ResourceStateConflictError(
         "The OAuth consent must use a Template and client in its scope.",
@@ -2972,13 +2964,9 @@ function repositories(
             client.cleanupAfter !== undefined ||
             (client.namespaceId !== undefined && client.namespaceId !== source.namespaceId) ||
             client.issuer !== version.issuer ||
-            client.tokenUrl !== version.tokenUrl ||
-            (version.revocationUrl !== undefined &&
-              client.revocationUrl !== version.revocationUrl) ||
-            (version.observed !== undefined &&
-              !(version.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
-                client.tokenEndpointAuthMethod,
-              )) ||
+            version.issuerVerification?.tokenEndpointAuthMethods.includes(
+              client.tokenEndpointAuthMethod,
+            ) !== true ||
             (client.tokenEndpointAuthMethod !== "none" &&
               client.tokenServiceInstanceId !== source.tokenServiceInstanceId)
           ) {

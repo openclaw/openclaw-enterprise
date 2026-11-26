@@ -416,7 +416,11 @@ export function pluginConnectionControl(
             { "aria-label": `Connection template for ${slot.label}` },
             element("option", { value: "" }, "Choose a template"),
             ...templates.map((template) =>
-              element("option", { value: template.id }, template.displayName),
+              element(
+                "option",
+                { value: template.id },
+                template.displayName + (template.current.issuerVerification ? "" : " (unverified)"),
+              ),
             ),
           );
           const clientArea = element("div");
@@ -428,7 +432,8 @@ export function pluginConnectionControl(
           );
           let selectionNumber = 0;
           const updateConnect = () => {
-            connect.disabled = !selected || !selectedClient || selectedScopes === null;
+            connect.disabled =
+              !selected?.current.issuerVerification || !selectedClient || selectedScopes === null;
           };
           async function select() {
             const number = ++selectionNumber;
@@ -443,6 +448,28 @@ export function pluginConnectionControl(
               return;
             }
             const template = selected;
+            if (!template.current.issuerVerification) {
+              status.textContent =
+                "This OAuth template is unverified. An Installation administrator must edit and save a verified version before consent can start.";
+              if (context.installationAdmin === true) {
+                const settings = new URL(`/console/${connectionTemplatesPage}`, location.origin);
+                settings.searchParams.set("namespace", context.namespaceId);
+                settings.searchParams.set("edit", template.id);
+                clientArea.append(
+                  element(
+                    "p",
+                    {},
+                    element(
+                      "a",
+                      { href: settings.href, target: "_blank", rel: "noopener noreferrer" },
+                      "Edit connection template",
+                    ),
+                  ),
+                );
+              }
+              clientArea.append(refresh());
+              return;
+            }
             scopeArea.append(
               scopeChoices(template, (scopes) => {
                 selectedScopes = scopes;
@@ -511,7 +538,12 @@ export function pluginConnectionControl(
         },
       );
     async function start() {
-      if (!selected || !selectedClient || connect.disabled || selectedScopes === null) {
+      if (
+        !selected?.current.issuerVerification ||
+        !selectedClient ||
+        connect.disabled ||
+        selectedScopes === null
+      ) {
         return;
       }
       attempt?.abort();

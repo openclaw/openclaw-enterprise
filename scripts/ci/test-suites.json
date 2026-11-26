@@ -36,6 +36,7 @@
     "openshell-token-service-agent": "./test-suites/openshell-token-service-agent.json",
     "openshell-token-service-pat-agent": "./test-suites/openshell-token-service-pat-agent.json",
     "openshell-token-service-git-agent": "./test-suites/openshell-token-service-git-agent.json",
+    "openshell-token-service-openclaw-git-agent": "./test-suites/openshell-token-service-openclaw-git-agent.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",
     "k3d-otel": "./test-suites/k3d-otel.json",

@@ -720,6 +720,29 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     });
   });
 
+  await t.test("Repository collaborator stories serve the legacy network policy", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    for (const story of [
+      "repositoryCollaborator",
+      "repositoryCollaboratorSaved",
+      "repositoryCollaboratorReadOnly",
+    ]) {
+      const scenario = scenarios[story];
+      assert.ok(scenario && "repositoryAccess" in scenario, story);
+      installFixture(scenario, evidence());
+      const view = await readData(
+        await request(`agents/${id("agt", 1)}/sandbox-policy/networking`),
+        200,
+      );
+      assert.partialDeepStrictEqual(view, { editingEnabled: false, policy: { version: 1 } }, story);
+      assert.ok("policy" in view && view.policy && typeof view.policy === "object", story);
+      assert.ok("additions" in view.policy, story);
+      assert.deepEqual(view.policy.additions, [], story);
+      // An empty repositoryNetworkPolicy would deny all repositories.
+      assert.equal(Object.hasOwn(view.policy, "repositoryNetworkPolicy"), false, story);
+    }
+  });
+
   await t.test("Malformed policy editing flags return 400 without changing the flag", async () => {
     installFixture({ policyState: "ready" }, evidence());
     const policyPath = `agents/${id("agt", 1)}/sandbox-policy/networking`;
@@ -1019,6 +1042,90 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
     await assertQueuedStop(traffic, id("agt", 1), id("rev", 7), id("rev", 6));
   });
 
+  await t.test("watched deployment returns scoped running and failed records", async () => {
+    const { scenarios } = await import("../../scripts/console-storybook/public/scenarios.mts");
+    installFixture(scenarios.deploymentFailsWhileWatching, evidence());
+    const agentId = id("agt", 1);
+    const deploymentId = id("rev", 7);
+    const servingId = id("rev", 6);
+    const agentPath = `agents/${agentId}`;
+    const deploymentPath = `${agentPath}/deployments/${deploymentId}`;
+    const revisionsPath = `${agentPath}/revisions`;
+    const agentScope = { namespaceId: namespace, agentId };
+    const scope = { deploymentId, ...agentScope };
+    const failureCode = "RUNTIME_MODEL_PROBE_FAILED";
+    const assertRevisions = (
+      data: object,
+      status: "running" | "failed",
+      errorCode: string | null,
+    ) => {
+      assert.partialDeepStrictEqual(data, [
+        {
+          ...agentScope,
+          id: deploymentId,
+          revision: 7,
+          deploymentStatus: status,
+          deploymentErrorCode: errorCode,
+        },
+        {
+          ...agentScope,
+          id: servingId,
+          revision: 6,
+          deploymentStatus: "succeeded",
+          deploymentErrorCode: null,
+        },
+      ]);
+    };
+
+    const initialRevisions = await readData(await request(revisionsPath), 200);
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "running",
+      cleanup: null,
+      error: null,
+    });
+    assertRevisions(initialRevisions, "running", null);
+    assertRevisions(await readData(await request(revisionsPath), 200), "running", null);
+
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "failed",
+      error: { code: failureCode },
+    });
+    assertRevisions(await readData(await request(revisionsPath), 200), "failed", failureCode);
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+
+    // A later deployment must succeed in the same preview where v7 failed.
+    const successor = await readData(await request(`${agentPath}/deploy`, "POST", {}), 202);
+    assert.partialDeepStrictEqual(successor, { ...agentScope, revision: 8 });
+    assert.ok("id" in successor && typeof successor.id === "string");
+    const successorId = successor.id;
+    assert.notEqual(successorId, deploymentId);
+    assert.notEqual(successorId, servingId);
+    const successorPath = `${agentPath}/deployments/${successorId}`;
+    const successorScope = { deploymentId: successorId, ...agentScope };
+    assert.partialDeepStrictEqual(await readData(await request(successorPath), 200), {
+      ...successorScope,
+      status: "queued",
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), servingId);
+    assert.partialDeepStrictEqual(await readData(await request(successorPath), 200), {
+      ...successorScope,
+      status: "succeeded",
+      error: null,
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), successorId);
+
+    // Revisiting the watched failure must leave the newer version selected.
+    assert.partialDeepStrictEqual(await readData(await request(deploymentPath), 200), {
+      ...scope,
+      status: "failed",
+      error: { code: failureCode },
+    });
+    assertRevisionSelection(await readData(await request(agentPath), 200), successorId);
+  });
+
   await t.test("created Agent ignores forged selection through queued Stop", async () => {
     const traffic = evidence();
     installFixture({ deployed: true }, traffic);
@@ -1130,6 +1237,19 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         extraSetting: { retained: true },
       });
       assertRevisionSelection(cleared);
+
+      const historicalRecord = await readData(
+        await request(`${agentPath}/deployments/${firstRevision}`),
+        200,
+      );
+      assert.partialDeepStrictEqual(historicalRecord, {
+        deploymentId: firstRevision,
+        status: "succeeded",
+      });
+      const afterHistoricalRead = await readData(await request(agentPath), 200);
+      assert.partialDeepStrictEqual(afterHistoricalRead, { desiredRuntimeState: "stopped" });
+      assertRevisionSelection(afterHistoricalRead);
+
       assert.equal((await request(agentPath, "DELETE")).status, 202);
       assert.equal((await request(agentPath)).status, 404);
     },

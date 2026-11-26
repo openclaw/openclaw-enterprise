@@ -1,4 +1,5 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import {
@@ -188,6 +189,7 @@ export async function composePostgresDevelopment(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        oauthIssuer: oauthIssuerOperations,
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(drivers?.installation, drivers?.repositoryRegistry),
         credentialSourceDelivery: credentialSourceDeliveryBinding(drivers),

@@ -166,18 +166,24 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preNamespaceGitHubAppClients";
   }
   if (count === 96 && completedCount > 96) {
-    return "preRuntimeAudit";
+    return "preOAuthEndpointAuthority";
   }
   if (count === 97 && completedCount > 97) {
-    return "preAuditMessageRead";
+    return "preSharedGitSourceRepositoryGrants";
   }
   if (count === 98 && completedCount > 98) {
-    return "preHttpChatAuditLimits";
+    return "preRuntimeAudit";
   }
   if (count === 99 && completedCount > 99) {
-    return "preRuntimeAuditReplay";
+    return "preAuditMessageRead";
   }
   if (count === 100 && completedCount > 100) {
+    return "preHttpChatAuditLimits";
+  }
+  if (count === 101 && completedCount > 101) {
+    return "preRuntimeAuditReplay";
+  }
+  if (count === 102 && completedCount > 102) {
     return "preAgentHttpChatAuditPage";
   }
   if (count === completedCount) {

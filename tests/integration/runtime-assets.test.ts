@@ -173,7 +173,8 @@ packages:
 `,
     "dist/index.js": "export const ready = true;\n",
     "openclaw.mjs":
-      'import { ready } from "./node-runtime-recovery.mjs"; process.stdout.write(ready);\n',
+      'import "./release-launcher-forward.mjs"; import { ready } from "./node-runtime-recovery.mjs"; process.stdout.write(ready);\n',
+    "release-launcher-forward.mjs": "export {};\n",
     "node-runtime-recovery.mjs": 'export { ready } from "./node-runtime-env.mjs";\n',
     "node-runtime-env.mjs": 'export { ready } from "./node-compile-cache.mjs";\n',
     "node-compile-cache.mjs": 'export const ready = "runtime-ready";\n',

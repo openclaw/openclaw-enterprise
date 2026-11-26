@@ -1,4 +1,5 @@
 import { createPostgresReadinessCheck } from "./postgres-readiness.ts";
+import { oauthIssuerOperations } from "../connections/oauth-issuer.ts";
 import { validateAuthSecret } from "../auth/configuration.ts";
 import {
   CONTROL_PLANE_AUDIT_WRITE_TIMEOUT_MS,
@@ -210,6 +211,7 @@ export async function composeProduction(
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
+        oauthIssuer: oauthIssuerOperations,
         authenticationStateEncryptionSecret: config.authSecret,
         ...installationControllerOptions(
           config.drivers.installation,

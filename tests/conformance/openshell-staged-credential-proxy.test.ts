@@ -9,8 +9,14 @@ import {
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
 import { resolveModelCredentialPreset } from "../../apps/controller/src/composition/model-credential-presets.ts";
+import {
+  KubernetesComputeDriver,
+  kubernetesNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/credential-proxy/openshell.ts";
+import { OpenShellCredentialDeliveryRefusedError } from "../../apps/controller/src/drivers/credential-proxy/openshell-pushed-provider.ts";
 import { openShellRepositoryCredentialRequests } from "../../apps/controller/src/drivers/credential-proxy/openshell-repository-policy.ts";
+import { isNativeStagedRepositoryRevision } from "../../packages/contracts/src/credential-deployment.ts";
 import { admitRepositoryNetworkPolicy } from "../../packages/contracts/src/repository-network-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
@@ -21,6 +27,7 @@ import {
   OpenShellAdmissionLimitError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellGatewayFailure } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
 import type {
   Backend,
   DeploymentRequestMatch,
@@ -29,7 +36,13 @@ import type {
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { grpc, loader, openShellService, type Grpc } from "../helpers/openshell-grpc-sdk.ts";
+import { digest, routedOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { bindWireServer } from "./openshell-gateway-wire-fixture.ts";
+import {
+  createDedicatedDeployEnrollmentFixture,
+  createDedicatedDeployKubernetesFixture,
+} from "./kubernetes-dedicated-deploy-fixture.ts";
+import { openShellWorkspaceHarnessConfiguration } from "../integration/sandbox-driver-installation-fixture.ts";
 import { completeSandboxRevision } from "../integration/sandbox-driver-revision-fixture.ts";
 import {
   ActivationPendingError,
@@ -37,6 +50,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/errors.ts";
+import { InstalledDriver } from "../../packages/occ/src/installed-driver.ts";
 
 type Wire = Record<string, unknown>;
 type Handler = (request: Wire) => Wire | undefined;
@@ -138,12 +152,13 @@ function policyUsesProvider(policy: unknown, provider: string): boolean {
   );
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, workspaceNamespace: string = namespace.name) {
+  const placedNamespace = { ...namespace, name: workspaceNamespace };
   const sandbox = {
     metadata: {
       id: configuration.targetRef.sandboxId as string,
       name: "held-sandbox",
-      workspace: namespace.name,
+      workspace: placedNamespace.name,
       resource_version: "5",
       labels: { ...labels } as Record<string, string>,
       annotations: { ...annotations } as Record<string, string>,
@@ -228,7 +243,7 @@ async function fixture(t: TestContext) {
   };
   const methods: Record<string, Handler> = {
     ListSandboxes: (input) => {
-      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      assert.equal(record(input.workspace_scope).workspace, placedNamespace.name);
       const pageToken = String(input.page_token ?? "");
       if (state.sandboxInventoryMode === "repeated-token") {
         return { sandboxes: [], next_page_token: "again" };
@@ -259,6 +274,20 @@ async function fixture(t: TestContext) {
       }
       return { sandbox: target };
     },
+    StopSandbox: (input) => {
+      assert.equal(record(input.workspace_scope).workspace, placedNamespace.name);
+      const target = liveSandbox(String(input.name));
+      assert.ok(target);
+      // Stock StopSandbox stops execution and keeps Sandbox policy and Provider membership.
+      target.status.phase = "SANDBOX_PHASE_STOPPED";
+      target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
+      state.config = undefined;
+      if (state.policyStatus) {
+        record(state.policyStatus.revision).status = "POLICY_STATUS_PENDING";
+        delete state.policyStatus.active_version;
+      }
+      return { sandbox: target };
+    },
     GetWorkspace: () => {
       if (state.workspaceDenied) {
         throw Object.assign(new Error("Workspace role denied"), {
@@ -269,7 +298,7 @@ async function fixture(t: TestContext) {
         workspace: {
           metadata: {
             id: "workspace-id",
-            name: namespace.name,
+            name: placedNamespace.name,
             labels: {
               "app.kubernetes.io/managed-by": "openclaw-enterprise",
               "openclaw.dev/namespace-id": namespace.id,
@@ -286,7 +315,7 @@ async function fixture(t: TestContext) {
       return provider && { provider };
     },
     ListProviders: (input) => {
-      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      assert.equal(record(input.workspace_scope).workspace, placedNamespace.name);
       return {
         providers: [
           ...(state.provider ? [state.provider] : []),
@@ -304,8 +333,13 @@ async function fixture(t: TestContext) {
       const target = liveSandbox(String(input.sandbox));
       assert.ok(target);
       const provider = String(input.provider);
+      const stoppedPolicy =
+        target === sandbox && target.status.phase === "SANDBOX_PHASE_STOPPED"
+          ? record(state.policyStatus!.revision).policy
+          : undefined;
       if (
         (target.spec.policy && policyUsesProvider(target.spec.policy, provider)) ||
+        (stoppedPolicy && policyUsesProvider(stoppedPolicy, provider)) ||
         (target === sandbox &&
           state.config?.policy &&
           policyUsesProvider(state.config.policy, provider))
@@ -325,7 +359,7 @@ async function fixture(t: TestContext) {
         receipt_id: randomUUID(),
         mutation_id: mutationId,
         kind: "PROVIDER_MUTATION_KIND_DETACH",
-        workspace: namespace.name,
+        workspace: placedNamespace.name,
         provider,
         desired: {
           sandbox_id: target.metadata.id,
@@ -392,7 +426,7 @@ async function fixture(t: TestContext) {
       return profile && { profile };
     },
     ListProviderProfiles: (input) => {
-      assert.equal(record(input.workspace_scope).workspace, namespace.name);
+      assert.equal(record(input.workspace_scope).workspace, placedNamespace.name);
       return {
         profiles: [...(state.profile ? [state.profile] : []), ...state.additionalProfiles.values()],
       };
@@ -405,17 +439,20 @@ async function fixture(t: TestContext) {
       assert.ok(target);
       assert.equal(input.expected_resource_version, target.metadata.resource_version);
       const source = structuredClone(record(input.policy));
-      target.spec.policy = source;
+      const stopped = target.status.phase === "SANDBOX_PHASE_STOPPED";
+      if (!stopped) {
+        target.spec.policy = source;
+      }
       target.metadata.resource_version = String(BigInt(target.metadata.resource_version) + 1n);
       const version = Number(record(state.policyStatus!.revision).version) + 1;
       state.policyStatus = {
         revision: {
           version,
-          status: "POLICY_STATUS_LOADED",
+          status: stopped ? "POLICY_STATUS_PENDING" : "POLICY_STATUS_LOADED",
           policy: source,
           policy_hash: "a".repeat(64),
         },
-        active_version: version,
+        ...(stopped ? {} : { active_version: version }),
       };
       if (state.config) {
         const effective = structuredClone(source);
@@ -502,7 +539,7 @@ async function fixture(t: TestContext) {
           ...metadata,
           id: state.creates.length === 1 ? "f1d7e6c5-1b2a-4c3d-8e9f-102938475602" : randomUUID(),
           name: String(metadata.name),
-          workspace: namespace.name,
+          workspace: placedNamespace.name,
           resource_version: "7",
           labels: metadata.labels as Record<string, string>,
         },
@@ -568,7 +605,7 @@ async function fixture(t: TestContext) {
           receipt_id: receiptId,
           mutation_id: mutationId,
           provider: name,
-          workspace: namespace.name,
+          workspace: placedNamespace.name,
           kind: "PROVIDER_MUTATION_KIND_UPDATE",
           desired,
           persisted_time: time,
@@ -642,7 +679,7 @@ async function fixture(t: TestContext) {
         receipt_id: randomUUID(),
         mutation_id: mutationId,
         provider,
-        workspace: namespace.name,
+        workspace: placedNamespace.name,
         kind: "PROVIDER_MUTATION_KIND_ATTACH",
         desired: {
           sandbox_id: target.metadata.id,
@@ -695,7 +732,10 @@ async function fixture(t: TestContext) {
   );
   const service: Grpc.ServiceDefinition = Object.fromEntries(
     Object.keys(methods).map((name) => {
-      const definition = name === "AttachSandboxProvider" ? independent[name] : production[name];
+      const definition =
+        name === "AttachSandboxProvider" || name === "StopSandbox"
+          ? independent[name]
+          : production[name];
       assert.ok(definition);
       return [name, definition];
     }),
@@ -731,7 +771,7 @@ async function fixture(t: TestContext) {
     implementation: "openshell",
     gitRuntimeProviderName: () => runtimeProvider,
     harnessResource: ({ revision }: { revision: { agentId: string; id: string } }) => ({
-      namespaceName: namespace.name,
+      namespaceName: placedNamespace.name,
       resourceName:
         sandboxes.find(
           (candidate) =>
@@ -754,10 +794,11 @@ async function fixture(t: TestContext) {
       import("../../apps/controller/src/drivers/sandbox/openshell.ts").OpenShellSandboxDriver,
       "gitRuntimeProviderName" | "withdrawStagedCredentialRoute"
     >;
-  const backend = {
+  const backend: Backend<OpenShellGateway> = {
     id: "backend",
     client: new OpenShellGateway({ serviceName: "openshell" }, { gatewayClient: client }),
-  } as unknown as Backend<OpenShellGateway>;
+    drivers: { sandbox: selectedSandbox.id },
+  };
   const createProxy = (tokenServiceImplementation: string) =>
     new OpenShellCredentialProxyDriver({
       id: selectedSandbox.id,
@@ -769,7 +810,7 @@ async function fixture(t: TestContext) {
   const proxy = createProxy("occ/token-service");
   proxy.bindSourceNamespaceResolver(async (sourceRef) => {
     assert.equal(sourceRef.namespaceId, namespace.id);
-    return namespace;
+    return placedNamespace;
   });
   // Exercise the admitted runtime provider key separately from the catalog ModelProvider ID.
   // This controlled Gateway fixture does not qualify a real Agent or native enforcement.
@@ -781,7 +822,7 @@ async function fixture(t: TestContext) {
     harness: { id: "codex", version: "1", mode: "dedicated" },
   });
   const context = {
-    namespace,
+    namespace: placedNamespace,
     revision: {
       ...revision,
       configurationId: configuration.configurationId,
@@ -870,7 +911,7 @@ async function fixture(t: TestContext) {
       configuration_instance_id: instanceId,
       policy_source: 1,
       policy_validation_failure_mode: "fail_closed",
-      workspace: namespace.name,
+      workspace: placedNamespace.name,
     };
     state.policyStatus = {
       revision: {
@@ -911,7 +952,7 @@ async function fixture(t: TestContext) {
         receipt_id: receiptId,
         mutation_id: receiptId,
         kind: "PROVIDER_MUTATION_KIND_OBSERVE",
-        workspace: namespace.name,
+        workspace: placedNamespace.name,
         provider: provider.metadata.name,
         desired,
         persisted_time: time,
@@ -952,6 +993,7 @@ async function fixture(t: TestContext) {
     state.providerStatus = undefined;
   };
   return {
+    backend,
     client,
     proxy,
     createProxy,
@@ -2611,6 +2653,182 @@ test("staged OpenShell Proxy removes the last target binding and its delivery co
   assert.equal(f.state.updates.length, 0);
 });
 
+test("Kubernetes Stop detaches native Git and model Providers from a retained managed Sandbox", async (t) => {
+  const kubernetesNamespace = kubernetesNamespaceName(namespace.id);
+  const f = await fixture(t, kubernetesNamespace);
+  const sandboxOptions = openShellWorkspaceHarnessConfiguration();
+  sandboxOptions.integrationMode = "service";
+  sandboxOptions.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  const sandbox = new ManagedOpenShellSandbox(sandboxOptions, {
+    id: f.proxy.id,
+    implementation: f.proxy.implementation,
+    backend: f.backend,
+  });
+  const proxy = new OpenShellCredentialProxyDriver({
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    backend: f.backend,
+    sandbox,
+    tokenServiceImplementation: "occ/token-service",
+  });
+  const deployment = f.context.revision.credentialDeployment;
+  const owner = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: sandboxOptions },
+    { capabilities: { sandbox, credential_proxy_delivery: proxy } },
+  );
+  const compute = new KubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: { mode: "disabled" },
+    }),
+    { credentialDeliveryRegistration: owner, sandboxDriver: sandbox },
+  );
+  const grants = [{ repository: "fixture/repository", access: "read" }] as const;
+  const gitRequests = openShellRepositoryCredentialRequests(grants);
+  const git = {
+    bindingRef: "repository",
+    sourceRef: { kind: "credential_source", id: "cs_github", namespaceId: namespace.id },
+    consumer: { kind: "repository" },
+    projection: { environment: "GITHUB_TOKEN", presentation: "github_repository" },
+  } as const;
+  const baseline = {
+    version: 1,
+    network_policies: {
+      baseline: {
+        name: "baseline",
+        binaries: [{ path: "/usr/bin/curl" }],
+        endpoints: [{ host: "example.com", ports: [443] }],
+      },
+    },
+  };
+  const tokenServiceInstanceId = "tokens";
+  const revision = {
+    ...f.context.revision,
+    compute: { id: compute.id, implementation: compute.implementation },
+    harness: {
+      ...f.context.revision.harness,
+      configuration: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          supportsStandaloneWebSearch: false,
+        },
+      },
+    },
+    harnessAuth: {
+      method: "credential_source" as const,
+      sourceId: binding.sourceRef.id,
+      sourceType: "static" as const,
+      tokenServiceInstanceId,
+    },
+    credentialSources: [
+      { sourceId: binding.sourceRef.id, sourceType: "static" as const, tokenServiceInstanceId },
+      {
+        sourceId: git.sourceRef.id,
+        sourceType: "github-app-installation" as const,
+        tokenServiceInstanceId,
+      },
+    ],
+    repositoryCredentials: {
+      authorization: "credential_source" as const,
+      driver: { id: "repository", implementation: "github" },
+      bindings: [
+        {
+          repositoryRef: "repository",
+          profile: "github-repository",
+          backendId: "github-primary",
+          grant: { providerInstanceId: "github", repositoryId: "42", grantId: "repository" },
+        },
+      ],
+    },
+    sandboxPolicy: {
+      driverId: sandbox.id,
+      implementation: sandbox.implementation,
+      version: 1 as const,
+      defaults: baseline.network_policies,
+      additions: [],
+      repositoryNetworkPolicy: admitRepositoryNetworkPolicy(grants, grants)!,
+    },
+    credentialDeployment: {
+      ...deployment,
+      driver: owner.ref,
+      networkAccessPolicy: { allowed: [request, ...gitRequests] },
+      bindings: [binding, git],
+      injectionPolicies: [injection, { bindingRef: git.bindingRef, allowedRequests: gitRequests }],
+    },
+  };
+  assert.ok(isNativeStagedRepositoryRevision(revision));
+  Object.assign(revision.compute, { admission: compute.admitRevision(revision) });
+  const context = { ...f.context, revision };
+  const target = f.sandbox;
+  target.metadata.name = sandbox.harnessResource(context).resourceName;
+  target.spec.policy = structuredClone(baseline);
+  f.state.policyStatus = {
+    revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: baseline },
+    active_version: 1,
+  };
+  await proxy.configureDeployment(context, {
+    ...configuration,
+    bindings: [
+      f.suppliedBinding,
+      {
+        binding: git,
+        resolveCredential: async () => ({ credential: "synthetic-git-token", version: "git-v1" }),
+      },
+    ],
+    injectionPolicies: revision.credentialDeployment.injectionPolicies,
+  });
+  const providers = [...target.spec.providers];
+  assert.equal(providers.length, 2);
+  assert.ok(providers.every((provider) => policyUsesProvider(target.spec.policy, provider)));
+  // OpenShell retains the original creation policy separately from its latest pushed policy.
+  target.spec.policy = structuredClone(baseline);
+  const runtimeProvider = sandbox.gitRuntimeProviderName(revision);
+  target.spec.providers.push(runtimeProvider);
+  target.status.phase = "SANDBOX_PHASE_READY";
+
+  const targetNamespace = { name: kubernetesNamespace, plane: "control" } as const;
+  const k8s = createDedicatedDeployKubernetesFixture(
+    {
+      namespace: kubernetesNamespace,
+      gatewayName: `gateway-${digest(revision.agentId)}`,
+      state: createDedicatedDeployEnrollmentFixture().state,
+      revision,
+      sandboxDriver: sandbox,
+      clock: undefined,
+    },
+    (save) =>
+      save({
+        ...compute["gatewayNamespaceManifest"]({ namespaceId: namespace.id }),
+        status: { phase: "Active" },
+      }),
+  );
+  // Resume after the Gateway drained. The retained Harness belongs to OpenShell, not a tenant Pod.
+  k8s.clients.core.listNamespacedPod = async () => ({ items: [] });
+  // Persist the exact target that normal staged preparation retains for Stop retries.
+  assert.ok(Reflect.set(compute, "apiClients", Promise.resolve(k8s.clients)));
+  await compute["credentialDeploymentTarget"](revision, targetNamespace, target.metadata.id);
+
+  await compute.stopRevision(revision);
+
+  const stopped = await f.client.getSandbox(
+    { workspace: kubernetesNamespace, name: target.metadata.name },
+    t.signal,
+  );
+  assert.ok(stopped);
+  assert.equal(stopped.id, target.metadata.id);
+  assert.equal(stopped.phase, "SANDBOX_PHASE_STOPPED");
+  assert.deepEqual(stopped.spec?.providers, [runtimeProvider]);
+  const status = await f.client.getPolicyStatus(
+    { workspace: kubernetesNamespace, sandbox: target.metadata.name },
+    t.signal,
+  );
+  assert.equal(status.state, "POLICY_STATUS_PENDING");
+  assert.equal(status.activeVersion, 0);
+  assert.deepEqual(status.policy.network_policies, baseline.network_policies);
+  assert.equal(await compute["credentialDeploymentTarget"](revision, targetNamespace), undefined);
+});
+
 test("staged OpenShell Proxy retains a shared copy until the last Sandbox unbinds", async (t) => {
   const f = await fixture(t);
   await f.configure();
@@ -2831,8 +3049,8 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
   };
   f.sandbox.spec.policy = structuredClone(baseline);
   f.state.policyStatus = {
-    revision: { version: 1, status: "POLICY_STATUS_LOADED", policy: baseline },
-    active_version: 1,
+    revision: { version: 1, status: "POLICY_STATUS_PENDING", policy: baseline },
+    active_version: 0,
   };
   let resolutions = 0;
   const input = {
@@ -2869,12 +3087,51 @@ test("canonical OpenShell Proxy preserves exact Repository authority through del
     },
   };
   await assert.rejects(f.proxy.configureDeployment(overlapping, input), DependencyUnavailableError);
+  const configure = () => f.proxy.configureDeployment(context, input);
+  const pending = { name: ActivationPendingError.name, code: "CREDENTIAL_ACTIVATION_PENDING" };
+  const initial = record(f.state.policyStatus.revision);
+  // A pending revision must still contain one of the approved policies.
+  initial.policy = {
+    ...baseline,
+    network_policies: {
+      ...baseline.network_policies,
+      broad: { name: "broad", endpoints: [{ host: "github.com", ports: [443] }] },
+    },
+  };
+  await assert.rejects(configure, OpenShellCredentialDeliveryRefusedError);
+  initial.policy = baseline;
+  initial.status = "POLICY_STATUS_FAILED";
+  await assert.rejects(configure, OpenShellCredentialDeliveryRefusedError);
+  // Stock OpenShell reports the initial idle policy before it has an active version.
+  initial.status = "POLICY_STATUS_PENDING";
+  await assert.rejects(configure, pending);
   assert.equal(resolutions, 0);
-  const configured = await f.proxy.configureDeployment(context, input);
+  assert.equal(f.state.profile, undefined);
+  assert.equal(f.state.creates.length, 0);
+  assert.equal(f.state.attaches.length, 0);
+  assert.equal(f.state.policyUpdates.length, 0);
+  initial.status = "POLICY_STATUS_LOADED";
+  f.state.policyStatus.active_version = 1;
+  const configured = await configure();
   assert.deepEqual(configured.credentialProjections, [
     { bindingRef: "repository", environment: "GITHUB_TOKEN", placeholder: { kind: "runtime" } },
   ]);
   assert.equal(resolutions, 1);
+  assert.equal(f.state.policyUpdates.length, 1);
+  // The combined policy now exists at v2 while v1 is still active on the same Sandbox.
+  const combined = record(f.state.policyStatus.revision);
+  assert.equal(combined.version, 2);
+  combined.status = "POLICY_STATUS_PENDING";
+  f.state.policyStatus.active_version = 1;
+  await assert.rejects(configure, pending);
+  combined.status = "POLICY_STATUS_LOADED";
+  await assert.rejects(configure, pending);
+  f.state.policyStatus.active_version = 2;
+  assert.deepEqual(await configure(), configured);
+  assert.equal(resolutions, 1);
+  assert.equal(f.state.creates.length, 1);
+  assert.equal(f.state.attaches.length, 1);
+  assert.equal(f.state.updates.length, 0);
   assert.equal(f.state.policyUpdates.length, 1);
   // A resumed preparation must use the reduced effective policy even though the immutable
   // revision still contains the withdrawn Plugin. Recreate a missing Repository Provider.

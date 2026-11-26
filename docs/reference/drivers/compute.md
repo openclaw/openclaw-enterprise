@@ -78,6 +78,8 @@ gateway routing. A paired [Sandbox Driver](sandbox.md) can provision Harnesses.
 
 [Exported interface](../../../packages/contracts/src/drivers/compute/index.ts)
 
+For exports, `ComputeRevisionContext.gatewayStartupCredentials` supplies Worker-owned `resolve(signal)` and `authorize(signal)` callbacks. Compute owns delivery, launch authorization and cleanup.
+
 ### Properties
 
 | Property                                                                                  | Requirement | Value and meaning                                                                                                                                                               |

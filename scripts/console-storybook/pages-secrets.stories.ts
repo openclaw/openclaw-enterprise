@@ -2,7 +2,10 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Credentials/Secrets", id: "pages-secrets" };
 
-export const Populated = story("secrets");
+export const Populated = story("secrets", {
+  instructions:
+    "Open a result with Enter. Narrow the window, then press Escape. Check that the same row is visible and focused and the search filter is unchanged.",
+});
 export const Mobile = story("secretsMobile", { frameHeight: "844px" });
 export const NoSearchMatches = story("secretsSearch");
 export const Empty = story("secretsEmpty");

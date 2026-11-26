@@ -94,6 +94,7 @@ type AgentDetailScenario = {
   observabilityDenied?: true;
   candidateDeploymentStatus?: AgentDeploymentStatusWire["status"];
   candidateActivates?: true;
+  candidateFailsOnPoll?: true;
   deploymentLastAttempt?: NonNullable<AgentDeploymentStatusWire["progress"]>["lastAttempt"];
   bootstrapFailure?: true;
   cleanupStatus?: "queued";
@@ -1560,6 +1561,15 @@ export function createAgentDetailScenarios({
           "Review the compatible simulated MCP Template, the first eligible OAuth Client selected by default, and its preselected scopes in the same account consent dialog used by Create Agent.",
         gap: "Storybook supplies Template and Plugin metadata. It does not complete OAuth, create a Source, or grant an Agent access.",
       },
+      pluginAccountConsentMultipleClients: {
+        ...accountConsent,
+        oauthCatalog: "plugin-consent-multiple-clients",
+        name: "Choose an eligible OAuth Client",
+        description:
+          "The first eligible Client is selected automatically. Choosing another Client preserves that explicit selection for consent.",
+        steps: ["Choose Support alternate and confirm it remains selected."],
+        gap: "Client eligibility is simulated. This does not complete OAuth or create a Source.",
+      },
       pluginAccountConsentNoClients: {
         ...accountConsent,
         name: "No eligible OAuth Client for a Plugin Template",
@@ -1643,8 +1653,8 @@ export function createAgentDetailScenarios({
           click("Connect account"),
         ],
         description:
-          "An Installation admin sees the existing Google OAuth Template that needs a client and can configure it instead of creating a duplicate. Connect stays unavailable until a client is assigned.",
-        gap: "Template and permission responses are simulated. This does not register an OAuth client or start consent.",
+          "An Installation administrator sees the unverified Google starter and can edit it instead of creating a duplicate. Consent remains unavailable until a verified version and eligible client exist.",
+        gap: "Template verification and permission responses are simulated. This does not contact Google, register an OAuth client, or start consent.",
       },
       slackMcpSavedToolsUnavailable: {
         ...slackMcpBase,
@@ -2625,16 +2635,9 @@ export function createAgentDetailScenarios({
         name: "Deployment fails while watching",
         path: `${candidateVersion}&tab=deployment`,
         deployed: true,
-        candidateDeploymentStatus: "failed",
+        candidateDeploymentStatus: "running",
+        candidateFailsOnPoll: true,
         candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
-        // Show the in-progress record on arrival, then let the next poll read the failed record.
-        rules: [
-          {
-            suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
-            once: true,
-            data: { status: "running", progress: null, error: null, warnings: [] },
-          },
-        ],
         description:
           "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
         steps: [
@@ -4155,6 +4158,7 @@ export function createAgentDetailRepositoryScenarios(
   const repositoryCollaborator = {
     ...repositoryEditor,
     name: "Select repository collaborator from an empty set",
+    policyState: "repositoryPermissions",
     repositoryOptions: collaboratorRepositoryOptions,
     repositoryAccess: { defaultProfile: "git-full", repositories: [] },
     description:

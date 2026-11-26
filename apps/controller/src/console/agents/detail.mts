@@ -1786,6 +1786,22 @@ export async function renderAgentDetail(
     role: "tablist",
     "aria-label": "Agent configuration views",
   });
+  function inUseTabStripTop() {
+    if (!detailShown || !tabs.querySelector("button:hover, button:focus-visible")) {
+      return null;
+    }
+    const bounds = tabs.getBoundingClientRect();
+    return bounds.bottom > 0 && bounds.top < window.innerHeight ? bounds.top : null;
+  }
+  function restoreTabStripTop(top: number | null) {
+    if (top === null) {
+      return;
+    }
+    const moved = tabs.getBoundingClientRect().top - top;
+    if (Math.abs(moved) >= 1) {
+      window.scrollBy({ top: moved, left: 0, behavior: "instant" });
+    }
+  }
   content.id = `${tabIds}-panel`;
   content.setAttribute("role", "tabpanel");
   content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
@@ -2665,6 +2681,8 @@ export async function renderAgentDetail(
     }
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
+    const workspaceStripTop =
+      workspaceAvailabilityChanged && mountedTab?.id === "workspace" ? inUseTabStripTop() : null;
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -2699,6 +2717,9 @@ export async function renderAgentDetail(
     renderVersionNotice();
     versionRecord?.renderDiagnostics();
     logsServingChange?.(servingChange());
+    // The panel can grow after a deployment notice shrank the page. Keep the tab in view at
+    // the position it occupied before this synchronous rebuild.
+    restoreTabStripTop(workspaceStripTop);
   }
 
   // The Logs view of a version with no running Pod asks which version serves now. A stop and
@@ -2859,6 +2880,17 @@ export async function renderAgentDetail(
   }
 
   function renderLatestDeployment() {
+    // Recovery can change when the outcome arrives, or later when permissions or revision details
+    // arrive. Keep an in-use tab in place while that content above it is rendered.
+    const stripTop =
+      latestDeploymentStatus !== null && !deploymentPending(latestDeploymentStatus)
+        ? inUseTabStripTop()
+        : null;
+    updateLatestDeployment();
+    restoreTabStripTop(stripTop);
+  }
+
+  function updateLatestDeployment() {
     markVersionOutcomes();
     // A post-completion overview can change the label of an unreadable selection.
     renderCurrentVersion();
@@ -2869,14 +2901,23 @@ export async function renderAgentDetail(
     }
     const latest = visibleRevisions[0];
     setHidden(deploymentEmpty, Boolean(latest) || latestRevisionResult?.status !== "fulfilled");
+    // Keep an existing notice in place until permissions settle and recovery can render.
+    const awaitingFailureRecovery =
+      latestDeploymentStatus === "failed" &&
+      !callerPermissionsSettled &&
+      !deploymentAttention.hidden &&
+      deploymentAttention.dataset.rendered === latest?.id;
     const needsAttention =
       latest &&
       (deploymentPending(latestDeploymentStatus) ||
+        awaitingFailureRecovery ||
         latestOverviewUnavailable ||
         latestDeploymentRecord?.warnings?.length ||
         (latestDeploymentRecord?.cleanup && latestDeploymentRecord.cleanup.status !== "succeeded"));
     setHidden(deploymentAttention, !needsAttention || selectedTab === "deployment");
-    let attentionText = "A deployment is queued or in progress.";
+    let attentionText = awaitingFailureRecovery
+      ? "The latest visible deployment failed."
+      : "A deployment is queued or in progress.";
     if (latestDeploymentRecord?.warnings?.length) {
       attentionText = "The latest deployment has startup warnings.";
     }
@@ -5470,6 +5511,8 @@ export async function renderAgentDetail(
   }
 
   async function renderTab({ activated = false } = {}) {
+    const refreshingWorkspace =
+      !activated && selectedTab === "workspace" && mountedTab?.id === selectedTab;
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -5515,26 +5558,25 @@ export async function renderAgentDetail(
     deploymentAttention.hidden =
       selectedTab === "deployment" || !deploymentAttention.dataset.message;
     setLayoutShape();
-    if (stripTop !== null) {
-      const moved = tabs.getBoundingClientRect().top - stripTop;
-      if (Math.abs(moved) >= 1) {
-        window.scrollBy({ top: moved, left: 0, behavior: "instant" });
-      }
-    }
+    restoreTabStripTop(stripTop);
     const tab = selectedTab;
-    const focusInStrip = tabs.contains(document.activeElement);
-    for (const [id, control] of tabControls) {
-      control.setAttribute("aria-selected", String(id === tab));
-      control.tabIndex = id === tab ? 0 : -1;
-    }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
     content.toggleAttribute("data-restore-panel-focus", selected === "draft" && tab === "channels");
-    // History can select another tab while focus is in the strip; focus follows the selection,
-    // so the focused tab is the one revealed and the Tab stop.
-    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
-      tabControls.get(tab)?.focus({ preventScroll: true });
+    // A serving change rebuilds Workspace files in place. Keep focus and scroll in the tab
+    // strip while the panel is replaced.
+    if (!refreshingWorkspace) {
+      const focusInStrip = tabs.contains(document.activeElement);
+      for (const [id, control] of tabControls) {
+        control.setAttribute("aria-selected", String(id === tab));
+        control.tabIndex = id === tab ? 0 : -1;
+      }
+      // History can select another tab while focus is in the strip; focus follows the selection,
+      // so the focused tab is the one revealed and the Tab stop.
+      if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+        tabControls.get(tab)?.focus({ preventScroll: true });
+      }
+      revealSelectedTab();
     }
-    revealSelectedTab();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
@@ -7206,6 +7248,20 @@ export async function renderAgentDetail(
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
+    // Chrome can leave a textarea with selected text offscreen on Tab. Require its
+    // input-device information to preserve scripted preventScroll focus.
+    editor.addEventListener("focus", (event) => {
+      if (!("sourceCapabilities" in event) || !event.sourceCapabilities) {
+        return;
+      }
+      if (document.activeElement !== editor || editor.selectionStart === editor.selectionEnd) {
+        return;
+      }
+      const box = editor.getBoundingClientRect();
+      if (box.top >= window.innerHeight || box.bottom <= 0) {
+        editor.scrollIntoView({ block: "center", inline: "nearest" });
+      }
+    });
     // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
     const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
@@ -7718,7 +7774,7 @@ export async function renderAgentDetail(
   }
 
   view.append(dangerZone);
-  context.setTabNavigation((next) => {
+  context.setTabNavigation((next, onBlocked) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const requestedTab = next.searchParams.get("tab");
     const nextTab =
@@ -7744,7 +7800,9 @@ export async function renderAgentDetail(
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      showLeaveBlock();
+      showLeaveBlock(
+        selectedTab === "repositories" && !draftWriteInFlight() ? onBlocked : undefined,
+      );
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });
@@ -7769,7 +7827,7 @@ export async function renderAgentDetail(
     showTabNotice(unavailableTabNotice(requestedTab));
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
     if (!recovery.section.hidden) {
-      renderLatestDeployment();
+      updateLatestDeployment();
     }
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.

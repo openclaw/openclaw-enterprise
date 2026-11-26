@@ -669,6 +669,10 @@ const movedTipError =
 const invalidRefError = /^Could not verify the Enterprise main ref\. Check the ref in GitHub\.\n$/;
 const runsPath = `actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=${sourceSha}&per_page=100`;
 const jobsPath = "actions/runs/456/attempts/2/jobs?per_page=100";
+const inspectAttempt =
+  "Inspect https://github.com/openclaw/openclaw-enterprise/actions/runs/456/attempts/2\n";
+const genericRefusal = `CI does not qualify this commit. ${inspectAttempt}`;
+const failedRun = { ...sourceRun, conclusion: "failure" };
 
 for (const scenario of [
   { name: "prints the stable SHA and CI run", calls: 6 },
@@ -700,7 +704,7 @@ for (const scenario of [
     name: "links to the active CI attempt for the reviewed source",
     initialRun: { ...sourceRun, id: 789, run_attempt: 4, status: "in_progress", conclusion: null },
     error:
-      /CI is not complete\. Watch https:\/\/github\.com\/openclaw\/openclaw-enterprise\/actions\/runs\/789\/attempts\/4 and recheck the same source\./,
+      "Wait for the whole CI run to finish, even if CI Required has already passed. Watch https://github.com/openclaw/openclaw-enterprise/actions/runs/789/attempts/4 and recheck the same source.\n",
     calls: 3,
   },
   {
@@ -710,14 +714,54 @@ for (const scenario of [
     calls: 5,
   },
   {
+    name: "reports a failed workflow despite a successful CI Required job",
+    initialRun: failedRun,
+    currentRun: failedRun,
+    error: `CI does not qualify this commit. The workflow failed. The CI Required job passed. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
     name: "refuses a successful run with a skipped CI Required job",
-    job: { ...sourceJob, conclusion: "skipped" },
-    error: /CI does not qualify this commit/,
+    jobs: [{ ...sourceJob, conclusion: "skipped" }],
+    error: `CI does not qualify this commit. The workflow passed. The CI Required job was skipped. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "reports a missing CI Required job on a complete jobs page",
+    jobs: [],
+    error: `CI does not qualify this commit. The workflow passed. The CI Required job is missing. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "links to the attempt without repeating an unknown job conclusion",
+    jobs: [{ ...sourceJob, conclusion: "untrusted feedback\non a second line" }],
+    error: genericRefusal,
+    calls: 5,
+  },
+  {
+    name: "withholds the diagnosis when the workflow identity changes after a failure",
+    initialRun: failedRun,
+    currentRun: { ...failedRun, workflow_id: 999 },
+    error: genericRefusal,
+    calls: 5,
+  },
+  {
+    name: "reports cancellation without treating a cancelled job as a test failure",
+    initialRun: { ...sourceRun, conclusion: "cancelled" },
+    currentRun: { ...sourceRun, conclusion: "cancelled" },
+    jobs: [{ ...sourceJob, conclusion: "cancelled" }],
+    error: `CI does not qualify this commit. The workflow was cancelled. The CI Required job was cancelled. ${inspectAttempt}`,
+    calls: 5,
+  },
+  {
+    name: "links to the attempt without reporting a conflicting workflow conclusion",
+    currentRun: failedRun,
+    error: genericRefusal,
     calls: 5,
   },
   {
     name: "refuses a job from another attempt",
-    job: { ...sourceJob, run_attempt: 1 },
+    jobs: [{ ...sourceJob, run_attempt: 1 }],
     error: /CI jobs do not match the completed source and attempt/,
     calls: 4,
   },
@@ -725,12 +769,13 @@ for (const scenario of [
   test(`container source ${scenario.name}`, async (t) => {
     const directory = await temporaryDirectory(t, "oce-container-source-");
     const calls = join(directory, "calls");
+    const jobs = scenario.jobs ?? [sourceJob];
     // The API stand-in can change either identity between the two reads.
     const replies: [string, unknown][] = [
       ["git/ref/heads/main", scenario.initialTip ?? mainRef],
       ["actions/workflows/ci.yml", sourceWorkflow],
       [runsPath, { total_count: 1, workflow_runs: [scenario.initialRun ?? sourceRun] }],
-      [jobsPath, { total_count: 1, jobs: [scenario.job ?? sourceJob] }],
+      [jobsPath, { total_count: jobs.length, jobs }],
       [runsPath, { total_count: 1, workflow_runs: [scenario.currentRun ?? sourceRun] }],
       ["git/ref/heads/main", scenario.tip ?? mainRef],
     ];
@@ -763,7 +808,11 @@ for (const scenario of [
     if (scenario.error) {
       assert.equal(result.status, 1);
       assert.equal(result.stdout, "");
-      assert.match(result.stderr, scenario.error);
+      if (typeof scenario.error === "string") {
+        assert.equal(result.stderr, scenario.error);
+      } else {
+        assert.match(result.stderr, scenario.error);
+      }
       assert.equal(result.stderr.trimEnd().split("\n").length, 1);
     } else {
       assert.equal(result.status, 0);

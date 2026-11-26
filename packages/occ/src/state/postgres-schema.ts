@@ -2665,8 +2665,6 @@ export const oauthClients = occSchema.table(
     tokenEndpointAuthMethod: text("token_endpoint_auth_method").$type<
       import("@openclaw-enterprise/contracts").OAuthClientAuthMethod
     >(),
-    tokenUrl: text("token_url"),
-    revocationUrl: text("revocation_url"),
     appId: text("app_id"),
     tokenServiceInstanceId: text("token_service_instance_id").references(
       () => tokenServiceInstances.id,
@@ -2678,13 +2676,13 @@ export const oauthClients = occSchema.table(
     check(
       "oauth_clients_kind_shape",
       sql`CASE WHEN ${table.kind}='oauth2' THEN
-          ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL AND ${table.tokenUrl} IS NOT NULL
+          ${table.issuer} IS NOT NULL AND ${table.clientId} IS NOT NULL
           AND ${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')
           AND ${table.appId} IS NULL
           AND ((${table.tokenEndpointAuthMethod}='none')=(${table.tokenServiceInstanceId} IS NULL))
         WHEN ${table.kind}='github-app' THEN
           ${table.issuer} IS NULL AND ${table.clientId} IS NULL
-          AND ${table.tokenUrl} IS NULL AND ${table.revocationUrl} IS NULL AND ${table.tokenEndpointAuthMethod} IS NULL
+          AND ${table.tokenEndpointAuthMethod} IS NULL
           AND CASE WHEN ${table.appId} ~ '^[1-9][0-9]{0,15}$' THEN ${table.appId}::numeric <= 9007199254740991 ELSE false END
           AND ${table.tokenServiceInstanceId} IS NOT NULL
         ELSE false END IS TRUE`,
@@ -2695,14 +2693,6 @@ export const oauthClients = occSchema.table(
     check(
       "oauth_clients_display_name_check",
       sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})`,
-    ),
-    check(
-      "oauth_clients_token_url_check",
-      sql`${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
-    ),
-    check(
-      "oauth_clients_revocation_url_check",
-      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
     ),
     check(
       "oauth_clients_id_format",
@@ -2806,6 +2796,12 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       jsonb("observed_metadata").$type<
         import("@openclaw-enterprise/contracts").McpAuthorizationMetadata
       >(),
+    issuerVerification:
+      jsonb("issuer_verification").$type<
+        NonNullable<
+          import("@openclaw-enterprise/contracts").OAuthConnectionTemplateVersion["issuerVerification"]
+        >
+      >(),
     authorizationUrl: collatedText("authorization_url").notNull(),
     tokenUrl: collatedText("token_url").notNull(),
     scopes: text("scopes").array().notNull(),
@@ -2843,6 +2839,14 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     check(
       "oauth_connection_template_versions_destinations_valid",
       sql`occ.valid_connection_destinations(${table.destinations})`,
+    ),
+    check(
+      "oauth_connection_template_versions_issuer_verification_valid",
+      sql`${table.issuerVerification} IS NULL OR ((jsonb_typeof(${table.issuerVerification})='object'
+        AND ${table.issuerVerification} ? 'tokenEndpointAuthMethods'
+        AND ${table.issuerVerification} - 'tokenEndpointAuthMethods'='{}'::jsonb
+        AND jsonb_typeof(${table.issuerVerification}->'tokenEndpointAuthMethods')='array'
+        AND ${table.issuerVerification}->'tokenEndpointAuthMethods' <@ '["none","client_secret_basic","client_secret_post"]'::jsonb) IS TRUE)`,
     ),
     check(
       "oauth_connection_template_versions_discovery",

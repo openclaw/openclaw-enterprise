@@ -1,7 +1,7 @@
 ---
 created: "2026-11-04"
-updated: "2026-11-24 19:38"
-last_updated_session: "authoring-run/12bc1c8a-eaac-4de8-a731-f7638d71ab6b"
+updated: "2026-11-26 07:39"
+last_updated_session: "authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8"
 ---
 
 # How OCC saves a connection template
@@ -56,13 +56,13 @@ The Console lists both static Bearer and OAuth templates. Its editor sends the s
 
 OCC checks Installation administration and the selected Namespace before saving a template. For a static Bearer template, it validates and canonicalizes each complete method, host, port and path row. The path uses the same validator as credential request policy matching (`packages/contracts/src/request-path.ts:validRequestPath`); PostgreSQL enforces the same grammar when it stores a version. No discovery or OAuth client is required. The repository stores version 1 with the template identity. An edit that changes settings adds an immutable version and advances the current version; a rename alone keeps the version. OCC commits each mutation with its audit record.
 
-For manual OAuth, OCC accepts the configured settings and destinations. For MCP, it reads protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations.
+For manual OAuth, OCC authorizes Installation administration and verifies the entered OAuth URLs against metadata from that exact HTTPS issuer, including an administrator-approved private issuer. For MCP, it reads protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. Both modes save the verification and supported authentication methods with the immutable version. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations.
 
 <a id="2-register-and-maintain-the-oauth-client"></a>
 
 ### 2. Register and maintain a credential client
 
-`packages/occ/src/connection-administration.ts:createCredentialClient` and `packages/occ/src/state/postgres-credential-clients.ts:postgresCredentialClients`
+`packages/occ/src/credential-client-administration.ts:createCredentialClient` and `packages/occ/src/state/postgres-credential-clients.ts:postgresCredentialClients`
 
 `createCredentialClient` and `rotateCredentialClient` reject calls inside `OpenClawController.transact`, including an inherited transaction context, before private operations. Their independent commits preserve the cleanup reservation or, when the caller supplies an audit event, the requested-rotation audit if a later operation fails. The HTTP handlers call these methods directly and supply audit events. `deleteCredentialClient` only stages database work for worker cleanup and remains composable.
 
@@ -86,7 +86,7 @@ OCC verifies the person's Namespace permission and selected TokenService, then s
 
 `packages/occ/src/oauth-consent.ts:completeNamespaceConnection` and `apps/controller/src/drivers/token-service/occ.ts:createSource`
 
-On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active TokenService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
+On callback, OCC consumes the matching attempt once, checks the person's session and authority, and selects the active TokenService before exchanging the code. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. Before reading the current client secret or sending the code, OCC revalidates the original version's exact token endpoint against current issuer metadata. It sends the code and verifier only to that endpoint and includes the MCP resource when applicable. If the exchange times out, the person starts a new attempt.
 
 After exchange, OCC sends the grant and consent details to the selected TokenService. TokenService allocates the Source ID and writes the access token and refresh grant to private storage. It then saves the ready OAuth Source, its custody reference, and its renewal schedule in one transaction. OCC grants the creator access and records completion against the Source and the authorized Namespace create operation. OCC records the requested scopes and the issuer’s valid initial granted scopes separately, even when the issuer grants more than requested. If the issuer omits `scope`, OCC records the requested scopes as granted. The refresh parser refuses any scope outside the prior grant.
 
@@ -94,7 +94,7 @@ After exchange, OCC sends the grant and consent details to the selected TokenSer
 
 `apps/controller/src/composition/token-service.ts:scheduleTokenServiceMaintenance` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
 
-The API checks for due OAuth Sources on a five-second schedule independent of Git maintenance. The selected TokenService can also renew during an authorized API read. The Worker resolves only an eligible current access token and can retry deployment after API renewal. Template-backed renewal uses the Source's original consent version and the registered Client's current secret. A Template update can affect later admission. The existing grant keeps its issuer endpoint and scope ceiling. TokenService records the next renewal and any narrower granted scopes.
+The API checks for due OAuth Sources on a five-second schedule independent of Git maintenance. The selected TokenService can also renew during an authorized API read. The Worker resolves only an eligible current access token and can retry deployment after API renewal. Template-backed renewal revalidates the original consent version's token endpoint before reading the registered Client's current secret or sending the refresh grant. An unavailable or changed issuer endpoint stops the request; OCC never substitutes the current Template version or another Client. A Template update can affect later admission. The existing grant keeps its issuer endpoint and scope ceiling. TokenService records the next renewal and any narrower granted scopes.
 
 Built-in Codex device login uses no Connection Template. See the [Credential source lifecycle](credential-source-lifecycle.md#1-register-a-source).
 
@@ -117,6 +117,10 @@ Built-in Codex device login uses no Connection Template. See the [Credential sou
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-26 07:39: Trace cleanup evidence in the Credential Client module. (authoring-run/c14b7752-dc1d-449e-9cee-f248859972e8 - c539b52fcf87521d5d18b5bf7ae513c330a1d07c)
+
+- 2026-11-25 14:46: Point Credential Client administration to its own module. (authoring-run/2ae72e91-8611-461a-b01f-65bf8fc3e7a1 - 407247469c435c400c2bf7af763ec69cfebb6b53)
 
 - 2026-11-24 19:38: Record credential client cleanup and retry outcomes. (authoring-run/12bc1c8a-eaac-4de8-a731-f7638d71ab6b - 0865cc4ce1d9308ad66fbb5877dfb57186457e2e)
 
