@@ -27,8 +27,9 @@ export const CredentialsSlackHttp = {
 };
 export const CredentialsSlackReader = {
   ...story("credentialsSlackReader"),
-  name: "Slack tokens, viewer can only read",
+  name: "Slack Sources, viewer can only read",
 };
+export const CredentialsSlackSwappedKeys = story("credentialsSlackSwappedKeys");
 export const CredentialsSlackSourceOperateDenied = story("credentialsSlackSourceOperateDenied");
 export const CredentialsSlackStored = {
   ...story("credentialsSlackStored"),

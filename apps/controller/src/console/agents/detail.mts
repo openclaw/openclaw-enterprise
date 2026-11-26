@@ -1735,7 +1735,7 @@ export async function renderAgentDetail(
       return "This page stays open until the authentication save finishes.";
     }
     if (activeCredentials?.isSaving()) {
-      return "This page stays open until the channel Secret bindings save finishes.";
+      return "This page stays open until the channel credential bindings save finishes.";
     }
     return networkProxyNavigationBlock ?? draftEditorNavigationBlock;
   }

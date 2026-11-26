@@ -282,14 +282,30 @@ export function credentialsScenarios({
     },
     credentialsSlackReader: {
       group: "Components/Credentials",
-      name: "Slack tokens, viewer can only read",
+      name: "Slack Sources, viewer can only read",
       path: `${draft}&tab=credentials`,
       slack: true,
-      slackBindings: false,
       readOnlyPermissionSummary: true,
       description:
-        "The permission answer denies Configuration update, so the Slack token pickers are disabled, Save channel credentials is not offered, and a note says why.",
-      gap: "The permission answer is simulated; the API still authorizes every save.",
+        "The viewer can read the saved Slack Source bindings but cannot edit the Configuration. Each unavailable selector remains in the keyboard Tab order and names that editing restriction.",
+      steps: [
+        "Tab to Slack app token and Slack bot token. Each selector receives focus and is described by the Configuration read-only reason.",
+        "Press an arrow key or Enter. The saved Source selection does not change, and Save channel credentials is not offered.",
+      ],
+      gap: "This preview simulates the permission answer and Source metadata; it does not prove API authorization or credential delivery.",
+    },
+    credentialsSlackSwappedKeys: {
+      group: "Components/Credentials",
+      name: "Slack credential roles use swapped environment keys",
+      path: `${draft}&tab=credentials`,
+      slack: true,
+      slackTokens: {
+        appToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        botToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      },
+      description:
+        "The app setting reads SLACK_BOT_TOKEN and the bot setting reads SLACK_APP_TOKEN. The Source selectors show the exact environment keys instead of assigning the wrong app or bot role to either binding.",
+      gap: "This preview simulates Source metadata and Configuration values; it does not validate token roles with Slack.",
     },
     credentialsSlackSourceOperateDenied: {
       group: "Components/Credentials",

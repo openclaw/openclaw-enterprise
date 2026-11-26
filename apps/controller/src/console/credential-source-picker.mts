@@ -132,7 +132,7 @@ export function createCredentialSourcePicker<Criteria>(
     setUnavailable(
       select,
       disabled || (!loaded && !selected && addNewLabel === undefined),
-      disabled && disabledReason ? disabledReason : hint,
+      disabled ? disabledReason : hint,
     );
     select.required = active && required && !creating;
   }

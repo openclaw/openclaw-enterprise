@@ -11,12 +11,7 @@ import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 import type { Page } from "playwright";
-import type {
-  Agent,
-  Namespace,
-  SecretMetadata,
-  SecretBinding,
-} from "../../packages/contracts/src/index.ts";
+import type { Agent, Namespace, SecretBinding } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error-response.ts";
@@ -24,6 +19,7 @@ import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpe
 import {
   apiRequests,
   asksBeforeUnload,
+  createSlackSourceConsoleFixture,
   detailUrl,
   holdRequests,
   login,
@@ -31,7 +27,6 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
-  selectSecret,
   settlePageRequests,
   settledView,
   waitForCondition,
@@ -108,18 +103,6 @@ function agentFields(value: unknown): Pick<
   };
 }
 
-function secretFields(value: unknown): SecretMetadata {
-  const data = record(value);
-  const ref = record(data.ref);
-  assert.equal(ref.kind, "secret");
-  return {
-    id: text(data.id),
-    name: text(data.name),
-    namespaceId: text(data.namespaceId),
-    ref: { kind: "secret", id: text(ref.id), namespaceId: text(ref.namespaceId) },
-  };
-}
-
 // Unsaved drafts survive a refused Create and a failed Namespace read, and a pending save holds
 // every way off the page (findings 1934, 1935, 1937). The rules that keep untouched forms and
 // saved choices from asking before a reload are pinned too (finding 1938).
@@ -170,22 +153,17 @@ async function startDefaultPreset(page: Page) {
   await page.getByLabel("Agent name", { exact: true }).waitFor();
 }
 
-const envBinding = (secret: SecretMetadata): SecretBinding => ({
-  source: secret.ref,
+const envBinding = (source: { ref: SecretBinding["source"] }): SecretBinding => ({
+  source: source.ref,
   delivery: { type: "env" },
 });
 
-async function createSlackAgent(
-  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
-  namespace: Pick<Namespace, "id">,
-  name: string,
-) {
-  const app = secretFields(
-    await fixture.createSecret(namespace.id, `${name} app token`, "xapp-kept"),
-  );
-  const bot = secretFields(
-    await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-kept"),
-  );
+async function createSlackAgent(t: TestContext, name: string) {
+  const { fixture, namespace, enroll } = await createSlackSourceConsoleFixture(t, name, {
+    defaultPresets: [defaultCodexPreset],
+  });
+  const { source: app } = await enroll(`${name} app token`, "xapp");
+  const { source: bot } = await enroll(`${name} bot token`, "xoxb");
   const agent = agentFields(
     await fixture.createAgent(
       namespace.id,
@@ -208,7 +186,7 @@ async function createSlackAgent(
       },
     ),
   );
-  return { agent, app, bot };
+  return { fixture, namespace, enroll, agent, app, bot };
 }
 
 test("a refused Create stays a draft for a reload and a return, and the retry reuses what it saved", async (t) => {
@@ -453,10 +431,7 @@ test("a failed Namespace recheck keeps the Agent page's Configuration edit", asy
 });
 
 test("a pending save holds the sidebar links and Back on the Agent page", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Pending leave", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Pending leave Agent");
+  const { fixture, namespace, agent } = await createSlackAgent(t, "Pending leave Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
@@ -549,17 +524,18 @@ for (const pending of [
     start: (page: Page) => page.getByRole("button", { name: "Save authentication source" }).click(),
   },
   {
-    kind: "a channel Secrets save",
+    kind: "a channel credential save",
     tab: "credentials",
-    reason: "This page stays open until the channel Secret bindings save finishes.",
+    reason: "This page stays open until the channel credential bindings save finishes.",
     beside: ".channel-secrets",
     hold: ({ namespace, agent }) => [
       `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
       { method: "PATCH" },
     ],
-    start: async (page, { replacement }) => {
-      await selectSecret(page, "Slack app token", replacement);
-      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    start: async (page, { replacementId }) => {
+      assert.ok(replacementId);
+      await page.getByLabel("Slack app token", { exact: true }).selectOption(replacementId);
+      await page.getByRole("button", { name: "Save channel credentials" }).click();
     },
   },
   {
@@ -588,21 +564,19 @@ for (const pending of [
     namespace: Pick<Namespace, "id">;
     agent: Pick<Agent, "id" | "configurationId">;
   }) => [string, Parameters<typeof holdRequests>[3]?];
-  start: (page: Page, resources: { replacement: SecretMetadata }) => Promise<void>;
+  start: (page: Page, resources: { replacementId?: string }) => Promise<void>;
 }[]) {
   test(`${pending.kind} holds the sidebar, Back and ← Agents and says why`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
+    const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Pending reason Agent");
     if (pending.tab === "plugins") {
       const driver = new CodexPluginDriver();
       checkedController(fixture.controller).registerDriver(driver);
       checkedController(fixture.controller).selectDriver("plugin", driver.id);
     }
-    const namespace = resource(await fixture.createNamespace("Pending reason", { ready: true }));
-    const { agent } = await createSlackAgent(fixture, namespace, "Pending reason Agent");
-    const replacement = secretFields(
-      await fixture.createSecret(namespace.id, "Replacement app", "xapp-new"),
-    );
+    const replacementId =
+      pending.kind === "a channel credential save"
+        ? (await enroll("Replacement app", "xapp")).source.id
+        : undefined;
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Pending reason Agent" }).click();
@@ -614,7 +588,7 @@ for (const pending of [
     await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
     const [heldUrl, heldOptions] = pending.hold({ namespace, agent });
     const held = await holdRequests(t, page, heldUrl, heldOptions);
-    await pending.start(page, { replacement });
+    await pending.start(page, { ...(replacementId ? { replacementId } : {}) });
     await held.requested;
     const pageUrl = page.url();
     const reason = page.getByText(pending.reason, { exact: true });
@@ -717,13 +691,10 @@ for (const pending of [
 }
 
 test("a pending plugin save blocks navigation to the deletion controls", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const { fixture, namespace, agent } = await createSlackAgent(t, "Plugin Delete Agent");
   const driver = new CodexPluginDriver();
   checkedController(fixture.controller).registerDriver(driver);
   checkedController(fixture.controller).selectDriver("plugin", driver.id);
-  const namespace = resource(await fixture.createNamespace("Plugin save delete", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.locator(LIVE_BUTTON, { hasText: "Deploy new version" }).waitFor();
@@ -971,10 +942,7 @@ test("an uncertain Configuration save holds ← Agents, but the sidebar may leav
 });
 
 test("untouched forms, unchanged drawers and search text do not ask before a reload", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Nothing to lose", { ready: true }));
-  await createSlackAgent(fixture, namespace, "Nothing to lose Agent");
+  const { fixture, namespace } = await createSlackAgent(t, "Nothing to lose Agent");
   const { page } = await newPage(t, fixture);
   const dialogs: string[] = [];
   page.on("dialog", async (dialog) => {
@@ -1036,21 +1004,14 @@ test("a changed Preset variable still asks before a reload after a return", asyn
   assert.equal(await asksBeforeUnload(page), true);
 });
 
-test("Secret choices carried through Reload draft do not ask before a reload", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = resource(await fixture.createNamespace("Carried choices", { ready: true }));
-  const { agent } = await createSlackAgent(fixture, namespace, "Carried choices Agent");
-  const secondBot = secretFields(
-    await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2"),
-  );
-  const otherApp = secretFields(
-    await fixture.createSecret(namespace.id, "Other app token", "xapp-other"),
-  );
+test("Source choices carried through Reload draft do not ask before a reload", async (t) => {
+  const { fixture, namespace, agent, enroll } = await createSlackAgent(t, "Carried choices Agent");
+  const { source: secondBot } = await enroll("Second bot token", "xoxb");
+  const { source: otherApp } = await enroll("Other app token", "xapp");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Carried choices Agent" }).waitFor();
-  await selectSecret(page, "Slack bot token", secondBot);
+  await page.getByLabel("Slack bot token", { exact: true }).selectOption(secondBot.id);
   // Another browser rebinds the app token first.
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const current = record((await fixture.request("GET", configurationPath)).data);
@@ -1061,7 +1022,7 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
     },
   });
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
-  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page.getByRole("button", { name: "Save channel credentials" }).click();
   await page.getByText(CHANNEL_SECRETS_CONFIGURATION_CHANGED).waitFor();
 
   const reread = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
@@ -1070,14 +1031,14 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
   });
   await page.getByRole("button", { name: "Reload draft" }).click();
   await reread.requested;
-  // The carried choices name saved Secrets: a reload would lose nothing (finding 1938).
+  // The carried choices name stored Sources: a reload would lose nothing (finding 1938).
   assert.equal(await asksBeforeUnload(page), false);
   reread.release();
   await page
     .getByRole("status")
     .filter({
       hasText:
-        "Your Secret choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
+        "Your Credential Source choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
     })
     .waitFor();
 });

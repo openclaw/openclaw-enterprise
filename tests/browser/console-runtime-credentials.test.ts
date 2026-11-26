@@ -954,7 +954,7 @@ async function retryConflictReload(
   // The policy read lands: the grant is now known missing, and the section is rebuilt.
   await section
     .getByText(
-      "This Agent has no access to a bound Slack Secret, so deploying it would be refused.",
+      "This Agent has no access to a bound Namespace Secret, so deploying it would be refused.",
       {
         exact: false,
       },

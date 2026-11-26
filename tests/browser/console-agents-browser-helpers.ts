@@ -154,35 +154,6 @@ export async function createSlackSourceConsoleFixture(
   return { fixture, namespace, enroll };
 }
 
-/** Grant the Agent's exact Source references through the production IAM routes. */
-export async function grantAgentSourceOperate(
-  fixture: Fixture,
-  namespaceId: string,
-  principalId: string,
-  sourceIds: readonly string[],
-) {
-  const base = `/namespaces/${namespaceId}/iam`;
-  const role = await fixture.request("POST", `${base}/roles`, {
-    body: {
-      name: `Source operate ${randomUUID()}`,
-      permissions: [{ action: "operate", resourceKind: "credential_source" }],
-    },
-  });
-  assert.equal(role.status, 201);
-  for (const id of sourceIds) {
-    const binding = await fixture.request("POST", `${base}/access-bindings`, {
-      body: {
-        subjectKind: "identity",
-        subjectId: principalId,
-        roleId: role.data.id,
-        resourceKind: "credential_source",
-        resourceId: id,
-      },
-    });
-    assert.equal(binding.status, 201);
-  }
-}
-
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
 // or write IAM policy.
@@ -228,7 +199,7 @@ export const AGENT_READ: typeof MEMBER_WRITE = [
 
 // The Credentials tab's Channel Secrets save outcome (agents/credentials.mts saveOutcomeText). It
 // points to Deploy only once no grant read is still to come and every bound Secret is granted.
-export const CHANNEL_SECRETS_SAVED = "Channel Secret bindings saved.";
+export const CHANNEL_SECRETS_SAVED = "Channel credential bindings saved.";
 export const CHANNEL_SECRETS_SAVED_DEPLOY = `${CHANNEL_SECRETS_SAVED} Deploy the new version to deliver them.`;
 
 /**

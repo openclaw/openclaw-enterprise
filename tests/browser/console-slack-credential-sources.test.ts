@@ -1,17 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { OCCTokenServiceDriver } from "../../apps/controller/src/drivers/token-service/occ.ts";
-import type { PlatformStateStore } from "../../packages/occ/src/index.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
-import { installDeviceTokenService } from "../helpers/device-token-service.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createTestSecretDriver } from "../helpers/secret-driver.ts";
 import {
   apiRequests,
+  createSlackSourceConsoleFixture as sourceConsole,
   detailUrl,
   login,
   newPage,
@@ -19,44 +15,6 @@ import {
   setSlackSelection,
 } from "./console-agents-browser-helpers.ts";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-ui-test-support.ts";
-
-// Source custody, Fastify, Native IAM and the Console use production code. The selected Compute
-// is a fixture, and Slack's external transport is controlled; no live call or deployment occurs.
-async function sourceConsole(
-  t: TestContext,
-  name: string,
-  options: {
-    defaultPresets?: object[];
-  } = {},
-) {
-  const secretDriver = createTestSecretDriver({ id: `source-custody-${randomUUID()}` });
-  let state: PlatformStateStore | undefined;
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
-    defaultPresets: options.defaultPresets,
-    channelRuntime: true,
-    filesystemConfiguration: true,
-    secretDriver,
-    gatewayStartupSourceDelivery: (compute: { id: string }, owner: unknown) =>
-      compute.id === "console-compute" && owner instanceof OCCTokenServiceDriver,
-    wrapState(current: PlatformStateStore) {
-      state = current;
-      return current;
-    },
-  });
-  assert.ok(state);
-  await installDeviceTokenService(fixture.controller, state, secretDriver);
-  async function enroll(name: string, prefix = "xoxb") {
-    const secret = `${prefix}-${randomUUID()}`;
-    const response = await fixture.request(
-      "POST",
-      `/namespaces/${namespace.id}/credential-sources`,
-      { body: { name, type: "static", secret } },
-    );
-    assert.equal(response.status, 201);
-    return { source: response.data, secret };
-  }
-  return { fixture, namespace, enroll };
-}
 
 function grantExactSourceOperate(
   fixture: Awaited<ReturnType<typeof sourceConsole>>["fixture"],
