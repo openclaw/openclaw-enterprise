@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-11-25
-last_updated_session: authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9
+last_updated_session: authoring-run/dadb5e9f-d65b-4fae-8fe3-20232e7d6f5c
 ---
 
 # Platform console request flow
@@ -299,12 +299,12 @@ views. Rate notices update without rereading.
 
 ### 7. Commit only the current response, or clear the view
 
-`apps/controller/src/console/console.mjs:loadPage`, `logout`
+`apps/controller/src/console/console.mts:loadPage`, `logout`
 
-`loadPage` moves body focus to the destination heading with `preventScroll`,
-including Agents opened from the list. Controls keep focus.
-Tabs use one Tab stop and arrows. Navigation, Namespace changes and logout
-invalidate reads by generation. Refocus events coalesce.
+`loadPage` moves body focus to headings without scrolling, including list → Agent.
+Arrow keys navigate tabs within one Tab stop. If repository edits block Back or
+Forward, `loadPage` restores the URL and focuses the explanation unless interrupted.
+Navigation, Namespace changes and logout invalidate reads by generation. Refocus events coalesce.
 `revalidateMountedAgent` rereads session, Namespace, Agent, version and
 [permissions](platform-console/agent-stop-and-deletion.md#stop-agent).
 
@@ -382,6 +382,7 @@ gateway startup and file availability.
 
 ## Changelog
 
+- 2026-11-25 21:19: Blocked repository navigation. (authoring-run/dadb5e9f-d65b-4fae-8fe3-20232e7d6f5c - 2fece6e5c56d39aa228648a166e4d4e6cbc664e9)
 - 2026-11-25 11:30: Trace Namespace Source discovery and write-only registration in Console. (authoring-run/b55a110d-b732-438a-9cbf-aa5480016db9 - 105ffee9962176cf42fc7cfe013b8b94831435db)
 
 - 2026-11-25 08:48: Trace runtime status on return to Logs. (authoring-run/dfe9b6d4-0759-4dc0-8ad6-0df4fe70c747 - 1238aef6d77aa4544bfabfd80215ef1ea7414f2d)
