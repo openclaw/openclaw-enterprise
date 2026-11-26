@@ -8,8 +8,8 @@ description: Open pull requests in approved GitHub repositories with stock gh ap
 Use the admitted `OWNER/REPO` and approved head and base. Save `title`, `head`,
 `base`, and any requested `body` in a private JSON file outside the checkout.
 Set `draft: true` for a draft PR and set `payload` to the file's path.
-The Agent's Repository policy admits only `POST /repos/OWNER/REPO/pulls` for
-GitHub REST.
+When the deployed Repository grant permits pull request creation, the Agent's
+only admitted GitHub REST request is `POST /repos/OWNER/REPO/pulls`.
 `gh pr create` uses GraphQL, which this binding does not admit.
 
 Use only the binding's inert placeholder. Dedicated Codex supplies it as
