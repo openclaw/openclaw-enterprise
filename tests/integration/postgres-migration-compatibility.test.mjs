@@ -674,14 +674,50 @@ async function connectHistoryDatabase(fixture, name, clients) {
   return db;
 }
 
-// Each new migration needs a named history for the count before it, and every
-// hand-kept prefix table below must reach that count: a missing row means no case
-// upgrades a database at that count. From `contiguousFrom`, no count may be skipped.
+// Expected history names are test data, independent of the migration manifest.
+const recentHistories = [
+  [75, "preNativeBrowserAccess"],
+  [76, "preControlPlaneAudit"],
+  [77, "prePendingSandboxPolicyApplication"],
+  [78, "prePredecessorReplacement"],
+  [79, "preRevisionRuntimeInputs"],
+  [80, "preRestartContinuation"],
+  [81, "preAuthenticationStates"],
+  [82, "preNativeRestartRecovery"],
+  [83, "preRevisionEgressInstallations"],
+  [84, "preStaticTokenServiceSources"],
+  [85, "preTokenServiceSourceOwnership"],
+  [86, "preRepositoryNetworkPolicy"],
+  [87, "preStandaloneCredentialDeployment"],
+  [88, "preStaticConnectionTemplates"],
+  [89, "preNativeGitDelivery"],
+  [90, "preAgentNetworkProxy"],
+  [91, "preAgentNetworkProxyAdmission"],
+  [92, "preAgentRepositoryApiLimits"],
+  [93, "preTokenServiceSourceBackendRef"],
+  [94, "preTokenServiceCredentialSources"],
+  [95, "preNamespaceGitHubAppClients"],
+];
+
+// From contiguousFrom onward, every count needs a case that upgrades its next migration.
 async function coveringNewestPrefix(table, contiguousFrom, rows) {
   const { entries } = JSON.parse(
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
-  const listed = new Set(rows.map(([prefix]) => prefix));
+  const listed = new Set();
+  let previous = -1;
+  for (const [prefix] of rows) {
+    assert.ok(
+      Number.isInteger(prefix) && prefix >= 0 && prefix < entries.length,
+      `${table} table has invalid history prefix ${prefix} (${entries.length} migrations)`,
+    );
+    assert.ok(
+      prefix > previous,
+      `${table} table history prefix ${prefix} must be greater than ${previous}`,
+    );
+    listed.add(prefix);
+    previous = prefix;
+  }
   for (let count = contiguousFrom; count < entries.length; count += 1) {
     assert.ok(
       listed.has(count),
@@ -1552,28 +1588,11 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    for (const [prefix, history] of await coveringNewestPrefix("pending SandboxPolicy", 76, [
-      [76, "preControlPlaneAudit"],
-      [77, "prePendingSandboxPolicyApplication"],
-      [78, "prePredecessorReplacement"],
-      [79, "preRevisionRuntimeInputs"],
-      [80, "preRestartContinuation"],
-      [81, "preAuthenticationStates"],
-      [82, "preNativeRestartRecovery"],
-      [83, "preRevisionEgressInstallations"],
-      [84, "preStaticTokenServiceSources"],
-      [85, "preTokenServiceSourceOwnership"],
-      [86, "preRepositoryNetworkPolicy"],
-      [87, "preStandaloneCredentialDeployment"],
-      [88, "preStaticConnectionTemplates"],
-      [89, "preNativeGitDelivery"],
-      [90, "preAgentNetworkProxy"],
-      [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceSourceBackendRef"],
-      [94, "preTokenServiceCredentialSources"],
-      [95, "preNamespaceGitHubAppClients"],
-    ])) {
+    for (const [prefix, history] of await coveringNewestPrefix(
+      "pending SandboxPolicy",
+      76,
+      recentHistories.filter(([count]) => count >= 76),
+    )) {
       await context.test(`populated canonical ${prefix}`, async (child) => {
         const db = await historyDatabase(child, fixture, "pending_policy", {
           prefix,
@@ -1990,27 +2009,7 @@ test(
       [72, "preAccountAdministrationPolicy"],
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
-      [75, "preNativeBrowserAccess"],
-      [76, "preControlPlaneAudit"],
-      [77, "prePendingSandboxPolicyApplication"],
-      [78, "prePredecessorReplacement"],
-      [79, "preRevisionRuntimeInputs"],
-      [80, "preRestartContinuation"],
-      [81, "preAuthenticationStates"],
-      [82, "preNativeRestartRecovery"],
-      [83, "preRevisionEgressInstallations"],
-      [84, "preStaticTokenServiceSources"],
-      [85, "preTokenServiceSourceOwnership"],
-      [86, "preRepositoryNetworkPolicy"],
-      [87, "preStandaloneCredentialDeployment"],
-      [88, "preStaticConnectionTemplates"],
-      [89, "preNativeGitDelivery"],
-      [90, "preAgentNetworkProxy"],
-      [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceSourceBackendRef"],
-      [94, "preTokenServiceCredentialSources"],
-      [95, "preNamespaceGitHubAppClients"],
+      ...recentHistories,
     ]);
     const subtests = [];
     for (const schemas of [false, true]) {
@@ -3130,27 +3129,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [75, "preNativeBrowserAccess"],
-      [76, "preControlPlaneAudit"],
-      [77, "prePendingSandboxPolicyApplication"],
-      [78, "prePredecessorReplacement"],
-      [79, "preRevisionRuntimeInputs"],
-      [80, "preRestartContinuation"],
-      [81, "preAuthenticationStates"],
-      [82, "preNativeRestartRecovery"],
-      [83, "preRevisionEgressInstallations"],
-      [84, "preStaticTokenServiceSources"],
-      [85, "preTokenServiceSourceOwnership"],
-      [86, "preRepositoryNetworkPolicy"],
-      [87, "preStandaloneCredentialDeployment"],
-      [88, "preStaticConnectionTemplates"],
-      [89, "preNativeGitDelivery"],
-      [90, "preAgentNetworkProxy"],
-      [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceSourceBackendRef"],
-      [94, "preTokenServiceCredentialSources"],
-      [95, "preNamespaceGitHubAppClients"],
+      ...recentHistories,
     ])) {
       const subtest = context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -3280,16 +3259,11 @@ test(
     }
 
     // The production command must recognize archives from each predecessor.
-    for (const [prefix, history] of [
-      [88, "preStaticConnectionTemplates"],
-      [89, "preNativeGitDelivery"],
-      [90, "preAgentNetworkProxy"],
-      [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceSourceBackendRef"],
-      [94, "preTokenServiceCredentialSources"],
-      [95, "preNamespaceGitHubAppClients"],
-    ]) {
+    for (const [prefix, history] of await coveringNewestPrefix(
+      "production archive",
+      88,
+      recentHistories.filter(([count]) => count >= 88),
+    )) {
       await context.test(history, async (child) => {
         const predecessor = await historyDatabase(child, fixture, "restored_predecessor", {
           prefix,
@@ -3439,27 +3413,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
-      [75, "preNativeBrowserAccess"],
-      [76, "preControlPlaneAudit"],
-      [77, "prePendingSandboxPolicyApplication"],
-      [78, "prePredecessorReplacement"],
-      [79, "preRevisionRuntimeInputs"],
-      [80, "preRestartContinuation"],
-      [81, "preAuthenticationStates"],
-      [82, "preNativeRestartRecovery"],
-      [83, "preRevisionEgressInstallations"],
-      [84, "preStaticTokenServiceSources"],
-      [85, "preTokenServiceSourceOwnership"],
-      [86, "preRepositoryNetworkPolicy"],
-      [87, "preStandaloneCredentialDeployment"],
-      [88, "preStaticConnectionTemplates"],
-      [89, "preNativeGitDelivery"],
-      [90, "preAgentNetworkProxy"],
-      [91, "preAgentNetworkProxyAdmission"],
-      [92, "preAgentRepositoryApiLimits"],
-      [93, "preTokenServiceSourceBackendRef"],
-      [94, "preTokenServiceCredentialSources"],
-      [95, "preNamespaceGitHubAppClients"],
+      ...recentHistories,
     ])) {
       const subtest = context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
