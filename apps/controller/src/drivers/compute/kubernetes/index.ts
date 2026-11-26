@@ -18307,6 +18307,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         }
         variables.push(
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
+          { name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" },
           { name: "OPENCLAW_GATEWAY_PORT", value: String(this.options.network.gatewayPort) },
         );
         if (enabledChannels !== undefined) {
@@ -18350,6 +18351,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         env: [
           { name: "HOME", value: "/home/node" },
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
+          { name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" },
           { name: "OPENCLAW_WORKSPACE_SETUP_PATH", value: "/run/workspace-setup/setup.json" },
           { name: "OPENCLAW_WORKSPACE_DIR", value: workspace },
           { name: "OPENCLAW_EXECUTABLE", value: "/app/openclaw.mjs" },

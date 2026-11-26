@@ -7297,6 +7297,12 @@ for (const embedded of [true, false]) {
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
     assert.equal(initializer.image, driver.options.images.gateway);
     assert.deepEqual(initializer.resources, driver.options.resources.gateway);
+    for (const container of [initializer, gateway.spec.template.spec.containers[0]]) {
+      assert.deepEqual(
+        container.env.filter(({ name }) => name === "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF"),
+        [{ name: "OPENCLAW_GATEWAY_REQUIRE_NAMESPACE_PROOF", value: "1" }],
+      );
+    }
     // Container restarts do not rerun initContainers; the workspace owner checks its marker.
     assert.equal(containerProgram(pod.containers[0]).includes(setup.id), true);
     assert.equal(

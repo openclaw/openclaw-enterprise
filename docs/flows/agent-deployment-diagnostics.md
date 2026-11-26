@@ -171,9 +171,9 @@ state after admission.
   of its own child's records and inspects again. It restarts on purpose
   (exit 75) once no holder remains; a failed inspection exits 1. Follow
   [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
-- An `agent` `gateway-state-lock` check is a Kubernetes Harness whose Doctor or
-  native setup met node state lock holders. Both fail the deployment with
-  `RUNTIME_STATE_LOCK_UNVERIFIED` (`worker.ts:heldRuntimeFailureCode`).
+- A Kubernetes Harness holds `agent` `gateway-state-lock` if Doctor or setup
+  cannot verify a prior owner stopped. The Gateway also requires namespace proof.
+  Worker reports `RUNTIME_STATE_LOCK_UNVERIFIED` (`worker.ts:heldRuntimeFailureCode`).
 - A dedicated Gateway held at `gateway-tool-policy` with code
   `INCOMPATIBLE_RESPONSE` can have a runtime image provenance failure.
   `apps/controller/src/drivers/compute/gateway-tool-policy.ts:requireGatewayToolPolicyRuntime`

@@ -92,8 +92,6 @@ export async function probePackagedCodex(
       : {
           "stock-codex-0.164.0-dependency-pin.patch":
             "c688852ebcf1941452bfcb43ea07b307c4b9e464da444c3d02f4777523eff602",
-          "openclaw-terminated-gateway-namespace.patch":
-            "09a448c28e306410dbb3d1ae002620ec4c46f11487893c107e7bebce38e55cb5",
           "openclaw-planned-completion.patch":
             "600f0f401ceedf4f158b3becc85b21404afaea0e14e6fec00851c08637520cbe",
           "openclaw-http-chat-input.patch":

@@ -690,9 +690,7 @@ export function stoppedStarterReplacementTest(title: string, role: string | null
 // The contender runs in another Pod (new hostname and PID namespace), so OpenClaw
 // refuses on the namespace match, as it did before this release: this pins that
 // cross-container refusal. The PID check for a holder in the caller's own
-// namespace is covered by the bridge unit tests in OpenClaw's
-// src/infra/gateway-lock-recovery.test.ts
-// (deploy/runtime/openclaw-terminated-gateway-namespace.patch).
+// namespace is covered by OpenClaw's src/infra/gateway-lock-recovery.test.ts.
 export function liveHolderKeepsStateTest(title: string): void {
   test(title, { ...imageTestOptions, timeout: 900_000 }, async (t) => {
     assert.ok(image !== undefined, "the runtime image must be selected");
@@ -723,7 +721,7 @@ export function liveHolderKeepsStateTest(title: string): void {
       return { pid: lock.pid, ownerId: lock.ownerId };
     };
     const before = await readLock();
-    const refused = /is not attributable to the terminated namespace/;
+    const refused = /does not belong to the supplied namespace/;
     const contender = await runStartupProbeScenario(t, {
       ...scenario,
       until: ({ output }: { output: string }) => unverifiableOwner.test(output),
